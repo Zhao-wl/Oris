@@ -7,7 +7,7 @@
 | 阶段 | 结果 | 提交 / 分支 | 证据 |
 | --- | --- | --- | --- |
 | 1 界面验证批次与一期基线（`wip/gui-batch`） | **完成，已合入** | 合并 `8d1860a`；脚本 `4290587`、`f4238a3`、`6338252`、`91e9527`，文档 `d7fff7c` | [V1 基线](v2-baseline-v1.md)、[任务 03 Windows 界面证据](task-03-windows-gui.md)；`scripts/perf/gui-probe.mjs` |
-| 2 V2-01 数据层与流畅度（`feat/v2-01`） | **实现完成，验收未全部通过，未合入**；分支已推送 `origin/feat/v2-01` | `2424bd8`、`7656303`、`9f52588`、文档 `f2dd8e9` 之后的修订（见分支） | [V2-01 结果](v2-01-results.md)（在该分支上） |
+| 2 V2-01 数据层与流畅度（`feat/v2-01`） | **实现完成，验收未全部通过，未合入**；分支已推送 `origin/feat/v2-01` | `2424bd8`、`7656303`、`9f52588`，文档 `16706a3`（分支头） | [V2-01 结果](https://github.com/Zhao-wl/Oris/blob/feat/v2-01/docs/validation/v2-01-results.md)（在该分支上） |
 | 3 V2-06 预制模块（`wip/v2-06-core`） | **完成，已合入** | 合并 `464dae8`（`6bafd71`） | [任务 V2-06](../tasks/v2/06-settings-appearance.md)“预制模块与接入清单” |
 | 4 一期任务 04 预制模块（`wip/v1-04-core`） | **完成，已合入** | 合并 `4bbfc23`（`b6881c5`） | [任务 04](../tasks/04-history-branches.md)“预制模块与接入清单” |
 | 5 收尾 | 完成 | 本文 | — |
