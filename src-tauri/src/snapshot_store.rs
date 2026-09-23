@@ -2,7 +2,7 @@
 //! 只保存前端提交的轻量状态（文件列表、OID、分支、inProgress、阅读锚点），不含文件内容。
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// 单个项目快照上限。
 pub const MAX_SNAPSHOT_BYTES: usize = 2 * 1024 * 1024;
@@ -71,14 +71,11 @@ impl SnapshotStore {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn count(&self) -> usize {
         fs::read_dir(&self.dir)
             .map(|dir| dir.filter_map(Result::ok).filter(|e| e.path().extension().is_some_and(|x| x == "json")).count())
             .unwrap_or(0)
-    }
-
-    pub fn dir(&self) -> &Path {
-        &self.dir
     }
 }
 

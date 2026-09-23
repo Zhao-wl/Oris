@@ -146,7 +146,7 @@ impl GitAdapter {
         let (left, right) = if matches!(change.status, FileStatus::Conflicted) {
             let versions = versions.unwrap_or([ConflictVersion::Stage2, ConflictVersion::Stage3]);
             let stages = entry.and_then(|e| e.conflict.as_ref()).ok_or(GitError::StaleRequest)?;
-            let mut read = |version: ConflictVersion, budget: &mut ImageBudget| {
+            let read = |version: ConflictVersion, budget: &mut ImageBudget| {
                 let source = match version {
                     ConflictVersion::WorkingTree => Source::Worktree,
                     ConflictVersion::Stage1 => stages[0].as_ref().map_or(Source::NotFound, Source::Object),
@@ -189,9 +189,7 @@ impl GitAdapter {
             };
             (left, self.side_from(scope.right_endpoint(), &relative, right_source, &mut budget))
         };
-        if cancelled() {
-            return Err(GitError::StaleRequest);
-        }
+        // 读取后的代次检查由调用方负责（lib.rs）；这里只做内容守卫，不重试。
         self.guard(&state, scope, &change)?;
         let degradation = [left.details.as_ref(), right.details.as_ref()]
             .into_iter()

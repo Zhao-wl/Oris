@@ -7,7 +7,8 @@ mod status_v2;
 #[allow(dead_code)]
 pub mod object_reader;
 pub use content::PREFETCH_LIMIT;
-pub use scan::{RepositoryDetails, ScopeLists};
+#[cfg(feature = "desktop")]
+pub use scan::RepositoryDetails;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -57,6 +58,7 @@ pub enum GitError {
     #[error("文件读取失败：{0}")]
     Io(String),
     #[error("预取已跳过：{0}")]
+    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
     Skipped(String),
 }
 
@@ -224,83 +226,19 @@ pub struct ContentPair {
     degradation: Option<String>,
 }
 
-/// Decides whether watcher events can affect a snapshot or content read.
-#[derive(Clone)]
+/// 测试用：以 V2 watcher 的忽略规则与分类判断一批事件路径是否需要刷新（替代 V1 的 check-ignore 进程）。
+#[cfg(test)]
 pub struct ChangeFilter {
-    git: PathBuf,
     worktree: PathBuf,
     git_dirs: Vec<PathBuf>,
+    rules: crate::watch::IgnoreRules,
+    suppression: crate::watch::Suppression,
 }
 
+#[cfg(test)]
 impl ChangeFilter {
-    /// Object/LFS/log writes always accompany an index or ref update, and
-    /// git-ignored worktree paths (e.g. Unity Library/Temp) never change a
-    /// snapshot. Any failure to classify counts as relevant.
     pub fn relevant(&self, paths: &[PathBuf]) -> bool {
-        let mut candidates = std::collections::BTreeSet::new();
-        for path in paths {
-            if let Some(dir) = self.git_dirs.iter().find(|dir| path.starts_with(dir)) {
-                let first = path
-                    .strip_prefix(dir)
-                    .ok()
-                    .and_then(|inner| inner.components().next())
-                    .and_then(|component| component.as_os_str().to_str());
-                if !matches!(first, Some("objects" | "lfs" | "logs")) {
-                    return true;
-                }
-                continue;
-            }
-            let Ok(relative) = path.strip_prefix(&self.worktree) else {
-                return true;
-            };
-            let Some(relative) = relative.to_str().filter(|value| !value.is_empty()) else {
-                return true;
-            };
-            candidates.insert(relative.replace('\\', "/"));
-        }
-        if candidates.is_empty() {
-            return false;
-        }
-        let mut input = Vec::new();
-        for candidate in &candidates {
-            input.extend_from_slice(candidate.as_bytes());
-            input.push(0);
-        }
-        let output = (|| {
-            use std::io::Write;
-            use std::process::Stdio;
-            let mut child = readonly_command(
-                &self.git,
-                &self.worktree,
-                &["check-ignore", "-z", "--stdin"],
-            )
-            // check-ignore rejects the literal pathspec magic; it reads plain paths.
-            .env_remove("GIT_LITERAL_PATHSPECS")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .ok()?;
-            // Drain stdout concurrently with stdin: a burst of ignored paths can
-            // otherwise fill both OS pipes and block this watcher forever.
-            let mut stdin = child.stdin.take()?;
-            let writer = std::thread::spawn(move || stdin.write_all(&input));
-            let output = child.wait_with_output().ok();
-            writer.join().ok()?.ok()?;
-            output
-        })();
-        // check-ignore exits 0 when some path is ignored, 1 when none is.
-        match output {
-            Some(output) if output.status.success() => {
-                output
-                    .stdout
-                    .split(|b| *b == 0)
-                    .filter(|v| !v.is_empty())
-                    .count()
-                    < candidates.len()
-            }
-            _ => true,
-        }
+        crate::watch::classify("test", &self.worktree, &self.git_dirs, &self.rules, &self.suppression, paths).is_some()
     }
 }
 
@@ -311,8 +249,10 @@ pub struct GitAdapter {
     git_dir: PathBuf,
     common_dir: PathBuf,
     repo_id: String,
+    #[cfg_attr(not(test), allow(dead_code))]
     branch: String,
     version: String,
+    #[cfg_attr(not(test), allow(dead_code))]
     snapshots: Arc<Mutex<HashMap<CompareScope, Vec<read_guard::ReadSnapshot>>>>,
     scans: Arc<Mutex<Vec<Arc<scan::ScanState>>>>,
     reader: object_reader::SharedReader,
@@ -401,14 +341,17 @@ impl GitAdapter {
         self.reader.close();
     }
 
+    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
     pub fn repo_id(&self) -> &str {
         &self.repo_id
     }
 
+    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
     pub fn worktree(&self) -> &Path {
         &self.worktree
     }
 
+    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
     pub fn git_dirs(&self) -> (PathBuf, PathBuf) {
         (self.git_dir.clone(), self.common_dir.clone())
     }
@@ -522,23 +465,13 @@ impl GitAdapter {
         self.git.to_string_lossy().into_owned()
     }
 
-    #[cfg(feature = "desktop")]
-    pub fn watch_paths(&self) -> Vec<PathBuf> {
-        let mut paths = vec![self.worktree.clone()];
-        if !self.git_dir.starts_with(&self.worktree) {
-            paths.push(self.git_dir.clone());
-        }
-        if self.common_dir != self.git_dir && !self.common_dir.starts_with(&self.worktree) {
-            paths.push(self.common_dir.clone());
-        }
-        paths
-    }
-
+    #[cfg(test)]
     pub fn change_filter(&self) -> ChangeFilter {
         ChangeFilter {
-            git: self.git.clone(),
             worktree: self.worktree.clone(),
             git_dirs: vec![self.git_dir.clone(), self.common_dir.clone()],
+            rules: crate::watch::IgnoreRules::new(&self.worktree, &self.git_dir, self.tracked_ignored_paths()),
+            suppression: crate::watch::Suppression::default(),
         }
     }
 
@@ -547,7 +480,8 @@ impl GitAdapter {
         self.snapshot_for_scope(request_id, CompareScope::Unstaged)
     }
 
-    /// 同步版本：扫描后立即补齐统计（测试与一次性调用使用）。
+    /// 同步版本：扫描后立即补齐统计（测试使用）。
+    #[cfg(test)]
     pub fn snapshot_for_scope(
         &self,
         request_id: String,

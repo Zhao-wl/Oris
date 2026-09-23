@@ -52,7 +52,6 @@ impl Suppression {
 /// 分层 gitignore 匹配器：根 `.gitignore`、子目录 `.gitignore`、`info/exclude` 与全局 excludes。
 pub struct IgnoreRules {
     root: PathBuf,
-    git_dir: PathBuf,
     per_dir: Mutex<HashMap<PathBuf, Option<Arc<Gitignore>>>>,
     base: Arc<Gitignore>,
     global: Arc<Gitignore>,
@@ -67,16 +66,11 @@ impl IgnoreRules {
         let base = builder.build().unwrap_or_else(|_| Gitignore::empty());
         Self {
             root: root.to_path_buf(),
-            git_dir: git_dir.to_path_buf(),
             per_dir: Mutex::new(HashMap::new()),
             base: Arc::new(base),
             global: Arc::new(Gitignore::global().0),
             tracked_ignored: Mutex::new(tracked_ignored),
         }
-    }
-
-    pub fn set_tracked_ignored(&self, paths: HashSet<String>) {
-        *self.tracked_ignored.lock().unwrap_or_else(|p| p.into_inner()) = paths;
     }
 
     /// `.gitignore` 变化后丢弃缓存的匹配器，下次按需重新加载。
@@ -157,10 +151,6 @@ impl IgnoreRules {
             Match::Whitelist(_) => false,
             Match::None => matches!(self.global.matched(absolute, is_dir), Match::Ignore(_)),
         }
-    }
-
-    pub fn git_dir(&self) -> &Path {
-        &self.git_dir
     }
 }
 
@@ -254,8 +244,8 @@ fn noise(event: &notify::Event) -> bool {
 
 pub struct RepoWatcher {
     _debouncer: Debouncer<notify::RecommendedWatcher, RecommendedCache>,
+    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
     pub suppression: Arc<Suppression>,
-    pub rules: Arc<IgnoreRules>,
 }
 
 pub struct WatchTarget {
@@ -273,9 +263,8 @@ pub fn watch(
     emit: impl Fn(Invalidation) + Send + 'static,
 ) -> Result<RepoWatcher, String> {
     let suppression = Arc::new(Suppression::default());
-    let rules = Arc::new(IgnoreRules::new(&target.worktree, &target.git_dir, target.tracked_ignored));
+    let handler_rules = Arc::new(IgnoreRules::new(&target.worktree, &target.git_dir, target.tracked_ignored));
     let git_dirs = vec![target.git_dir.clone(), target.common_dir.clone()];
-    let handler_rules = rules.clone();
     let handler_suppression = suppression.clone();
     let repo_id = target.repo_id.clone();
     let worktree = target.worktree.clone();
@@ -314,7 +303,7 @@ pub fn watch(
             .watch(&root, RecursiveMode::Recursive)
             .map_err(|error| format!("无法监听 {}：{error}", root.display()))?;
     }
-    Ok(RepoWatcher { _debouncer: debouncer, suppression, rules })
+    Ok(RepoWatcher { _debouncer: debouncer, suppression })
 }
 
 /// watcher 的 LRU 登记：最多保留 [`MAX_WATCHED`] 个，超出时关闭最久未使用的项目。
@@ -343,13 +332,16 @@ impl WatchLru {
         }
         evicted
     }
+    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
     pub fn remove(&mut self, repo_id: &str) {
         self.order.retain(|id| id != repo_id);
         self.watchers.remove(repo_id);
     }
+    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
     pub fn get(&self, repo_id: &str) -> Option<&RepoWatcher> {
         self.watchers.get(repo_id)
     }
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.watchers.len()
     }

@@ -14,11 +14,13 @@ let host: HTMLDivElement;
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
+  // jsdom 没有 canvas 2D 上下文；TailPath 只需要 measureText。
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ font: "", measureText: (text: string) => ({ width: text.length * 6 }) } as unknown as CanvasRenderingContext2D);
   host = document.createElement("div");
   host.className = "files";
   document.body.append(host);
 });
-afterEach(() => { host.remove(); vi.unstubAllGlobals(); });
+afterEach(() => { host.remove(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 it("renders only a window of rows above the virtual threshold, in flat and tree modes", async () => {
   const root = createRoot(host);
