@@ -1,5 +1,7 @@
 mod media;
 mod read_guard;
+#[allow(dead_code)] mod status_v2;
+#[allow(dead_code)] mod object_reader;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
