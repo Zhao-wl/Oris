@@ -1,5 +1,7 @@
+pub mod log;
 mod media;
 mod read_guard;
+pub mod refs;
 #[allow(dead_code)] mod status_v2;
 #[allow(dead_code)] mod object_reader;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -2542,3 +2544,5 @@ mod task03_cancel_tests {
 
 #[cfg(test)]
 mod json_regression_tests;
+#[cfg(test)]
+mod history_tests;
