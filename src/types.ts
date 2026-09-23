@@ -1,4 +1,5 @@
-export type Endpoint = "index" | "workingTree";
+export type CompareScope = "unstaged" | "staged" | "all";
+export type Endpoint = "head" | "index" | "workingTree" | "emptyTree" | "unavailable";
 
 export interface GitInfo {
   executable: string;
@@ -19,15 +20,21 @@ export interface RepositoryInfo {
 export interface FileChange {
   pathId: string;
   displayPath: string;
-  status: "modified" | "deleted" | "typeChanged";
+  oldPathId: string | null;
+  oldDisplayPath: string | null;
+  status: "added" | "modified" | "deleted" | "renamed" | "untracked" | "conflicted" | "typeChanged";
+  additions: number | null;
+  deletions: number | null;
 }
 
 export interface RepositorySnapshot {
   requestId: string;
   repo: RepositoryInfo;
+  scope: CompareScope;
   revision: string;
   files: FileChange[];
   git: GitInfo;
+  scannedAt: number;
 }
 
 export interface TextSide {

@@ -201,7 +201,7 @@ await call("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", 
 await waitFor(`getSelection().isCollapsed && document.querySelectorAll('.oris-selection-match').length===0`);
 const emptySelectionCleared = await evaluate(`getSelection().isCollapsed && document.querySelectorAll('.oris-selection-match').length===0`);
 
-const bandsBefore = await evaluate(`(() => [...document.querySelectorAll('.diff-overview-rail')].map((rail)=>{const band=rail.querySelector('.diff-overview-viewport'),r=band.getBoundingClientRect(),rr=rail.getBoundingClientRect();return{top:r.top-rr.top,height:r.height,from:Number(band.dataset.lineFrom),to:Number(band.dataset.lineTo),total:Number(band.dataset.lineTotal),rail:rr.height,thumb:rail.querySelector('.diff-overview-thumb').getBoundingClientRect().height}}))()`);
+const bandsBefore = await evaluate(`(() => [...document.querySelectorAll('.diff-overview-rail')].map((rail)=>{const band=rail.querySelector('.diff-overview-viewport'),r=band.getBoundingClientRect(),rr=rail.getBoundingClientRect();return{top:r.top-rr.top,height:r.height,from:Number(band.dataset.lineFrom),to:Number(band.dataset.lineTo),total:Number(band.dataset.lineTotal),rail:rr.height,noTraditionalThumb:!rail.querySelector('.diff-overview-thumb')}}))()`);
 const leftScroller = await pointFor('.oris-split-pane.left .cm-scroller');
 await call("Input.dispatchMouseEvent", { type: "mouseMoved", x: leftScroller.x, y: leftScroller.y });
 await call("Input.dispatchMouseEvent", { type: "mouseWheel", x: leftScroller.x, y: leftScroller.y, deltaX: 0, deltaY: 620 });
@@ -247,7 +247,7 @@ result.passed = count(insensitive.status) > count(caseSensitive) && count(caseSe
   winsSelection.text === 'wins' && winsSelection.sameMatches > 1 && winsSelection.inModified && winsSelection.visible &&
   focusAfterClose.inEditor && emptySelectionCleared &&
   light.panel !== 'rgb(255, 255, 255)' && light.input !== 'rgb(255, 255, 255)' &&
-  bandsBefore.every(bandLogical) && bandsAfter.every((band,index)=>bandLogical(band) && band.from > bandsBefore[index].from && band.markerHit) &&
+  bandsBefore.every((band)=>bandLogical(band) && band.noTraditionalThumb) && bandsAfter.every((band,index)=>bandLogical(band) && band.from > bandsBefore[index].from && band.markerHit) &&
   wrapBands.every((band)=>band.to>band.from && band.height>=2) && foldBands.every((band)=>band.to>band.from && band.height>=2) &&
   alignedSearch.ready==='true' && alignedSearch.spacers>0 && count(alignedSearch.status)>0 &&
   unifiedSearch.editors===1 && count(unifiedSearch.status)>0 && unifiedSearch.replaceControls===0;

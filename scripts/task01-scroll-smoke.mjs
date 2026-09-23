@@ -64,9 +64,9 @@ await evaluate(`(() => {
 })()`);
 await waitFor(`document.querySelector('.oris-split-view') && document.querySelectorAll('.file').length === 3`);
 
-const selectFile = async (path) => {
+const selectFile = async (path, viewSelector = ".oris-split-view") => {
   await evaluate(`([...document.querySelectorAll('.file')].find((b)=>b.getAttribute('aria-label')===${JSON.stringify(path)})).click()`);
-  await waitFor(`document.querySelector('.file.selected')?.getAttribute('aria-label')===${JSON.stringify(path)} && document.querySelector('.tabbar strong')?.textContent===${JSON.stringify(path)} && document.querySelector('.right-endpoint .encoding') && Number(document.querySelector('.oris-split-view')?.dataset.hunkCount)>0`);
+  await waitFor(`document.querySelector('.file.selected')?.getAttribute('aria-label')===${JSON.stringify(path)} && document.querySelector('.tabbar strong')?.textContent===${JSON.stringify(path)} && document.querySelector('.endpoints .encoding') && document.querySelector(${JSON.stringify(viewSelector)})`);
   await wait(500);
 };
 
@@ -80,7 +80,7 @@ const initial = await evaluate(`(() => {
     mergeSpacers:document.querySelectorAll('.cm-mergeSpacer').length,
     orisSpacers:document.querySelectorAll('.oris-alignment-spacer').length,
     scrollers:scrollers.map((s)=>({top:s.scrollTop,height:s.scrollHeight,client:s.clientHeight,overflow:getComputedStyle(s).overflowY})),
-    rails:rails.map((r)=>{const thumb=r.querySelector('.diff-overview-thumb').getBoundingClientRect();const marker=r.querySelector('.diff-overview-markers').getBoundingClientRect();const band=r.querySelector('.diff-overview-viewport').getBoundingClientRect();const bandNode=r.querySelector('.diff-overview-viewport');return{label:r.getAttribute('aria-label'),width:r.getBoundingClientRect().width,max:Number(r.getAttribute('aria-valuemax')),now:Number(r.getAttribute('aria-valuenow')),markers:r.querySelectorAll('.diff-overview-marker').length,thumb:thumb.height,band:{height:band.height,from:Number(bandNode.dataset.lineFrom),to:Number(bandNode.dataset.lineTo),total:Number(bandNode.dataset.lineTotal)},thumbLane:{left:thumb.left,right:thumb.right},markerLane:{left:marker.left,right:marker.right},separate:r.classList.contains('left')?thumb.right<marker.left:marker.right<thumb.left}}),
+    rails:rails.map((r)=>{const marker=r.querySelector('.diff-overview-marker')?.getBoundingClientRect();const band=r.querySelector('.diff-overview-viewport').getBoundingClientRect();const bandNode=r.querySelector('.diff-overview-viewport');return{label:r.getAttribute('aria-label'),width:r.getBoundingClientRect().width,max:Number(r.getAttribute('aria-valuemax')),now:Number(r.getAttribute('aria-valuenow')),markers:r.querySelectorAll('.diff-overview-marker').length,noTraditionalThumb:!r.querySelector('.diff-overview-thumb'),band:{height:band.height,from:Number(bandNode.dataset.lineFrom),to:Number(bandNode.dataset.lineTo),total:Number(bandNode.dataset.lineTotal)},merged:!!marker&&marker.left<band.right&&marker.right>band.left}}),
     connectors:document.querySelectorAll('.diff-connectors path').length,
     zeroLines:document.querySelectorAll('.diff-zero-line').length,
     toolbar:document.querySelector('.toolbar').getBoundingClientRect().top,
@@ -101,12 +101,12 @@ const rightWheel = await evaluate(`(() => { const r=document.querySelector('.ori
 await wait(350);
 const settled = await evaluate(`(() => { const r=document.querySelector('.oris-split-view'); const s=[...r.querySelectorAll('.cm-scroller')]; return {epoch:Number(r.dataset.syncEpoch),left:s[0].scrollTop,right:s[1].scrollTop}; })()`);
 
-const leftThumb = await pointFor(".diff-overview-rail.left .diff-overview-thumb");
-await call("Input.dispatchMouseEvent", { type: "mousePressed", ...leftThumb, button: "left", clickCount: 1 });
-await call("Input.dispatchMouseEvent", { type: "mouseMoved", x: leftThumb.x, y: leftThumb.y + 80, button: "left" });
-await call("Input.dispatchMouseEvent", { type: "mouseReleased", x: leftThumb.x, y: leftThumb.y + 80, button: "left", clickCount: 1 });
+const leftViewport = await pointFor(".diff-overview-rail.left .diff-overview-viewport");
+await call("Input.dispatchMouseEvent", { type: "mousePressed", ...leftViewport, button: "left", clickCount: 1 });
+await call("Input.dispatchMouseEvent", { type: "mouseMoved", x: leftViewport.x, y: leftViewport.y + 80, button: "left" });
+await call("Input.dispatchMouseEvent", { type: "mouseReleased", x: leftViewport.x, y: leftViewport.y + 80, button: "left", clickCount: 1 });
 await wait(350);
-const thumbDrag = await evaluate(`(() => { const r=document.querySelector('.oris-split-view'); const s=[...r.querySelectorAll('.cm-scroller')]; return {master:r.dataset.masterSide,left:s[0].scrollTop,right:s[1].scrollTop,aria:Number(document.querySelector('.diff-overview-rail.left').getAttribute('aria-valuenow'))}; })()`);
+const viewportDrag = await evaluate(`(() => { const r=document.querySelector('.oris-split-view'); const s=[...r.querySelectorAll('.cm-scroller')]; return {master:r.dataset.masterSide,left:s[0].scrollTop,right:s[1].scrollTop,aria:Number(document.querySelector('.diff-overview-rail.left').getAttribute('aria-valuenow'))}; })()`);
 
 const rightRail = await pointFor(".diff-overview-rail.right");
 await clickPoint(rightRail);
@@ -154,17 +154,17 @@ for (let index = 0; index < 8; index += 1) {
   alignmentCycles.push(await evaluate(`({active:document.querySelector('.oris-split-view').dataset.alignmentEnabled==='true',spacers:document.querySelectorAll('.oris-alignment-spacer').length,mergeSpacers:document.querySelectorAll('.cm-mergeSpacer').length})`));
 }
 
-await selectFile("src/insert-only.ts");
-const insertOnly = await evaluate(`(() => { const r=document.querySelector('.oris-split-view'); const s=[...r.querySelectorAll('.cm-scroller')]; const rails=[...r.querySelectorAll('.diff-overview-rail')]; const emptyBand=rails[0].querySelector('.diff-overview-viewport'); return {hunks:Number(r.dataset.hunkCount),leftLength:Number(r.dataset.leftLength),rightLength:Number(r.dataset.rightLength),geometryCount:Number(r.dataset.connectorGeometryCount),geometry:r.dataset.firstConnectorGeometry,x1:Number(r.dataset.connectorX1),x2:Number(r.dataset.connectorX2),markers:rails.map((rail)=>rail.querySelectorAll('.diff-overview-marker').length),zeroLines:r.querySelectorAll('.diff-zero-line.left').length,connectors:r.querySelectorAll('.diff-connectors path.inserted').length,left:{height:s[0].scrollHeight,client:s[0].clientHeight,thumb:rails[0].querySelector('.diff-overview-thumb').getBoundingClientRect().height,rail:rails[0].clientHeight,band:emptyBand.getBoundingClientRect().height,bandTotal:Number(emptyBand.dataset.lineTotal)},right:{height:s[1].scrollHeight,client:s[1].clientHeight},finite:[...r.querySelectorAll('.diff-connectors path')].every((p)=>!p.getAttribute('d').includes('NaN'))}; })()`);
-await selectFile("src/delete-only.ts");
-const deleteOnly = await evaluate(`(() => { const r=document.querySelector('.oris-split-view'); return {zeroLines:r.querySelectorAll('.diff-zero-line.right').length,connectors:r.querySelectorAll('.diff-connectors path.deleted').length,finite:[...r.querySelectorAll('.diff-connectors path')].every((p)=>!p.getAttribute('d').includes('NaN'))}; })()`);
+await selectFile("src/insert-only.ts", ".oris-single-view.inserted");
+const insertOnly = await evaluate(`(() => { const r=document.querySelector('.oris-single-view'); const rail=r.querySelector('.diff-overview-rail'); const band=rail.querySelector('.diff-overview-viewport'); return {side:r.dataset.singleSide,editors:r.querySelectorAll('.cm-editor').length,rails:r.querySelectorAll('.diff-overview-rail').length,split:!!document.querySelector('.oris-split-view'),connectors:r.querySelectorAll('.diff-connectors').length,markers:rail.querySelectorAll('.diff-overview-marker.inserted').length,noTraditionalThumb:!rail.querySelector('.diff-overview-thumb'),bandVisible:band.getBoundingClientRect().height>0,endpoint:document.querySelector('.single-endpoint')?.textContent,layoutDisabled:document.querySelector('select[aria-label="Diff 布局"]')?.disabled,alignDisabled:[...document.querySelectorAll('.toggle-button')].find(b=>b.textContent.includes('对齐变化'))?.disabled}; })()`);
+await selectFile("src/delete-only.ts", ".oris-single-view.deleted");
+const deleteOnly = await evaluate(`(() => { const r=document.querySelector('.oris-single-view'); const rail=r.querySelector('.diff-overview-rail'); return {side:r.dataset.singleSide,editors:r.querySelectorAll('.cm-editor').length,rails:r.querySelectorAll('.diff-overview-rail').length,split:!!document.querySelector('.oris-split-view'),connectors:r.querySelectorAll('.diff-connectors').length,markers:rail.querySelectorAll('.diff-overview-marker.deleted').length,noTraditionalThumb:!rail.querySelector('.diff-overview-thumb'),endpoint:document.querySelector('.single-endpoint')?.textContent}; })()`);
 
 const result = {
   initial,
   leftWheel,
   rightWheel,
   settled,
-  thumbDrag,
+  viewportDrag,
   keyboardRail,
   markerNavigation,
   toolbarBefore,
@@ -177,19 +177,19 @@ const result = {
 };
 result.passed = initial.mergeViews === 0 && initial.mergeSpacers === 0 && initial.orisSpacers === 0 &&
   initial.scrollers.length === 2 && initial.scrollers.every((item) => item.height > item.client && item.overflow === "auto") &&
-  initial.rails.length === 2 && initial.rails.every((rail) => rail.width === 24 && rail.markers > 0 && rail.max > 0 && rail.separate && rail.band.total > 0 && rail.band.to > rail.band.from) &&
+  initial.rails.length === 2 && initial.rails.every((rail) => rail.width === 24 && rail.markers > 0 && rail.max > 0 && rail.noTraditionalThumb && rail.merged && rail.band.total > 0 && rail.band.to > rail.band.from) &&
   leftWheel.master === "a" && leftWheel.left > 0 && leftWheel.right >= 0 && leftWheel.workspace === 0 &&
   rightWheel.master === "b" && rightWheel.epoch > leftWheel.epoch && rightWheel.workspace === 0 &&
   settled.epoch === rightWheel.epoch && Math.abs(settled.left - rightWheel.left) < 1 && Math.abs(settled.right - rightWheel.right) < 1 &&
-  thumbDrag.master === "a" && thumbDrag.left > leftWheel.left && Math.abs(thumbDrag.aria - thumbDrag.left) <= 1 &&
+  viewportDrag.master === "a" && viewportDrag.left > leftWheel.left && Math.abs(viewportDrag.aria - viewportDrag.left) <= 1 &&
   keyboardRail.master === "b" && Math.abs(keyboardRail.aria - keyboardRail.right) <= 1 &&
   markerNavigation.after > markerNavigation.before && markerNavigation.connectors > 0 && markerNavigation.zeroLines > 0 &&
   navigation.workspace === 0 && navigation.positions.every((value, index) => Math.abs(value - toolbarBefore[index]) < 1) &&
   aligned.spacers > 0 && aligned.mergeSpacers === 0 && aligned.ready === "true" && aligned.connectors > 0 &&
   toggledOff.spacers === 0 && toggledOff.mergeSpacers === 0 && toggledOff.zeroLines > 0 &&
   alignmentCycles.every((cycle, index) => cycle.mergeSpacers === 0 && (index % 2 === 0 ? cycle.active && cycle.spacers > 0 : !cycle.active && cycle.spacers === 0)) &&
-  insertOnly.zeroLines > 0 && insertOnly.connectors > 0 && insertOnly.left.thumb === insertOnly.left.rail && insertOnly.left.band === insertOnly.left.rail && insertOnly.left.bandTotal === 0 && insertOnly.finite &&
-  deleteOnly.zeroLines > 0 && deleteOnly.connectors > 0 && deleteOnly.finite;
+  insertOnly.side === "b" && insertOnly.editors === 1 && insertOnly.rails === 1 && !insertOnly.split && insertOnly.connectors === 0 && insertOnly.markers > 0 && insertOnly.noTraditionalThumb && insertOnly.bandVisible && insertOnly.endpoint?.includes("Working Tree") && insertOnly.layoutDisabled && insertOnly.alignDisabled &&
+  deleteOnly.side === "a" && deleteOnly.editors === 1 && deleteOnly.rails === 1 && !deleteOnly.split && deleteOnly.connectors === 0 && deleteOnly.markers > 0 && deleteOnly.noTraditionalThumb && deleteOnly.endpoint?.includes("Index");
 
 writeFileSync(`${outputPrefix}.json`, JSON.stringify(result, null, 2));
 console.log(JSON.stringify(result, null, 2));

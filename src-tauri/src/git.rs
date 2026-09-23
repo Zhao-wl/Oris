@@ -1,11 +1,13 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::HashMap,
     ffi::OsStr,
     fs,
     path::{Component, Path, PathBuf},
     process::{Command, Output},
+    sync::{Arc, Mutex},
 };
 use thiserror::Error;
 
@@ -72,14 +74,46 @@ pub struct RepositoryInfo {
 pub struct FileChange {
     path_id: String,
     display_path: String,
+    old_path_id: Option<String>,
+    old_display_path: Option<String>,
     status: FileStatus,
+    additions: Option<u64>,
+    deletions: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub enum CompareScope {
+    Unstaged,
+    Staged,
+    All,
+}
+
+impl CompareScope {
+    fn left_endpoint(self) -> &'static str {
+        match self {
+            Self::Unstaged => "index",
+            Self::Staged | Self::All => "head",
+        }
+    }
+
+    fn right_endpoint(self) -> &'static str {
+        match self {
+            Self::Staged => "index",
+            Self::Unstaged | Self::All => "workingTree",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 enum FileStatus {
+    Added,
     Modified,
     Deleted,
+    Renamed,
+    Untracked,
+    Conflicted,
     TypeChanged,
 }
 
@@ -88,9 +122,11 @@ enum FileStatus {
 pub struct RepositorySnapshot {
     request_id: String,
     pub repo: RepositoryInfo,
+    pub scope: CompareScope,
     pub revision: String,
     files: Vec<FileChange>,
     git: GitInfo,
+    scanned_at: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -128,6 +164,7 @@ pub struct GitAdapter {
     repo_id: String,
     branch: String,
     version: String,
+    snapshots: Arc<Mutex<HashMap<CompareScope, (String, Vec<FileChange>, Vec<u8>)>>>,
 }
 
 impl GitAdapter {
@@ -168,8 +205,6 @@ impl GitAdapter {
                 "--show-toplevel",
                 "--absolute-git-dir",
                 "--git-common-dir",
-                "--abbrev-ref",
-                "HEAD",
             ],
         )?;
         let repository_text = String::from_utf8(repository_output.stdout)
@@ -178,19 +213,21 @@ impl GitAdapter {
         let worktree = canonical_output_path(repository_lines.next())?;
         let git_dir = canonical_output_path(repository_lines.next())?;
         let common_dir = canonical_output_path(repository_lines.next())?;
-        let branch_name = repository_lines
-            .next()
-            .ok_or_else(|| GitError::InvalidRepository("Git 未返回分支信息".into()))?;
         if repository_lines.next().is_some() {
             return Err(GitError::InvalidRepository(
                 "Git 返回了意外的仓库信息".into(),
             ));
         }
-        let branch = if branch_name == "HEAD" {
+        let symbolic = run_readonly(
+            &git,
+            &worktree,
+            &["symbolic-ref", "--quiet", "--short", "HEAD"],
+        )?;
+        let branch = if symbolic.status.success() {
+            String::from_utf8_lossy(&symbolic.stdout).trim().to_owned()
+        } else {
             let oid = run_required(&git, &worktree, &["rev-parse", "--short", "HEAD"])?;
             format!("detached @ {}", String::from_utf8_lossy(&oid.stdout).trim())
-        } else {
-            branch_name.to_owned()
         };
         let repo_id = hash_bytes(worktree.to_string_lossy().as_bytes());
         Ok(Self {
@@ -201,6 +238,7 @@ impl GitAdapter {
             repo_id,
             branch,
             version,
+            snapshots: Arc::default(),
         })
     }
 
@@ -208,9 +246,34 @@ impl GitAdapter {
         self.git.to_string_lossy().into_owned()
     }
 
+    #[cfg(feature = "desktop")]
+    pub fn watch_paths(&self) -> Vec<PathBuf> {
+        let mut paths = vec![self.worktree.clone()];
+        if !self.git_dir.starts_with(&self.worktree) {
+            paths.push(self.git_dir.clone());
+        }
+        if self.common_dir != self.git_dir && !self.common_dir.starts_with(&self.worktree) {
+            paths.push(self.common_dir.clone());
+        }
+        paths
+    }
+
+    #[cfg(test)]
     pub fn snapshot(&self, request_id: String) -> Result<RepositorySnapshot, GitError> {
-        let (files, raw) = self.list_unstaged()?;
-        let revision = self.revision(&raw, &files)?;
+        self.snapshot_for_scope(request_id, CompareScope::Unstaged)
+    }
+
+    pub fn snapshot_for_scope(
+        &self,
+        request_id: String,
+        scope: CompareScope,
+    ) -> Result<RepositorySnapshot, GitError> {
+        let (files, raw) = self.list_changes(scope)?;
+        let revision = self.revision(scope, &raw, &files)?;
+        self.snapshots
+            .lock()
+            .map_err(|e| GitError::Io(e.to_string()))?
+            .insert(scope, (revision.clone(), files.clone(), raw));
         let display_name = self
             .worktree
             .file_name()
@@ -225,8 +288,11 @@ impl GitAdapter {
                 worktree_path: self.worktree.to_string_lossy().into_owned(),
                 git_dir: self.git_dir.to_string_lossy().into_owned(),
                 common_dir: self.common_dir.to_string_lossy().into_owned(),
-                branch: self.branch.clone(),
+                branch: self
+                    .current_branch()
+                    .unwrap_or_else(|_| self.branch.clone()),
             },
+            scope,
             revision,
             files,
             git: GitInfo {
@@ -235,12 +301,32 @@ impl GitAdapter {
                 supported: true,
                 minimum_version: MINIMUM_GIT_VERSION.into(),
             },
+            scanned_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
         })
     }
 
+    #[cfg(test)]
     pub fn read_content_pair(
         &self,
         request_id: String,
+        requested_revision: String,
+        path_id: String,
+    ) -> Result<ContentPair, GitError> {
+        self.read_content_pair_for_scope(
+            request_id,
+            CompareScope::Unstaged,
+            requested_revision,
+            path_id,
+        )
+    }
+
+    pub fn read_content_pair_for_scope(
+        &self,
+        request_id: String,
+        scope: CompareScope,
         requested_revision: String,
         path_id: String,
     ) -> Result<ContentPair, GitError> {
@@ -251,38 +337,15 @@ impl GitAdapter {
             String::from_utf8(path_bytes).map_err(|_| GitError::UnsupportedPathEncoding)?;
         validate_relative(&relative)?;
 
-        let index_spec = format!(":{relative}");
-        let left_output = run_readonly(
-            &self.git,
-            &self.worktree,
-            &["show", "--no-textconv", &index_spec],
-        )?;
-        let left_bytes = if left_output.status.success() {
-            left_output.stdout
-        } else {
-            return Err(GitError::CommandFailed(stderr_summary(&left_output)));
-        };
-        let working_path = self.worktree.join(Path::new(&relative));
-        let resolved_working_path = match dunce::canonicalize(&working_path) {
-            Ok(path) if path.starts_with(&self.worktree) => Some(path),
-            Ok(_) => return Err(GitError::UnsafePath),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(error) => return Err(GitError::Io(error.to_string())),
-        };
-        let right_bytes = match resolved_working_path.as_deref().map(fs::symlink_metadata) {
-            Some(Ok(metadata)) if metadata.file_type().is_symlink() => {
-                return Err(GitError::UnsafePath)
-            }
-            Some(Ok(metadata)) if metadata.is_file() => {
-                fs::read(resolved_working_path.as_ref().unwrap())
-                    .map_err(|error| GitError::Io(error.to_string()))?
-            }
-            Some(Ok(_)) => return Err(GitError::UnsafePath),
-            Some(Err(error)) => return Err(GitError::Io(error.to_string())),
-            None => Vec::new(),
-        };
-        let (current_files, current_raw) = self.list_unstaged()?;
-        let current_revision = self.revision(&current_raw, &current_files)?;
+        let (_, current_files, current_raw) = self
+            .snapshots
+            .lock()
+            .map_err(|e| GitError::Io(e.to_string()))?
+            .get(&scope)
+            .cloned()
+            .filter(|(revision, _, _)| revision == &requested_revision)
+            .ok_or(GitError::StaleRequest)?;
+        let current_revision = self.revision(scope, &current_raw, &current_files)?;
         if requested_revision != current_revision {
             return Err(GitError::StaleRequest);
         }
@@ -290,11 +353,70 @@ impl GitAdapter {
             .iter()
             .find(|file| file.path_id == path_id)
             .ok_or(GitError::StaleRequest)?;
+        if matches!(change.status, FileStatus::Conflicted) {
+            return Ok(ContentPair {
+                request_id,
+                repo_id: self.repo_id.clone(),
+                revision: current_revision,
+                path_id,
+                display_path: change.display_path.clone(),
+                left: unavailable_side(scope.left_endpoint()),
+                right: unavailable_side(scope.right_endpoint()),
+                stale: false,
+                degradation: Some(
+                    "文件处于未解决冲突状态，不能生成普通双端差异；Oris 不提供冲突解决操作。"
+                        .into(),
+                ),
+            });
+        }
+        let old_relative = change
+            .old_path_id
+            .as_ref()
+            .map(|value| {
+                URL_SAFE_NO_PAD
+                    .decode(value)
+                    .map_err(|_| GitError::UnsafePath)
+            })
+            .transpose()?
+            .map(String::from_utf8)
+            .transpose()
+            .map_err(|_| GitError::UnsupportedPathEncoding)?
+            .unwrap_or_else(|| relative.clone());
+        validate_relative(&old_relative)?;
+        let no_left = matches!(change.status, FileStatus::Added | FileStatus::Untracked);
+        let left_bytes = if no_left {
+            Vec::new()
+        } else {
+            match scope {
+                CompareScope::Unstaged => self.read_index(&old_relative)?,
+                CompareScope::Staged | CompareScope::All => self.read_head(&old_relative)?,
+            }
+        };
         let deleted = matches!(change.status, FileStatus::Deleted);
+        let right_bytes = if deleted {
+            Vec::new()
+        } else {
+            match scope {
+                CompareScope::Staged => self.read_index(&relative)?,
+                CompareScope::Unstaged | CompareScope::All => self.read_worktree(&relative)?,
+            }
+        };
         let display_path = change.display_path.clone();
-        let (left, left_reason) = text_side("index", left_bytes, false);
-        let (right, right_reason) = text_side("workingTree", right_bytes, deleted);
+        let left_missing = no_left || (scope != CompareScope::Unstaged && !self.has_head());
+        let (left, left_reason) = text_side(
+            if left_missing {
+                "emptyTree"
+            } else {
+                scope.left_endpoint()
+            },
+            left_bytes,
+            left_missing,
+        );
+        let (right, right_reason) = text_side(scope.right_endpoint(), right_bytes, deleted);
         let degradation = [left_reason, right_reason].into_iter().flatten().next();
+        if self.revision(scope, &current_raw, &current_files)? != current_revision {
+            return Err(GitError::StaleRequest);
+        }
         Ok(ContentPair {
             request_id,
             repo_id: self.repo_id.clone(),
@@ -308,47 +430,263 @@ impl GitAdapter {
         })
     }
 
-    fn list_unstaged(&self) -> Result<(Vec<FileChange>, Vec<u8>), GitError> {
-        let output = run_required(
+    fn list_changes(&self, scope: CompareScope) -> Result<(Vec<FileChange>, Vec<u8>), GitError> {
+        if scope == CompareScope::All && !self.has_head() {
+            return self.list_unborn_all();
+        }
+        let mut args = vec![
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--find-renames",
+            "--name-status",
+            "-z",
+        ];
+        match scope {
+            CompareScope::Unstaged => {}
+            CompareScope::Staged => args.push("--cached"),
+            CompareScope::All => args.push("HEAD"),
+        }
+        args.push("--");
+        let output = run_required(&self.git, &self.worktree, &args)?;
+        let mut raw = output.stdout;
+        let mut files = parse_name_status(&raw)?;
+        if scope != CompareScope::Staged {
+            let untracked = run_required(
+                &self.git,
+                &self.worktree,
+                &["ls-files", "--others", "--exclude-standard", "-z", "--"],
+            )?;
+            raw.extend_from_slice(&untracked.stdout);
+            for path in untracked
+                .stdout
+                .split(|byte| *byte == 0)
+                .filter(|field| !field.is_empty())
+            {
+                upsert_change(&mut files, path, None, FileStatus::Untracked);
+            }
+        }
+        let conflicts = run_required(
             &self.git,
             &self.worktree,
-            &[
-                "diff",
-                "--no-ext-diff",
-                "--no-textconv",
-                "--no-renames",
-                "--name-status",
-                "-z",
-                "--",
-            ],
+            &["diff", "--name-only", "--diff-filter=U", "-z", "--"],
         )?;
-        let raw = output.stdout;
-        let fields: Vec<&[u8]> = raw
+        raw.extend_from_slice(&conflicts.stdout);
+        for path in conflicts
+            .stdout
             .split(|byte| *byte == 0)
             .filter(|field| !field.is_empty())
-            .collect();
-        if !fields.len().is_multiple_of(2) {
-            return Err(GitError::CommandFailed("无法解析 Git NUL 分隔输出".into()));
+        {
+            upsert_change(&mut files, path, None, FileStatus::Conflicted);
         }
-        let mut files = Vec::with_capacity(fields.len() / 2);
-        for pair in fields.chunks_exact(2) {
-            let status = match pair[0].first().copied() {
-                Some(b'M') => FileStatus::Modified,
-                Some(b'D') => FileStatus::Deleted,
-                Some(b'T') => FileStatus::TypeChanged,
-                _ => continue,
-            };
-            files.push(FileChange {
-                path_id: URL_SAFE_NO_PAD.encode(pair[1]),
-                display_path: String::from_utf8_lossy(pair[1]).into_owned(),
-                status,
-            });
-        }
+        self.populate_stats(scope, &mut files)?;
+        files.sort_by(|left, right| left.display_path.cmp(&right.display_path));
         Ok((files, raw))
     }
 
-    fn revision(&self, status_bytes: &[u8], files: &[FileChange]) -> Result<String, GitError> {
+    fn list_unborn_all(&self) -> Result<(Vec<FileChange>, Vec<u8>), GitError> {
+        let (mut files, mut raw) = self.list_changes(CompareScope::Staged)?;
+        let tracked = run_required(&self.git, &self.worktree, &["ls-files", "-z", "--"])?;
+        raw.extend_from_slice(&tracked.stdout);
+        for path in tracked
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|field| !field.is_empty())
+        {
+            upsert_change(&mut files, path, None, FileStatus::Added);
+        }
+        let untracked = run_required(
+            &self.git,
+            &self.worktree,
+            &["ls-files", "--others", "--exclude-standard", "-z", "--"],
+        )?;
+        raw.extend_from_slice(&untracked.stdout);
+        for path in untracked
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|field| !field.is_empty())
+        {
+            upsert_change(&mut files, path, None, FileStatus::Untracked);
+        }
+        self.populate_stats(CompareScope::Staged, &mut files)?;
+        files.sort_by(|left, right| left.display_path.cmp(&right.display_path));
+        Ok((files, raw))
+    }
+
+    fn populate_stats(
+        &self,
+        scope: CompareScope,
+        files: &mut [FileChange],
+    ) -> Result<(), GitError> {
+        let mut args = vec![
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-renames",
+            "--numstat",
+            "-z",
+        ];
+        match scope {
+            CompareScope::Unstaged => {}
+            CompareScope::Staged => args.push("--cached"),
+            CompareScope::All if self.has_head() => args.push("HEAD"),
+            CompareScope::All => args.push("--cached"),
+        }
+        args.push("--");
+        let output = run_required(&self.git, &self.worktree, &args)?;
+        for field in output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|field| !field.is_empty())
+        {
+            let mut parts = field.splitn(3, |byte| *byte == b'\t');
+            let additions = parts.next().and_then(parse_stat);
+            let deletions = parts.next().and_then(parse_stat);
+            let Some(path) = parts.next() else { continue };
+            let path_id = URL_SAFE_NO_PAD.encode(path);
+            if let Some(file) = files.iter_mut().find(|file| file.path_id == path_id) {
+                file.additions = additions;
+                file.deletions = deletions;
+            }
+        }
+        for file in files
+            .iter_mut()
+            .filter(|file| matches!(file.status, FileStatus::Untracked))
+        {
+            let Ok(bytes) = URL_SAFE_NO_PAD.decode(&file.path_id) else {
+                continue;
+            };
+            let Ok(relative) = String::from_utf8(bytes) else {
+                continue;
+            };
+            let Ok(content) = self.read_worktree(&relative) else {
+                continue;
+            };
+            if content.len() <= MAX_TEXT_BYTES && !content.contains(&0) {
+                file.additions = Some(
+                    content.iter().filter(|byte| **byte == b'\n').count() as u64
+                        + u64::from(!content.is_empty() && !content.ends_with(b"\n")),
+                );
+                file.deletions = Some(0);
+            }
+        }
+        Ok(())
+    }
+
+    fn has_head(&self) -> bool {
+        run_readonly(
+            &self.git,
+            &self.worktree,
+            &["rev-parse", "--verify", "HEAD"],
+        )
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+    }
+
+    fn current_branch(&self) -> Result<String, GitError> {
+        let symbolic = run_readonly(
+            &self.git,
+            &self.worktree,
+            &["symbolic-ref", "--quiet", "--short", "HEAD"],
+        )?;
+        if symbolic.status.success() {
+            return Ok(String::from_utf8_lossy(&symbolic.stdout).trim().to_owned());
+        }
+        let detached = run_readonly(&self.git, &self.worktree, &["rev-parse", "--short", "HEAD"])?;
+        if detached.status.success() {
+            Ok(format!(
+                "detached @ {}",
+                String::from_utf8_lossy(&detached.stdout).trim()
+            ))
+        } else {
+            Ok("unborn HEAD".into())
+        }
+    }
+
+    fn read_index(&self, relative: &str) -> Result<Vec<u8>, GitError> {
+        let spec = format!(":{relative}");
+        let output = run_readonly(&self.git, &self.worktree, &["show", "--no-textconv", &spec])?;
+        if output.status.success() {
+            Ok(output.stdout)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    fn read_head(&self, relative: &str) -> Result<Vec<u8>, GitError> {
+        if !self.has_head() {
+            return Ok(Vec::new());
+        }
+        let spec = format!("HEAD:{relative}");
+        let output = run_readonly(&self.git, &self.worktree, &["show", "--no-textconv", &spec])?;
+        if output.status.success() {
+            Ok(output.stdout)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    fn read_worktree(&self, relative: &str) -> Result<Vec<u8>, GitError> {
+        let working_path = self.worktree.join(Path::new(relative));
+        let resolved = match dunce::canonicalize(&working_path) {
+            Ok(path) if path.starts_with(&self.worktree) => Some(path),
+            Ok(_) => return Err(GitError::UnsafePath),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(GitError::Io(error.to_string())),
+        };
+        match resolved.as_deref().map(fs::symlink_metadata) {
+            Some(Ok(metadata)) if metadata.file_type().is_symlink() => Err(GitError::UnsafePath),
+            Some(Ok(metadata)) if metadata.is_file() => {
+                fs::read(resolved.unwrap()).map_err(|error| GitError::Io(error.to_string()))
+            }
+            Some(Ok(_)) => Err(GitError::UnsafePath),
+            Some(Err(error)) => Err(GitError::Io(error.to_string())),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    fn revision(
+        &self,
+        scope: CompareScope,
+        status_bytes: &[u8],
+        files: &[FileChange],
+    ) -> Result<String, GitError> {
         let mut digest = Sha256::new();
+        digest.update(format!("{scope:?}").as_bytes());
+        // Revision checks run for every content read. Read local ref storage rather
+        // than spawning rev-parse + symbolic-ref (twice around each read).
+        for directory in [&self.git_dir, &self.common_dir] {
+            if let Ok(packed) = fs::read(directory.join("packed-refs")) {
+                digest.update(packed);
+            }
+        }
+        // Reftable repositories do not expose loose refs; keep the CLI fallback.
+        if self.common_dir.join("reftable").exists() {
+            digest.update(
+                run_readonly(
+                    &self.git,
+                    &self.worktree,
+                    &["rev-parse", "--verify", "HEAD"],
+                )?
+                .stdout,
+            );
+            digest.update(self.current_branch()?.as_bytes());
+        }
+        let mut reference = "HEAD".to_owned();
+        for _ in 0..8 {
+            validate_relative(&reference)?;
+            let bytes = fs::read(self.git_dir.join(&reference))
+                .or_else(|_| fs::read(self.common_dir.join(&reference)))
+                .unwrap_or_default();
+            digest.update(reference.as_bytes());
+            digest.update(&bytes);
+            let value = String::from_utf8_lossy(&bytes);
+            if let Some(next) = value.trim().strip_prefix("ref: ") {
+                reference = next.to_owned();
+            } else {
+                break;
+            }
+        }
         digest.update(status_bytes);
         for index in [self.git_dir.join("index"), self.common_dir.join("index")] {
             if let Ok(metadata) = fs::metadata(index) {
@@ -371,11 +709,98 @@ impl GitAdapter {
     }
 }
 
+fn parse_name_status(raw: &[u8]) -> Result<Vec<FileChange>, GitError> {
+    let fields: Vec<&[u8]> = raw
+        .split(|byte| *byte == 0)
+        .filter(|field| !field.is_empty())
+        .collect();
+    let mut files = Vec::new();
+    let mut index = 0;
+    while index < fields.len() {
+        let code = fields[index];
+        index += 1;
+        let first = code
+            .first()
+            .copied()
+            .ok_or_else(|| GitError::CommandFailed("Git 返回空状态".into()))?;
+        if matches!(first, b'R' | b'C') {
+            if index + 1 >= fields.len() {
+                return Err(GitError::CommandFailed(
+                    "无法解析 Git rename NUL 输出".into(),
+                ));
+            }
+            let old_path = fields[index];
+            let new_path = fields[index + 1];
+            index += 2;
+            upsert_change(&mut files, new_path, Some(old_path), FileStatus::Renamed);
+            continue;
+        }
+        if index >= fields.len() {
+            return Err(GitError::CommandFailed("无法解析 Git NUL 分隔输出".into()));
+        }
+        let path = fields[index];
+        index += 1;
+        let status = match first {
+            b'A' => FileStatus::Added,
+            b'M' => FileStatus::Modified,
+            b'D' => FileStatus::Deleted,
+            b'T' => FileStatus::TypeChanged,
+            b'U' => FileStatus::Conflicted,
+            _ => continue,
+        };
+        upsert_change(&mut files, path, None, status);
+    }
+    Ok(files)
+}
+
+fn parse_stat(value: &[u8]) -> Option<u64> {
+    if value == b"-" {
+        None
+    } else {
+        std::str::from_utf8(value).ok()?.parse().ok()
+    }
+}
+
+fn upsert_change(
+    files: &mut Vec<FileChange>,
+    path: &[u8],
+    old_path: Option<&[u8]>,
+    status: FileStatus,
+) {
+    let path_id = URL_SAFE_NO_PAD.encode(path);
+    let value = FileChange {
+        path_id: path_id.clone(),
+        display_path: String::from_utf8_lossy(path).into_owned(),
+        old_path_id: old_path.map(|value| URL_SAFE_NO_PAD.encode(value)),
+        old_display_path: old_path.map(|value| String::from_utf8_lossy(value).into_owned()),
+        status,
+        additions: None,
+        deletions: None,
+    };
+    if let Some(existing) = files.iter_mut().find(|file| file.path_id == path_id) {
+        *existing = value;
+    } else {
+        files.push(value);
+    }
+}
+
 fn update_modified(digest: &mut Sha256, metadata: &fs::Metadata) {
     if let Ok(modified) = metadata.modified() {
         if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
             digest.update(duration.as_nanos().to_le_bytes());
         }
+    }
+}
+
+fn unavailable_side(endpoint: &'static str) -> TextSide {
+    TextSide {
+        endpoint,
+        text: None,
+        byte_length: 0,
+        encoding: "missing",
+        eol: "none",
+        has_final_newline: None,
+        content_id: hash_bytes(&[]),
     }
 }
 
@@ -777,6 +1202,343 @@ mod tests {
     }
 
     #[test]
+    fn reads_staged_unstaged_and_all_as_distinct_endpoint_pairs() {
+        let dir = fixture();
+        assert!(git(dir.path(), &["add", "hello.ts"]).status.success());
+        fs::write(dir.path().join("hello.ts"), "working tree only\n").unwrap();
+        fs::write(dir.path().join("未跟踪 # file.txt"), "new text\n").unwrap();
+        let adapter = GitAdapter::open(dir.path().to_string_lossy().into_owned(), None).unwrap();
+
+        let staged = adapter
+            .snapshot_for_scope("staged".into(), CompareScope::Staged)
+            .unwrap();
+        let staged_file = staged
+            .files
+            .iter()
+            .find(|file| file.display_path == "hello.ts")
+            .unwrap();
+        assert!(staged_file.additions.is_some() && staged_file.deletions.is_some());
+        let staged_pair = adapter
+            .read_content_pair_for_scope(
+                "staged-pair".into(),
+                CompareScope::Staged,
+                staged.revision.clone(),
+                staged_file.path_id.clone(),
+            )
+            .unwrap();
+        assert_eq!(
+            staged_pair.left.text.as_deref(),
+            Some("export const value = \"old\";\n")
+        );
+        assert!(staged_pair
+            .right
+            .text
+            .as_deref()
+            .unwrap()
+            .contains("added = true"));
+
+        let unstaged = adapter
+            .snapshot_for_scope("unstaged".into(), CompareScope::Unstaged)
+            .unwrap();
+        assert!(unstaged
+            .files
+            .iter()
+            .any(|file| matches!(file.status, FileStatus::Untracked)));
+        assert_eq!(
+            unstaged
+                .files
+                .iter()
+                .find(|file| file.display_path == "未跟踪 # file.txt")
+                .and_then(|file| file.additions),
+            Some(1)
+        );
+        let unstaged_file = unstaged
+            .files
+            .iter()
+            .find(|file| file.display_path == "hello.ts")
+            .unwrap();
+        let unstaged_pair = adapter
+            .read_content_pair_for_scope(
+                "unstaged-pair".into(),
+                CompareScope::Unstaged,
+                unstaged.revision.clone(),
+                unstaged_file.path_id.clone(),
+            )
+            .unwrap();
+        assert!(unstaged_pair
+            .left
+            .text
+            .as_deref()
+            .unwrap()
+            .contains("added = true"));
+        assert_eq!(
+            unstaged_pair.right.text.as_deref(),
+            Some("working tree only\n")
+        );
+
+        let all = adapter
+            .snapshot_for_scope("all".into(), CompareScope::All)
+            .unwrap();
+        let all_file = all
+            .files
+            .iter()
+            .find(|file| file.display_path == "hello.ts")
+            .unwrap();
+        let all_pair = adapter
+            .read_content_pair_for_scope(
+                "all-pair".into(),
+                CompareScope::All,
+                all.revision.clone(),
+                all_file.path_id.clone(),
+            )
+            .unwrap();
+        assert_eq!(
+            all_pair.left.text.as_deref(),
+            Some("export const value = \"old\";\n")
+        );
+        assert_eq!(all_pair.right.text.as_deref(), Some("working tree only\n"));
+    }
+
+    #[test]
+    fn reports_rename_delete_untracked_special_paths_and_conflicts() {
+        let dir = fixture();
+        fs::write(dir.path().join("rename old.txt"), "rename\n").unwrap();
+        fs::write(dir.path().join("delete.txt"), "delete\n").unwrap();
+        fs::write(dir.path().join("conflict.txt"), "base\n").unwrap();
+        assert!(git(dir.path(), &["add", "--all"]).status.success());
+        assert!(git(dir.path(), &["commit", "-qm", "paths"])
+            .status
+            .success());
+        assert!(
+            git(dir.path(), &["mv", "rename old.txt", "renamed 中文 #.txt"])
+                .status
+                .success()
+        );
+        fs::remove_file(dir.path().join("delete.txt")).unwrap();
+        fs::write(dir.path().join("untracked [x].txt"), "new\n").unwrap();
+        let adapter = GitAdapter::open(dir.path().to_string_lossy().into_owned(), None).unwrap();
+        let all = adapter
+            .snapshot_for_scope("paths".into(), CompareScope::All)
+            .unwrap();
+        let renamed = all
+            .files
+            .iter()
+            .find(|file| matches!(file.status, FileStatus::Renamed))
+            .unwrap();
+        assert_eq!(renamed.old_display_path.as_deref(), Some("rename old.txt"));
+        assert_eq!(renamed.display_path, "renamed 中文 #.txt");
+        assert!(all
+            .files
+            .iter()
+            .any(|file| file.display_path == "delete.txt"
+                && matches!(file.status, FileStatus::Deleted)));
+        assert!(all
+            .files
+            .iter()
+            .any(|file| file.display_path == "untracked [x].txt"
+                && matches!(file.status, FileStatus::Untracked)));
+
+        assert!(git(dir.path(), &["commit", "-am", "main conflict"])
+            .status
+            .success());
+        let main = String::from_utf8_lossy(&git(dir.path(), &["branch", "--show-current"]).stdout)
+            .trim()
+            .to_owned();
+        assert!(git(dir.path(), &["checkout", "-qb", "side", "HEAD~1"])
+            .status
+            .success());
+        fs::write(dir.path().join("conflict.txt"), "side\n").unwrap();
+        assert!(git(dir.path(), &["commit", "-am", "side conflict"])
+            .status
+            .success());
+        assert!(git(dir.path(), &["checkout", "-q", &main]).status.success());
+        fs::write(dir.path().join("conflict.txt"), "main\n").unwrap();
+        assert!(git(dir.path(), &["commit", "-am", "main conflict content"])
+            .status
+            .success());
+        assert!(!git(dir.path(), &["merge", "side"]).status.success());
+        let conflict_adapter =
+            GitAdapter::open(dir.path().to_string_lossy().into_owned(), None).unwrap();
+        let conflict = conflict_adapter
+            .snapshot_for_scope("conflict".into(), CompareScope::All)
+            .unwrap();
+        let file = conflict
+            .files
+            .iter()
+            .find(|file| file.display_path == "conflict.txt")
+            .unwrap();
+        assert!(matches!(file.status, FileStatus::Conflicted));
+        let pair = conflict_adapter
+            .read_content_pair_for_scope(
+                "conflict-pair".into(),
+                CompareScope::All,
+                conflict.revision.clone(),
+                file.path_id.clone(),
+            )
+            .unwrap();
+        assert!(pair.degradation.unwrap().contains("未解决冲突"));
+    }
+
+    #[test]
+    fn supports_unborn_head_and_revision_changes_after_external_git_operations() {
+        let empty = tempfile::tempdir().unwrap();
+        assert!(git(empty.path(), &["init", "-q"]).status.success());
+        fs::write(empty.path().join("first.txt"), "first\n").unwrap();
+        assert!(git(empty.path(), &["add", "first.txt"]).status.success());
+        let empty_adapter =
+            GitAdapter::open(empty.path().to_string_lossy().into_owned(), None).unwrap();
+        let empty_snapshot = empty_adapter
+            .snapshot_for_scope("empty".into(), CompareScope::All)
+            .unwrap();
+        assert!(!empty_snapshot.repo.branch.is_empty());
+        let empty_file = empty_snapshot
+            .files
+            .iter()
+            .find(|file| file.display_path == "first.txt")
+            .unwrap();
+        let empty_pair = empty_adapter
+            .read_content_pair_for_scope(
+                "empty-pair".into(),
+                CompareScope::All,
+                empty_snapshot.revision.clone(),
+                empty_file.path_id.clone(),
+            )
+            .unwrap();
+        assert_eq!(empty_pair.left.endpoint, "emptyTree");
+        assert_eq!(empty_pair.right.text.as_deref(), Some("first\n"));
+
+        let dir = fixture();
+        let adapter = GitAdapter::open(dir.path().to_string_lossy().into_owned(), None).unwrap();
+        let before = adapter
+            .snapshot_for_scope("before".into(), CompareScope::All)
+            .unwrap();
+        assert!(git(dir.path(), &["add", "hello.ts"]).status.success());
+        let after_add = adapter
+            .snapshot_for_scope("after-add".into(), CompareScope::All)
+            .unwrap();
+        assert_ne!(before.revision, after_add.revision);
+        assert!(git(dir.path(), &["commit", "-qm", "external commit"])
+            .status
+            .success());
+        let after_commit = adapter
+            .snapshot_for_scope("after-commit".into(), CompareScope::All)
+            .unwrap();
+        assert_ne!(after_add.revision, after_commit.revision);
+        assert!(git(dir.path(), &["checkout", "-qb", "external-branch"])
+            .status
+            .success());
+        let after_checkout = adapter
+            .snapshot_for_scope("after-checkout".into(), CompareScope::All)
+            .unwrap();
+        assert_ne!(after_commit.revision, after_checkout.revision);
+        assert_eq!(after_checkout.repo.branch, "external-branch");
+    }
+
+    #[test]
+    fn cached_content_rejects_index_and_packed_head_changes() {
+        let dir = fixture();
+        let adapter = GitAdapter::open(dir.path().to_string_lossy().into_owned(), None).unwrap();
+        let snapshot = adapter
+            .snapshot_for_scope("before".into(), CompareScope::All)
+            .unwrap();
+        assert!(git(dir.path(), &["add", "hello.ts"]).status.success());
+        assert!(matches!(
+            adapter.read_content_pair_for_scope(
+                "stale".into(),
+                CompareScope::All,
+                snapshot.revision,
+                snapshot.files[0].path_id.clone()
+            ),
+            Err(GitError::StaleRequest)
+        ));
+        assert!(git(dir.path(), &["pack-refs", "--all"]).status.success());
+        let snapshot = adapter
+            .snapshot_for_scope("packed".into(), CompareScope::All)
+            .unwrap();
+        let pair = adapter
+            .read_content_pair_for_scope(
+                "fresh".into(),
+                CompareScope::All,
+                snapshot.revision.clone(),
+                snapshot.files[0].path_id.clone(),
+            )
+            .unwrap();
+        assert!(pair.left.text.is_some());
+        assert!(git(dir.path(), &["commit", "-qm", "move HEAD"])
+            .status
+            .success());
+        assert!(matches!(
+            adapter.read_content_pair_for_scope(
+                "moved".into(),
+                CompareScope::All,
+                snapshot.revision,
+                snapshot.files[0].path_id.clone()
+            ),
+            Err(GitError::StaleRequest)
+        ));
+    }
+
+    #[test]
+    #[ignore = "explicit task-02 five-repository switch probe"]
+    fn task02_five_repository_switch_probe() {
+        let mut directories = Vec::new();
+        let mut adapters = Vec::new();
+        for project in 0..5 {
+            let dir = tempfile::tempdir().unwrap();
+            assert!(git(dir.path(), &["init", "-q"]).status.success());
+            assert!(git(
+                dir.path(),
+                &["config", "user.email", "fixture@example.invalid"]
+            )
+            .status
+            .success());
+            assert!(git(dir.path(), &["config", "user.name", "Oris Task02"])
+                .status
+                .success());
+            for file in 0..100 {
+                fs::write(
+                    dir.path()
+                        .join(format!("project-{project}-file-{file:03}.txt")),
+                    format!("baseline {file}\n"),
+                )
+                .unwrap();
+            }
+            assert!(git(dir.path(), &["add", "--all"]).status.success());
+            assert!(git(dir.path(), &["commit", "-qm", "baseline"])
+                .status
+                .success());
+            for file in 0..20 {
+                fs::write(
+                    dir.path()
+                        .join(format!("project-{project}-file-{file:03}.txt")),
+                    format!("changed {file}\nsecond\n"),
+                )
+                .unwrap();
+            }
+            adapters
+                .push(GitAdapter::open(dir.path().to_string_lossy().into_owned(), None).unwrap());
+            directories.push(dir);
+        }
+        let mut samples = Vec::new();
+        for run in 0..30 {
+            let started = Instant::now();
+            let snapshot = adapters[run % adapters.len()]
+                .snapshot_for_scope(format!("switch-{run}"), CompareScope::All)
+                .unwrap();
+            assert_eq!(snapshot.files.len(), 20);
+            samples.push(started.elapsed().as_secs_f64() * 1000.0);
+        }
+        samples.sort_by(f64::total_cmp);
+        let percentile = |p: f64| {
+            samples[((samples.len() as f64 * p).ceil() as usize)
+                .saturating_sub(1)
+                .min(samples.len() - 1)]
+        };
+        println!("ORIS_TASK02_PERF {{\"projects\":5,\"runs\":30,\"filesPerProject\":100,\"changedPerProject\":20,\"switchP50Ms\":{:.2},\"switchP95Ms\":{:.2},\"contentCacheBudgetMiB\":16,\"contentCacheEntries\":12,\"workingSetMB\":{:.2}}}", percentile(0.50), percentile(0.95), working_set_mb());
+        drop(directories);
+    }
+
+    #[test]
     #[ignore = "explicit task-01 S/L performance probe"]
     fn performance_probe_from_environment() {
         let file_count = std::env::var("ORIS_PERF_FILES")
@@ -883,34 +1645,25 @@ mod tests {
 
     #[cfg(windows)]
     fn working_set_mb() -> f64 {
-        use windows_sys::Win32::System::ProcessStatus::{
-            GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
-        };
-        use windows_sys::Win32::System::Threading::GetCurrentProcess;
-        let mut counters = PROCESS_MEMORY_COUNTERS {
-            cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
-            PageFaultCount: 0,
-            PeakWorkingSetSize: 0,
-            WorkingSetSize: 0,
-            QuotaPeakPagedPoolUsage: 0,
-            QuotaPagedPoolUsage: 0,
-            QuotaPeakNonPagedPoolUsage: 0,
-            QuotaNonPagedPoolUsage: 0,
-            PagefileUsage: 0,
-            PeakPagefileUsage: 0,
-        };
-        let ok = unsafe {
-            GetProcessMemoryInfo(
-                GetCurrentProcess(),
-                &mut counters,
-                std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
-            )
-        };
-        if ok == 0 {
-            0.0
-        } else {
-            counters.WorkingSetSize as f64 / 1024.0 / 1024.0
-        }
+        let pid = std::process::id().to_string();
+        let output = Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+            .output();
+        let Ok(output) = output else { return 0.0 };
+        let text = String::from_utf8_lossy(&output.stdout);
+        let memory = text
+            .trim()
+            .trim_matches('"')
+            .split("\",\"")
+            .nth(4)
+            .unwrap_or("");
+        memory
+            .chars()
+            .filter(char::is_ascii_digit)
+            .collect::<String>()
+            .parse::<f64>()
+            .unwrap_or(0.0)
+            / 1024.0
     }
 
     #[cfg(not(windows))]

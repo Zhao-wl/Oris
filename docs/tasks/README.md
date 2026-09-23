@@ -1,24 +1,27 @@
 # V1 实施任务
 
-状态：开发已启动；任务 01 为 Blocked（Windows 双独立滚动、零行语义与外缘双列轨道已实施并通过本轮基础覆盖；最新获授权的选区/搜索/viewport 阅读切片也已通过 Windows 基础需求覆盖；仍等待 macOS 14+ Apple Silicon/WKWebView 真机验证）。用户已明确批准以 Windows 已通过的基础继续启动任务 02，macOS 未验证事实与任务 01 的 Blocked 状态继续保留；任务 04 的本次阅读功能只是提前实施切片，其余 03–05 仍为 Pending。没有发布产品。
+状态：开发已启动；任务 01 与任务 02 均为 Blocked。两项 Windows 实现与基础需求覆盖已经通过，但仍等待 macOS 14+ Apple Silicon/WKWebView、GUI 与文件监听真机验证；这不等于双平台最终验收通过。新 03 为 Blocked（待执行、未开始，依赖门禁未解除），任务 04–06 继续保持 Pending，任务 05（原 04）的既有阅读功能仅为提前实施切片；没有发布产品。
 
 共同输入：[产品规格](../specs/v1-product.md)、[技术方案](../architecture/v1-architecture.md)、[UI/UX](../design/02-approved-ui.md)、[验收计划](../validation/v1-acceptance.md)、[决策登记](../decisions/v1-decisions.md)。
 
-## 五条纵向任务
+## 六条纵向任务
 
 | 任务 | 交付闭环 | 依赖 | 当前状态 |
 | --- | --- | --- | --- |
 | [01 真实仓库文本 Diff 与双平台选型验证](01-repository-diff.md) | 打开仓库 → 选文件 → 阅读真实 diff；确定组件可行性 | 无 | Blocked：Windows 独立修复与对齐开关通过基础覆盖；macOS 真机待验证 |
-| [02 多项目与完整本地变更浏览](02-project-workspace.md) | 多项目切换 → 三种比较范围 → 外部变化更新 → 恢复阅读状态 | 01 Windows 基础通过；macOS 门禁保留 | Ready（用户已明确批准启动；平铺/树切换、最近单仓库恢复切片已提前交付） |
-| [03 提交、分支、版本比较与文件历史](03-history-branches.md) | 分支/提交 → 文件 diff → 两版本/文件历史；显式 fetch | 02 通过 | Pending |
-| [04 完整阅读体验与图片差异](04-diff-experience.md) | 完善文本交互 → 图片/特殊内容 → 键盘与主题 | 02 通过 | Pending（选区/搜索/viewport 阅读切片已提前实施） |
-| [05 双平台性能与可安装发布包](05-performance-release.md) | 全范围真实验收 → 性能预算 → 双平台安装/签名 | 03、04 通过 | Pending |
+| [02 多项目与完整本地变更浏览](02-project-workspace.md) | 多项目切换 → 三种比较范围 → 外部变化更新 → 恢复阅读状态 | 01 Windows 基础通过；macOS 门禁保留 | Blocked：Windows 实现与基础覆盖通过；macOS GUI/WKWebView/watcher 真机待验证 |
+| [03 图片差异与冲突只读查看](03-image-conflict-diff.md) | 静态 PNG/JPEG/WebP 图片比较 → stages/WT 冲突版本阅读；仅两闭环 | 02 通过，原平台及 GUI 门禁保留 | Blocked（待执行、未开始；仅已授权计划同步） |
+| [04 提交、分支、版本比较与文件历史](04-history-branches.md) | 分支/提交 → 文件 diff → 两版本/文件历史；显式 fetch | 02、03 通过 | Pending |
+| [05 完整阅读体验与特殊文件](05-diff-experience.md) | 完善文本交互/编码 → 其他特殊内容 → 键盘与主题；复用 03 图片 | 02、03 通过；默认 04 后 | Pending（选区/搜索/viewport 阅读切片已提前实施） |
+| [06 双平台性能与可安装发布包](06-performance-release.md) | 全范围真实验收 → 性能预算 → 双平台安装/签名 | 03、04、05 通过 | Pending |
 
-默认顺序：01 → 02 → 03 → 04 → 05。03/04 没有产品依赖，但共享 diff 契约；只有确认文件/接口/资源隔离后才能并行，不能因为表格上无直接依赖就默认并发。
+默认顺序：01 → 02 → 03（图片→冲突）→ 04 → 05 → 06。04/05 共享 diff 契约，只有确认文件/接口/资源隔离后才能并行；当前不启动后续产品任务。用户此次仅授权已确认范围的正式文档同步。
 
-01 是可运行的纵向交付，不是只有技术调研。任务 01 已确定 Git 最低支持版本为 2.31.0，npm/Cargo 具体依赖由 lockfile 锁定；Windows 基础覆盖和性能/Git 基线表述已经关闭，但 macOS 真机证据未完成，因此 01 保持 Blocked。用户已明确接受在保留该平台门禁的前提下启动 02；这只是解除 02 的启动阻塞，不等于 01 双平台验收通过，也不降低后续 macOS 验收要求。
+01 与 02 都是可运行的纵向交付，不是只有技术调研。任务 01 已确定 Git 最低支持版本为 2.31.0，npm/Cargo 具体依赖由 lockfile 锁定；任务 02 的 Windows 多项目、完整本地变化、外部更新、恢复与性能基础覆盖也已关闭。两项都缺少 macOS 真机证据，因此保持 Blocked；不得据此启动或解锁 03–06，也不降低后续 macOS 验收要求。
 
 内部覆盖代理 `/root/task01_coverage` 完成的是定向覆盖复查：原 Windows 目录树、A06 几何/滚动/复制、A13 textconv 与工作区字节只读校验三个缺口均已关闭。该结论不是全量代码审核，也不替代 macOS 真机验收。
+
+内部覆盖代理 `/root/task02_coverage` 完成的是 Windows 基础需求定向复查：失效阅读锚点的明确提示与合法回退缺口关闭，其余既定覆盖成立。该复查未重跑测试，也不是全量技术深审；运行结果仍以任务 02 的 Windows 验证记录为准，macOS 门禁未解除。
 
 JetBrains Diff 首轮专项调研结论与证据入口见 [JetBrains Diff 行为调研](../research/04-jetbrains-diff-behavior.md)，Align 关闭后的双侧滚动、零行语义和外缘轨道见 [研究 05](../research/05-unaligned-diff-scroll.md)。研究 05 已完成并按用户授权实施；实现不宣称逐像素复制 JetBrains，macOS 平台门禁仍未解除。
 
@@ -26,18 +29,29 @@ JetBrains Diff 首轮专项调研结论与证据入口见 [JetBrains Diff 行为
 
 | 需求 | 实现主责 | 最终验收 |
 | --- | --- | --- |
-| R-PROJECT | 02 | A02/A03，05 复核 |
-| R-LOCAL | 01 基础、02 完整 | A01/A04/A05 |
+| R-PROJECT | 02 | A02/A03，06 复核 |
+| R-LOCAL | 01 基础、02 本地范围、03 冲突只读 | A01/A04/A05 |
 | R-FILES | 02 | A04/A12 |
-| R-DIFF | 01 基础、04 完整 | A06/A12/A14 |
-| R-HISTORY/R-BRANCH | 03 | A07/A08 |
-| R-COMPARE/R-FILEHISTORY | 03 | A09 |
-| R-REMOTE | 03 | A10 |
-| R-IMAGE | 04 | A11 |
-| R-UX | 02 状态、04 交互 | A03/A06 |
+| R-DIFF | 01 基础、05 完整 | A06/A12/A14 |
+| R-HISTORY/R-BRANCH | 04 | A07/A08 |
+| R-COMPARE/R-FILEHISTORY | 04 | A09 |
+| R-REMOTE | 04 | A10 |
+| R-IMAGE | 03 图片、05 其他特殊文件 | A11 |
+| R-UX | 02 状态、05 交互 | A03/A06 |
 | R-SAFE | 全任务，01 建边界 | A01/A05/A10/A13 |
-| R-PERF | 全任务，05 总体验收 | A03/A14 |
-| R-PLATFORM | 01 起两端验证、05 发布 | A15 |
+| R-PERF | 全任务，06 总体验收 | A03/A14 |
+| R-PLATFORM | 01 起两端验证、06 发布 | A15 |
+
+## 2026-09-23 编号迁移与历史追溯
+
+| 原文件/编号 | 当前文件/编号 |
+| --- | --- |
+| 新增 | [03-image-conflict-diff.md](03-image-conflict-diff.md) |
+| 03-history-branches.md / 03 | [04-history-branches.md](04-history-branches.md) / 04 |
+| 04-diff-experience.md / 04 | [05-diff-experience.md](05-diff-experience.md) / 05 |
+| 05-performance-release.md / 05 | [06-performance-release.md](06-performance-release.md) / 06 |
+
+仅原 04 图片实现主责迁至新 03；文本/编码、二进制/SVG/LFS/submodule 既有约定仍由现 05 承担。历史研究、运行记录和验证报告保留当时编号与内容，查阅其中旧 03/04/05 时按上表对应；编号变化不是重跑验收。研究中的全格式候选不属于新 03，正式票据为准。
 
 ## 任务通用执行约定
 
@@ -47,4 +61,4 @@ JetBrains Diff 首轮专项调研结论与证据入口见 [JetBrains Diff 行为
 - 核对源代码、测试夹具、日志的生成调用链，避免用截图或静态页面替代功能证明。
 - 任务完成报告包含交付版本、逐项验收结果、证据路径、未运行平台和遗留问题；无证据不得标记完成。
 - 状态流转：Ready/Pending → In progress → Awaiting acceptance → Done；实质问题为 Blocked 并说明恢复条件。
-- 用户已授权按完整计划派发实施，并明确批准基于任务 01 的 Windows 基础覆盖启动任务 02；任务 03–05 仍按各自依赖保持 Pending。推送与发布仍未授权。
+- 用户已授权按完整计划派发实施，并明确批准基于任务 01 的 Windows 基础覆盖启动任务 02；本轮仅授权新 03 图片/冲突范围和正式计划同步，不自动授权产品开工；新 03 保持 Blocked，04–06 保持 Pending，按各自依赖门禁等待后续实施指令。推送与发布仍未授权。

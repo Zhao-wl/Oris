@@ -25,7 +25,7 @@
 
 - [x] A01（Windows）：真实 Git 夹具中打开 → 文件选择 → 正确左右内容 → hunk 导航，前后无仓库写入；macOS 平台侧仍待验证。
 - [ ] A06 基础：Windows 几何、拖动、比例、复制、56px 可见连接区、对齐开关、双侧 hunk 映射同步、零行细线及两侧“滚动条 + 差异色标”双列轨道已通过专项与本轮基础覆盖；macOS 平台侧仍待验证。
-- [x] 用户授权阅读切片（Windows 基础需求覆盖）：已实现高对比真实选区、选中同词、应用内大小写/全字/正则搜索及 marker 槽逻辑 viewport band，并完成专项执行会话验证和内部定向复查；复查未重跑测试或新增代码审核，不替代任务 04 完整验收或 macOS 门禁。
+- [x] 用户授权阅读切片（Windows 基础需求覆盖）：已实现高对比真实选区、选中同词、应用内大小写/全字/正则搜索及 marker 槽逻辑 viewport band，并完成专项执行会话验证和内部定向复查；复查未重跑测试或新增代码审核，不替代任务 05（原 04）完整验收或 macOS 门禁。
 - [x] A13 基础（Windows）：无害 external diff、fsmonitor、textconv 标记均未触发；不修改 safe.directory，不拼接 shell；macOS 平台侧仍待验证。
 - [ ] Win11 WebView2 和 macOS 14+ M1 WKWebView 各自真实运行；浏览器截图不替代 Tauri 实机。
 - [x] Windows S 场景首轮核心测量与 L 压力探测已记录预算、线程位置、时延/内存及边界；范围不含 IPC/Worker/CodeMirror/首屏，不宣称全 V1 或端到端性能通过。
