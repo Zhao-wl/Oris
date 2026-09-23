@@ -1,0 +1,159 @@
+{
+  "id": "solarized-light",
+  "name": "Solarized Light",
+  "type": "light",
+  "source": {
+    "kind": "vscode",
+    "commit": "e81ea68fc0228ba2eb01fc9848c30d2e41a26d56",
+    "path": "extensions/theme-solarized-light/themes/solarized-light-color-theme.json"
+  },
+  "variables": {
+    "--bg": "#FDF6E3",
+    "--panel": "#EEE8D5",
+    "--chrome": "#EEE8D5",
+    "--text": "#657B83",
+    "--dim": "#717171",
+    "--line-number": "#237893",
+    "--border": "#DDD6C1",
+    "--hover": "#DFCA8844",
+    "--selection": "#DFCA88",
+    "--selection-text": "#6C6C6C",
+    "--blue": "#b49471",
+    "--button-bg": "#AC9D57",
+    "--button-text": "#ffffff",
+    "--button-secondary-bg": "#DFCA8844",
+    "--button-secondary-text": "#616161",
+    "--input-bg": "#DDD6C1",
+    "--input-text": "#586E75",
+    "--input-border": "#D3AF86",
+    "--dropdown-bg": "#EEE8D5",
+    "--dropdown-text": "#616161",
+    "--dropdown-border": "#D3AF86",
+    "--toggle-on": "#b4947133",
+    "--toggle-on-border": "#D3AF86",
+    "--toggle-off": "#DDD6C1",
+    "--status-bg": "#EEE8D5",
+    "--status-text": "#586E75",
+    "--text-selection": "#EEE8D5",
+    "--text-selection-fg": "#657B83",
+    "--same-word": "#f3efe199",
+    "--search-match": "#A8AC94",
+    "--search-other": "#EA5C0055",
+    "--warning": "#BF8803",
+    "--error": "#A1260D",
+    "--status-modified": "#895503",
+    "--status-added": "#007100",
+    "--status-conflicted": "#ad0707",
+    "--scrollbar": "#64646466",
+    "--scrollbar-hover": "#646464b3",
+    "--scrollbar-active": "#00000099",
+    "--widget-shadow": "#00000029",
+    "--status-deleted": "#b4bbb5",
+    "--status-renamed": "#895503",
+    "--status-type-changed": "#895503"
+  },
+  "diff": {
+    "oris": {
+      "modified": {
+        "marker": "#2090D3",
+        "line": "#2090d33b",
+        "word": "#2090d357"
+      },
+      "added": {
+        "marker": "#48985D",
+        "line": "#9bb95533",
+        "word": "#9ccc2c40"
+      },
+      "deleted": {
+        "marker": "#b4bbb5",
+        "line": "#b4bbb538",
+        "word": "#b4bbb559"
+      }
+    },
+    "vscode": {
+      "added": {
+        "marker": "#48985D",
+        "line": "#9bb95533",
+        "word": "#9ccc2c40"
+      },
+      "deleted": {
+        "marker": "#E51400",
+        "line": "#ff000033",
+        "word": "#ff000033"
+      }
+    }
+  },
+  "highlight": [
+    {
+      "tag": "atom"
+    },
+    {
+      "tag": "attributeName",
+      "color": "#93A1A1"
+    },
+    {
+      "tag": "className",
+      "color": "#CB4B16"
+    },
+    {
+      "tag": "comment",
+      "color": "#93A1A1",
+      "fontStyle": "italic"
+    },
+    {
+      "tag": "emphasis",
+      "fontStyle": "italic"
+    },
+    {
+      "tag": "function(variableName)",
+      "color": "#268BD2"
+    },
+    {
+      "tag": "heading",
+      "color": "#268BD2"
+    },
+    {
+      "tag": "invalid",
+      "color": "#DC322F"
+    },
+    {
+      "tag": "keyword",
+      "color": "#CB4B16"
+    },
+    {
+      "tag": "number",
+      "color": "#D33682"
+    },
+    {
+      "tag": "punctuation",
+      "color": "#DC322F"
+    },
+    {
+      "tag": "regexp",
+      "color": "#DC322F"
+    },
+    {
+      "tag": "self",
+      "color": "#268BD2"
+    },
+    {
+      "tag": "string",
+      "color": "#2AA198"
+    },
+    {
+      "tag": "strong",
+      "fontStyle": "bold"
+    },
+    {
+      "tag": "tagName",
+      "color": "#268BD2"
+    },
+    {
+      "tag": "typeName",
+      "color": "#CB4B16"
+    },
+    {
+      "tag": "variableName"
+    }
+  ]
+}

@@ -1,0 +1,52 @@
+{
+  "id": "oris-dark",
+  "name": "Oris 深色",
+  "type": "dark",
+  "source": {
+    "kind": "oris",
+    "path": "src/styles.css"
+  },
+  "variables": {
+    "--bg": "#1e1f22",
+    "--panel": "#2b2d30",
+    "--chrome": "#26272b",
+    "--text": "#bcbec4",
+    "--dim": "#8b8d98",
+    "--border": "#393b40",
+    "--hover": "#334a74",
+    "--blue": "#548af7",
+    "--diff-word-bg": "#548af755",
+    "--toggle-on": "#254b7b",
+    "--toggle-on-border": "#6ea1ff",
+    "--toggle-off": "#303136",
+    "--status-modified": "#5ca4ff",
+    "--status-added": "#4f9f64",
+    "--status-deleted": "#9ca0a8",
+    "--status-renamed": "#d9a24f",
+    "--status-type-changed": "#d9a24f",
+    "--status-conflicted": "#ff7b72",
+    "--text-selection": "#ad4cf0e8",
+    "--text-selection-fg": "#fff"
+  },
+  "diff": {
+    "oris": {
+      "modified": {
+        "marker": "#548af7",
+        "line": "#283d53aa",
+        "word": "#548af755"
+      },
+      "added": {
+        "marker": "#4f9f64",
+        "line": "#294436aa",
+        "word": "#4f9f6457"
+      },
+      "deleted": {
+        "marker": "#85888f",
+        "line": "#3c3f41",
+        "word": "#85888f57"
+      }
+    },
+    "vscode": null
+  },
+  "highlight": []
+}
