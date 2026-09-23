@@ -94,6 +94,8 @@
 
 本轮实现与验证记录：[任务 03 证据](../validation/task-03-image-conflict-evidence.md)。A/B 非 GUI 实现与自动验证已完成，总控内部 `task03_coverage` 只读基础检查已通过：当前源码及既有非 GUI 自动验证基本覆盖 A/B，未发现明确实现遗漏。此次检查未重跑测试，也不是技术深审；不替代真实平台验收。
 
+2026-09-23 开发收尾复核及当前源码 release 见[任务 03 收尾记录](../validation/task-03-closeout.md)；整体平台验收门禁不变。
+
 整体阻塞项：真实 WebView2/WKWebView 显示交互、原生 watcher/focus、跨平台 GUI 30 次混合切换及全进程树峰值/稳态内存证据尚未完成。整体 A/B 与双平台最终验收保持未勾选，标准不降低；04–06 未启动，不释放后继。
 
 ## 完成与交付

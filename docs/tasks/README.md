@@ -25,6 +25,8 @@
 
 总控内部 `task03_coverage` 只读基础检查已通过：当前源码及既有非 GUI 自动验证基本覆盖 A/B，未发现明确实现遗漏。此次检查未重跑测试，也不是技术深审；不替代真实平台验收。任务 03 整体 A/B 与双平台最终验收未通过，04–06 保持 Pending、未启动，不释放后继。
 
+任务 03 开发收尾已按当前源码重跑非 GUI 回归并重新构建独立 release，结果见[收尾记录](../validation/task-03-closeout.md)；真实平台证据缺口与上述 Blocked 状态不变。
+
 JetBrains Diff 首轮专项调研结论与证据入口见 [JetBrains Diff 行为调研](../research/04-jetbrains-diff-behavior.md)，Align 关闭后的双侧滚动、零行语义和外缘轨道见 [研究 05](../research/05-unaligned-diff-scroll.md)。研究 05 已完成并按用户授权实施；实现不宣称逐像素复制 JetBrains，macOS 平台门禁仍未解除。
 
 ## 需求覆盖索引
