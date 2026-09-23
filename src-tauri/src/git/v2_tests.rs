@@ -143,7 +143,8 @@ fn b01_worktree_only_renames_empty_head_and_cancelled_layers_match_v1() {
     let dir = init();
     let p = dir.path();
     let body = b"line one of a long enough body\nline two\nline three\nline four\n";
-    write(p, "a.txt", body);
+    // a 与 b 内容不同，避免 rename 配对出现歧义（相同内容时 Git 可把任一删除配给新路径）。
+    write(p, "a.txt", b"alpha one\nalpha two\nalpha three\nalpha four\n");
     write(p, "b.txt", body);
     write(p, "c.txt", b"head\n");
     git(p, &["add", "-A"]);
@@ -415,7 +416,7 @@ fn b17_readonly_paths_never_write_index_and_manual_refresh_is_the_only_writeback
 fn b18_malicious_config_is_not_executed_on_v2_paths() {
     let dir = init();
     let p = dir.path();
-    write(p, ".gitattributes", "*.ts diff=evil\n");
+    write(p, ".gitattributes", b"*.ts diff=evil\n");
     write(p, "code.ts", b"old\n");
     git(p, &["add", "-A"]);
     git(p, &["commit", "-qm", "base"]);
@@ -510,4 +511,51 @@ fn resource_limits_cat_file_pool_idle_reaping_and_blob_cache_budget() {
     assert_eq!(cache.stats().bytes, 32 * 1024 * 1024);
     cache.insert("f".repeat(40), Arc::from(vec![0u8; MAX_CACHED_BLOB_BYTES + 1]));
     assert!(cache.get(&"f".repeat(40)).is_none());
+}
+
+/// B02：大内容以二进制帧传输：文本与图片字节不经 JSON 转义 / base64，解码后与原内容逐字节一致。
+#[test]
+fn b02_binary_frame_carries_text_and_image_bytes_verbatim() {
+    let dir = init();
+    let p = dir.path();
+    let png = {
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(2, 2, image::Rgba([9, 8, 7, 255])))
+            .write_to(&mut out, image::ImageFormat::Png)
+            .unwrap();
+        out.into_inner()
+    };
+    let text = "引号\"与反斜杠\\ 和换行\r\n".repeat(2000);
+    write(p, "t.txt", b"old\n");
+    write(p, "i.png", &png);
+    git(p, &["add", "-A"]);
+    git(p, &["commit", "-qm", "base"]);
+    write(p, "t.txt", text.as_bytes());
+    let a = adapter(p);
+    let snap = a.snapshot_for_scope("s".into(), CompareScope::Unstaged).unwrap();
+    let text_pair = a.read_content_pair_for_scope("t".into(), CompareScope::Unstaged, snap.revision.clone(), URL_SAFE_NO_PAD.encode("t.txt")).unwrap();
+    let frame = text_pair.encode_frame();
+    assert_eq!(&frame[..4], b"ORC1");
+    let header_len = u32::from_le_bytes(frame[4..8].try_into().unwrap()) as usize;
+    let header: serde_json::Value = serde_json::from_slice(&frame[8..8 + header_len]).unwrap();
+    let payload = &frame[8 + header_len..];
+    let range = header["textRanges"][1].as_array().unwrap();
+    let (start, len) = (range[0].as_u64().unwrap() as usize, range[1].as_u64().unwrap() as usize);
+    assert_eq!(&payload[start..start + len], text.as_bytes());
+    assert!(header["pair"]["right"]["text"].is_null(), "文本不应再出现在 JSON 头中");
+    assert!(frame.len() < text.len() + 4096, "帧大小应接近原文字节数（无转义膨胀）");
+    let image_repo = init();
+    let q = image_repo.path();
+    write(q, "i.png", &png);
+    git(q, &["add", "-A"]);
+    let unborn = adapter(q);
+    let staged = unborn.snapshot_for_scope("i".into(), CompareScope::Staged).unwrap();
+    let image_pair = unborn.read_content_pair_for_scope("i".into(), CompareScope::Staged, staged.revision, URL_SAFE_NO_PAD.encode("i.png")).unwrap();
+    let frame = image_pair.encode_frame();
+    let header_len = u32::from_le_bytes(frame[4..8].try_into().unwrap()) as usize;
+    let header: serde_json::Value = serde_json::from_slice(&frame[8..8 + header_len]).unwrap();
+    let range = header["imageRanges"][1].as_array().unwrap();
+    let (start, len) = (range[0].as_u64().unwrap() as usize, range[1].as_u64().unwrap() as usize);
+    assert_eq!(&frame[8 + header_len + start..8 + header_len + start + len], png.as_slice());
+    assert_eq!(header["pair"]["right"]["details"]["image"]["base64"], "");
 }
