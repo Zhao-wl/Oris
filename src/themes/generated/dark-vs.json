@@ -1,0 +1,175 @@
+{
+  "id": "dark-vs",
+  "name": "Dark (Visual Studio)",
+  "type": "dark",
+  "source": {
+    "kind": "vscode",
+    "commit": "e81ea68fc0228ba2eb01fc9848c30d2e41a26d56",
+    "path": "extensions/theme-defaults/themes/dark_vs.json"
+  },
+  "variables": {
+    "--bg": "#1E1E1E",
+    "--panel": "#252526",
+    "--chrome": "#3C3C3C",
+    "--text": "#D4D4D4",
+    "--dim": "#ccccccb3",
+    "--line-number": "#858585",
+    "--border": "#80808059",
+    "--hover": "#2A2D2E",
+    "--selection": "#04395E",
+    "--selection-text": "#ffffff",
+    "--blue": "#007FD4",
+    "--button-bg": "#0E639C",
+    "--button-text": "#ffffff",
+    "--button-secondary-bg": "#2A2D2E",
+    "--button-secondary-text": "#CCCCCC",
+    "--input-bg": "#3C3C3C",
+    "--input-text": "#CCCCCC",
+    "--input-border": "#3C3C3C",
+    "--dropdown-bg": "#3C3C3C",
+    "--dropdown-text": "#F0F0F0",
+    "--dropdown-border": "#3C3C3C",
+    "--toggle-on": "#007fd466",
+    "--toggle-on-border": "#007ACC",
+    "--toggle-off": "#3C3C3C",
+    "--status-bg": "#007ACC",
+    "--status-text": "#ffffff",
+    "--text-selection": "#264F78",
+    "--text-selection-fg": "#D4D4D4",
+    "--same-word": "#ADD6FF26",
+    "--search-match": "#515C6A",
+    "--search-other": "#EA5C0055",
+    "--warning": "#CCA700",
+    "--error": "#F48771",
+    "--status-modified": "#E2C08D",
+    "--status-added": "#73C991",
+    "--status-conflicted": "#e4676b",
+    "--scrollbar": "#79797966",
+    "--scrollbar-hover": "#646464b3",
+    "--scrollbar-active": "#bfbfbf66",
+    "--widget-shadow": "#0000005c",
+    "--status-deleted": "#757575",
+    "--status-renamed": "#E2C08D",
+    "--status-type-changed": "#E2C08D"
+  },
+  "diff": {
+    "oris": {
+      "modified": {
+        "marker": "#1B81A8",
+        "line": "#1b81a83b",
+        "word": "#1b81a857"
+      },
+      "added": {
+        "marker": "#487E02",
+        "line": "#9bb95533",
+        "word": "#9ccc2c33"
+      },
+      "deleted": {
+        "marker": "#757575",
+        "line": "#75757538",
+        "word": "#75757559"
+      }
+    },
+    "vscode": {
+      "added": {
+        "marker": "#487E02",
+        "line": "#9bb95533",
+        "word": "#9ccc2c33"
+      },
+      "deleted": {
+        "marker": "#F14C4C",
+        "line": "#ff000033",
+        "word": "#ff000033"
+      }
+    }
+  },
+  "highlight": [
+    {
+      "tag": "atom",
+      "color": "#b5cea8"
+    },
+    {
+      "tag": "attributeName",
+      "color": "#d7ba7d"
+    },
+    {
+      "tag": "comment",
+      "color": "#6A9955"
+    },
+    {
+      "tag": "controlKeyword",
+      "color": "#569cd6"
+    },
+    {
+      "tag": "definitionKeyword",
+      "color": "#569cd6"
+    },
+    {
+      "tag": "emphasis",
+      "color": "#C586C0",
+      "fontStyle": "italic"
+    },
+    {
+      "tag": "function(variableName)",
+      "color": "#569cd6"
+    },
+    {
+      "tag": "heading",
+      "color": "#569cd6",
+      "fontStyle": "bold"
+    },
+    {
+      "tag": "invalid",
+      "color": "#f44747"
+    },
+    {
+      "tag": "keyword",
+      "color": "#b5cea8"
+    },
+    {
+      "tag": "modifier",
+      "color": "#d4d4d4"
+    },
+    {
+      "tag": "number",
+      "color": "#b5cea8"
+    },
+    {
+      "tag": "operatorKeyword",
+      "color": "#569cd6"
+    },
+    {
+      "tag": "punctuation",
+      "color": "#569cd6"
+    },
+    {
+      "tag": "regexp",
+      "color": "#d16969"
+    },
+    {
+      "tag": "self",
+      "color": "#569cd6"
+    },
+    {
+      "tag": "string",
+      "color": "#ce9178"
+    },
+    {
+      "tag": "strong",
+      "color": "#569cd6",
+      "fontStyle": "bold"
+    },
+    {
+      "tag": "tagName",
+      "color": "#d7ba7d"
+    },
+    {
+      "tag": "typeName",
+      "color": "#9cdcfe"
+    },
+    {
+      "tag": "variableName",
+      "color": "#b5cea8"
+    }
+  ]
+}
