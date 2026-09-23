@@ -78,7 +78,10 @@ fn start_watcher(app: &tauri::AppHandle, adapter: &GitAdapter) -> Result<watch::
             worktree: adapter.worktree().to_path_buf(),
             git_dir,
             common_dir,
-            tracked_ignored: adapter.tracked_ignored_paths(),
+            tracked_ignored: {
+                let adapter = adapter.clone();
+                Box::new(move || adapter.tracked_ignored_paths())
+            },
         },
         watch::DEBOUNCE,
         move |change| {

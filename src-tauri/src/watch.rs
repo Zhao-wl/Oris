@@ -3,7 +3,7 @@
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use ignore::Match;
 use notify_debouncer_full::notify::{self, RecursiveMode};
-use notify_debouncer_full::{new_debouncer, DebounceEventResult, Debouncer, RecommendedCache};
+use notify_debouncer_full::{new_debouncer_opt, DebounceEventResult, Debouncer, NoCache};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -60,6 +60,10 @@ pub struct IgnoreRules {
 }
 
 impl IgnoreRules {
+    pub fn set_tracked_ignored(&self, paths: HashSet<String>) {
+        *self.tracked_ignored.lock().unwrap_or_else(|p| p.into_inner()) = paths;
+    }
+
     pub fn new(root: &Path, git_dir: &Path, tracked_ignored: HashSet<String>) -> Self {
         let mut builder = GitignoreBuilder::new(root);
         let _ = builder.add(git_dir.join("info").join("exclude"));
@@ -243,7 +247,9 @@ fn noise(event: &notify::Event) -> bool {
 }
 
 pub struct RepoWatcher {
-    _debouncer: Debouncer<notify::RecommendedWatcher, RecommendedCache>,
+    // 不使用文件 ID 缓存：Windows 上默认的 FileIdMap 会在 watch() 时遍历整棵目录树并为每个文件保存 ID，
+    // 大仓库打开会慢上秒级并常驻内存；我们不需要跨事件的 rename 缝合。
+    _debouncer: Debouncer<notify::RecommendedWatcher, NoCache>,
     #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
     pub suppression: Arc<Suppression>,
 }
@@ -253,7 +259,8 @@ pub struct WatchTarget {
     pub worktree: PathBuf,
     pub git_dir: PathBuf,
     pub common_dir: PathBuf,
-    pub tracked_ignored: HashSet<String>,
+    /// 已跟踪但被忽略的文件清单；在后台线程中计算，不阻塞项目打开。
+    pub tracked_ignored: Box<dyn FnOnce() -> HashSet<String> + Send>,
 }
 
 /// 启动一个仓库 watcher；`emit` 在后台线程上以合并后的分类结果调用。
@@ -263,12 +270,15 @@ pub fn watch(
     emit: impl Fn(Invalidation) + Send + 'static,
 ) -> Result<RepoWatcher, String> {
     let suppression = Arc::new(Suppression::default());
-    let handler_rules = Arc::new(IgnoreRules::new(&target.worktree, &target.git_dir, target.tracked_ignored));
+    let handler_rules = Arc::new(IgnoreRules::new(&target.worktree, &target.git_dir, HashSet::new()));
+    let pending_rules = handler_rules.clone();
+    let tracked_ignored = target.tracked_ignored;
+    std::thread::spawn(move || pending_rules.set_tracked_ignored(tracked_ignored()));
     let git_dirs = vec![target.git_dir.clone(), target.common_dir.clone()];
     let handler_suppression = suppression.clone();
     let repo_id = target.repo_id.clone();
     let worktree = target.worktree.clone();
-    let mut debouncer = new_debouncer(debounce, None, move |result: DebounceEventResult| {
+    let mut debouncer = new_debouncer_opt::<_, notify::RecommendedWatcher, NoCache>(debounce, None, move |result: DebounceEventResult| {
         let paths: Vec<PathBuf> = match result {
             Ok(events) => events
                 .iter()
@@ -289,7 +299,7 @@ pub fn watch(
         if let Some(invalidation) = classify(&repo_id, &worktree, &git_dirs, &handler_rules, &handler_suppression, &paths) {
             emit(invalidation);
         }
-    })
+    }, NoCache, notify::Config::default())
     .map_err(|error| format!("无法启动文件监听：{error}"))?;
     let mut roots = vec![target.worktree.clone()];
     if !target.git_dir.starts_with(&target.worktree) {
@@ -449,7 +459,7 @@ mod tests {
         fs::write(&file, b"{\"a\":1}").unwrap();
         let (sender, receiver) = mpsc::channel();
         let _watcher = watch(
-            WatchTarget { repo_id: "r".into(), worktree: root.clone(), git_dir: root.join(".git"), common_dir: root.join(".git"), tracked_ignored: HashSet::new() },
+            WatchTarget { repo_id: "r".into(), worktree: root.clone(), git_dir: root.join(".git"), common_dir: root.join(".git"), tracked_ignored: Box::new(HashSet::new) },
             DEBOUNCE,
             move |change| {
                 let _ = sender.send(change);
@@ -479,7 +489,7 @@ mod tests {
         for (i, dir) in dirs.iter().enumerate() {
             let root = dunce::canonicalize(dir.path()).unwrap();
             let watcher = watch(
-                WatchTarget { repo_id: format!("r{i}"), worktree: root.clone(), git_dir: root.join(".git"), common_dir: root.join(".git"), tracked_ignored: HashSet::new() },
+                WatchTarget { repo_id: format!("r{i}"), worktree: root.clone(), git_dir: root.join(".git"), common_dir: root.join(".git"), tracked_ignored: Box::new(HashSet::new) },
                 DEBOUNCE,
                 |_| {},
             )
@@ -500,7 +510,7 @@ mod tests {
         fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
         let (sender, receiver) = mpsc::channel();
         let _watcher = watch(
-            WatchTarget { repo_id: "r".into(), worktree: root.clone(), git_dir: root.join(".git"), common_dir: root.join(".git"), tracked_ignored: HashSet::new() },
+            WatchTarget { repo_id: "r".into(), worktree: root.clone(), git_dir: root.join(".git"), common_dir: root.join(".git"), tracked_ignored: Box::new(HashSet::new) },
             DEBOUNCE,
             move |change| {
                 let _ = sender.send(change);
