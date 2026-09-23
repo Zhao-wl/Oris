@@ -1,12 +1,12 @@
 # V2 实施任务
 
-状态：全部 Pending（未开始），本次只做规划。共同输入：[V2 产品规格](../../specs/v2-product.md)、[V2 技术方案](../../architecture/v2-architecture.md)、[V2 验收计划](../../validation/v2-acceptance.md)、[V2 决策登记](../../decisions/v2-decisions.md)。V1 任务总表见 [../README.md](../README.md)；V1 文档中“明确不支持”的列表只约束 V1 范围。
+状态：V2-01 已实施（Blocked，见下表）；V2-06 预制模块另行完成；其余 Pending。共同输入：[V2 产品规格](../../specs/v2-product.md)、[V2 技术方案](../../architecture/v2-architecture.md)、[V2 验收计划](../../validation/v2-acceptance.md)、[V2 决策登记](../../decisions/v2-decisions.md)。V1 任务总表见 [../README.md](../README.md)；V1 文档中“明确不支持”的列表只约束 V1 范围。
 
 ## 五条纵向任务
 
 | 任务 | 交付闭环 | 依赖 | 当前状态 |
 | --- | --- | --- | --- |
-| [V2-01 数据层与流畅度基础](01-data-layer-performance.md) | 测 V1 基线 → 单次 status + cat-file + OID 缓存 → 快照恢复 → watcher 分类 → 对比基线达标 | V1 03 代码已提交（V2-D27） | Pending；预制模块 `status_v2` / `object_reader` 与 Git 命令层探测已合入 main |
+| [V2-01 数据层与流畅度基础](01-data-layer-performance.md) | 测 V1 基线 → 单次 status + cat-file + OID 缓存 → 快照恢复 → watcher 分类 → 对比基线达标 | V1 03 代码已提交（V2-D27） | Blocked：实现已合入，Windows 功能 / 安全验收与 §3 可测时延达标；§4 内存两项未达标、外部变化未测、macOS 未运行（[结果](../../validation/v2-01-results.md)） |
 | [V2-02 暂存、丢弃与提交](02-stage-commit.md) | 写操作通道 → stage/unstage → discard（含撤销）→ commit/amend/撤销提交 | V2-01 | Pending |
 | [V2-03 stash 与分支切换](03-stash-branch.md) | stash 保存 / 查看 / 恢复 → 新建 / 切换分支 → detached 检出 → 分支管理 | V2-02、V1 04 | Pending |
 | [V2-04 远端同步与合并](04-sync-merge.md) | pull / push（进度、取消）→ merge → 冲突只读查看 → 标记已解决 → 完成或中止 | V2-02、V1 03、V1 04 | Pending |
