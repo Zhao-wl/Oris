@@ -1,7 +1,13 @@
+mod content;
 mod media;
 mod read_guard;
-#[allow(dead_code)] mod status_v2;
-#[allow(dead_code)] mod object_reader;
+mod scan;
+#[allow(dead_code)]
+mod status_v2;
+#[allow(dead_code)]
+pub mod object_reader;
+pub use content::PREFETCH_LIMIT;
+pub use scan::{RepositoryDetails, ScopeLists};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -50,6 +56,8 @@ pub enum GitError {
     Runtime(String),
     #[error("文件读取失败：{0}")]
     Io(String),
+    #[error("预取已跳过：{0}")]
+    Skipped(String),
 }
 
 // Tauri must receive the Display reason for unit/struct variants too, not only tuple payloads.
@@ -73,6 +81,7 @@ impl Serialize for GitError {
             #[cfg(feature = "desktop")]
             Self::Runtime(_) => "runtime",
             Self::Io(_) => "io",
+            Self::Skipped(_) => "skipped",
         };
         let mut value = serializer.serialize_struct("GitError", 2)?;
         value.serialize_field("kind", kind)?;
@@ -159,6 +168,12 @@ pub struct RepositorySnapshot {
     files: Vec<FileChange>,
     git: GitInfo,
     scanned_at: u64,
+    /// V2：一次 status 得到的三个范围；前端据此切换范围，不再启动 Git 进程。
+    scopes: Option<scan::ScopeLists>,
+    /// 增删统计与“全部”范围修正是否已合并；为 false 时统计显示占位而不是 0。
+    stats_ready: bool,
+    branch_info: Option<scan::BranchSummary>,
+    in_progress: Option<scan::InProgressSummary>,
 }
 
 #[derive(Debug, Serialize)]
@@ -299,6 +314,8 @@ pub struct GitAdapter {
     branch: String,
     version: String,
     snapshots: Arc<Mutex<HashMap<CompareScope, Vec<read_guard::ReadSnapshot>>>>,
+    scans: Arc<Mutex<Vec<Arc<scan::ScanState>>>>,
+    reader: object_reader::SharedReader,
 }
 
 impl GitAdapter {
@@ -364,6 +381,7 @@ impl GitAdapter {
             format!("detached @ {}", String::from_utf8_lossy(&oid.stdout).trim())
         };
         let repo_id = hash_bytes(worktree.to_string_lossy().as_bytes());
+        let reader = object_reader::shared_reader(&git, &worktree, object_reader::DEFAULT_IDLE);
         Ok(Self {
             git,
             worktree,
@@ -373,7 +391,131 @@ impl GitAdapter {
             branch,
             version,
             snapshots: Arc::default(),
+            scans: Arc::default(),
+            reader,
         })
+    }
+
+    /// 关闭项目时立即回收常驻 cat-file 进程（资源上限 §7）。
+    pub fn close(&self) {
+        self.reader.close();
+    }
+
+    pub fn repo_id(&self) -> &str {
+        &self.repo_id
+    }
+
+    pub fn worktree(&self) -> &Path {
+        &self.worktree
+    }
+
+    pub fn git_dirs(&self) -> (PathBuf, PathBuf) {
+        (self.git_dir.clone(), self.common_dir.clone())
+    }
+
+    fn git_info(&self) -> GitInfo {
+        GitInfo {
+            executable: self.git_executable_display(),
+            version: self.version.clone(),
+            supported: true,
+            minimum_version: MINIMUM_GIT_VERSION.into(),
+        }
+    }
+
+    fn repository_info(&self, branch: String) -> RepositoryInfo {
+        let display_name = self
+            .worktree
+            .file_name()
+            .unwrap_or_else(|| OsStr::new("repository"))
+            .to_string_lossy()
+            .into_owned();
+        RepositoryInfo {
+            repo_id: self.repo_id.clone(),
+            display_name,
+            worktree_path: self.worktree.to_string_lossy().into_owned(),
+            git_dir: self.git_dir.to_string_lossy().into_owned(),
+            common_dir: self.common_dir.to_string_lossy().into_owned(),
+            branch,
+        }
+    }
+
+    fn build_snapshot(
+        &self,
+        request_id: String,
+        scope: CompareScope,
+        state: &scan::ScanState,
+        details: Option<&scan::RepositoryDetails>,
+    ) -> RepositorySnapshot {
+        let mut lists = state.lists.clone();
+        if let Some(details) = details {
+            lists.all = details.all.clone();
+            let apply = |list: &mut Vec<FileChange>, stats: &[(String, Option<u64>, Option<u64>)]| {
+                let map: HashMap<&str, (Option<u64>, Option<u64>)> =
+                    stats.iter().map(|(id, a, d)| (id.as_str(), (*a, *d))).collect();
+                for file in list.iter_mut() {
+                    if let Some((a, d)) = map.get(file.path_id.as_str()) {
+                        file.additions = *a;
+                        file.deletions = *d;
+                    }
+                }
+            };
+            apply(&mut lists.unstaged, &details.stats.unstaged);
+            apply(&mut lists.staged, &details.stats.staged);
+            apply(&mut lists.all, &details.stats.all);
+        }
+        let files = lists.get(scope).clone();
+        RepositorySnapshot {
+            request_id,
+            repo: self.repository_info(Self::branch_label(&state.branch)),
+            scope,
+            revision: state.revision.clone(),
+            files,
+            git: self.git_info(),
+            scanned_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+            scopes: Some(lists),
+            stats_ready: details.is_some(),
+            branch_info: Some((&state.branch).into()),
+            in_progress: Some((&state.in_progress).into()),
+        }
+    }
+
+    /// V2 扫描：一次 status 覆盖三个范围，统计由 [`Self::details`] 在后台补齐。
+    /// `refresh_index` 仅用于用户手动刷新（V2-D09）。
+    pub fn snapshot_v2(
+        &self,
+        request_id: String,
+        scope: CompareScope,
+        refresh_index: bool,
+    ) -> Result<RepositorySnapshot, GitError> {
+        let state = self.scan(refresh_index)?;
+        let details = state.details.get().cloned();
+        Ok(self.build_snapshot(request_id, scope, &state, details.as_deref()))
+    }
+
+    /// 按 revision 计算（并缓存）增删统计与“全部”范围修正。
+    pub fn details(&self, revision: &str) -> Result<scan::RepositoryDetails, GitError> {
+        let state = self.scan_state(revision).ok_or(GitError::StaleRequest)?;
+        Ok((*self.details_for(&state)?).clone())
+    }
+
+    /// 已跟踪但匹配忽略规则的文件（watcher 不应丢弃它们的变化）。只读 plumbing，失败时返回空集。
+    pub fn tracked_ignored_paths(&self) -> std::collections::HashSet<String> {
+        readonly_command(&self.git, &self.worktree, &["ls-files", "-z", "-c", "-i", "--exclude-standard"])
+            .env_remove("GIT_LITERAL_PATHSPECS")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| {
+                o.stdout
+                    .split(|b| *b == 0)
+                    .filter(|p| !p.is_empty())
+                    .map(|p| String::from_utf8_lossy(p).into_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     pub fn git_executable_display(&self) -> String {
@@ -405,7 +547,20 @@ impl GitAdapter {
         self.snapshot_for_scope(request_id, CompareScope::Unstaged)
     }
 
+    /// 同步版本：扫描后立即补齐统计（测试与一次性调用使用）。
     pub fn snapshot_for_scope(
+        &self,
+        request_id: String,
+        scope: CompareScope,
+    ) -> Result<RepositorySnapshot, GitError> {
+        let state = self.scan(false)?;
+        let details = self.details_for(&state)?;
+        Ok(self.build_snapshot(request_id, scope, &state, Some(&details)))
+    }
+
+    /// V1 逐命令实现，仅保留为 B01/B02 的对照预言机。
+    #[cfg(test)]
+    pub fn snapshot_for_scope_v1(
         &self,
         request_id: String,
         scope: CompareScope,
@@ -473,6 +628,10 @@ impl GitAdapter {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64,
+            scopes: None,
+            stats_ready: true,
+            branch_info: None,
+            in_progress: None,
         })
     }
 
@@ -521,18 +680,17 @@ impl GitAdapter {
         )
     }
 
-    pub fn read_content_pair_cancellable(
+    /// V1 读取路径，仅保留为 B02 的逐字节对照。
+    #[cfg(test)]
+    pub fn read_content_pair_v1(
         &self,
         request_id: String,
         scope: CompareScope,
         requested_revision: String,
         path_id: String,
         versions: Option<[ConflictVersion; 2]>,
-        cancelled: impl Fn() -> bool,
     ) -> Result<ContentPair, GitError> {
-        if cancelled() {
-            return Err(GitError::StaleRequest);
-        }
+        let cancelled = || false;
         let path_bytes = URL_SAFE_NO_PAD
             .decode(&path_id)
             .map_err(|_| GitError::UnsafePath)?;
@@ -641,6 +799,7 @@ impl GitAdapter {
         })
     }
 
+    #[cfg(test)]
     fn list_changes(&self, scope: CompareScope) -> Result<(Vec<FileChange>, Vec<u8>), GitError> {
         if scope == CompareScope::All && !self.has_head() {
             return self.list_unborn_all();
@@ -697,6 +856,7 @@ impl GitAdapter {
         Ok((files, raw))
     }
 
+    #[cfg(test)]
     fn list_unborn_all(&self) -> Result<(Vec<FileChange>, Vec<u8>), GitError> {
         let (mut files, mut raw) = self.list_changes(CompareScope::Staged)?;
         let tracked = run_required(&self.git, &self.worktree, &["ls-files", "-z", "--"])?;
@@ -726,6 +886,7 @@ impl GitAdapter {
         Ok((files, raw))
     }
 
+    #[cfg(test)]
     fn populate_stats(
         &self,
         scope: CompareScope,
@@ -857,6 +1018,7 @@ impl GitAdapter {
         Ok(bytes)
     }
 
+    #[cfg(test)]
     fn revision(
         &self,
         scope: CompareScope,
@@ -921,6 +1083,7 @@ impl GitAdapter {
     }
 }
 
+#[cfg(test)]
 fn parse_name_status(raw: &[u8]) -> Result<Vec<FileChange>, GitError> {
     let fields: Vec<&[u8]> = raw
         .split(|byte| *byte == 0)
@@ -973,6 +1136,7 @@ fn parse_stat(value: &[u8]) -> Option<u64> {
     }
 }
 
+#[cfg(test)]
 fn upsert_change(
     files: &mut Vec<FileChange>,
     path: &[u8],
@@ -2542,3 +2706,5 @@ mod task03_cancel_tests {
 
 #[cfg(test)]
 mod json_regression_tests;
+#[cfg(test)]
+mod v2_tests;

@@ -51,14 +51,33 @@ interface SplitController {
   view: SplitView;
   navigate(index: number): void;
   settleViewport(onComplete: () => void): void;
-  destroy(): void;
+  /** keepViews 为 true 时只拆除控制器与外层 DOM，EditorView 留给下一个文件复用。 */
+  destroy(keepViews?: boolean): void;
 }
 
 interface SingleController {
   view: EditorView;
   chunks: Change[];
   navigate(index: number): void;
-  destroy(): void;
+  destroy(keepViews?: boolean): void;
+}
+
+/** 可复用的编辑器实例（技术方案 §5.7：切换文件时只替换文档与装饰，不重建编辑器）。 */
+interface EditorPool {
+  a?: EditorView;
+  b?: EditorView;
+  single?: EditorView;
+  unified?: EditorView;
+}
+
+/** 复用已有 EditorView：挂到新的容器并以新文档与扩展替换状态；没有可复用实例时新建。 */
+function reuseOrCreate(existing: EditorView | undefined, parent: HTMLElement, doc: string, extensions: Extension[]) {
+  if (!existing) return new EditorView({ parent, doc, extensions });
+  parent.append(existing.dom);
+  existing.setState(EditorState.create({ doc, extensions }));
+  existing.scrollDOM.scrollTop = 0;
+  existing.scrollDOM.scrollLeft = 0;
+  return existing;
 }
 
 const alignmentLayouts = new WeakMap<SplitView, { a: AlignmentSpacerSpec[]; b: AlignmentSpacerSpec[] }>();
@@ -1394,7 +1413,8 @@ function createSplitView(
   alignChanges: boolean,
   initialRatio: number,
   onLayoutChange: (ratio: number, leftWidth: number) => void,
-  onPositionChange: (position: number, total: number) => void
+  onPositionChange: (position: number, total: number) => void,
+  pool: EditorPool = {}
 ): SplitController {
   const root = document.createElement("div");
   root.className = "oris-split-view";
@@ -1421,8 +1441,10 @@ function createSplitView(
   root.dataset.leftLength = String(left.length);
   root.dataset.rightLength = String(right.length);
   root.dataset.hunkCount = String(chunks.length);
-  const a = new EditorView({ parent: paneA, doc: left, extensions: shared });
-  const b = new EditorView({ parent: paneB, doc: right, extensions: shared });
+  const a = reuseOrCreate(pool.a, paneA, left, shared);
+  const b = reuseOrCreate(pool.b, paneB, right, shared);
+  pool.a = a;
+  pool.b = b;
   a.dom.id = "oris-left-editor";
   b.dom.id = "oris-right-editor";
   a.dispatch({ effects: StateEffect.appendConfig.of(EditorView.decorations.of(buildSideDecorations(a, chunks, diffDocument.changes, "a", highlight))) });
@@ -1483,14 +1505,19 @@ function createSplitView(
       if (alignmentController) alignmentController.schedule(onComplete);
       else onComplete();
     },
-    destroy() {
+    destroy(keepViews = false) {
       alignmentController?.destroy();
       removeCollapse?.();
       removeResize();
       scrollController?.destroy();
       visualController?.destroy();
-      a.destroy();
-      b.destroy();
+      if (keepViews) {
+        a.dom.remove();
+        b.dom.remove();
+      } else {
+        a.destroy();
+        b.destroy();
+      }
       root.remove();
     }
   };
@@ -1502,7 +1529,8 @@ function createSingleView(
   diffDocument: DiffDocument,
   shared: Extension[],
   presentation: Extract<DiffPresentation, { kind: "single" }>,
-  onPositionChange: (position: number, total: number) => void
+  onPositionChange: (position: number, total: number) => void,
+  pool: EditorPool = {}
 ): SingleController {
   const root = document.createElement("div");
   root.className = `oris-single-view ${presentation.tone}`;
@@ -1515,7 +1543,8 @@ function createSingleView(
   else root.append(pane, rail.rail);
   parent.append(root);
 
-  const view = new EditorView({ parent: pane, doc: text, extensions: shared });
+  const view = reuseOrCreate(pool.single, pane, text, shared);
+  pool.single = view;
   view.dom.id = "oris-single-editor";
   const lineClass = presentation.tone === "inserted" ? "oris-inserted-line" : "oris-deleted-line";
   const lineDecorations = Array.from({ length: view.state.doc.lines }, (_, index) =>
@@ -1561,11 +1590,12 @@ function createSingleView(
     view,
     chunks,
     navigate,
-    destroy() {
+    destroy(keepViews = false) {
       resize.disconnect();
       removeRailInput();
       view.scrollDOM.removeEventListener("scroll", scroll);
-      view.destroy();
+      if (keepViews) view.dom.remove();
+      else view.destroy();
       root.remove();
     }
   };
@@ -1600,7 +1630,9 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
   const host = useRef<HTMLDivElement>(null);
   const runtime = useRef<{ split?: SplitController; single?: SingleController; unified?: EditorView; position: number }>({ position: 0 });
   const splitRatio = useRef(0.5);
-  const savedViewport = useRef<{ key: string; sides: { line: number; text: string; offset: number; left: number }[] } | null>(null);
+  /** 按阅读键保存的阅读位置（最近 32 个），切回同一文件时恢复。 */
+  const savedViewports = useRef(new Map<string, { line: number; text: string; offset: number; left: number }[]>());
+  const pool = useRef<EditorPool>({});
   const layoutKey = `${readingKey}:${presentation.kind === "single" ? `single-${presentation.side}` : "compare"}`;
 
   useImperativeHandle(ref, () => ({
@@ -1693,7 +1725,8 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
         document,
         shared,
         presentation,
-        onPositionChange
+        onPositionChange,
+        pool.current
       );
       runtime.current = { single, position: 0 };
     } else if (mode === "split") {
@@ -1703,26 +1736,24 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
           splitRatio.current = ratio;
           onSplitLayoutChange(ratio, leftWidth);
         },
-        onPositionChange
+        onPositionChange,
+        pool.current
       );
       runtime.current = { split, position: 0 };
     } else {
-      unified = new EditorView({
-        parent: host.current,
-        doc: right,
-        extensions: [
-          ...shared,
-          unifiedMergeView({
-            original: left,
-            highlightChanges: highlight === "words",
-            gutter: true,
-            mergeControls: false,
-            allowInlineDiffs: true,
-            collapseUnchanged,
-            diffConfig
-          })
-        ]
-      });
+      unified = reuseOrCreate(pool.current.unified, host.current, right, [
+        ...shared,
+        unifiedMergeView({
+          original: left,
+          highlightChanges: highlight === "words",
+          gutter: true,
+          mergeControls: false,
+          allowInlineDiffs: true,
+          collapseUnchanged,
+          diffConfig
+        })
+      ]);
+      pool.current.unified = unified;
       runtime.current = { unified, position: 0 };
       const total = getChunks(unified.state)?.chunks.length ?? 0;
       onPositionChange(total ? 1 : 0, total);
@@ -1731,10 +1762,10 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
       ? [{ view: split.view.a, side: "left" }, { view: split.view.b, side: "right" }]
       : single ? [{ view: single.view, side: presentation.kind === "single" && presentation.side === "a" ? "left" : "right" }]
       : unified ? [{ view: unified, side: "unified" }] : [];
-    const saved = savedViewport.current;
-    if (saved?.key === layoutKey) {
+    const saved = savedViewports.current.get(layoutKey);
+    if (saved) {
       const restore = () => searchViews.forEach(({ view }, index) => {
-        const anchor = saved.sides[index]; if (!anchor) return;
+        const anchor = saved[index]; if (!anchor) return;
         let number = Math.min(anchor.line, view.state.doc.lines);
         // Keep the visible text as anchor when lines were inserted/deleted above it.
         if (view.state.doc.line(number).text !== anchor.text) {
@@ -1751,19 +1782,29 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
     }
     readingSearch = installReadingSearch(host.current, searchViews, split ? (onComplete) => split?.settleViewport(onComplete) : undefined);
     return () => {
-      savedViewport.current = { key: layoutKey, sides: searchViews.map(({ view }) => {
+      const viewports = savedViewports.current;
+      viewports.delete(layoutKey);
+      viewports.set(layoutKey, searchViews.map(({ view }) => {
         const block = view.lineBlockAtHeight(view.scrollDOM.scrollTop);
         const line = view.state.doc.lineAt(block.from);
         return { line: line.number, text: line.text, offset: view.scrollDOM.scrollTop - block.top, left: view.scrollDOM.scrollLeft };
-      }) };
+      }));
+      while (viewports.size > 32) viewports.delete(viewports.keys().next().value as string);
       readingSearch?.destroy();
-      split?.destroy();
-      single?.destroy();
-      unified?.destroy();
+      split?.destroy(true);
+      single?.destroy(true);
+      unified?.dom.remove();
       runtime.current = { position: 0 };
       if (host.current) host.current.replaceChildren();
     };
   }, [layoutKey, left, right, document, mode, highlight, collapsed, wrap, fontSize, dark, alignChanges, onPositionChange, onSplitLayoutChange, presentation]);
+
+  // 在主 effect 之后声明：卸载时先拆除控制器，再销毁复用池中的编辑器。
+  useEffect(() => () => {
+    const views = pool.current;
+    for (const view of [views.a, views.b, views.single, views.unified]) view?.destroy();
+    pool.current = {};
+  }, []);
 
   return <div className="diff-host" ref={host} aria-label="只读文件差异" />;
 });
