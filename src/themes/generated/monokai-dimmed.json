@@ -1,0 +1,163 @@
+{
+  "id": "monokai-dimmed",
+  "name": "Monokai Dimmed",
+  "type": "dark",
+  "source": {
+    "kind": "vscode",
+    "commit": "e81ea68fc0228ba2eb01fc9848c30d2e41a26d56",
+    "path": "extensions/theme-monokai-dimmed/themes/dimmed-monokai-color-theme.json"
+  },
+  "variables": {
+    "--bg": "#1e1e1e",
+    "--panel": "#272727",
+    "--chrome": "#505050",
+    "--text": "#c5c8c6",
+    "--dim": "#ccccccb3",
+    "--line-number": "#858585",
+    "--border": "#80808059",
+    "--hover": "#444444",
+    "--selection": "#707070",
+    "--selection-text": "#ffffff",
+    "--blue": "#3655b5",
+    "--button-bg": "#565656",
+    "--button-text": "#ffffff",
+    "--button-secondary-bg": "#444444",
+    "--button-secondary-text": "#CCCCCC",
+    "--input-bg": "#3C3C3C",
+    "--input-text": "#CCCCCC",
+    "--input-border": "#525252",
+    "--dropdown-bg": "#525252",
+    "--dropdown-text": "#F0F0F0",
+    "--dropdown-border": "#525252",
+    "--toggle-on": "#3655b566",
+    "--toggle-on-border": "#3655b5",
+    "--toggle-off": "#3C3C3C",
+    "--status-bg": "#505050",
+    "--status-text": "#ffffff",
+    "--text-selection": "#676b7180",
+    "--text-selection-fg": "#c5c8c6",
+    "--same-word": "#575b6180",
+    "--search-match": "#515C6A",
+    "--search-other": "#EA5C0055",
+    "--warning": "#CCA700",
+    "--error": "#F48771",
+    "--status-modified": "#E2C08D",
+    "--status-added": "#73C991",
+    "--status-conflicted": "#e4676b",
+    "--scrollbar": "#79797966",
+    "--scrollbar-hover": "#646464b3",
+    "--scrollbar-active": "#bfbfbf66",
+    "--widget-shadow": "#0000005c",
+    "--status-deleted": "#6e706f",
+    "--status-renamed": "#E2C08D",
+    "--status-type-changed": "#E2C08D"
+  },
+  "diff": {
+    "oris": {
+      "modified": {
+        "marker": "#1B81A8",
+        "line": "#1b81a83b",
+        "word": "#1b81a857"
+      },
+      "added": {
+        "marker": "#487E02",
+        "line": "#9bb95533",
+        "word": "#9ccc2c33"
+      },
+      "deleted": {
+        "marker": "#6e706f",
+        "line": "#6e706f38",
+        "word": "#6e706f59"
+      }
+    },
+    "vscode": {
+      "added": {
+        "marker": "#487E02",
+        "line": "#9bb95533",
+        "word": "#9ccc2c33"
+      },
+      "deleted": {
+        "marker": "#F14C4C",
+        "line": "#ff000033",
+        "word": "#ff000033"
+      }
+    }
+  },
+  "highlight": [
+    {
+      "tag": "atom",
+      "color": "#9AA83A"
+    },
+    {
+      "tag": "attributeName",
+      "color": "#D0B344"
+    },
+    {
+      "tag": "className",
+      "color": "#9B0000"
+    },
+    {
+      "tag": "comment",
+      "color": "#9A9B99"
+    },
+    {
+      "tag": "controlKeyword",
+      "color": "#9872A2"
+    },
+    {
+      "tag": "emphasis",
+      "fontStyle": "italic"
+    },
+    {
+      "tag": "function(variableName)",
+      "color": "#CE6700"
+    },
+    {
+      "tag": "heading",
+      "fontStyle": "bold"
+    },
+    {
+      "tag": "invalid",
+      "color": "#FF0B00"
+    },
+    {
+      "tag": "keyword",
+      "color": "#D0B344"
+    },
+    {
+      "tag": "number",
+      "color": "#6089B4"
+    },
+    {
+      "tag": "operatorKeyword",
+      "color": "#9872A2"
+    },
+    {
+      "tag": "punctuation"
+    },
+    {
+      "tag": "self",
+      "color": "#c7444a"
+    },
+    {
+      "tag": "string",
+      "color": "#AE81FF"
+    },
+    {
+      "tag": "strong",
+      "fontStyle": "bold"
+    },
+    {
+      "tag": "tagName",
+      "color": "#9872A2"
+    },
+    {
+      "tag": "typeName",
+      "color": "#9B0000"
+    },
+    {
+      "tag": "variableName",
+      "color": "#6089B4"
+    }
+  ]
+}
