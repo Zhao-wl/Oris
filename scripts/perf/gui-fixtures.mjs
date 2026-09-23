@@ -48,7 +48,19 @@ export async function prepareCoreRepos(runDir, count = 5) {
     git(target, ["status", "--porcelain"], { allowFail: true });
     const real = realpathSync.native(target);
     const manifest = JSON.parse(readFileSync(path.join(real, ".git", "oris-perf-manifest.json"), "utf8"));
-    repos.push({ path: real, manifest });
+    repos.push({ path: real, manifest, warmup: [] });
+  }
+  // 预热：刚复制的大量文件会触发系统后台扫描，首轮 status 明显偏慢。重复只读 status，
+  // 直到连续两次都在最快值的 1.3 倍以内（最多 20 轮），把稳定前的耗时记录下来而不是计入测量。
+  for (const repo of repos) {
+    for (let round = 0; round < 20; round++) {
+      const started = Date.now();
+      spawnSync("git", ["--no-optional-locks", "-C", repo.path, "status", "--porcelain=v2", "-z", "--untracked-files=all"], { env: gitEnv, maxBuffer: 64 * 1024 * 1024 });
+      repo.warmup.push(Date.now() - started);
+      const fastest = Math.min(...repo.warmup);
+      const last = repo.warmup.slice(-2);
+      if (last.length === 2 && last.every((ms) => ms <= fastest * 1.3)) break;
+    }
   }
   return repos;
 }

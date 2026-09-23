@@ -81,9 +81,9 @@ const memorySample = (app) => { const tree = processTree(app.pid); return { at: 
 async function runCore() {
   const repos = await prepareCoreRepos(runDir);
   const P = repos.map((r) => r.path);
-  const app = await start("core");
+  const app = await start("core", { ORIS_APP_CACHE_DIR: path.join(runDir, "app-cache-core") });
   const h = helpers(app);
-  const result = { ...header, suite: "core", repos: repos.map((r) => ({ path: r.path, head: r.manifest.head, tracked: r.manifest.tracked, changed: r.manifest.changed })), identity: app.identity, scenarios: {}, notes: [] };
+  const result = { ...header, suite: "core", repos: repos.map((r) => ({ path: r.path, head: r.manifest.head, tracked: r.manifest.tracked, changed: r.manifest.changed, warmupStatusMs: r.warmup })), identity: app.identity, scenarios: {}, notes: [] };
   const fingerprintsBefore = repos.map((r) => repositoryFingerprint(r.path, { includeWorktree: false }));
   try {
     await h.waitUntil(`document.querySelector('.project-empty')`);
@@ -282,11 +282,27 @@ async function runCore() {
 }
 
 // ------------------------------ restart ------------------------------
+/** 在新文档上安装的时间点记录：列表出现、校验完成（无“校验中”标记）。时间相对导航开始（窗口就绪）。 */
+const restartMarks = (worktree) => `(() => {
+  const marks = window.__restartMarks = {};
+  const check = () => {
+    const status = document.querySelector('.statusbar > span')?.textContent ?? '';
+    const list = status.startsWith(${JSON.stringify(worktree)}) && document.querySelectorAll('.file').length > 0;
+    const verifying = [...document.querySelectorAll('.stale-badge, .restore-status')].some((n) => /校验中/.test(n.textContent));
+    if (list && marks.list === undefined) marks.list = performance.now();
+    if (list && !verifying && marks.verified === undefined) marks.verified = performance.now();
+  };
+  new MutationObserver(check).observe(document, { subtree: true, childList: true, characterData: true, attributes: true });
+})()`;
+
 async function runRestart() {
   const repos = await prepareCoreRepos(path.join(runDir, "restart-repos"));
   const P = repos.map((r) => r.path);
-  const result = { ...header, suite: "restart", samples: [], notes: ["从进程启动计时（spawnToList）与从页面导航开始计时（windowReadyToList，performance.timeOrigin）；node 每 10 ms 轮询一次 DOM，误差约一个轮询周期。"] };
-  let app = await start("restart");
+  const result = { ...header, suite: "restart", warmup: repos.map((r) => r.warmup), samples: [], notes: [
+    "windowReady*：同一测试进程内页面重载（Page.reload），在新文档中用 MutationObserver 记录列表出现与校验完成时刻，相对导航开始；后端进程、登记表与 OS 文件缓存为热。V1 没有持久化快照，列表出现即校验完成。",
+    "coldSpawnUpperBound：冷进程启动到首次 CDP 轮询看到列表的时间，包含测试框架的身份核验与 CDP 连接开销，只作上界参考。"
+  ] };
+  let app = await start("restart", { ORIS_APP_CACHE_DIR: path.join(runDir, "app-cache-restart") });
   const h = helpers(app);
   try {
     await h.waitUntil(`document.querySelector('.project-empty')`);
@@ -295,27 +311,26 @@ async function runRestart() {
     await sleep(3000);
   } finally { await stop(app); }
   for (let i = 0; i < iterations; i++) {
-    app = await start("restart");
+    app = await start("restart", { ORIS_APP_CACHE_DIR: path.join(runDir, "app-cache-restart") });
     try {
-      const expr = `(() => { const s = document.querySelector('.statusbar > span')?.textContent ?? ''; const list = s.startsWith(${q(P[0])}) && document.querySelectorAll('.file').length > 0; const verifying = [...document.querySelectorAll('*')].some((n) => n.childElementCount === 0 && /校验中/.test(n.textContent)); return { list, verifying, epoch: performance.timeOrigin + performance.now(), origin: performance.timeOrigin }; })()`;
-      let first = null, listAt = null, verifiedAt = null, origin = null, polls = 0;
-      const deadline = Date.now() + 30000;
-      while (Date.now() < deadline) {
-        let state;
-        try { state = await app.cdp.evaluate(expr, 5000); } catch { await sleep(10); continue; }
-        polls++;
-        origin = state.origin;
-        if (first === null) first = state;
-        if (state.list && listAt === null) listAt = state.epoch;
-        if (state.list && !state.verifying) { verifiedAt = state.epoch; break; }
-        await sleep(10);
-      }
-      result.samples.push({ i, ok: listAt !== null, alreadyVisibleAtFirstPoll: !!first?.list, spawnToListMs: listAt ? listAt - app.spawnedAt : null, windowReadyToListMs: listAt ? listAt - origin : null, windowReadyToVerifiedMs: verifiedAt ? verifiedAt - origin : null, spawnToCdpMs: app.cdpFoundAt - app.spawnedAt, polls });
-      log(`重启 ${i}`, result.samples.at(-1));
+      const firstPoll = await app.cdp.evaluate(`({ list: (document.querySelector('.statusbar > span')?.textContent ?? '').startsWith(${q(P[0])}) && document.querySelectorAll('.file').length > 0, epoch: performance.timeOrigin + performance.now() })`);
+      await app.cdp.waitFor(`(document.querySelector('.statusbar > span')?.textContent ?? '').startsWith(${q(P[0])}) && document.querySelectorAll('.file').length > 0 && ![...document.querySelectorAll('.stale-badge, .restore-status')].some((n) => /校验中/.test(n.textContent))`, 30000);
+      await sleep(1500);
+      const { identifier } = await app.cdp.call("Page.addScriptToEvaluateOnNewDocument", { source: restartMarks(P[0]) });
+      await app.cdp.call("Page.reload", { ignoreCache: false });
+      await sleep(200);
+      await app.cdp.waitFor(`window.__restartMarks && window.__restartMarks.verified !== undefined`, 30000);
+      const marks = await app.cdp.evaluate(`window.__restartMarks`);
+      await app.cdp.call("Page.removeScriptToEvaluateOnNewDocument", { identifier });
+      result.samples.push({ i, ok: true, windowReadyToListMs: marks.list, windowReadyToVerifiedMs: marks.verified, coldSpawnUpperBoundMs: firstPoll.list ? firstPoll.epoch - app.spawnedAt : null, coldListVisibleAtFirstPoll: firstPoll.list, spawnToCdpMs: app.cdpFoundAt - app.spawnedAt });
+      log(`重启 ${i}`, JSON.stringify(result.samples.at(-1)));
+    } catch (error) {
+      result.samples.push({ i, ok: false, error: String(error).slice(0, 300) });
+      log(`重启 ${i} 失败`, error);
     } finally { await stop(app); await sleep(1000); }
   }
-  const pick = (key) => result.samples.map((s) => ({ ok: s[key] !== null, ms: s[key] }));
-  result.summary = { windowReadyToList: summarize(pick("windowReadyToListMs")), windowReadyToVerified: summarize(pick("windowReadyToVerifiedMs")), spawnToList: summarize(pick("spawnToListMs")) };
+  const pick = (key) => result.samples.map((s) => ({ ok: s.ok && s[key] !== null && s[key] !== undefined, ms: s[key] }));
+  result.summary = { windowReadyToList: summarize(pick("windowReadyToListMs")), windowReadyToVerified: summarize(pick("windowReadyToVerifiedMs")), coldSpawnUpperBound: summarize(pick("coldSpawnUpperBoundMs")) };
   save("restart.json", result);
   return result;
 }
@@ -326,7 +341,7 @@ async function runTrace() {
   const P = repos.map((r) => r.path);
   const traceDir = path.join(runDir, "trace2");
   mkdirSync(traceDir, { recursive: true });
-  const app = await start("trace", { GIT_TRACE2_EVENT: traceDir });
+  const app = await start("trace", { GIT_TRACE2_EVENT: traceDir, ORIS_APP_CACHE_DIR: path.join(runDir, "app-cache-trace") });
   const h = helpers(app);
   const result = { ...header, suite: "trace", notes: ["GIT_TRACE2_EVENT 指向目录时每个 Git 进程写一个文件；每个动作完成后再静置 1.5 s 统计新增文件（含后台补齐统计的进程）。"], actions: [] };
   const files = () => new Set(readdirSync(traceDir));
@@ -366,7 +381,7 @@ async function runTrace() {
 
 // ------------------------------ task03 ------------------------------
 async function runTask03() {
-  const app = await start("task03");
+  const app = await start("task03", { ORIS_APP_CACHE_DIR: path.join(runDir, "app-cache-task03") });
   const h = helpers(app);
   const result = { ...header, suite: "task03", checks: [], notes: ["图片由 WebView2 实际解码（naturalWidth / 截图像素）；DOM 事件由 CDP 派发，不是原生鼠标与真实焦点。"] };
   const check = (name, pass, detail = {}) => { result.checks.push({ name, pass: !!pass, ...detail }); log(pass ? "通过" : "失败", name, JSON.stringify(detail).slice(0, 300)); };
