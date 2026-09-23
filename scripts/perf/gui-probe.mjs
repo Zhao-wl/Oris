@@ -75,7 +75,18 @@ function helpers(app) {
 
 const textOf = (repo, rel) => readFileSync(path.join(repo, rel), "utf8").split("\n")[0];
 const modifiedTextFiles = (repo) => repo.manifest.manifest.filter((m) => m.type === "unstaged" || m.type === "both").map((m) => m.path);
-const memorySample = (app) => { const tree = processTree(app.pid); return { at: Date.now(), workingSetMiB: tree.workingSetMiB, privateMiB: tree.privateMiB, processes: tree.processes.length, git: tree.git }; };
+const memorySample = (app) => {
+  const tree = processTree(app.pid);
+  const byName = {};
+  for (const p of tree.processes) {
+    const key = p.name.toLowerCase();
+    byName[key] ??= { count: 0, workingSetMiB: 0, privateMiB: 0 };
+    byName[key].count++;
+    byName[key].workingSetMiB = Math.round((byName[key].workingSetMiB + p.workingSetMiB) * 10) / 10;
+    byName[key].privateMiB = Math.round((byName[key].privateMiB + p.privateMiB) * 10) / 10;
+  }
+  return { at: Date.now(), workingSetMiB: tree.workingSetMiB, privateMiB: tree.privateMiB, processes: tree.processes.length, git: tree.git, byName };
+};
 
 // ------------------------------ core ------------------------------
 async function runCore() {
