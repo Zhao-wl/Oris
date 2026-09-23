@@ -59,6 +59,10 @@ button:disabled { opacity:.45; cursor:default; }
 .file-path { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .old-path { max-width:35%; margin-left:5px; overflow:hidden; color:var(--dim); text-overflow:ellipsis; white-space:nowrap; font-size:10px; }
 .line-stat { margin-left:auto; color:var(--dim); font-size:10px; white-space:nowrap; }
+.line-stat.pending { opacity:.6; letter-spacing:1px; }
+.tree-row { display:flex; align-items:center; gap:2px; min-height:27px; padding:4px 8px 4px calc(8px + var(--tree-depth, 0) * 17px); cursor:pointer; user-select:none; box-sizing:border-box; }
+.tree-row.open>.directory-chevron { transform:rotate(90deg); }
+.stale-badge.verifying { opacity:.85; }
 .tree-directory>summary { display:flex; align-items:center; gap:2px; min-height:27px; padding:4px 8px 4px calc(8px + var(--tree-depth, 0) * 17px); cursor:pointer; user-select:none; }
 .tree-directory>summary:hover { background:color-mix(in srgb, var(--hover) 55%, transparent); }
 .tree-directory>summary::marker { content:""; }

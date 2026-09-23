@@ -11,6 +11,17 @@ use std::{
 
 pub const DEFAULT_CACHE_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_CACHED_BLOB_BYTES: usize = 4 * 1024 * 1024;
+/// 全局常驻 cat-file 进程上限（技术方案 §7）。
+pub const MAX_LIVE_READERS: usize = 5;
+pub const DEFAULT_IDLE: Duration = Duration::from_secs(60);
+
+/// 按 OID 的有界读取结果：超过上限时只报告大小，不把内容留在内存中。
+#[derive(Debug, Clone)]
+pub enum BlobRead {
+    Bytes(Arc<[u8]>),
+    TooLarge(usize),
+    Missing,
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CacheStats {
@@ -91,6 +102,134 @@ pub fn global_cache() -> Arc<Mutex<BlobCache>> {
         .clone()
 }
 
+enum Fetched {
+    Bytes(Vec<u8>),
+    TooLarge(usize),
+    Missing,
+}
+
+/// 登记在全局池中的读取器。池限制同时存活的 cat-file 进程数（按最近使用淘汰），并回收空闲进程。
+pub struct PooledReader {
+    id: u64,
+    inner: Mutex<ObjectReader>,
+}
+pub type SharedReader = Arc<PooledReader>;
+
+struct PoolEntry {
+    id: u64,
+    reader: std::sync::Weak<PooledReader>,
+    touched: Instant,
+}
+struct ReaderPool {
+    entries: Mutex<Vec<PoolEntry>>,
+    next: std::sync::atomic::AtomicU64,
+    limit: std::sync::atomic::AtomicUsize,
+}
+static POOL: OnceLock<ReaderPool> = OnceLock::new();
+fn pool() -> &'static ReaderPool {
+    POOL.get_or_init(|| {
+        // 后台每 5 s 回收空闲进程；只持有弱引用，项目关闭后条目自然失效。
+        std::thread::Builder::new()
+            .name("oris-cat-file-reaper".into())
+            .spawn(|| loop {
+                std::thread::sleep(Duration::from_secs(5));
+                expire_idle_readers();
+            })
+            .ok();
+        ReaderPool {
+            entries: Mutex::new(Vec::new()),
+            next: std::sync::atomic::AtomicU64::new(1),
+            limit: std::sync::atomic::AtomicUsize::new(MAX_LIVE_READERS),
+        }
+    })
+}
+
+impl PooledReader {
+    /// 在持有读取器锁的情况下执行读取，之后更新池的最近使用顺序并执行进程上限。
+    pub fn with<T>(&self, f: impl FnOnce(&mut ObjectReader) -> T) -> T {
+        let result = {
+            let mut reader = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+            f(&mut reader)
+        };
+        let pool = pool();
+        let limit = pool.limit.load(std::sync::atomic::Ordering::Relaxed);
+        let mut entries = pool.entries.lock().unwrap_or_else(|p| p.into_inner());
+        entries.retain(|e| e.reader.strong_count() > 0);
+        if let Some(entry) = entries.iter_mut().find(|e| e.id == self.id) {
+            entry.touched = Instant::now();
+        }
+        entries.sort_by_key(|e| std::cmp::Reverse(e.touched));
+        let mut live = 0;
+        for entry in entries.iter() {
+            let Some(reader) = entry.reader.upgrade() else { continue };
+            let Ok(mut guard) = reader.inner.try_lock() else {
+                live += 1;
+                continue;
+            };
+            if guard.is_live() {
+                live += 1;
+                if live > limit && entry.id != self.id {
+                    guard.release();
+                    live -= 1;
+                }
+            }
+        }
+        result
+    }
+    pub fn close(&self) {
+        self.inner.lock().unwrap_or_else(|p| p.into_inner()).close();
+    }
+    pub fn is_live(&self) -> bool {
+        self.inner.lock().map(|r| r.is_live()).unwrap_or(false)
+    }
+}
+
+/// 为仓库创建一个登记在全局池中的读取器（共享全局 BlobCache）。
+pub fn shared_reader(git: &Path, worktree: &Path, idle: Duration) -> SharedReader {
+    let pool = pool();
+    let id = pool.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let reader = Arc::new(PooledReader {
+        id,
+        inner: Mutex::new(ObjectReader::with_global_cache(git, worktree, idle)),
+    });
+    pool.entries
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .push(PoolEntry {
+            id,
+            reader: Arc::downgrade(&reader),
+            touched: Instant::now(),
+        });
+    reader
+}
+
+/// 回收所有空闲超时的常驻进程，返回回收数量。
+pub fn expire_idle_readers() -> usize {
+    let readers: Vec<_> = pool()
+        .entries
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+        .filter_map(|e| e.reader.upgrade())
+        .collect();
+    readers
+        .iter()
+        .filter(|r| r.inner.try_lock().map(|mut g| g.expire_idle()).unwrap_or(false))
+        .count()
+}
+
+/// 当前存活的常驻 cat-file 进程数（用于资源断言与诊断）。
+pub fn live_reader_count() -> usize {
+    let readers: Vec<_> = pool()
+        .entries
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+        .filter_map(|e| e.reader.upgrade())
+        .collect();
+    readers.iter().filter(|r| r.is_live()).count()
+}
+
 struct Batch {
     child: Child,
     stdin: ChildStdin,
@@ -164,7 +303,7 @@ impl ObjectReader {
             false
         }
     }
-    fn request_once(&mut self, oid: &str) -> Result<Option<Vec<u8>>, GitError> {
+    fn request_limited(&mut self, oid: &str, limit: usize) -> Result<Fetched, GitError> {
         let batch = self
             .batch
             .as_mut()
@@ -184,11 +323,11 @@ impl ObjectReader {
             return Err(GitError::Io("cat-file 提前退出".into()));
         }
         if header.ends_with(b" missing\n") {
-            return Ok(None);
+            return Ok(Fetched::Missing);
         }
         let fields: Vec<_> = header.split(|b| *b == b' ').collect();
-        if fields.len() != 3 || fields[1] != b"blob" {
-            return Err(GitError::CommandFailed("cat-file 返回非 blob 对象".into()));
+        if fields.len() != 3 {
+            return Err(GitError::CommandFailed("cat-file 响应头无效".into()));
         }
         let length: usize = std::str::from_utf8(
             fields[2]
@@ -198,6 +337,24 @@ impl ObjectReader {
         .map_err(|e| GitError::Io(e.to_string()))?
         .parse()
         .map_err(|e: std::num::ParseIntError| GitError::Io(e.to_string()))?;
+        let is_blob = fields[1] == b"blob";
+        if !is_blob || length > limit {
+            // 丢弃对象内容（分块读取，内存有界），保持批处理流同步。
+            let mut remaining = length + 1;
+            let mut sink = [0u8; 64 * 1024];
+            while remaining > 0 {
+                let take = remaining.min(sink.len());
+                batch
+                    .stdout
+                    .read_exact(&mut sink[..take])
+                    .map_err(|e| GitError::Io(e.to_string()))?;
+                remaining -= take;
+            }
+            if !is_blob {
+                return Err(GitError::CommandFailed("cat-file 返回非 blob 对象".into()));
+            }
+            return Ok(Fetched::TooLarge(length));
+        }
         let mut data = vec![0; length];
         batch
             .stdout
@@ -211,10 +368,26 @@ impl ObjectReader {
         if end != *b"\n" {
             return Err(GitError::Io("cat-file 响应分隔符错误".into()));
         }
-        Ok(Some(data))
+        Ok(Fetched::Bytes(data))
     }
     /// 单次请求最多在原进程失败后重启一次。missing 不重试。
     pub fn read_blob(&mut self, oid: &str) -> Result<Option<Arc<[u8]>>, GitError> {
+        Ok(match self.read_blob_limited(oid, usize::MAX)? {
+            BlobRead::Bytes(bytes) => Some(bytes),
+            BlobRead::Missing => None,
+            BlobRead::TooLarge(_) => unreachable!("unbounded read"),
+        })
+    }
+    /// 当前是否持有常驻 cat-file 进程。
+    pub fn is_live(&self) -> bool {
+        self.batch.is_some()
+    }
+    /// 停止常驻进程但保留读取器（下次读取时重新启动）。
+    pub fn release(&mut self) {
+        self.stop();
+    }
+    /// 有界读取：超过 `limit` 字节的对象只返回大小。命中缓存时不启动进程。
+    pub fn read_blob_limited(&mut self, oid: &str, limit: usize) -> Result<BlobRead, GitError> {
         if self.closed {
             return Err(GitError::Io("读取器已关闭".into()));
         }
@@ -227,7 +400,10 @@ impl ObjectReader {
             .map_err(|e| GitError::Io(e.to_string()))?
             .get(oid)
         {
-            return Ok(Some(value));
+            if value.len() <= limit {
+                return Ok(BlobRead::Bytes(value));
+            }
+            return Ok(BlobRead::TooLarge(value.len()));
         }
         self.expire_idle();
         if let Some(batch) = self.batch.as_mut() {
@@ -244,25 +420,29 @@ impl ObjectReader {
         if self.batch.is_none() {
             self.start()?;
         }
-        let result = match self.request_once(oid) {
+        let result = match self.request_limited(oid, limit) {
             Ok(value) => Ok(value),
             Err(_) => {
                 self.stop();
                 self.start()?;
-                self.request_once(oid)
+                self.request_limited(oid, limit)
             }
         }?;
         self.last_used = Some(Instant::now());
-        Ok(result.map(|bytes| {
-            let value: Arc<[u8]> = bytes.into();
-            if let Ok(mut cache) = self.cache.lock() {
-                cache.insert(oid.into(), value.clone());
+        Ok(match result {
+            Fetched::Bytes(bytes) => {
+                let value: Arc<[u8]> = bytes.into();
+                if let Ok(mut cache) = self.cache.lock() {
+                    cache.insert(oid.into(), value.clone());
+                }
+                BlobRead::Bytes(value)
             }
-            value
-        }))
+            Fetched::TooLarge(size) => BlobRead::TooLarge(size),
+            Fetched::Missing => BlobRead::Missing,
+        })
     }
     #[cfg(test)]
-    fn kill_for_test(&mut self) {
+    pub(crate) fn kill_for_test(&mut self) {
         if let Some(batch) = self.batch.as_mut() {
             batch.child.kill().unwrap();
             batch.child.wait().unwrap();

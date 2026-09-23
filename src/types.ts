@@ -28,6 +28,28 @@ export interface FileChange {
   deletions: number | null;
 }
 
+export interface ScopeLists {
+  unstaged: FileChange[];
+  staged: FileChange[];
+  all: FileChange[];
+}
+
+export interface BranchSummary {
+  head: string | null;
+  oid: string | null;
+  upstream: string | null;
+  ahead: number | null;
+  behind: number | null;
+}
+
+export interface InProgressSummary {
+  merge: boolean;
+  rebase: boolean;
+  cherryPick: boolean;
+  revert: boolean;
+  bisect: boolean;
+}
+
 export interface RepositorySnapshot {
   requestId: string;
   repo: RepositoryInfo;
@@ -36,10 +58,26 @@ export interface RepositorySnapshot {
   files: FileChange[];
   git: GitInfo;
   scannedAt: number;
+  /** V2：一次 status 得到的三个范围，切换范围时直接使用，不再请求后端。 */
+  scopes?: ScopeLists | null;
+  /** 为 false 时增删统计仍在后台补齐，界面显示占位而不是 0。 */
+  statsReady?: boolean;
+  branchInfo?: BranchSummary | null;
+  inProgress?: InProgressSummary | null;
+}
+
+/** 后台补齐的次要信息（按 revision 缓存）。 */
+export interface RepositoryDetails {
+  revision: string;
+  stats: Record<CompareScope, [string, number | null, number | null][]>;
+  all: FileChange[];
+  elapsedMs: number;
 }
 
 export interface ImagePayload {
   mime: string; base64: string; width: number; height: number;
+  /** V2 二进制帧中的原始图片字节；存在时优先于 base64。 */
+  bytes?: Uint8Array;
   displayWidth: number; displayHeight: number; orientation: number;
 }
 export interface SideDetails {

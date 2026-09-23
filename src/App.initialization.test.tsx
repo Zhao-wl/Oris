@@ -7,10 +7,12 @@ import { defaultAnchor, WORKSPACE_KEY } from "./workspace-model";
 
 const bridge = vi.hoisted(() => ({
   open: vi.fn(), refresh: vi.fn(), read: vi.fn(), close: vi.fn(), diff: vi.fn(), queryFocus: vi.fn(),
+  details: vi.fn(), activate: vi.fn(), loadSnapshot: vi.fn(), saveSnapshot: vi.fn(),
   focused: false, focus: null as null | ((event: { payload: boolean }) => void),
   changed: null as null | ((event: { payload: string }) => void),
 }));
-vi.mock("./api", () => ({ openRepository: bridge.open, refreshRepository: bridge.refresh, readContentPair: bridge.read, closeRepository: bridge.close, cancelContentRead: vi.fn(async () => {}) }));
+vi.mock("./api", () => ({ openRepository: bridge.open, refreshRepository: bridge.refresh, readContentPair: bridge.read, closeRepository: bridge.close, cancelContentRead: vi.fn(async () => {}),
+  repositoryDetails: bridge.details, activateRepository: bridge.activate, loadSnapshot: bridge.loadSnapshot, saveSnapshot: bridge.saveSnapshot, removeSnapshot: vi.fn(async () => {}) }));
 vi.mock("./diff", () => ({ calculateDiff: bridge.diff }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({
@@ -54,6 +56,7 @@ beforeEach(() => {
   vi.useFakeTimers(); vi.resetAllMocks(); localStorage.clear();
   bridge.focused = false; bridge.focus = null; bridge.changed = null;
   bridge.queryFocus.mockImplementation(async () => bridge.focused);
+  bridge.details.mockResolvedValue(null); bridge.activate.mockResolvedValue(true); bridge.loadSnapshot.mockResolvedValue(null); bridge.saveSnapshot.mockResolvedValue(true);
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
   bridge.open.mockImplementation(async (path: string, scope: CompareScope) => ({ ...snapshot(path.slice(3)), scope }));
@@ -347,4 +350,60 @@ it("unrelated continuous events do not reject an in-flight conflict read", async
   await act(async () => pending.resolve({ ...pair("a"), left: { ...pair("a").left, endpoint: "stage2" }, right: { ...pair("a").right, endpoint: "stage3" } })); await flush();
   expect(host.querySelector('[data-testid="readable"]')).not.toBeNull();
   expect(host.textContent).not.toContain("旧内容已丢弃"); expect(bridge.read).toHaveBeenCalledTimes(1);
+});
+
+describe("V2 data layer integration (mocked backend)", () => {
+  const v2 = (id: string, revision = "r1"): RepositorySnapshot => {
+    const base = snapshot(id, revision);
+    const staged = { ...base.files[0], pathId: "s", displayPath: "staged.txt" };
+    return { ...base, statsReady: false, scopes: { unstaged: base.files, staged: [staged], all: [...base.files, staged] } };
+  };
+  it("switches scope locally without starting a backend scan and fills stats in the background", async () => {
+    bridge.open.mockImplementation(async (path: string) => v2(path.slice(3)));
+    bridge.details.mockResolvedValue({ revision: "r1", elapsedMs: 1, stats: { unstaged: [["f", 7, 2]], staged: [["s", 1, 0]], all: [] }, all: [] });
+    await mount(["a"]);
+    await tick(10);
+    expect(bridge.details).toHaveBeenCalledWith("a", "r1");
+    const opens = bridge.open.mock.calls.length, refreshes = bridge.refresh.mock.calls.length;
+    await click('.scope:nth-child(2)');
+    await tick(10);
+    expect([...host.querySelectorAll('.files button')].map(node => node.textContent)).toEqual(["staged.txt"]);
+    expect(bridge.open.mock.calls.length).toBe(opens);
+    expect(bridge.refresh.mock.calls.length).toBe(refreshes);
+    expect(host.querySelector('.sidebar > footer')?.textContent).toContain("已暂存");
+  });
+  it("shows the persisted snapshot as verifying on restart, then replaces it after verification", async () => {
+    const opening = deferred<RepositorySnapshot>();
+    bridge.open.mockReturnValueOnce(opening.promise);
+    const persisted = v2("a", "old");
+    bridge.loadSnapshot.mockResolvedValue(JSON.stringify({ version: 1, savedAt: 1, snapshot: persisted }));
+    await mount(["a"]);
+    expect(host.querySelector('.verifying')?.textContent).toBe("校验中");
+    expect([...host.querySelectorAll('.files button')].map(node => node.textContent)).toEqual(["file.txt"]);
+    opening.resolve(v2("a", "r1"));
+    await tick(10);
+    expect(host.querySelector('.verifying')).toBeNull();
+  });
+  it("background changes only mark a project dirty; switching back refreshes it, clean projects are not rescanned", async () => {
+    bridge.open.mockImplementation(async (path: string) => v2(path.slice(3)));
+    bridge.refresh.mockImplementation(async (id: string) => v2(id, "r2"));
+    await mount(["a", "b"]);
+    await click('.project-tab:nth-child(2) .project-switch');
+    await tick(10);
+    await click('.project-tab:nth-child(1) .project-switch');
+    await tick(10);
+    const refreshes = bridge.refresh.mock.calls.length;
+    await click('.project-tab:nth-child(2) .project-switch');
+    await tick(10);
+    expect(bridge.refresh.mock.calls.length).toBe(refreshes);
+    await click('.project-tab:nth-child(1) .project-switch');
+    await tick(10);
+    await act(async () => { bridge.changed?.({ payload: { repoId: "b", paths: ["x.txt"], global: false } } as never); });
+    await tick(10);
+    expect(bridge.refresh.mock.calls.length).toBe(refreshes);
+    await click('.project-tab:nth-child(2) .project-switch');
+    await tick(10);
+    expect(bridge.refresh.mock.calls.length).toBe(refreshes + 1);
+    expect(bridge.refresh.mock.calls.at(-1)?.[0]).toBe("b");
+  });
 });
