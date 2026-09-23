@@ -15,7 +15,7 @@ import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { javascript } from "@codemirror/lang-javascript";
 import { Change, getChunks, unifiedMergeView } from "@codemirror/merge";
 import { oneDark } from "@codemirror/theme-one-dark";
-import { diffMarkerGeometry, mapDiffPosition, railViewportStartLine, type DiffBoundaryPair, type DiffSide } from "./diff-scroll";
+import { chainedWheelDelta, diffMarkerGeometry, mapDiffPosition, railViewportStartLine, type DiffBoundaryPair, type DiffSide } from "./diff-scroll";
 import type { DiffPresentation } from "./diff-presentation";
 import { collectQueryMatches, createReadingQuery, type ReadingSearchOptions, type TextMatch } from "./search-model";
 import type { DiffDocument } from "./types";
@@ -858,8 +858,8 @@ function renderRailMarkers(
   toneOverride?: Exclude<AlignmentTone, "neutral">
 ) {
   const markers = rail.querySelector<HTMLElement>(".diff-overview-markers")!;
-  const viewport = markers.querySelector<HTMLElement>(".diff-overview-viewport")!;
-  markers.replaceChildren(viewport);
+  // Keep the viewport band attached: detaching it would drop an active drag's pointer capture.
+  markers.querySelectorAll(".diff-overview-marker").forEach((node) => node.remove());
   const doc = view.state.doc;
   const deviceMinimum = Math.max(1, 1 / Math.max(1, window.devicePixelRatio));
   const occupied = new Map<string, { node: HTMLButtonElement; bottom: number }>();
@@ -987,6 +987,10 @@ function installSplitVisuals(split: SplitView, navigate: (index: number) => void
     }
   };
   const scheduleDraw = () => { if (!drawFrame) drawFrame = requestAnimationFrame(draw); };
+  const drawNow = () => {
+    if (drawFrame) cancelAnimationFrame(drawFrame);
+    draw();
+  };
   const measure = () => {
     measureFrame = 0;
     geometry = split.chunks.map((chunk, index) => {
@@ -1037,19 +1041,18 @@ function installSplitVisuals(split: SplitView, navigate: (index: number) => void
   const mutation = new MutationObserver(scheduleMeasure);
   mutation.observe(split.a.contentDOM, { subtree: true, childList: true, attributes: true });
   mutation.observe(split.b.contentDOM, { subtree: true, childList: true, attributes: true });
-  split.a.scrollDOM.addEventListener("scroll", scheduleDraw, { passive: true });
-  split.b.scrollDOM.addEventListener("scroll", scheduleDraw, { passive: true });
+  // Scroll-driven redraws come from installScrollAndRails, which knows when the
+  // other pane is about to be synced and must not be painted against a stale scrollTop.
   scheduleMeasure();
   return {
     scheduleDraw,
+    drawNow,
     scheduleMeasure,
     destroy() {
       if (drawFrame) cancelAnimationFrame(drawFrame);
       if (measureFrame) cancelAnimationFrame(measureFrame);
       resize.disconnect();
       mutation.disconnect();
-      split.a.scrollDOM.removeEventListener("scroll", scheduleDraw);
-      split.b.scrollDOM.removeEventListener("scroll", scheduleDraw);
       svg.remove();
       zeroLayer.remove();
     }
@@ -1060,29 +1063,51 @@ function clampViewScroll(view: EditorView, value: number) {
   return Math.min(Math.max(0, view.scrollDOM.scrollHeight - view.scrollDOM.clientHeight), Math.max(0, value));
 }
 
+// Fractional line position (0-based) of a document height, interpolated inside the
+// line block so the rail band moves continuously instead of in whole-line steps.
+function lineAtHeight(view: EditorView, height: number) {
+  const doc = view.state.doc;
+  const block = view.lineBlockAtHeight(height);
+  const first = doc.lineAt(Math.min(doc.length, block.from)).number - 1;
+  const last = doc.lineAt(Math.min(doc.length, block.to)).number;
+  const ratio = block.height > 0 ? Math.min(1, Math.max(0, (height - block.top) / block.height)) : 0;
+  return first + ratio * (last - first);
+}
+
+// Inverse of lineAtHeight.
+function heightAtLine(view: EditorView, position: number) {
+  const doc = view.state.doc;
+  const index = Math.min(doc.lines - 1, Math.max(0, Math.floor(position)));
+  const block = view.lineBlockAt(doc.line(index + 1).from);
+  const first = doc.lineAt(block.from).number - 1;
+  const last = doc.lineAt(block.to).number;
+  const ratio = Math.min(1, Math.max(0, (position - first) / Math.max(1, last - first)));
+  return block.top + ratio * block.height;
+}
+
 function updateRailViewport(rail: HTMLElement, view: EditorView) {
   const band = rail.querySelector<HTMLElement>(".diff-overview-viewport")!;
   const doc = view.state.doc;
+  // While dragging, the band follows the pointer directly (see installRailInput).
+  const dragging = rail.dataset.dragging === "true";
   if (doc.length === 0) {
     band.style.top = "0px";
     band.style.height = `${rail.clientHeight}px`;
     band.dataset.lineFrom = "0";
     band.dataset.lineTo = "0";
     band.dataset.lineTotal = "0";
-  } else {
+  } else if (!dragging) {
     const viewportRect = view.scrollDOM.getBoundingClientRect();
     const topHeight = Math.max(0, Math.min(view.contentHeight, (viewportRect.top - view.documentTop) / view.scaleY));
     const bottomHeight = Math.max(topHeight, Math.min(view.contentHeight, (viewportRect.bottom - view.documentTop) / view.scaleY));
-    const topBlock = view.lineBlockAtHeight(topHeight);
-    const bottomBlock = view.lineBlockAtHeight(bottomHeight);
-    const firstLine = Math.max(0, doc.lineAt(Math.min(doc.length, topBlock.from)).number - 1);
-    const lastLine = Math.max(firstLine + 1, doc.lineAt(Math.min(doc.length, bottomBlock.to)).number);
+    const firstLine = lineAtHeight(view, topHeight);
+    const lastLine = Math.min(doc.lines, Math.max(firstLine + 1, lineAtHeight(view, bottomHeight)));
     const top = rail.clientHeight * firstLine / doc.lines;
-    const bottom = rail.clientHeight * Math.min(doc.lines, lastLine) / doc.lines;
+    const bottom = rail.clientHeight * lastLine / doc.lines;
     band.style.top = `${top}px`;
     band.style.height = `${Math.max(2, bottom - top)}px`;
     band.dataset.lineFrom = String(firstLine);
-    band.dataset.lineTo = String(Math.min(doc.lines, lastLine));
+    band.dataset.lineTo = String(lastLine);
     band.dataset.lineTotal = String(doc.lines);
   }
   const maximum = Math.max(0, view.scrollDOM.scrollHeight - view.scrollDOM.clientHeight);
@@ -1091,54 +1116,65 @@ function updateRailViewport(rail: HTMLElement, view: EditorView) {
   rail.setAttribute("aria-disabled", String(maximum <= 0));
 }
 
-function setViewFromRail(view: EditorView, rail: HTMLElement, pointerY: number, grabOffset: number) {
+type RailDrag = { pointerId: number; grabOffset: number; bandHeight: number; visibleLines: number };
+
+function setViewFromRail(view: EditorView, rail: HTMLElement, pointerY: number, drag: RailDrag) {
   const doc = view.state.doc;
   if (!doc.length) return;
   const band = rail.querySelector<HTMLElement>(".diff-overview-viewport")!;
-  const lineFrom = Number(band.dataset.lineFrom ?? "0");
-  const lineTo = Number(band.dataset.lineTo ?? String(lineFrom + 1));
-  const visibleLines = Math.max(1, lineTo - lineFrom);
-  const startLine = railViewportStartLine(
+  // Band size is frozen for the whole drag; letting it follow the live visible line
+  // count (spacers, collapsed ranges) would shift the pointer-to-scroll mapping mid-drag.
+  const position = railViewportStartLine(
     rail.clientHeight,
-    band.getBoundingClientRect().height,
+    drag.bandHeight,
     pointerY,
-    grabOffset,
+    drag.grabOffset,
     doc.lines,
-    visibleLines
+    drag.visibleLines
   );
-  const block = view.lineBlockAt(doc.line(Math.min(doc.lines, startLine + 1)).from);
-  view.scrollDOM.scrollTop = clampViewScroll(view, block.top);
+  band.style.top = `${position.top}px`;
+  const scroll = view.scrollDOM;
+  const contentOffset = view.documentTop - scroll.getBoundingClientRect().top + scroll.scrollTop;
+  scroll.scrollTop = clampViewScroll(view, contentOffset + heightAtLine(view, position.line) * view.scaleY);
 }
 
 function installRailInput(rail: HTMLElement, view: EditorView, onUserInput: () => void) {
   const band = rail.querySelector<HTMLElement>(".diff-overview-viewport")!;
-  let drag: { pointerId: number; grabOffset: number } | null = null;
+  const markers = rail.querySelector<HTMLElement>(".diff-overview-markers")!;
+  let drag: RailDrag | null = null;
   const pointerDown = (event: PointerEvent) => {
     if (event.button !== 0 || rail.getAttribute("aria-disabled") === "true") return;
+    const bandRect = band.getBoundingClientRect();
+    // Markers paint above the band; pressing one inside the band still grabs the band.
+    const onMarker = event.target instanceof HTMLElement && event.target.classList.contains("diff-overview-marker");
+    const onBand = event.target === band || (onMarker && event.clientY >= bandRect.top && event.clientY <= bandRect.bottom);
+    if (!onBand && event.target !== rail && event.target !== markers) return;
     onUserInput();
-    const rect = band.getBoundingClientRect();
-    drag = { pointerId: event.pointerId, grabOffset: event.clientY - rect.top };
-    band.setPointerCapture(event.pointerId);
-    event.stopPropagation();
+    const lineFrom = Number(band.dataset.lineFrom ?? "0");
+    const lineTo = Number(band.dataset.lineTo ?? String(lineFrom + 1));
+    drag = {
+      pointerId: event.pointerId,
+      // Clicking the track centres the band under the pointer, then keeps dragging.
+      grabOffset: onBand ? event.clientY - bandRect.top : bandRect.height / 2,
+      bandHeight: bandRect.height,
+      visibleLines: Math.max(1, lineTo - lineFrom)
+    };
+    rail.dataset.dragging = "true";
+    // Capture on the rail, which is never re-rendered, so the drag survives marker refreshes.
+    rail.setPointerCapture(event.pointerId);
+    if (!onBand) setViewFromRail(view, rail, event.clientY - rail.getBoundingClientRect().top, drag);
     event.preventDefault();
   };
   const pointerMove = (event: PointerEvent) => {
     if (!drag || drag.pointerId !== event.pointerId) return;
-    const rect = rail.getBoundingClientRect();
-    setViewFromRail(view, rail, event.clientY - rect.top, drag.grabOffset);
+    setViewFromRail(view, rail, event.clientY - rail.getBoundingClientRect().top, drag);
   };
   const pointerEnd = (event: PointerEvent) => {
     if (!drag || drag.pointerId !== event.pointerId) return;
     drag = null;
-    if (band.hasPointerCapture(event.pointerId)) band.releasePointerCapture(event.pointerId);
-  };
-  const railPointer = (event: PointerEvent) => {
-    if (event.button !== 0 || (event.target !== rail && event.target !== rail.querySelector(".diff-overview-markers"))) return;
-    onUserInput();
-    const rect = rail.getBoundingClientRect();
-    const bandHeight = band.getBoundingClientRect().height;
-    setViewFromRail(view, rail, event.clientY - rect.top, bandHeight / 2);
-    event.preventDefault();
+    delete rail.dataset.dragging;
+    if (rail.hasPointerCapture(event.pointerId)) rail.releasePointerCapture(event.pointerId);
+    updateRailViewport(rail, view);
   };
   const railKey = (event: KeyboardEvent) => {
     let next: number | undefined;
@@ -1153,23 +1189,27 @@ function installRailInput(rail: HTMLElement, view: EditorView, onUserInput: () =
     view.scrollDOM.scrollTop = clampViewScroll(view, next);
     event.preventDefault();
   };
-  band.addEventListener("pointerdown", pointerDown);
-  band.addEventListener("pointermove", pointerMove);
-  band.addEventListener("pointerup", pointerEnd);
-  band.addEventListener("pointercancel", pointerEnd);
-  rail.addEventListener("pointerdown", railPointer);
+  rail.addEventListener("pointerdown", pointerDown);
+  rail.addEventListener("pointermove", pointerMove);
+  rail.addEventListener("pointerup", pointerEnd);
+  rail.addEventListener("pointercancel", pointerEnd);
+  rail.addEventListener("lostpointercapture", pointerEnd);
   rail.addEventListener("keydown", railKey);
   return () => {
-    band.removeEventListener("pointerdown", pointerDown);
-    band.removeEventListener("pointermove", pointerMove);
-    band.removeEventListener("pointerup", pointerEnd);
-    band.removeEventListener("pointercancel", pointerEnd);
-    rail.removeEventListener("pointerdown", railPointer);
+    rail.removeEventListener("pointerdown", pointerDown);
+    rail.removeEventListener("pointermove", pointerMove);
+    rail.removeEventListener("pointerup", pointerEnd);
+    rail.removeEventListener("pointercancel", pointerEnd);
+    rail.removeEventListener("lostpointercapture", pointerEnd);
     rail.removeEventListener("keydown", railKey);
   };
 }
 
-function installScrollAndRails(split: SplitView, onVisualChange: () => void, onUserViewportChange: () => void) {
+function installScrollAndRails(
+  split: SplitView,
+  visuals: { scheduleDraw: () => void; drawNow: () => void },
+  onUserViewportChange: () => void
+) {
   let epoch = 0;
   let frame = 0;
   let pending: DiffSide | null = null;
@@ -1192,6 +1232,8 @@ function installScrollAndRails(split: SplitView, onVisualChange: () => void, onU
     if (frame) {
       cancelAnimationFrame(frame);
       frame = 0;
+      // The cancelled sync owned the redraw for the scroll that scheduled it.
+      visuals.scheduleDraw();
     }
     delete tokens.a;
     delete tokens.b;
@@ -1209,10 +1251,13 @@ function installScrollAndRails(split: SplitView, onVisualChange: () => void, onU
     const rail = railFor(side);
     updateRailViewport(rail, view);
   };
-  const updateRails = () => {
+  const updateRailViewports = () => {
     updateRail("a");
     updateRail("b");
-    onVisualChange();
+  };
+  const updateRails = () => {
+    updateRailViewports();
+    visuals.scheduleDraw();
   };
   const syncFrom = (side: DiffSide) => {
     const source = viewFor(side);
@@ -1223,7 +1268,10 @@ function installScrollAndRails(split: SplitView, onVisualChange: () => void, onU
     split.dom.dataset.syncSegment = String(mapped.segment);
     split.dom.dataset.syncSourceTop = String(source.scrollDOM.scrollTop);
     write(targetSide, mapped.value - target.scrollDOM.clientHeight / 3, epoch);
-    updateRails();
+    updateRailViewports();
+    // Draw in this frame, after both panes hold their final scrollTop; a deferred
+    // draw would paint connectors against one pane that has already moved on.
+    visuals.drawNow();
   };
   const scheduleSync = (side: DiffSide) => {
     pending = side;
@@ -1235,34 +1283,82 @@ function installScrollAndRails(split: SplitView, onVisualChange: () => void, onU
       if (next) syncFrom(next);
     });
   };
+  // Horizontal scroll mirrors 1:1. The narrower pane clamps, so a write is only
+  // tokened when it actually moved the target; otherwise its clamped echo would
+  // drag the source pane back.
+  const lefts: Record<DiffSide, number> = { a: split.a.scrollDOM.scrollLeft, b: split.b.scrollDOM.scrollLeft };
+  const tops: Record<DiffSide, number> = { a: split.a.scrollDOM.scrollTop, b: split.b.scrollDOM.scrollTop };
+  const leftTokens: Partial<Record<DiffSide, number>> = {};
+  const syncHorizontal = (side: DiffSide) => {
+    const current = viewFor(side).scrollDOM.scrollLeft;
+    if (current === lefts[side]) return;
+    lefts[side] = current;
+    const expected = leftTokens[side];
+    delete leftTokens[side];
+    if (expected !== undefined && Math.abs(expected - current) <= 1) return;
+    const targetSide: DiffSide = side === "a" ? "b" : "a";
+    const target = viewFor(targetSide).scrollDOM;
+    target.scrollLeft = current;
+    if (target.scrollLeft !== lefts[targetSide]) leftTokens[targetSide] = target.scrollLeft;
+  };
   const onScroll = (side: DiffSide) => {
+    syncHorizontal(side);
     const token = tokens[side];
     const current = viewFor(side).scrollDOM.scrollTop;
+    const moved = current !== tops[side];
+    tops[side] = current;
     if (token && Math.abs(token.expected - current) <= 1) {
       delete tokens[side];
       updateRails();
       return;
     }
+    // Purely horizontal scroll: no vertical re-sync or master change.
+    if (!moved) return;
     if (side !== master) claim(side);
     scheduleSync(side);
-    updateRails();
+    // Connectors wait for syncFrom: drawing now would pair this pane's new
+    // scrollTop with the other pane's pre-sync one.
+    updateRailViewports();
+  };
+  const extentOf = (view: EditorView) => ({
+    top: view.scrollDOM.scrollTop,
+    max: Math.max(0, view.scrollDOM.scrollHeight - view.scrollDOM.clientHeight)
+  });
+  // When the hovered pane is already at its top/bottom but the other pane still
+  // has room, keep the wheel moving by scrolling the other pane instead.
+  const chainWheel = (side: DiffSide, event: WheelEvent) => {
+    if (event.ctrlKey || event.shiftKey || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return false;
+    const source = viewFor(side);
+    const targetSide: DiffSide = side === "a" ? "b" : "a";
+    const target = viewFor(targetSide);
+    const unit = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? target.defaultLineHeight
+      : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? target.scrollDOM.clientHeight : 1;
+    const delta = chainedWheelDelta(event.deltaY * unit, extentOf(source), extentOf(target));
+    if (!delta) return false;
+    event.preventDefault();
+    claim(targetSide, true);
+    target.scrollDOM.scrollTop += delta;
+    return true;
   };
   const listeners: Array<() => void> = [];
   for (const side of ["a", "b"] as const) {
     const scrollDOM = viewFor(side).scrollDOM;
     const scroll = () => onScroll(side);
     const userInput = () => claim(side, true);
+    const wheel = (event: WheelEvent) => {
+      if (!chainWheel(side, event)) claim(side, true);
+    };
     const keyboard = (event: KeyboardEvent) => {
       if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) claim(side, true);
     };
     scrollDOM.addEventListener("scroll", scroll, { passive: true });
-    scrollDOM.addEventListener("wheel", userInput, { passive: true });
+    scrollDOM.addEventListener("wheel", wheel, { passive: false });
     scrollDOM.addEventListener("touchstart", userInput, { passive: true });
     scrollDOM.addEventListener("pointerdown", userInput, { passive: true });
     scrollDOM.addEventListener("keydown", keyboard);
     listeners.push(() => {
       scrollDOM.removeEventListener("scroll", scroll);
-      scrollDOM.removeEventListener("wheel", userInput);
+      scrollDOM.removeEventListener("wheel", wheel);
       scrollDOM.removeEventListener("touchstart", userInput);
       scrollDOM.removeEventListener("pointerdown", userInput);
       scrollDOM.removeEventListener("keydown", keyboard);
@@ -1375,7 +1471,7 @@ function createSplitView(
     visualController?.scheduleDraw();
   };
   visualController = installSplitVisuals(split, navigate);
-  scrollController = installScrollAndRails(split, visualController.scheduleDraw, () => alignmentController?.schedule());
+  scrollController = installScrollAndRails(split, visualController, () => alignmentController?.schedule());
   const removeResize = installSplitResize(split, separator, initialRatio, onLayoutChange, visualController.scheduleMeasure);
   const removeCollapse = collapsed ? installPairedCollapse(split) : undefined;
   alignmentController = alignChanges ? installChangeAlignment(split, visualController.scheduleMeasure) : undefined;

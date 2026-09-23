@@ -8,19 +8,48 @@
 .PARAMETER Test
   构建前先运行 npm test。
 
+.PARAMETER OutputRoot
+  将前端和 Rust 产物输出到指定独立目录，使用相对 frontendDist 嵌入资源。
+
 .EXAMPLE
   npm run package
   npm run package -- -Bundle -Test
+  npm run package -- -OutputRoot D:\Projects\Research\Oris-builds\release-check
 #>
 [CmdletBinding()]
 param(
   [switch]$Bundle,
-  [switch]$Test
+  [switch]$Test,
+  [string]$OutputRoot
 )
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $releaseDir = Join-Path $root 'src-tauri\target\release'
+$savedTargetDir = $env:CARGO_TARGET_DIR
+$savedConfig = $env:TAURI_CONFIG
+$configPath = $null
+if ($OutputRoot) {
+  $output = [IO.Path]::GetFullPath($OutputRoot)
+  $frontendDir = Join-Path $output 'dist'
+  $tauriRootUri = [Uri]((Join-Path $root 'src-tauri') + [IO.Path]::DirectorySeparatorChar)
+  $relativeUri = $tauriRootUri.MakeRelativeUri([Uri]($frontendDir + [IO.Path]::DirectorySeparatorChar))
+  if ($relativeUri.IsAbsoluteUri) { throw '独立输出必须与项目位于同一磁盘，以便 frontendDist 使用相对目录。' }
+  $relativeDist = [Uri]::UnescapeDataString($relativeUri.ToString()).TrimEnd('/')
+  if ($relativeDist -match '^[a-zA-Z][a-zA-Z0-9+.-]*:') { throw 'frontendDist 不能是 URL 或带盘符的路径。' }
+  New-Item -ItemType Directory -Force -Path $output | Out-Null
+  $configPath = Join-Path $output 'build-config.json'
+  $config = @{ build = @{
+    # Build through structured arguments below, not a nested shell command.
+    beforeBuildCommand = $null
+    frontendDist = $relativeDist
+  } } | ConvertTo-Json -Depth 4
+  [IO.File]::WriteAllText($configPath, $config, (New-Object Text.UTF8Encoding($false)))
+  $env:CARGO_TARGET_DIR = Join-Path $output 'target'
+  $releaseDir = Join-Path $env:CARGO_TARGET_DIR 'release'
+} elseif ($env:CARGO_TARGET_DIR) {
+  $releaseDir = Join-Path ([IO.Path]::GetFullPath($env:CARGO_TARGET_DIR)) 'release'
+}
 $exePath = Join-Path $releaseDir 'oris.exe'
 
 function Invoke-Step([string]$title, [scriptblock]$action) {
@@ -35,6 +64,11 @@ try {
   $mingwBin = 'D:\Tools\Rust\mingw-binutils\mingw64\bin'
   if (-not (Get-Command dlltool -ErrorAction SilentlyContinue) -and (Test-Path $mingwBin)) {
     $env:PATH = "$mingwBin;$env:PATH"
+  }
+  # windres 编译 Windows 资源（图标/manifest）时需要 gcc 做预处理；追加到 PATH 末尾，不覆盖已有工具。
+  $msysMingwBin = 'D:\Tools\Rust\msys2\msys64\mingw64\bin'
+  if (-not (Get-Command gcc -ErrorAction SilentlyContinue) -and (Test-Path (Join-Path $msysMingwBin 'gcc.exe'))) {
+    $env:PATH = "$env:PATH;$msysMingwBin"
   }
 
   # 仅检查运行路径正是目标 exe 的实例；不结束任何进程，由用户自行关闭。
@@ -52,10 +86,24 @@ try {
     Invoke-Step '运行测试 (npm test)' { npm test }
   }
 
-  $buildArgs = @('run', 'tauri', '--', 'build')
+  if ($configPath) {
+    Invoke-Step '检查 TypeScript' { npx tsc -b }
+    Invoke-Step '构建独立前端目录' { node node_modules/vite/bin/vite.js build --outDir $frontendDir }
+  }
+
+  $buildArgs = @('run', 'tauri', '--', 'build', '--features', 'tauri/custom-protocol')
+  if ($configPath) { $buildArgs += @('--config', $configPath) }
   if (-not $Bundle) { $buildArgs += '--no-bundle' }
   $started = Get-Date
   Invoke-Step "构建 release (npm $($buildArgs -join ' '))" { npm @buildArgs }
+  # Execute the same compiled context used by oris.exe; this creates no window.
+  if ($configPath) { $env:TAURI_CONFIG = [IO.File]::ReadAllText($configPath) }
+  # GNU Tauri puts the matching WebView2Loader.dll beside the app, not examples.
+  $env:PATH = "$releaseDir;$env:PATH"
+  Invoke-Step '验证嵌入入口、index.html 和 JS/CSS/Worker 资源（无 GUI）' {
+    cargo run --manifest-path src-tauri/Cargo.toml --release --example verify_release_entry --features tauri/custom-protocol
+  }
+
   $elapsed = (Get-Date) - $started
 
   $exe = Get-Item $exePath
@@ -77,5 +125,7 @@ try {
   }
 }
 finally {
+  $env:CARGO_TARGET_DIR = $savedTargetDir
+  $env:TAURI_CONFIG = $savedConfig
   Pop-Location
 }

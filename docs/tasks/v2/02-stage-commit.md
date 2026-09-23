@@ -1,6 +1,6 @@
 # V2-02 — 暂存、丢弃与提交
 
-状态：Pending（未开始）。依赖：V2-01；[二期 UI 提案](../../design/03-phase2-ui-proposal.md)已获确认（V2-D18）。
+状态：Pending（未开始）。依赖：V2-01；[一二期混合发布参考图](../../design/04-mixed-release-ui-reference.md)已获用户确认，UI 前置条件满足（V2-D18）。
 
 ## 用户闭环
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { diffMarkerGeometry, mapDiffPosition, railViewportStartLine } from "./diff-scroll";
+import { chainedWheelDelta, diffMarkerGeometry, mapDiffPosition, railViewportStartLine } from "./diff-scroll";
 
 describe("分段 Diff 滚动映射", () => {
   it("N:N 段内保持 1:1", () => {
@@ -46,17 +46,46 @@ describe("分段 Diff 滚动映射", () => {
 
 describe("Diff 外缘轨道几何", () => {
   it("单轨 viewport 无可移动范围时停在首行", () => {
-    expect(railViewportStartLine(300, 300, 180, 40, 20, 20)).toBe(0);
+    expect(railViewportStartLine(300, 300, 180, 40, 20, 20)).toEqual({ top: 0, line: 0 });
   });
 
   it("单轨 viewport 拖动映射到逻辑可见行范围", () => {
-    expect(railViewportStartLine(300, 75, 37.5, 37.5, 100, 25)).toBe(0);
-    expect(railViewportStartLine(300, 75, 150, 37.5, 100, 25)).toBe(38);
-    expect(railViewportStartLine(300, 75, 300, 37.5, 100, 25)).toBe(75);
+    expect(railViewportStartLine(300, 75, 37.5, 37.5, 100, 25)).toEqual({ top: 0, line: 0 });
+    expect(railViewportStartLine(300, 75, 150, 37.5, 100, 25)).toEqual({ top: 112.5, line: 37.5 });
+    expect(railViewportStartLine(300, 75, 300, 37.5, 100, 25)).toEqual({ top: 225, line: 75 });
+  });
+
+  it("单轨 viewport 拖动连续跟手，不按整行跳变", () => {
+    const a = railViewportStartLine(300, 150, 76, 0, 10, 5);
+    const b = railViewportStartLine(300, 150, 77, 0, 10, 5);
+    expect(b.top - a.top).toBe(1);
+    expect(b.line).toBeGreaterThan(a.line);
   });
 
   it("零行 marker 保持最小可见刻度且不借用相邻整行", () => {
     expect(diffMarkerGeometry(200, 4, 4, 10, 2)).toEqual({ top: 80, height: 2 });
     expect(diffMarkerGeometry(200, 4, 6, 10, 2)).toEqual({ top: 80, height: 40 });
+  });
+});
+
+describe("分栏滚轮接力", () => {
+  it("当前侧未到边界时不接力", () => {
+    expect(chainedWheelDelta(100, { top: 50, max: 500 }, { top: 50, max: 900 })).toBe(0);
+    expect(chainedWheelDelta(-100, { top: 50, max: 500 }, { top: 50, max: 900 })).toBe(0);
+  });
+
+  it("当前侧到底后把滚动交给另一侧，并按剩余空间截断", () => {
+    expect(chainedWheelDelta(100, { top: 500, max: 500 }, { top: 300, max: 900 })).toBe(100);
+    expect(chainedWheelDelta(100, { top: 499.5, max: 500 }, { top: 860, max: 900 })).toBe(40);
+  });
+
+  it("当前侧到顶后向上滚动交给另一侧", () => {
+    expect(chainedWheelDelta(-120, { top: 0, max: 500 }, { top: 80, max: 900 })).toBe(-80);
+  });
+
+  it("两侧都到边界或无增量时不接力", () => {
+    expect(chainedWheelDelta(100, { top: 500, max: 500 }, { top: 900, max: 900 })).toBe(0);
+    expect(chainedWheelDelta(-100, { top: 0, max: 500 }, { top: 0, max: 900 })).toBe(0);
+    expect(chainedWheelDelta(0, { top: 500, max: 500 }, { top: 0, max: 900 })).toBe(0);
   });
 });

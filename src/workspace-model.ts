@@ -133,6 +133,7 @@ export class ContentCache {
   }
 
   set(key: string, value: ContentPair) {
+    if (value.left.details?.image || value.right.details?.image) return;
     const bytes = value.left.byteLength + value.right.byteLength;
     const prior = this.entries.get(key);
     if (prior) this.bytes -= prior.bytes;

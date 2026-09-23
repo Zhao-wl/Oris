@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { CompareScope, ContentPair, RepositorySnapshot } from "./types";
+import type { CompareScope, ConflictVersion, ContentPair, RepositorySnapshot } from "./types";
 
 export const openRepository = (path: string, scope: CompareScope, gitExecutable: string | null, requestId: string) =>
   invoke<RepositorySnapshot>("open_repository", { path, scope, gitExecutable, requestId });
@@ -15,5 +15,8 @@ export const readContentPair = (
   revision: string,
   pathId: string,
   gitExecutable: string | null,
-  requestId: string
-) => invoke<ContentPair>("read_content_pair", { repoId, scope, revision, pathId, gitExecutable, requestId });
+  requestId: string,
+  versions?: [ConflictVersion, ConflictVersion]
+) => invoke<ContentPair>("read_content_pair", { repoId, scope, revision, pathId, gitExecutable, requestId, versions });
+
+export const cancelContentRead = () => invoke<void>("cancel_content_read");

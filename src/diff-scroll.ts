@@ -64,6 +64,25 @@ export function mapDiffPosition(
   };
 }
 
+export interface ScrollExtent {
+  top: number;
+  max: number;
+}
+
+/**
+ * Wheel chaining between split panes: once the hovered pane can no longer move
+ * in the wheel direction, hand the remaining delta to the opposite pane.
+ * Returns the delta to apply to the opposite pane, or 0 when nothing chains.
+ */
+export function chainedWheelDelta(deltaY: number, source: ScrollExtent, target: ScrollExtent, epsilon = 1): number {
+  if (!deltaY) return 0;
+  const sourceBlocked = deltaY > 0 ? source.top >= source.max - epsilon : source.top <= epsilon;
+  if (!sourceBlocked) return 0;
+  const room = deltaY > 0 ? target.max - target.top : target.top;
+  if (room <= epsilon) return 0;
+  return Math.sign(deltaY) * Math.min(Math.abs(deltaY), room);
+}
+
 export function railViewportStartLine(
   trackHeight: number,
   viewportHeight: number,
@@ -71,14 +90,15 @@ export function railViewportStartLine(
   grabOffset: number,
   lineCount: number,
   visibleLineCount: number
-): number {
+): { top: number; line: number } {
   const lines = Math.max(1, Math.floor(lineCount));
-  const visible = Math.min(lines, Math.max(1, Math.floor(visibleLineCount)));
+  const visible = Math.min(lines, Math.max(1, visibleLineCount));
   const maximumStart = Math.max(0, lines - visible);
   const travel = Math.max(0, trackHeight - viewportHeight);
-  if (!travel || !maximumStart) return 0;
-  const viewportTop = Math.min(travel, Math.max(0, pointerY - grabOffset));
-  return Math.min(maximumStart, Math.max(0, Math.round(viewportTop / travel * maximumStart)));
+  if (!travel || !maximumStart) return { top: 0, line: 0 };
+  const top = Math.min(travel, Math.max(0, pointerY - grabOffset));
+  // Fractional on purpose: rounding to whole lines makes the drag step on short files.
+  return { top, line: top / travel * maximumStart };
 }
 
 export function diffMarkerGeometry(

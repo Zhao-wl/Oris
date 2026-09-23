@@ -12,7 +12,7 @@
   "app": {
     "windows": [{ "label": "main", "title": "Oris", "width": 1280, "height": 820, "minWidth": 900, "minHeight": 600 }],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: data:; connect-src ipc: http://ipc.localhost; worker-src 'self' blob:"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: data: blob:; connect-src ipc: http://ipc.localhost; worker-src 'self' blob:"
     }
   },
   "bundle": { "active": true, "targets": "all", "icon": [] }

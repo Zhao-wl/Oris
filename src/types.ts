@@ -1,5 +1,6 @@
 export type CompareScope = "unstaged" | "staged" | "all";
-export type Endpoint = "head" | "index" | "workingTree" | "emptyTree" | "unavailable";
+export type ConflictVersion = "stage1" | "stage2" | "stage3" | "workingTree";
+export type Endpoint = ConflictVersion | "head" | "index" | "workingTree" | "emptyTree" | "unavailable";
 
 export interface GitInfo {
   executable: string;
@@ -37,7 +38,19 @@ export interface RepositorySnapshot {
   scannedAt: number;
 }
 
+export interface ImagePayload {
+  mime: string; base64: string; width: number; height: number;
+  displayWidth: number; displayHeight: number; orientation: number;
+}
+export interface SideDetails {
+  sizeKnown?: boolean;
+  state: "ready" | "missing" | "unavailable" | "unsupported" | "overBudget";
+  reason: string | null; oid: string | null; mode: string | null; image: ImagePayload | null;
+  /** SHA-256 of the LFS entity when the side is stored as an LFS pointer. */
+  lfsOid?: string | null;
+}
 export interface TextSide {
+  details?: SideDetails | null;
   endpoint: Endpoint;
   text: string | null;
   byteLength: number;

@@ -1,3 +1,5 @@
+mod media;
+mod read_guard;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -16,8 +18,7 @@ const MAX_TEXT_BYTES: usize = 5 * 1024 * 1024;
 const MAX_TEXT_LINES: usize = 100_000;
 const MAX_LINE_CHARS: usize = 100_000;
 
-#[derive(Debug, Error, Serialize)]
-#[serde(tag = "kind", content = "message", rename_all = "camelCase")]
+#[derive(Debug, Error)]
 pub enum GitError {
     #[error("找不到或无法启动 Git：{0}")]
     GitUnavailable(String),
@@ -49,6 +50,35 @@ pub enum GitError {
     Io(String),
 }
 
+// Tauri must receive the Display reason for unit/struct variants too, not only tuple payloads.
+impl Serialize for GitError {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let kind = match self {
+            Self::GitUnavailable(_) => "gitUnavailable",
+            Self::UnsupportedGit { .. } => "unsupportedGit",
+            Self::InvalidRepository(_) => "invalidRepository",
+            Self::CommandFailed(_) => "commandFailed",
+            Self::UnsupportedPathEncoding => "unsupportedPathEncoding",
+            Self::UnsafePath => "unsafePath",
+            Self::StaleRequest => "staleRequest",
+            #[cfg(feature = "desktop")]
+            Self::UnknownRepository => "unknownRepository",
+            #[cfg(feature = "desktop")]
+            Self::GitChanged => "gitChanged",
+            #[cfg(feature = "desktop")]
+            Self::Registry => "registry",
+            #[cfg(feature = "desktop")]
+            Self::Runtime(_) => "runtime",
+            Self::Io(_) => "io",
+        };
+        let mut value = serializer.serialize_struct("GitError", 2)?;
+        value.serialize_field("kind", kind)?;
+        value.serialize_field("message", &self.to_string())?;
+        value.end()
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitInfo {
@@ -63,9 +93,9 @@ pub struct GitInfo {
 pub struct RepositoryInfo {
     pub repo_id: String,
     display_name: String,
-    worktree_path: String,
-    git_dir: String,
-    common_dir: String,
+    pub worktree_path: String,
+    pub git_dir: String,
+    pub common_dir: String,
     branch: String,
 }
 
@@ -132,6 +162,7 @@ pub struct RepositorySnapshot {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TextSide {
+    details: Option<media::SideDetails>,
     endpoint: &'static str,
     text: Option<String>,
     byte_length: usize,
@@ -139,6 +170,27 @@ pub struct TextSide {
     eol: &'static str,
     has_final_newline: Option<bool>,
     content_id: String,
+    #[serde(skip)]
+    source_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ConflictVersion {
+    Stage1,
+    Stage2,
+    Stage3,
+    WorkingTree,
+}
+impl ConflictVersion {
+    fn endpoint(self) -> &'static str {
+        match self {
+            Self::Stage1 => "stage1",
+            Self::Stage2 => "stage2",
+            Self::Stage3 => "stage3",
+            Self::WorkingTree => "workingTree",
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -155,6 +207,86 @@ pub struct ContentPair {
     degradation: Option<String>,
 }
 
+/// Decides whether watcher events can affect a snapshot or content read.
+#[derive(Clone)]
+pub struct ChangeFilter {
+    git: PathBuf,
+    worktree: PathBuf,
+    git_dirs: Vec<PathBuf>,
+}
+
+impl ChangeFilter {
+    /// Object/LFS/log writes always accompany an index or ref update, and
+    /// git-ignored worktree paths (e.g. Unity Library/Temp) never change a
+    /// snapshot. Any failure to classify counts as relevant.
+    pub fn relevant(&self, paths: &[PathBuf]) -> bool {
+        let mut candidates = std::collections::BTreeSet::new();
+        for path in paths {
+            if let Some(dir) = self.git_dirs.iter().find(|dir| path.starts_with(dir)) {
+                let first = path
+                    .strip_prefix(dir)
+                    .ok()
+                    .and_then(|inner| inner.components().next())
+                    .and_then(|component| component.as_os_str().to_str());
+                if !matches!(first, Some("objects" | "lfs" | "logs")) {
+                    return true;
+                }
+                continue;
+            }
+            let Ok(relative) = path.strip_prefix(&self.worktree) else {
+                return true;
+            };
+            let Some(relative) = relative.to_str().filter(|value| !value.is_empty()) else {
+                return true;
+            };
+            candidates.insert(relative.replace('\\', "/"));
+        }
+        if candidates.is_empty() {
+            return false;
+        }
+        let mut input = Vec::new();
+        for candidate in &candidates {
+            input.extend_from_slice(candidate.as_bytes());
+            input.push(0);
+        }
+        let output = (|| {
+            use std::io::Write;
+            use std::process::Stdio;
+            let mut child = readonly_command(
+                &self.git,
+                &self.worktree,
+                &["check-ignore", "-z", "--stdin"],
+            )
+            // check-ignore rejects the literal pathspec magic; it reads plain paths.
+            .env_remove("GIT_LITERAL_PATHSPECS")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+            // Drain stdout concurrently with stdin: a burst of ignored paths can
+            // otherwise fill both OS pipes and block this watcher forever.
+            let mut stdin = child.stdin.take()?;
+            let writer = std::thread::spawn(move || stdin.write_all(&input));
+            let output = child.wait_with_output().ok();
+            writer.join().ok()?.ok()?;
+            output
+        })();
+        // check-ignore exits 0 when some path is ignored, 1 when none is.
+        match output {
+            Some(output) if output.status.success() => {
+                output
+                    .stdout
+                    .split(|b| *b == 0)
+                    .filter(|v| !v.is_empty())
+                    .count()
+                    < candidates.len()
+            }
+            _ => true,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct GitAdapter {
     git: PathBuf,
@@ -164,7 +296,7 @@ pub struct GitAdapter {
     repo_id: String,
     branch: String,
     version: String,
-    snapshots: Arc<Mutex<HashMap<CompareScope, (String, Vec<FileChange>, Vec<u8>)>>>,
+    snapshots: Arc<Mutex<HashMap<CompareScope, Vec<read_guard::ReadSnapshot>>>>,
 }
 
 impl GitAdapter {
@@ -258,6 +390,14 @@ impl GitAdapter {
         paths
     }
 
+    pub fn change_filter(&self) -> ChangeFilter {
+        ChangeFilter {
+            git: self.git.clone(),
+            worktree: self.worktree.clone(),
+            git_dirs: vec![self.git_dir.clone(), self.common_dir.clone()],
+        }
+    }
+
     #[cfg(test)]
     pub fn snapshot(&self, request_id: String) -> Result<RepositorySnapshot, GitError> {
         self.snapshot_for_scope(request_id, CompareScope::Unstaged)
@@ -268,12 +408,38 @@ impl GitAdapter {
         request_id: String,
         scope: CompareScope,
     ) -> Result<RepositorySnapshot, GitError> {
+        #[cfg(test)]
+        let started = std::time::Instant::now();
+        let catalogs = self.guard_catalogs(scope, &[])?;
         let (files, raw) = self.list_changes(scope)?;
+        #[cfg(test)]
+        let listed = started.elapsed().as_millis();
         let revision = self.revision(scope, &raw, &files)?;
-        self.snapshots
-            .lock()
-            .map_err(|e| GitError::Io(e.to_string()))?
-            .insert(scope, (revision.clone(), files.clone(), raw));
+        #[cfg(test)]
+        let revised = started.elapsed().as_millis();
+        let saved = self.capture_read_snapshot(scope, revision.clone(), &files, catalogs)?;
+        #[cfg(test)]
+        if files.len() >= 5000 {
+            println!(
+                "SNAPSHOT_PHASE files={} list_ms={} revision_ms={} guards_ms={}",
+                files.len(),
+                listed,
+                revised - listed,
+                started.elapsed().as_millis() - revised
+            );
+        }
+        {
+            let mut snapshots = self
+                .snapshots
+                .lock()
+                .map_err(|e| GitError::Io(e.to_string()))?;
+            let history = snapshots.entry(scope).or_default();
+            history.retain(|old| old.revision != revision);
+            history.push(saved);
+            if history.len() > 3 {
+                history.remove(0);
+            }
+        }
         let display_name = self
             .worktree
             .file_name()
@@ -323,6 +489,7 @@ impl GitAdapter {
         )
     }
 
+    #[cfg(test)]
     pub fn read_content_pair_for_scope(
         &self,
         request_id: String,
@@ -330,6 +497,40 @@ impl GitAdapter {
         requested_revision: String,
         path_id: String,
     ) -> Result<ContentPair, GitError> {
+        self.read_content_pair_versions(request_id, scope, requested_revision, path_id, None)
+    }
+
+    #[cfg(test)]
+    pub fn read_content_pair_versions(
+        &self,
+        request_id: String,
+        scope: CompareScope,
+        requested_revision: String,
+        path_id: String,
+        versions: Option<[ConflictVersion; 2]>,
+    ) -> Result<ContentPair, GitError> {
+        self.read_content_pair_cancellable(
+            request_id,
+            scope,
+            requested_revision,
+            path_id,
+            versions,
+            || false,
+        )
+    }
+
+    pub fn read_content_pair_cancellable(
+        &self,
+        request_id: String,
+        scope: CompareScope,
+        requested_revision: String,
+        path_id: String,
+        versions: Option<[ConflictVersion; 2]>,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<ContentPair, GitError> {
+        if cancelled() {
+            return Err(GitError::StaleRequest);
+        }
         let path_bytes = URL_SAFE_NO_PAD
             .decode(&path_id)
             .map_err(|_| GitError::UnsafePath)?;
@@ -337,36 +538,51 @@ impl GitAdapter {
             String::from_utf8(path_bytes).map_err(|_| GitError::UnsupportedPathEncoding)?;
         validate_relative(&relative)?;
 
-        let (_, current_files, current_raw) = self
+        let (change, expected_guard) = self
             .snapshots
             .lock()
             .map_err(|e| GitError::Io(e.to_string()))?
             .get(&scope)
+            .and_then(|history| {
+                history
+                    .iter()
+                    .find(|saved| saved.revision == requested_revision)
+            })
+            .and_then(|saved| saved.files.get(&path_id))
             .cloned()
-            .filter(|(revision, _, _)| revision == &requested_revision)
             .ok_or(GitError::StaleRequest)?;
-        let current_revision = self.revision(scope, &current_raw, &current_files)?;
-        if requested_revision != current_revision {
+        let current_revision = requested_revision;
+        if self.selected_guard(scope, &change)? != expected_guard {
             return Err(GitError::StaleRequest);
         }
-        let change = current_files
-            .iter()
-            .find(|file| file.path_id == path_id)
-            .ok_or(GitError::StaleRequest)?;
         if matches!(change.status, FileStatus::Conflicted) {
+            let versions = versions.unwrap_or([ConflictVersion::Stage2, ConflictVersion::Stage3]);
+            let mut remaining = media::ImageBudget::default();
+            let left = self.read_side(versions[0].endpoint(), &relative, false, &mut remaining);
+            if cancelled() {
+                return Err(GitError::StaleRequest);
+            }
+            let right = self.read_side(versions[1].endpoint(), &relative, false, &mut remaining);
+            if self.selected_guard(scope, &change)? != expected_guard
+                || !self.source_still_matches(&left, &relative)
+                || !self.source_still_matches(&right, &relative)
+            {
+                return Err(GitError::StaleRequest);
+            }
+            let degradation = [left.details.as_ref(), right.details.as_ref()]
+                .into_iter()
+                .flatten()
+                .find_map(|d| d.reason.clone());
             return Ok(ContentPair {
                 request_id,
                 repo_id: self.repo_id.clone(),
                 revision: current_revision,
                 path_id,
                 display_path: change.display_path.clone(),
-                left: unavailable_side(scope.left_endpoint()),
-                right: unavailable_side(scope.right_endpoint()),
+                left,
+                right,
                 stale: false,
-                degradation: Some(
-                    "文件处于未解决冲突状态，不能生成普通双端差异；Oris 不提供冲突解决操作。"
-                        .into(),
-                ),
+                degradation,
             });
         }
         let old_relative = change
@@ -384,37 +600,30 @@ impl GitAdapter {
             .unwrap_or_else(|| relative.clone());
         validate_relative(&old_relative)?;
         let no_left = matches!(change.status, FileStatus::Added | FileStatus::Untracked);
-        let left_bytes = if no_left {
-            Vec::new()
-        } else {
-            match scope {
-                CompareScope::Unstaged => self.read_index(&old_relative)?,
-                CompareScope::Staged | CompareScope::All => self.read_head(&old_relative)?,
-            }
-        };
-        let deleted = matches!(change.status, FileStatus::Deleted);
-        let right_bytes = if deleted {
-            Vec::new()
-        } else {
-            match scope {
-                CompareScope::Staged => self.read_index(&relative)?,
-                CompareScope::Unstaged | CompareScope::All => self.read_worktree(&relative)?,
-            }
-        };
         let display_path = change.display_path.clone();
         let left_missing = no_left || (scope != CompareScope::Unstaged && !self.has_head());
-        let (left, left_reason) = text_side(
+        let mut remaining = media::ImageBudget::default();
+        let left = self.read_side(
             if left_missing {
                 "emptyTree"
             } else {
                 scope.left_endpoint()
             },
-            left_bytes,
+            &old_relative,
             left_missing,
+            &mut remaining,
         );
-        let (right, right_reason) = text_side(scope.right_endpoint(), right_bytes, deleted);
+        if cancelled() {
+            return Err(GitError::StaleRequest);
+        }
+        let right = self.read_side(scope.right_endpoint(), &relative, false, &mut remaining);
+        let left_reason = left.details.as_ref().and_then(|d| d.reason.clone());
+        let right_reason = right.details.as_ref().and_then(|d| d.reason.clone());
         let degradation = [left_reason, right_reason].into_iter().flatten().next();
-        if self.revision(scope, &current_raw, &current_files)? != current_revision {
+        if self.selected_guard(scope, &change)? != expected_guard
+            || !self.source_still_matches(&left, &old_relative)
+            || !self.source_still_matches(&right, &relative)
+        {
             return Err(GitError::StaleRequest);
         }
         Ok(ContentPair {
@@ -469,15 +678,17 @@ impl GitAdapter {
         let conflicts = run_required(
             &self.git,
             &self.worktree,
-            &["diff", "--name-only", "--diff-filter=U", "-z", "--"],
+            &["ls-files", "--unmerged", "-z", "--"],
         )?;
         raw.extend_from_slice(&conflicts.stdout);
-        for path in conflicts
+        for record in conflicts
             .stdout
             .split(|byte| *byte == 0)
             .filter(|field| !field.is_empty())
         {
-            upsert_change(&mut files, path, None, FileStatus::Conflicted);
+            if let Some(tab) = record.iter().position(|byte| *byte == b'\t') {
+                upsert_change(&mut files, &record[tab + 1..], None, FileStatus::Conflicted);
+            }
         }
         self.populate_stats(scope, &mut files)?;
         files.sort_by(|left, right| left.display_path.cmp(&right.display_path));
@@ -545,13 +756,18 @@ impl GitAdapter {
             let Some(path) = parts.next() else { continue };
             let path_id = URL_SAFE_NO_PAD.encode(path);
             if let Some(file) = files.iter_mut().find(|file| file.path_id == path_id) {
-                file.additions = additions;
-                file.deletions = deletions;
+                if !matches!(file.status, FileStatus::Conflicted) {
+                    file.additions = additions;
+                    file.deletions = deletions;
+                }
             }
         }
+        // Counts are optional metadata. Bound aggregate I/O without hiding files.
+        let mut stats_remaining = 1024 * 1024usize;
         for file in files
             .iter_mut()
             .filter(|file| matches!(file.status, FileStatus::Untracked))
+            .take(64)
         {
             let Ok(bytes) = URL_SAFE_NO_PAD.decode(&file.path_id) else {
                 continue;
@@ -559,9 +775,19 @@ impl GitAdapter {
             let Ok(relative) = String::from_utf8(bytes) else {
                 continue;
             };
-            let Ok(content) = self.read_worktree(&relative) else {
+            let Ok(meta) = fs::symlink_metadata(self.worktree.join(&relative)) else {
                 continue;
             };
+            if !meta.is_file() || meta.len() > stats_remaining as u64 {
+                continue;
+            }
+            let Ok(content) = self.read_worktree(&relative, stats_remaining) else {
+                continue;
+            };
+            if content.len() > stats_remaining {
+                break;
+            }
+            stats_remaining -= content.len();
             if content.len() <= MAX_TEXT_BYTES && !content.contains(&0) {
                 file.additions = Some(
                     content.iter().filter(|byte| **byte == b'\n').count() as u64
@@ -603,46 +829,30 @@ impl GitAdapter {
         }
     }
 
-    fn read_index(&self, relative: &str) -> Result<Vec<u8>, GitError> {
-        let spec = format!(":{relative}");
-        let output = run_readonly(&self.git, &self.worktree, &["show", "--no-textconv", &spec])?;
-        if output.status.success() {
-            Ok(output.stdout)
-        } else {
-            Ok(Vec::new())
-        }
-    }
-
-    fn read_head(&self, relative: &str) -> Result<Vec<u8>, GitError> {
-        if !self.has_head() {
-            return Ok(Vec::new());
-        }
-        let spec = format!("HEAD:{relative}");
-        let output = run_readonly(&self.git, &self.worktree, &["show", "--no-textconv", &spec])?;
-        if output.status.success() {
-            Ok(output.stdout)
-        } else {
-            Ok(Vec::new())
-        }
-    }
-
-    fn read_worktree(&self, relative: &str) -> Result<Vec<u8>, GitError> {
-        let working_path = self.worktree.join(Path::new(relative));
-        let resolved = match dunce::canonicalize(&working_path) {
-            Ok(path) if path.starts_with(&self.worktree) => Some(path),
-            Ok(_) => return Err(GitError::UnsafePath),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(error) => return Err(GitError::Io(error.to_string())),
-        };
-        match resolved.as_deref().map(fs::symlink_metadata) {
-            Some(Ok(metadata)) if metadata.file_type().is_symlink() => Err(GitError::UnsafePath),
-            Some(Ok(metadata)) if metadata.is_file() => {
-                fs::read(resolved.unwrap()).map_err(|error| GitError::Io(error.to_string()))
+    fn read_worktree(&self, relative: &str, limit: usize) -> Result<Vec<u8>, GitError> {
+        use std::io::Read;
+        validate_relative(relative)?;
+        let mut path = self.worktree.clone();
+        for component in Path::new(relative).components() {
+            path.push(component);
+            let meta = fs::symlink_metadata(&path).map_err(|e| GitError::Io(e.to_string()))?;
+            if meta.file_type().is_symlink() {
+                return Err(GitError::UnsafePath);
             }
-            Some(Ok(_)) => Err(GitError::UnsafePath),
-            Some(Err(error)) => Err(GitError::Io(error.to_string())),
-            None => Ok(Vec::new()),
         }
+        if !fs::symlink_metadata(&path)
+            .map_err(|e| GitError::Io(e.to_string()))?
+            .is_file()
+        {
+            return Err(GitError::UnsafePath);
+        }
+        let mut bytes = Vec::new();
+        fs::File::open(path)
+            .map_err(|e| GitError::Io(e.to_string()))?
+            .take((limit + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|e| GitError::Io(e.to_string()))?;
+        Ok(bytes)
     }
 
     fn revision(
@@ -792,29 +1002,19 @@ fn update_modified(digest: &mut Sha256, metadata: &fs::Metadata) {
     }
 }
 
-fn unavailable_side(endpoint: &'static str) -> TextSide {
-    TextSide {
-        endpoint,
-        text: None,
-        byte_length: 0,
-        encoding: "missing",
-        eol: "none",
-        has_final_newline: None,
-        content_id: hash_bytes(&[]),
-    }
-}
-
 fn text_side(endpoint: &'static str, bytes: Vec<u8>, missing: bool) -> (TextSide, Option<String>) {
     let content_id = hash_bytes(&bytes);
     if missing {
         return (
             TextSide {
+                details: None,
                 endpoint,
                 text: Some(String::new()),
                 byte_length: 0,
                 encoding: "missing",
                 eol: "none",
                 has_final_newline: None,
+                source_id: None,
                 content_id,
             },
             None,
@@ -828,12 +1028,14 @@ fn text_side(endpoint: &'static str, bytes: Vec<u8>, missing: bool) -> (TextSide
         );
         return (
             TextSide {
+                details: None,
                 endpoint,
                 text: None,
                 byte_length: bytes.len(),
                 encoding: "binary-or-unsupported",
                 eol: "none",
                 has_final_newline: None,
+                source_id: None,
                 content_id,
             },
             Some(reason),
@@ -846,12 +1048,14 @@ fn text_side(endpoint: &'static str, bytes: Vec<u8>, missing: bool) -> (TextSide
             let reason = "内容不是受支持的 UTF-8 文本或包含 NUL；未显示为无差异。".to_owned();
             return (
                 TextSide {
+                    details: None,
                     endpoint,
                     text: None,
                     byte_length,
                     encoding: "binary-or-unsupported",
                     eol: "none",
                     has_final_newline: None,
+                    source_id: None,
                     content_id,
                 },
                 Some(reason),
@@ -870,12 +1074,14 @@ fn text_side(endpoint: &'static str, bytes: Vec<u8>, missing: bool) -> (TextSide
             format!("内容为 {lines} 行，最长行 {longest} 字符，超过显示预算；未静默截断。");
         return (
             TextSide {
+                details: None,
                 endpoint,
                 text: None,
                 byte_length,
                 encoding: "utf-8",
                 eol: eol(&text),
                 has_final_newline: Some(text.ends_with('\n')),
+                source_id: None,
                 content_id,
             },
             Some(reason),
@@ -885,12 +1091,14 @@ fn text_side(endpoint: &'static str, bytes: Vec<u8>, missing: bool) -> (TextSide
     let final_newline = text.ends_with('\n');
     (
         TextSide {
+            details: None,
             endpoint,
             text: Some(text),
             byte_length,
             encoding: "utf-8",
             eol: line_ending,
             has_final_newline: Some(final_newline),
+            source_id: None,
             content_id,
         },
         None,
@@ -951,7 +1159,14 @@ fn run_required(git: &Path, cwd: &Path, args: &[&str]) -> Result<Output, GitErro
 }
 
 fn run_readonly(git: &Path, cwd: &Path, args: &[&str]) -> Result<Output, GitError> {
-    git_command(git)
+    readonly_command(git, cwd, args)
+        .output()
+        .map_err(|error| GitError::GitUnavailable(error.to_string()))
+}
+
+fn readonly_command(git: &Path, cwd: &Path, args: &[&str]) -> Command {
+    let mut command = git_command(git);
+    command
         .arg("--no-optional-locks")
         .arg("-c")
         .arg("core.fsmonitor=false")
@@ -964,8 +1179,9 @@ fn run_readonly(git: &Path, cwd: &Path, args: &[&str]) -> Result<Output, GitErro
         .args(args)
         .env("GIT_EXTERNAL_DIFF", "")
         .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .map_err(|error| GitError::GitUnavailable(error.to_string()))
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .env("GIT_LITERAL_PATHSPECS", "1");
+    command
 }
 
 fn stderr_summary(output: &Output) -> String {
@@ -1376,7 +1592,10 @@ mod tests {
                 file.path_id.clone(),
             )
             .unwrap();
-        assert!(pair.degradation.unwrap().contains("未解决冲突"));
+        assert_eq!(pair.left.endpoint, "stage2");
+        assert_eq!(pair.right.endpoint, "stage3");
+        assert_eq!(pair.left.text.as_deref(), Some("main\n"));
+        assert_eq!(pair.right.text.as_deref(), Some("side\n"));
     }
 
     #[test]
@@ -1712,3 +1931,612 @@ mod tests {
         output
     }
 }
+#[cfg(test)]
+mod conflict_tests {
+    use super::*;
+    use std::io::Write;
+    fn command(root: &Path, args: &[&str]) -> Output {
+        git_command(Path::new("git"))
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .unwrap()
+    }
+    fn git(root: &Path, args: &[&str]) -> Vec<u8> {
+        let o = command(root, args);
+        assert!(
+            o.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        o.stdout
+    }
+    fn init() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init", "-q", "-b", "main"]);
+        git(dir.path(), &["config", "user.name", "Oris"]);
+        git(
+            dir.path(),
+            &["config", "user.email", "oris@example.invalid"],
+        );
+        dir
+    }
+    fn commit(root: &Path, message: &str) {
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-qm", message]);
+    }
+    fn manifest(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+        fn walk(root: &Path, path: &Path, out: &mut Vec<(PathBuf, Vec<u8>)>) {
+            for entry in fs::read_dir(path).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(root, &path, out)
+                } else {
+                    out.push((
+                        path.strip_prefix(root).unwrap().to_path_buf(),
+                        fs::read(path).unwrap(),
+                    ));
+                }
+            }
+        }
+        let mut out = vec![];
+        walk(root, root, &mut out);
+        out.sort();
+        out
+    }
+    fn verify(root: &Path) {
+        let before = manifest(root);
+        let adapter = GitAdapter::open(root.to_string_lossy().into_owned(), None).unwrap();
+        let records = git(root, &["ls-files", "--unmerged", "-z"]);
+        assert!(!records.is_empty());
+        for scope in [
+            CompareScope::All,
+            CompareScope::Staged,
+            CompareScope::Unstaged,
+        ] {
+            let snapshot = adapter
+                .snapshot_for_scope("snapshot".into(), scope)
+                .unwrap();
+            for file in snapshot
+                .files
+                .iter()
+                .filter(|f| matches!(f.status, FileStatus::Conflicted))
+            {
+                assert!(file.additions.is_none() && file.deletions.is_none());
+                for versions in [
+                    [ConflictVersion::Stage2, ConflictVersion::Stage3],
+                    [ConflictVersion::Stage1, ConflictVersion::Stage2],
+                    [ConflictVersion::Stage1, ConflictVersion::Stage3],
+                    [ConflictVersion::Stage2, ConflictVersion::WorkingTree],
+                    [ConflictVersion::Stage3, ConflictVersion::WorkingTree],
+                    [ConflictVersion::Stage1, ConflictVersion::WorkingTree],
+                ] {
+                    let pair = adapter
+                        .read_content_pair_versions(
+                            "read".into(),
+                            scope,
+                            snapshot.revision.clone(),
+                            file.path_id.clone(),
+                            Some(versions),
+                        )
+                        .unwrap();
+                    for (side, version) in [(&pair.left, versions[0]), (&pair.right, versions[1])] {
+                        assert_eq!(side.endpoint, version.endpoint());
+                        if matches!(version, ConflictVersion::WorkingTree) {
+                            continue;
+                        }
+                        let stage = version.endpoint().as_bytes()[5];
+                        let record = records.split(|b| *b == 0).find(|record| {
+                            let Some(tab) = record.iter().position(|b| *b == b'\t') else {
+                                return false;
+                            };
+                            &record[tab + 1..] == file.display_path.as_bytes()
+                                && record[tab - 1] == stage
+                        });
+                        if let Some(record) = record {
+                            let fields: Vec<&str> = std::str::from_utf8(record)
+                                .unwrap()
+                                .split_whitespace()
+                                .collect();
+                            assert_eq!(
+                                side.details.as_ref().unwrap().oid.as_deref(),
+                                Some(fields[1])
+                            );
+                            assert_ne!(side.encoding, "missing");
+                            let bytes = git(root, &["cat-file", "blob", fields[1]]);
+                            assert_eq!(side.content_id, hash_bytes(&bytes));
+                            if let Some(text) = &side.text {
+                                assert_eq!(text.as_bytes(), bytes);
+                            }
+                        } else {
+                            assert_eq!(side.encoding, "missing");
+                            assert!(side.details.as_ref().unwrap().oid.is_none());
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            manifest(root),
+            before,
+            "reader changed worktree/index/refs/config/objects"
+        );
+    }
+    #[test]
+    fn real_merge_modify_add_delete_rename_binary_images_and_rebase() {
+        for scenario in [
+            "UU",
+            "AA",
+            "UD",
+            "DU",
+            "rename-delete",
+            "rename-rename",
+            "binary",
+            "image",
+            "rebase",
+        ] {
+            let dir = init();
+            let root = dir.path();
+            let file = if scenario == "image" {
+                "file.png"
+            } else {
+                "file.txt"
+            };
+            fs::write(root.join("seed"), "seed").unwrap();
+            if scenario != "AA" {
+                fs::write(root.join(file), "base\n").unwrap();
+            }
+            commit(root, "base");
+            git(root, &["checkout", "-qb", "side"]);
+            if scenario == "UD" || scenario == "rename-delete" {
+                git(root, &["rm", file]);
+            } else if scenario == "rename-rename" {
+                git(root, &["mv", file, "side.txt"]);
+            } else {
+                fs::write(
+                    root.join(file),
+                    if scenario == "binary" {
+                        b"side\0".as_slice()
+                    } else {
+                        b"side\n".as_slice()
+                    },
+                )
+                .unwrap();
+            }
+            commit(root, "side");
+            git(root, &["checkout", "-q", "main"]);
+            if scenario == "DU" {
+                git(root, &["rm", file]);
+            } else if scenario.starts_with("rename-") {
+                git(root, &["mv", file, "main.txt"]);
+            } else {
+                fs::write(
+                    root.join(file),
+                    if scenario == "binary" {
+                        b"main\0".as_slice()
+                    } else {
+                        b"main\n".as_slice()
+                    },
+                )
+                .unwrap();
+            }
+            commit(root, "main");
+            if scenario == "image" {
+                // Replace all three commits' image contents in a dedicated actual binary merge below.
+                assert!(!command(root, &["merge", "side"]).status.success());
+            } else if scenario == "rebase" {
+                git(root, &["checkout", "-q", "side"]);
+                assert!(!command(root, &["rebase", "main"]).status.success());
+            } else {
+                assert!(
+                    !command(root, &["merge", "side"]).status.success(),
+                    "{scenario}"
+                );
+            }
+            verify(root);
+            if scenario == "UU" {
+                fs::write(root.join(file), "no conflict markers\n").unwrap();
+                verify(root);
+                let adapter = GitAdapter::open(root.to_string_lossy().into_owned(), None).unwrap();
+                let snapshot = adapter
+                    .snapshot_for_scope("old".into(), CompareScope::All)
+                    .unwrap();
+                git(root, &["add", file]);
+                assert!(matches!(
+                    adapter.read_content_pair_for_scope(
+                        "stale".into(),
+                        CompareScope::All,
+                        snapshot.revision,
+                        snapshot
+                            .files
+                            .iter()
+                            .find(|f| f.display_path == file)
+                            .unwrap()
+                            .path_id
+                            .clone()
+                    ),
+                    Err(GitError::StaleRequest)
+                ));
+                let fresh = adapter
+                    .snapshot_for_scope("new".into(), CompareScope::All)
+                    .unwrap();
+                assert!(!fresh
+                    .files
+                    .iter()
+                    .any(|f| matches!(f.status, FileStatus::Conflicted)));
+            }
+        }
+    }
+    fn hash_object(root: &Path, bytes: &[u8]) -> String {
+        let mut child = git_command(Path::new("git"))
+            .arg("-C")
+            .arg(root)
+            .args(["hash-object", "-w", "--stdin"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(bytes).unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap().trim().into()
+    }
+    #[test]
+    fn controlled_index_dd_au_ua_and_all_missing_stage_shapes() {
+        for stages in [
+            vec![1],
+            vec![2],
+            vec![3],
+            vec![1, 2],
+            vec![1, 3],
+            vec![2, 3],
+            vec![1, 2, 3],
+        ] {
+            let dir = init();
+            let root = dir.path();
+            fs::write(root.join("seed"), "seed").unwrap();
+            commit(root, "base");
+            let mut input = String::new();
+            for stage in &stages {
+                let oid = hash_object(root, if *stage == 2 { b"" } else { b"version\n" });
+                input.push_str(&format!("100644 {oid} {stage}\tconflict.txt\n"));
+            }
+            let mut child = git_command(Path::new("git"))
+                .arg("-C")
+                .arg(root)
+                .args(["update-index", "--index-info"])
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(input.as_bytes())
+                .unwrap();
+            assert!(child.wait().unwrap().success());
+            fs::write(root.join("conflict.txt"), "working tree\n").unwrap();
+            verify(root);
+        }
+    }
+    #[test]
+    fn actual_image_merge_and_unsupported_mode_do_not_read_targets() {
+        use image::{DynamicImage, ImageFormat, RgbaImage};
+        use std::io::Cursor;
+        let dir = init();
+        let root = dir.path();
+        let write = |n| {
+            let mut output = Cursor::new(vec![]);
+            DynamicImage::ImageRgba8(RgbaImage::from_pixel(n, 3, image::Rgba([n as u8, 2, 3, 4])))
+                .write_to(&mut output, ImageFormat::Png)
+                .unwrap();
+            fs::write(root.join("image.png"), output.into_inner()).unwrap();
+        };
+        write(2);
+        commit(root, "base");
+        git(root, &["checkout", "-qb", "side"]);
+        write(3);
+        commit(root, "side");
+        git(root, &["checkout", "-q", "main"]);
+        write(4);
+        commit(root, "main");
+        assert!(!command(root, &["merge", "side"]).status.success());
+        verify(root);
+        let adapter = GitAdapter::open(root.to_string_lossy().into_owned(), None).unwrap();
+        let snapshot = adapter
+            .snapshot_for_scope("s".into(), CompareScope::All)
+            .unwrap();
+        let pair = adapter
+            .read_content_pair_for_scope(
+                "r".into(),
+                CompareScope::All,
+                snapshot.revision,
+                snapshot.files[0].path_id.clone(),
+            )
+            .unwrap();
+        assert_eq!(pair.left.details.unwrap().image.unwrap().width, 4);
+        assert_eq!(pair.right.details.unwrap().image.unwrap().width, 3);
+        let target = hash_object(root, b"image.png");
+        git(
+            root,
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("120000,{target},link.png"),
+            ],
+        );
+        let mut budget = media::ImageBudget::default();
+        let side = adapter.read_side("index", "link.png", false, &mut budget);
+        assert!(side.details.unwrap().reason.unwrap().contains("120000"));
+    }
+}
+#[cfg(test)]
+mod task03_safety_tests {
+    use super::*;
+    use std::io::Write;
+    #[test]
+    fn missing_object_failure_keeps_oid_and_never_becomes_missing_stage() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(git_command(Path::new("git"))
+            .arg("-C")
+            .arg(dir.path())
+            .args(["init", "-q"])
+            .output()
+            .unwrap()
+            .status
+            .success());
+        let oid = "1234567890123456789012345678901234567890";
+        let mut child = git_command(Path::new("git"))
+            .arg("-C")
+            .arg(dir.path())
+            .args(["update-index", "--index-info"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(format!("100644 {oid} 2\tbroken.png\n").as_bytes())
+            .unwrap();
+        assert!(child.wait().unwrap().success());
+        let adapter = GitAdapter::open(dir.path().to_string_lossy().into_owned(), None).unwrap();
+        let mut budget = media::ImageBudget::default();
+        let side = adapter.read_side("stage2", "broken.png", false, &mut budget);
+        assert_ne!(side.encoding, "missing");
+        assert!(side.text.is_none());
+        let info = side.details.unwrap();
+        assert_eq!(info.oid.as_deref(), Some(oid));
+        assert!(!info.size_known);
+        assert!(info.reason.is_some());
+    }
+    #[test]
+    fn marker_text_is_not_a_conflict_and_external_image_commands_never_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let git = |args: &[&str]| {
+            let o = git_command(Path::new("git"))
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(o.status.success());
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.name", "Oris"]);
+        git(&["config", "user.email", "a@b.invalid"]);
+        fs::write(root.join("file.txt"), "base\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        fs::write(
+            root.join("file.txt"),
+            "<<<<<<< ordinary text\n=======\n>>>>>>> text\n",
+        )
+        .unwrap();
+        fs::write(root.join("bad.png"), "not an image").unwrap();
+        let marker = root.join("COMMAND_RAN");
+        let script = root.join("driver.cmd");
+        fs::write(
+            &script,
+            format!("@echo touched>\"{}\"\r\n", marker.display()),
+        )
+        .unwrap();
+        git(&["config", "diff.image.textconv", script.to_str().unwrap()]);
+        git(&["config", "diff.image.command", script.to_str().unwrap()]);
+        git(&["config", "filter.image.smudge", script.to_str().unwrap()]);
+        git(&["config", "filter.image.clean", script.to_str().unwrap()]);
+        git(&["config", "core.fsmonitor", script.to_str().unwrap()]);
+        fs::write(
+            root.join(".gitattributes"),
+            "*.png diff=image filter=image\n",
+        )
+        .unwrap();
+        let index = fs::read(root.join(".git/index")).unwrap();
+        let config = fs::read(root.join(".git/config")).unwrap();
+        let adapter = GitAdapter::open(root.to_string_lossy().into_owned(), None).unwrap();
+        let snapshot = adapter
+            .snapshot_for_scope("safe".into(), CompareScope::All)
+            .unwrap();
+        assert!(!snapshot
+            .files
+            .iter()
+            .any(|f| matches!(f.status, FileStatus::Conflicted)));
+        for file in &snapshot.files {
+            adapter
+                .read_content_pair_for_scope(
+                    "read".into(),
+                    CompareScope::All,
+                    snapshot.revision.clone(),
+                    file.path_id.clone(),
+                )
+                .unwrap();
+        }
+        assert!(!marker.exists());
+        assert_eq!(fs::read(root.join(".git/index")).unwrap(), index);
+        assert_eq!(fs::read(root.join(".git/config")).unwrap(), config);
+    }
+}
+#[cfg(test)]
+mod task03_performance {
+    use super::*;
+    use std::{io::Cursor, time::Instant};
+    #[test]
+    #[ignore = "explicit task03 backend mixed-switch performance probe; no WebView"]
+    fn thirty_mixed_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let git = |args: &[&str]| {
+            let out = git_command(Path::new("git"))
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.name", "Oris"]);
+        git(&["config", "user.email", "a@b.invalid"]);
+        let write_image = |value| {
+            let mut output = Cursor::new(vec![]);
+            image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+                1280,
+                720,
+                image::Rgba([value, 40, 60, 128]),
+            ))
+            .write_to(&mut output, image::ImageFormat::Png)
+            .unwrap();
+            fs::write(root.join("image.png"), output.into_inner()).unwrap();
+        };
+        fs::write(root.join("conflict.txt"), "base\n").unwrap();
+        fs::write(root.join("text.txt"), "base\n").unwrap();
+        write_image(1);
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        git(&["checkout", "-qb", "side"]);
+        fs::write(root.join("conflict.txt"), "side\n").unwrap();
+        git(&["commit", "-am", "side", "-q"]);
+        git(&["checkout", "-q", "main"]);
+        fs::write(root.join("conflict.txt"), "main\n").unwrap();
+        git(&["commit", "-am", "main", "-q"]);
+        assert!(!git_command(Path::new("git"))
+            .arg("-C")
+            .arg(root)
+            .args(["merge", "side"])
+            .output()
+            .unwrap()
+            .status
+            .success());
+        fs::write(root.join("text.txt"), "index\n").unwrap();
+        write_image(2);
+        git(&["add", "text.txt", "image.png"]);
+        fs::write(root.join("text.txt"), "working tree\n").unwrap();
+        write_image(3);
+        let adapter = GitAdapter::open(root.to_string_lossy().into_owned(), None).unwrap();
+        let mut samples = vec![];
+        let mut memories = vec![];
+        for index in 0..30 {
+            let start = Instant::now();
+            let scope = [
+                CompareScope::All,
+                CompareScope::Staged,
+                CompareScope::Unstaged,
+            ][(index / 3) % 3];
+            let snapshot = adapter
+                .snapshot_for_scope(format!("s{index}"), scope)
+                .unwrap();
+            let path = ["image.png", "text.txt", "conflict.txt"][index % 3];
+            let file = snapshot
+                .files
+                .iter()
+                .find(|f| f.display_path == path)
+                .unwrap();
+            let pair = adapter
+                .read_content_pair_for_scope(
+                    format!("r{index}"),
+                    scope,
+                    snapshot.revision,
+                    file.path_id.clone(),
+                )
+                .unwrap();
+            if index % 3 == 0 {
+                assert!(pair.left.details.as_ref().unwrap().image.is_some());
+                assert!(pair.right.details.as_ref().unwrap().image.is_some());
+            } else {
+                assert!(pair.left.text.is_some() && pair.right.text.is_some());
+            }
+            samples.push(start.elapsed().as_secs_f64() * 1000.0);
+            drop(pair);
+            let out = git_command(Path::new("tasklist"))
+                .args([
+                    "/FI",
+                    &format!("PID eq {}", std::process::id()),
+                    "/FO",
+                    "CSV",
+                    "/NH",
+                ])
+                .output()
+                .unwrap();
+            let text = String::from_utf8_lossy(&out.stdout);
+            let value = text
+                .trim()
+                .trim_matches('"')
+                .split("\",\"")
+                .nth(4)
+                .unwrap_or("");
+            memories.push(
+                value
+                    .chars()
+                    .filter(char::is_ascii_digit)
+                    .collect::<String>()
+                    .parse::<f64>()
+                    .unwrap_or(0.0)
+                    / 1024.0,
+            );
+        }
+        samples.sort_by(f64::total_cmp);
+        println!("ORIS_TASK03_BACKEND {{\"runs\":30,\"image\":\"1280x720 RGBA\",\"p50Ms\":{:.2},\"p95Ms\":{:.2},\"backendPeakSampleMiB\":{:.2},\"backendLastSampleMiB\":{:.2},\"webviewMeasured\":false}}",samples[14],samples[28],memories.iter().copied().fold(0.0,f64::max),memories[29]);
+    }
+}
+
+#[cfg(test)]
+mod task03_cancel_tests {
+    use super::*;
+    #[test]
+    fn cancellation_stops_before_second_endpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(git_command(Path::new("git"))
+            .arg("-C")
+            .arg(dir.path())
+            .args(["init", "-q"])
+            .output()
+            .unwrap()
+            .status
+            .success());
+        fs::write(dir.path().join("new.txt"), "new").unwrap();
+        let adapter = GitAdapter::open(dir.path().to_string_lossy().into_owned(), None).unwrap();
+        let snapshot = adapter
+            .snapshot_for_scope("s".into(), CompareScope::Unstaged)
+            .unwrap();
+        let checks = std::cell::Cell::new(0);
+        let result = adapter.read_content_pair_cancellable(
+            "r".into(),
+            CompareScope::Unstaged,
+            snapshot.revision,
+            snapshot.files[0].path_id.clone(),
+            None,
+            || {
+                checks.set(checks.get() + 1);
+                checks.get() == 2
+            },
+        );
+        assert!(matches!(result, Err(GitError::StaleRequest)));
+        assert_eq!(checks.get(), 2);
+    }
+}
+
+#[cfg(test)]
+mod json_regression_tests;
