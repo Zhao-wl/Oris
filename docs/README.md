@@ -11,6 +11,17 @@
 5. [验收计划](validation/v1-acceptance.md)：需求覆盖、正确性、双平台验证与性能预算。
 6. [任务清单](tasks/README.md)：六项纵向实施任务、依赖与完成条件。
 
+## V2（二期，规划中）
+
+2026-09-23 起规划：在 V1 可读基础上补充简单 Git 写操作与流畅度优化，尚未实施。
+
+1. [V2 决策登记](decisions/v2-decisions.md)：已确认范围、工程建议与待决事项。
+2. [V2 产品规格](specs/v2-product.md)：新增需求组与明确不支持的范围。
+3. [V2 技术方案](architecture/v2-architecture.md)：现状瓶颈、读写通道、数据层、缓存与资源上限。
+4. [V2 验收计划](validation/v2-acceptance.md)：B01–B18、性能与内存预算。
+5. [V2 UI 提案](design/03-phase2-ui-proposal.md)：增量效果图与待确认的布局选择。
+6. [V2 任务清单](tasks/v2/README.md)：五项纵向任务与已确认顺序。
+
 ## 文档约定
 
 - 产品规格决定“做什么”；技术方案描述“如何做”；任务引用需求，不另行缩减功能。

@@ -1,0 +1,557 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Oris 二期增量效果图（待确认）</title>
+<style>
+:root { font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif; }
+* { box-sizing: border-box; }
+body { margin: 0; background: #141518; color: #d6d7dc; font-size: 13px; }
+body.light-page { background: #e9ebf0; color: #25272d; }
+.scenario-bar { position: sticky; top: 0; z-index: 50; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 10px 14px; background: #0e0f11; border-bottom: 1px solid #333; }
+.light-page .scenario-bar { background: #fff; border-color: #ccc; }
+.scenario-bar strong { margin-right: 6px; }
+.scenario-bar button { font: inherit; font-size: 12px; padding: 5px 10px; border-radius: 4px; border: 1px solid #444; background: #26272b; color: inherit; cursor: pointer; }
+.light-page .scenario-bar button { background: #f5f6f8; border-color: #ccc; }
+.scenario-bar button.on { background: #315ee7; border-color: #315ee7; color: #fff; }
+.scenario-note { margin: 10px 14px 0; padding: 9px 12px; border-left: 3px solid #548af7; background: #1d2230; line-height: 1.6; }
+.light-page .scenario-note { background: #eef3ff; }
+.scenario-note b { color: #8fb4ff; }
+.light-page .scenario-note b { color: #315ee7; }
+.frame { margin: 12px 14px 30px; min-width: 1240px; height: 820px; border: 1px solid #393b40; border-radius: 8px; overflow: hidden; position: relative; }
+
+/* ---- 复用 V1 当前实现的配色与结构 ---- */
+.app { --bg:#1e1f22; --panel:#2b2d30; --chrome:#26272b; --text:#bcbec4; --dim:#8b8d98; --border:#393b40; --hover:#334a74; --blue:#548af7; --toggle-on:#254b7b; --toggle-on-border:#6ea1ff;
+  --mod:#283d53; --mod-strong:#385f86; --add:#294436; --add-strong:#3b674d; --del:#3c3f41; --warn:#e0a23b; --warn-bg:#3d3220; --danger:#e06c6c; --danger-bg:#402626; --ok:#6aab73; --kw:#cf8e6d; --str:#6aab73;
+  display: grid; grid-template-rows: auto auto auto 1fr auto 25px; height: 100%; color: var(--text); background: var(--bg); position: relative; }
+.app.light { --bg:#fff; --panel:#f7f8fa; --chrome:#ebedf2; --text:#25272d; --dim:#737780; --border:#dfe1e5; --hover:#d4e2ff; --blue:#315ee7; --toggle-on:#d8e6ff; --toggle-on-border:#315ee7;
+  --mod:#e2edfb; --mod-strong:#adcefa; --add:#e3f2df; --add-strong:#b5dca8; --del:#e7e7e8; --warn:#9a6700; --warn-bg:#fff4d6; --danger:#c62828; --danger-bg:#fde8e8; --ok:#377624; --kw:#0049b7; --str:#377624; }
+.app button, .app select, .app input, .app textarea { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; }
+.app button { cursor: pointer; }
+.app button:hover:not(:disabled) { background: var(--hover); }
+.app button:disabled { opacity: .42; cursor: not-allowed; }
+.app .primary { background: #315ee7; color: #fff; border-color: #315ee7; }
+.app .danger { background: var(--danger); color: #fff; border-color: var(--danger); }
+.dim { color: var(--dim); }
+.spacer { flex: 1; }
+.row { display: flex; align-items: center; gap: 8px; }
+.new-tag { font-size: 10px; color: #fff; background: #8a5cf6; border-radius: 3px; padding: 0 4px; margin-left: 4px; vertical-align: 1px; }
+
+.titlebar, .openbar, .toolbar, .tabbar, .statusbar { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); }
+.titlebar { min-height: 43px; padding: 6px 12px; background: var(--chrome); position: relative; }
+.logo { width: 26px; height: 26px; display: grid; place-items: center; border-radius: 5px; background: #7165d3; color: #fff; font-weight: 700; }
+.branch-btn { display: inline-flex; gap: 6px; align-items: center; }
+.branch-btn.detached { border-color: var(--warn); color: var(--warn); }
+.sync-group { display: inline-flex; gap: 0; }
+.sync-group button { border-radius: 0; margin-left: -1px; }
+.sync-group button:first-child { border-radius: 4px 0 0 4px; margin-left: 0; }
+.sync-group button:last-child { border-radius: 0 4px 4px 0; }
+.count { font-size: 11px; color: var(--blue); font-weight: 600; }
+.verify-badge { font-size: 11px; padding: 2px 7px; border-radius: 10px; background: var(--warn-bg); color: var(--warn); }
+.projectbar { display: flex; align-items: center; gap: 7px; min-height: 44px; padding: 5px 8px; border-bottom: 1px solid var(--border); background: var(--chrome); }
+.projectbar > input { width: 210px; }
+.ptab { width: 164px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--panel); font-size: 12px; line-height: 1.3; }
+.ptab.active { border-color: var(--toggle-on-border); box-shadow: inset 0 -2px 0 var(--blue); }
+.ptab small { display: block; color: var(--dim); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.openbar { min-height: 40px; padding: 5px 10px; background: var(--panel); }
+.openbar > input { flex: 1; }
+
+.workspace { display: grid; grid-template-columns: 330px 1fr; min-height: 0; }
+.sidebar { display: grid; grid-template-rows: auto auto auto auto 1fr auto auto; min-height: 0; border-right: 1px solid var(--border); background: var(--panel); }
+.panel-title { display: flex; align-items: center; gap: 8px; padding: 8px 10px; }
+.panel-title span { color: var(--dim); font-size: 11px; }
+.scope-row { display: flex; gap: 4px; padding: 0 8px 6px; }
+.scope-row button { flex: 1; }
+.scope-row button.sel { background: var(--toggle-on); border-color: var(--toggle-on-border); }
+.side-actions { display: flex; gap: 4px; padding: 0 8px 6px; }
+.side-actions button { font-size: 12px; padding: 3px 6px; }
+.filter { margin: 0 8px 6px; }
+.files { overflow: auto; min-height: 0; border-top: 1px solid var(--border); }
+.group-label { font-size: 11px; color: var(--dim); padding: 6px 10px 3px; display: flex; gap: 6px; align-items: center; }
+.frow { display: flex; align-items: center; gap: 6px; padding: 4px 8px 4px 10px; font-size: 12px; cursor: default; position: relative; }
+.frow:hover, .frow.sel { background: var(--hover); }
+.frow .path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.frow .stat { font: 10px Consolas, monospace; color: var(--dim); }
+.frow .st { font: 700 11px Consolas, monospace; width: 12px; text-align: center; }
+.st-M { color: #6faff4; } .st-A { color: var(--ok); } .st-U { color: #c5a0ff; } .st-D { color: var(--dim); } .st-C { color: var(--danger); }
+.frow .acts { display: none; gap: 2px; }
+.frow:hover .acts, .frow.sel .acts, .frow.force .acts { display: inline-flex; }
+.frow:hover .stat, .frow.sel .stat, .frow.force .stat { display: none; }
+.acts button { padding: 0 5px; font-size: 11px; line-height: 18px; }
+.frow input[type=checkbox] { margin: 0; }
+.frow.optimistic { opacity: .6; }
+.side-foot { border-top: 1px solid var(--border); padding: 5px 10px; font-size: 11px; color: var(--dim); }
+
+.commit-panel { border-top: 1px solid var(--border); padding: 8px; display: grid; gap: 6px; background: var(--chrome); }
+.commit-panel textarea { width: 100%; height: 64px; resize: none; }
+.commit-panel .hint { font-size: 11px; color: var(--dim); }
+.link { background: none !important; border: 0 !important; color: var(--blue) !important; padding: 0 !important; font-size: 12px; }
+.link:disabled { color: var(--dim) !important; }
+
+.editor { display: grid; grid-template-rows: auto auto auto auto 1fr auto; min-width: 0; min-height: 0; }
+.banner { display: flex; align-items: center; gap: 8px; padding: 7px 12px; font-size: 12px; border-bottom: 1px solid var(--border); }
+.banner.warn { background: var(--warn-bg); color: var(--warn); }
+.banner.danger { background: var(--danger-bg); color: var(--danger); }
+.banner.info { background: var(--toggle-on); }
+.banner button { font-size: 12px; padding: 2px 8px; }
+.tabbar { padding: 0 12px; min-height: 36px; color: var(--dim); }
+.tabbar strong { color: var(--text); }
+.toolbar { padding: 4px 8px; font-size: 12px; min-height: 36px; }
+.toolbar button, .toolbar select { padding: 2px 7px; font-size: 12px; }
+.toolbar .tog.on { background: var(--toggle-on); border-color: var(--toggle-on-border); }
+.endpoints { display: grid; grid-template-columns: 1fr 26px 1fr; font-size: 11px; color: var(--dim); border-bottom: 1px solid var(--border); }
+.endpoints span { padding: 5px 10px; }
+.conflict-toolbar { display: flex; gap: 8px; align-items: center; padding: 6px 12px; font-size: 12px; background: var(--danger-bg); border-bottom: 1px solid var(--border); }
+.diff { overflow: auto; font: 13px/21px "JetBrains Mono", Consolas, "Cascadia Code", monospace; min-height: 0; }
+.drow { display: grid; grid-template-columns: 1fr 26px 1fr; }
+.cell { display: grid; grid-template-columns: 44px 1fr; white-space: pre; min-height: 21px; position: relative; }
+.cell .ln { color: var(--dim); text-align: right; padding-right: 10px; user-select: none; }
+.cell.mod { background: var(--mod); } .cell.add { background: var(--add); } .cell.del { background: var(--del); }
+.cell.filler { background: repeating-linear-gradient(135deg, transparent 0 5px, #8881 5px 6px); }
+.w { background: var(--mod-strong); border-radius: 2px; }
+.cell.add .w { background: var(--add-strong); }
+.kw { color: var(--kw); } .s { color: var(--str); } .cm { color: var(--dim); font-style: italic; }
+.gap { background: var(--bg); border-left: 1px solid var(--border); border-right: 1px solid var(--border); }
+.hunk-acts { position: absolute; right: 8px; top: -1px; display: inline-flex; gap: 3px; z-index: 2; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
+.hunk-acts button { font-size: 12px; line-height: 16px; padding: 1px 6px; background: var(--bg); box-shadow: 0 1px 4px #0005; opacity: .75; }
+.drow:hover .hunk-acts button { opacity: 1; }
+.hunk-acts .why { font-size: 11px; color: var(--dim); background: var(--bg); padding: 1px 6px; border: 1px dashed var(--border); border-radius: 4px; }
+.diff-footer { display: flex; gap: 12px; padding: 4px 12px; font-size: 11px; color: var(--dim); border-top: 1px solid var(--border); }
+
+.bottom { border-top: 1px solid var(--border); background: var(--panel); height: 250px; display: grid; grid-template-rows: auto 1fr; }
+.bottom-tabs { display: flex; gap: 14px; align-items: center; padding: 0 12px; border-bottom: 1px solid var(--border); min-height: 32px; font-size: 12px; }
+.bottom-tabs span { padding: 7px 0; border-bottom: 2px solid transparent; color: var(--dim); }
+.bottom-tabs span.on { border-color: var(--blue); color: var(--text); }
+.stash-body { display: grid; grid-template-columns: 1fr 1fr; min-height: 0; }
+.stash-list { border-right: 1px solid var(--border); overflow: auto; }
+.srow { padding: 6px 12px; font-size: 12px; border-bottom: 1px solid var(--border); display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; }
+.srow.sel { background: var(--hover); }
+.srow small { color: var(--dim); font-size: 11px; }
+.output { font: 12px/18px Consolas, monospace; padding: 8px 12px; overflow: auto; white-space: pre-wrap; color: var(--dim); }
+.output .ok { color: var(--ok); } .output .err { color: var(--danger); }
+
+.statusbar { border-top: 1px solid var(--border); border-bottom: 0; padding: 0 10px; font-size: 11px; color: var(--dim); min-height: 25px; }
+.progress { display: inline-flex; align-items: center; gap: 6px; color: var(--text); }
+.bar { width: 120px; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--blue); }
+.statusbar button { font-size: 11px; padding: 0 6px; line-height: 17px; }
+.status-ok { color: var(--ok); }
+
+.pop { position: absolute; z-index: 20; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 14px 40px #000a; font-size: 12px; }
+.pop .pop-search { margin: 8px; width: calc(100% - 16px); }
+.pop .item { display: flex; align-items: center; gap: 8px; padding: 5px 12px; }
+.pop .item:hover { background: var(--hover); }
+.pop .item .acts { display: none; gap: 3px; margin-left: auto; }
+.pop .item:hover .acts, .pop .item.force .acts { display: inline-flex; }
+.pop .item .acts button { font-size: 11px; padding: 0 5px; line-height: 18px; }
+.pop .sep { height: 1px; background: var(--border); margin: 4px 0; }
+.pop .note { padding: 6px 12px; color: var(--dim); font-size: 11px; line-height: 1.5; }
+.menu .item { cursor: pointer; }
+.menu .item small { color: var(--dim); display: block; }
+
+.overlay { position: absolute; inset: 0; background: #0007; z-index: 30; display: grid; place-items: center; }
+.dialog { width: 460px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 20px 60px #000b; }
+.dialog h3 { margin: 0; padding: 14px 16px 6px; font-size: 14px; }
+.dialog .body { padding: 4px 16px 12px; line-height: 1.6; font-size: 12px; }
+.dialog .body ul { margin: 6px 0; padding-left: 18px; font-family: Consolas, monospace; }
+.dialog .foot { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--border); }
+.dialog .irrev { color: var(--danger); font-weight: 600; }
+.dialog label { display: flex; gap: 6px; align-items: center; margin: 6px 0; }
+.dialog input[type=text], .dialog textarea { width: 100%; }
+.toast { position: absolute; right: 14px; bottom: 36px; z-index: 25; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; display: flex; gap: 10px; align-items: center; box-shadow: 0 8px 24px #0009; font-size: 12px; }
+.tip { position: relative; }
+.tip[data-tip]:hover::after { content: attr(data-tip); position: absolute; left: 50%; top: calc(100% + 6px); transform: translateX(-50%); white-space: nowrap; background: #000d; color: #fff; padding: 3px 8px; border-radius: 4px; font-size: 11px; z-index: 60; }
+</style>
+</head>
+<body>
+<div class="scenario-bar" id="scenarios"></div>
+<div class="scenario-note" id="note"></div>
+<div class="frame"><main class="app dark" id="app"></main></div>
+
+<script>
+const SCENARIOS = [
+  { id: "daily", name: "A 日常暂存与提交", note: "<b>文件行操作</b>：鼠标悬停（或选中）时，统计数字换成 暂存 / 丢弃 按钮；复选框用于批量操作。<b>提交面板</b>在文件区底部，草稿按项目保存。<b>hunk 按钮</b>浮在每个 hunk 首行右侧。<b>顶部</b>新增分支按钮与 获取 / 拉取 / 推送，数字为落后 / 领先数。原来的“只读”标记去掉。可以切换“未暂存 / 已暂存 / 全部”查看 hunk 按钮如何变化；点击 暂存 可以看到乐观更新。" },
+  { id: "branch", name: "B 分支切换", note: "点击顶部分支按钮打开<b>分支弹层</b>：搜索、新建、本地 / 远端分组；悬停一行显示 切换 / 合并到当前 / 重命名 / 删除 / 设置上游。点击 main 的“切换”可以看到工作区改动阻止切换时的<b>“stash 后切换”</b>对话框。" },
+  { id: "discard", name: "C 丢弃确认与撤销", note: "丢弃需要二次确认，列出文件数并单独标明<b>未跟踪文件会被删除</b>。点击“丢弃”后，右下角出现<b>撤销丢弃</b>提示（丢弃记录也可以在状态栏的操作输出中找回）。超过 50 MiB 的文件会标“不可撤销”。" },
+  { id: "pullmenu", name: "D 拉取选项", note: "拉取按钮右侧的下拉菜单提供<b>仅快进（默认）/ 合并远端改动</b>，没有 rebase。仓库配置了 pull.rebase=true 时在菜单里说明 Oris 会以合并方式执行。" },
+  { id: "progress", name: "E 拉取进行中", note: "网络操作期间：状态栏显示<b>进度与取消</b>；同一仓库的其他写入口全部不可用（按钮置灰，悬停说明原因），阅读与切换文件照常。底部面板展示本次操作的 Git 输出，操作结束后可从状态栏再次展开。" },
+  { id: "merge", name: "F 合并冲突", note: "<b>合并进行中横幅</b>常驻 diff 上方。冲突文件单独分组，打开后使用一期任务 03 的只读冲突查看。在外部解决后点“标记已解决”；文件中仍有冲突标记时先警告。全部解决后“完成合并”可用，默认填入合并信息。可以依次点击两个文件的“标记已解决”体验。" },
+  { id: "verify", name: "G 快照校验中", note: "重启后<b>立即显示上次快照</b>，标题栏和刷新区都标“校验中”。校验完成前所有写入口不可用（悬停可见原因），阅读可用。约 4 秒后模拟校验完成：有差异的条目被替换，阅读位置保持。" },
+  { id: "rebase", name: "H 外部 rebase 进行中", note: "仓库处于 Oris 不支持的进行中状态（外部发起的 rebase / cherry-pick / revert / bisect）时，横幅说明情况并<b>禁用全部写操作</b>，提示回命令行处理；阅读不受影响。" },
+  { id: "stash", name: "I Stash", note: "侧栏的“储藏”按钮打开<b>保存对话框</b>（说明、包含未跟踪、仅选中文件）。底部 Git 面板新增 <b>Stash 页签</b>（与一期任务 04 的日志并列）：左侧列表，右侧内容文件，点击文件用同一个 diff 阅读器查看；操作前核对 stash 身份。" },
+  { id: "detached", name: "J detached HEAD", note: "从提交历史检出某个提交后进入 detached HEAD：分支按钮变为警示色，横幅提供<b>“从这里新建分支”</b>；推送不可用。另外演示<b>已推送保护</b>：最近提交已包含在上游中时，amend 与撤销提交不可用并说明原因。" },
+];
+
+const UNSTAGED = [
+  { p: "src/core/projectStore.ts", s: "M", a: 5, d: 2 },
+  { p: "src/api.ts", s: "M", a: 3, d: 1 },
+  { p: "src/git/sync.ts", s: "U", a: 48, d: 0 },
+  { p: "docs/notes/临时 草稿.md", s: "U", a: 5, d: 0 },
+  { p: "src/legacy/oldPanel.tsx", s: "D", a: 0, d: 37 },
+];
+const STAGED = [
+  { p: "src/types.ts", s: "M", a: 6, d: 0 },
+  { p: "src/ui/CommitPanel.tsx", s: "A", a: 80, d: 0 },
+  { p: "README.md", s: "M", a: 2, d: 2 },
+];
+
+// [[...]] 表示词级高亮
+const ROWS = [
+  { l: [1, 'import { invoke } from "@tauri-apps/api/core";'], r: [1, 'import { invoke } from "@tauri-apps/api/core";'] },
+  { l: [2, 'import type { Project } from "./types";'], r: [2, 'import type { Project, [[StoredWorkspace]] } from "./types";'], t: "mod", hunk: 1 },
+  { l: [3, ''], r: [3, ''] },
+  { l: [4, 'export function loadProjects(raw: string): Project[] {'], r: [4, 'export function loadProjects(raw: string): Project[] {'] },
+  { l: [5, '  const parsed = JSON.parse(raw);'], r: [5, '  const parsed = JSON.parse(raw)[[ as StoredWorkspace]];'], t: "mod", hunk: 2 },
+  { l: null, r: [6, '  if (parsed.version !== 2) return migrate(parsed);'], t: "add" },
+  { l: [6, '  return parsed.projects ?? [];'], r: [7, '  return parsed.projects ?? [];'] },
+  { l: [7, '}'], r: [8, '}'] },
+  { l: [8, ''], r: [9, ''] },
+  { l: [9, 'export function saveProjects(list: Project[]) {'], r: [10, 'export function saveProjects(list: Project[]) {'] },
+  { l: null, r: [11, '  console.log("[debug] save", list.length);'], t: "add", hunk: 3, debug: true },
+  { l: null, r: [12, '  console.time("save");'], t: "add" },
+  { l: [10, '  localStorage.setItem("projects", JSON.stringify(list));'], r: [13, '  localStorage.setItem("projects", JSON.stringify(list));'] },
+  { l: [11, '}'], r: [14, '}'] },
+  { l: [12, ''], r: [15, ''] },
+  { l: [13, 'export const LEGACY_KEY = "oris.projects.v1";'], r: null, t: "del", hunk: 4 },
+  { l: [14, 'export const MAX_PROJECTS = 20;'], r: [16, 'export const MAX_PROJECTS = 20;'] },
+  { l: [15, ''], r: [17, ''] },
+  { l: [16, 'export function projectKey(p: Project) {'], r: [18, 'export function projectKey(p: Project) {'] },
+  { l: [17, '  return p.repo.repoId;'], r: [19, '  return p.repo.repoId;'] },
+  { l: [18, '}'], r: [20, '}'] },
+];
+const CONFLICT_ROWS = [
+  { l: [1, 'export function loadProjects(raw: string): Project[] {'], r: [1, 'export function loadProjects(raw: string): Project[] {'] },
+  { l: [2, '  const parsed = JSON.parse(raw)[[ as StoredWorkspace]];'], r: [2, '  const parsed = [[safeParse]](raw);'], t: "mod", hunk: 1 },
+  { l: [3, '  if (parsed.version !== 2) return migrate(parsed);'], r: null, t: "del" },
+  { l: [4, '  return parsed.projects ?? [];'], r: [3, '  return parsed[[?.]]projects ?? [];'], t: "mod" },
+  { l: [5, '}'], r: [4, '}'] },
+];
+
+const state = {
+  scenario: "daily", scope: "unstaged", selected: "src/core/projectStore.ts", theme: "dark",
+  checked: new Set(["src/api.ts", "docs/notes/临时 草稿.md"]),
+  optimistic: null, dialog: null, toast: null, popover: null, bottom: null,
+  resolved: new Set(), verifying: false, verified: false, progress: 0, stagedExtra: [], discarded: false, hunkDone: null,
+};
+let timers = [];
+
+function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+function code(text) {
+  let h = esc(text);
+  h = h.replace(/("[^"]*")/g, '<span class="s">$1</span>');
+  h = h.replace(/\b(import|export|from|function|const|return|if|type)\b/g, '<span class="kw">$1</span>');
+  h = h.replace(/\[\[(.+?)\]\]/g, '<span class="w">$1</span>');
+  return h;
+}
+
+function writeBlockReason() {
+  const s = state.scenario;
+  if (s === "progress") return "正在拉取，完成前不可执行其他写操作";
+  if (s === "verify" && !state.verified) return "快照校验完成前不可用";
+  if (s === "rebase") return "仓库处于 rebase 进行中，Oris 不支持，请在命令行处理";
+  return null;
+}
+function dis(extraReason) {
+  const r = extraReason || writeBlockReason();
+  return r ? `disabled data-tip="${r}"` : "";
+}
+function tipWrap(inner, reason) { return reason ? `<span class="tip" data-tip="${reason}">${inner}</span>` : inner; }
+
+function render() {
+  const app = document.getElementById("app");
+  app.className = "app " + state.theme;
+  document.body.className = state.theme === "light" ? "light-page" : "";
+  const sc = SCENARIOS.find(x => x.id === state.scenario);
+  document.getElementById("note").innerHTML = sc.note;
+  document.getElementById("scenarios").innerHTML = "<strong>场景</strong>" + SCENARIOS.map(x => `<button class="${x.id === state.scenario ? "on" : ""}" data-sc="${x.id}">${x.name}</button>`).join("") + `<span class="spacer" style="flex:1"></span><button data-theme>切换浅 / 深色</button>`;
+  app.innerHTML = titlebar() + projectbar() + openbar() + `<section class="workspace">${sidebar()}${editor()}</section>` + bottom() + statusbar() + popover() + dialog() + toast();
+}
+
+function titlebar() {
+  const s = state.scenario;
+  const detached = s === "detached";
+  const reason = writeBlockReason();
+  const branchLabel = detached ? "⑂ detached @ 3f2a1c9" : "⑂ feature/diff-viewer";
+  const pushReason = detached ? "detached HEAD 不能推送，请先新建分支" : reason;
+  return `<header class="titlebar"><span class="logo">O</span><strong>Oris</strong>
+    <button class="branch-btn ${detached ? "detached" : ""}" data-act="branch">${branchLabel} ▾<span class="new-tag">新</span></button>
+    ${s === "verify" && !state.verified ? '<span class="verify-badge">上次快照 · 校验中…</span>' : ""}
+    <span class="spacer"></span>
+    <span class="sync-group">
+      <button class="tip" data-tip="获取远端状态（不修改工作区）" ${reason ? `disabled` : ""}>⟳ 获取</button>
+      <button ${dis()} data-act="pull">↓ 拉取 <span class="count">2</span></button>
+      <button ${dis()} data-act="pullmenu" style="padding:4px 5px">▾</button>
+      <button ${dis(pushReason)}>↑ 推送 <span class="count">${detached ? "" : "1"}</span></button>
+    </span><span class="new-tag">新</span>
+    <button data-theme title="切换主题">${state.theme === "dark" ? "☀" : "☾"}</button></header>`;
+}
+function projectbar() {
+  return `<section class="projectbar"><button class="primary">添加项目</button><input placeholder="搜索项目或完整路径">
+    <div class="ptab active">Oris<small>D:\\Projects\\Research\\Oris</small></div>
+    <div class="ptab">Atlas Web<small>D:\\work\\atlas-web</small></div>
+    <div class="ptab">Motion Kit<small>E:\\repos\\motion-kit</small></div></section>`;
+}
+function openbar() {
+  const s = state.scenario;
+  const status = s === "verify" && !state.verified ? "上次快照 · 昨天 18:42 · 校验中…" : "已同步 · 10:31:51";
+  return `<section class="openbar"><input value="D:\\Projects\\Research\\Oris"><button>载入/添加</button><button>Git 设置 ▸</button><button>↻ 本地刷新</button><span class="dim">${status}</span></section>`;
+}
+
+function fileRow(f, scope) {
+  const reason = writeBlockReason();
+  const sel = f.p === state.selected ? "sel" : "";
+  const opt = state.optimistic === f.p ? "optimistic" : "";
+  const force = (state.scenario === "discard" && f.s === "U" && f.p.includes("草稿")) ? "force" : "";
+  let acts = "";
+  if (f.s === "C") {
+    acts = state.resolved.has(f.p) ? `<span class="dim" style="font-size:11px">已解决</span>` : `<button data-resolve="${f.p}">标记已解决</button>`;
+  } else if (scope === "staged") {
+    acts = `<button ${dis()} data-unstage="${f.p}">− 取消暂存</button>`;
+  } else {
+    acts = `<button ${dis()} data-stage="${f.p}">＋ 暂存</button><button ${dis()} data-act="discard">↶ 丢弃</button>`;
+  }
+  const stat = f.s === "C" ? "冲突" : `+${f.a} −${f.d}`;
+  return `<div class="frow ${sel} ${opt} ${force}" data-file="${f.p}"><input type="checkbox" ${state.checked.has(f.p) ? "checked" : ""}><span class="st st-${f.s}">${f.s}</span><span class="path">${f.p}</span><span class="stat">${opt ? "确认中…" : stat}</span><span class="acts">${acts}</span></div>`;
+}
+
+function sidebar() {
+  const s = state.scenario;
+  const reason = writeBlockReason();
+  let groups = "";
+  let unstaged = UNSTAGED.filter(f => !state.stagedExtra.includes(f.p));
+  if (state.discarded) unstaged = unstaged.filter(f => !state.checked.has(f.p));
+  const staged = STAGED.concat(UNSTAGED.filter(f => state.stagedExtra.includes(f.p)));
+  if (s === "merge") {
+    const conflicts = [{ p: "src/core/projectStore.ts", s: "C" }, { p: "src/api.ts", s: "C" }];
+    const pending = conflicts.filter(f => !state.resolved.has(f.p)).length;
+    groups = `<div class="group-label">冲突 · ${pending} 个未解决</div>` + conflicts.map(f => fileRow(f, "conflict")).join("")
+      + `<div class="group-label">已合并（已暂存）</div>` + [{ p: "src/git/remote.ts", s: "M", a: 22, d: 3 }, { p: "src/login/form.tsx", s: "A", a: 64, d: 0 }].map(f => fileRow(f, "staged")).join("");
+  } else if (state.scope === "staged") {
+    groups = staged.map(f => fileRow(f, "staged")).join("");
+  } else if (state.scope === "all") {
+    groups = staged.concat(unstaged).map(f => fileRow(f, "all")).join("");
+  } else {
+    groups = unstaged.map(f => fileRow(f, "unstaged")).join("");
+  }
+  const scopes = [["unstaged", "未暂存"], ["staged", "已暂存"], ["all", "全部"]].map(([id, label]) => `<button class="${state.scope === id ? "sel" : ""}" data-scope="${id}">${label}</button>`).join("");
+  const nChecked = state.checked.size;
+  return `<aside class="sidebar"><div class="panel-title"><strong>变更</strong><span>${state.scope === "staged" ? "HEAD → Index" : state.scope === "all" ? "HEAD → Working Tree" : "Index → Working Tree"}</span></div>
+    <div class="scope-row">${scopes}<select style="flex:0 0 44px"><option>☷</option></select></div>
+    <div class="side-actions"><button ${dis()}>＋ 暂存选中 (${nChecked})</button><button ${dis()} data-act="discard">↶ 丢弃选中</button><button ${dis()} data-act="stashsave">储藏…</button><span class="new-tag" style="align-self:center">新</span></div>
+    <input class="filter" placeholder="按完整相对路径筛选">
+    <div class="files">${groups}</div>
+    <div class="side-foot">${s === "merge" ? "合并进行中 · 2 个冲突 · 2 个已合并" : `${unstaged.length} 未暂存 · ${staged.length} 已暂存`}</div>
+    ${commitPanel(staged.length)}</aside>`;
+}
+
+function commitPanel(stagedCount) {
+  const s = state.scenario;
+  const reason = writeBlockReason();
+  if (s === "merge") {
+    const allResolved = state.resolved.size === 2;
+    return `<div class="commit-panel"><div class="row"><strong>完成合并</strong><span class="new-tag">新</span><span class="spacer"></span><span class="hint">${allResolved ? "冲突已全部解决" : "还有冲突未解决"}</span></div>
+      <textarea>Merge branch 'feature/login' into feature/diff-viewer</textarea>
+      <div class="row"><button class="primary" ${allResolved ? "" : 'disabled data-tip="请先标记所有冲突文件为已解决"'}>完成合并</button><button data-act="abortmerge">中止合并</button></div></div>`;
+  }
+  const pushed = s === "detached";
+  const pushedReason = pushed ? "最近提交已包含在上游 origin/feature/diff-viewer 中；二期不支持强制推送，请在命令行处理" : null;
+  return `<div class="commit-panel"><div class="row"><strong>提交</strong><span class="new-tag">新</span><span class="spacer"></span><span class="hint">已暂存 ${stagedCount} 个文件 · 草稿已保存</span></div>
+    <textarea placeholder="提交信息（首行为摘要）">feat: add commit panel draft persistence
+
+按项目保存未完成的提交信息。</textarea>
+    <div class="row"><button class="primary" ${dis()}>提交</button>
+      ${tipWrap(`<label class="row" style="gap:4px;font-size:12px;white-space:nowrap;${pushed ? "opacity:.45" : ""}"><input type="checkbox" ${pushed || reason ? "disabled" : ""}> 修正上一次提交（amend）</label>`, pushedReason || reason)}
+      </div>
+    <div class="row hint">${pushed ? "⚠ 最近提交 a41c9e2 已推送，amend 与撤销不可用" : "最近提交 a41c9e2 尚未推送 · hooks：pre-commit"}<span class="spacer"></span>${tipWrap(`<button class="link" ${pushed || reason ? "disabled" : ""}>撤销最近提交</button>`, pushedReason || reason)}</div></div>`;
+}
+
+function banner() {
+  const s = state.scenario;
+  if (s === "merge") {
+    const pending = 2 - state.resolved.size;
+    return `<div class="banner warn">⚠ <strong>合并进行中</strong>：将 feature/login 合并到 feature/diff-viewer · ${pending ? `${pending} 个冲突未解决` : "冲突已全部解决，可以完成合并"}<span class="spacer"></span><button>查看冲突</button><button data-act="abortmerge">中止合并</button><button class="primary" ${pending ? 'disabled' : ''}>完成合并</button></div>`;
+  }
+  if (s === "rebase") return `<div class="banner danger">⛔ 仓库正处于 <strong>rebase 进行中</strong>（由外部工具发起，3 / 7）。Oris 不支持 rebase，写操作已全部禁用；请在命令行执行 git rebase --continue 或 --abort。阅读不受影响。</div>`;
+  if (s === "detached") return `<div class="banner warn">⚠ 当前处于 <strong>detached HEAD</strong>（检出了提交 3f2a1c9 “fix: diff scroll sync”）。在这里提交不会属于任何分支。<span class="spacer"></span><button class="primary">从这里新建分支…</button><button>切回 feature/diff-viewer</button></div>`;
+  if (s === "verify" && !state.verified) return `<div class="banner info">ⓘ 正在显示上次关闭时的快照（昨天 18:42），后台校验中。校验完成前写操作不可用。</div>`;
+  if (s === "verify" && state.verified) return `<div class="banner info">✓ 校验完成：2 个文件有变化，已更新；当前阅读位置保持不变。</div>`;
+  return "";
+}
+
+function hunkActs(row) {
+  if (!row.hunk || state.scenario === "merge") return "";
+  const reason = writeBlockReason();
+  if (state.hunkDone === row.hunk) return `<span class="hunk-acts"><span class="why">✓ 已暂存</span></span>`;
+  if (state.scope === "all") return row.hunk === 1 ? `<span class="hunk-acts"><span class="why tip" data-tip="请切换到“未暂存”或“已暂存”">“全部”范围无块操作</span></span>` : "";
+  if (state.scope === "staged") return `<span class="hunk-acts"><button class="tip" data-tip="取消暂存此块" ${dis()}>−</button></span>`;
+  return `<span class="hunk-acts"><button class="tip" data-tip="暂存此块" ${dis()} data-hunk="${row.hunk}">＋</button><button class="tip" data-tip="丢弃此块" ${dis()} data-act="discard">↶</button></span>`;
+}
+
+function cell(side, row, isRight) {
+  if (!side) return `<div class="cell filler"><span class="ln"></span><span></span></div>`;
+  const t = row.t || "";
+  const cls = t === "mod" ? "mod" : (t === "add" && isRight) ? "add" : (t === "del" && !isRight) ? "del" : "";
+  return `<div class="cell ${cls}"><span class="ln">${side[0]}</span><span>${code(side[1])}</span>${isRight ? hunkActs(row) : ""}</div>`;
+}
+
+function editor() {
+  const s = state.scenario;
+  const conflict = s === "merge";
+  const rows = conflict ? CONFLICT_ROWS : ROWS;
+  const endpoints = conflict ? ["stage 2 · 当前分支（ours）", "stage 3 · feature/login（theirs）"]
+    : state.scope === "staged" ? ["HEAD", "Index（暂存区）"] : state.scope === "all" ? ["HEAD", "Working Tree（工作区）"] : ["Index（暂存区）", "Working Tree（工作区）"];
+  return `<section class="editor">${banner() || "<div></div>"}
+    <div class="tabbar"><strong>src/core/projectStore.ts</strong><span class="spacer"></span><span>${conflict ? "冲突 · 只读查看" : "4 处差异 · Worker 3.1 ms"}</span></div>
+    <div class="toolbar"><button>↑</button><button>↓</button><span>1 / ${conflict ? 2 : 4}</span><select><option>并排视图</option></select><select><option>按词高亮</option></select><button class="tog">折叠上下文</button><button class="tog">自动换行</button><button class="tog">对齐变化</button><span class="spacer"></span><span class="dim">字号 13</span></div>
+    ${conflict ? `<div class="conflict-toolbar"><strong>未合并 index · 只读版本查看</strong><select><option>stage 2（ours）</option></select>→<select><option>stage 3（theirs）</option></select><span class="spacer"></span><span class="dim">在外部工具中解决后，回到文件列表点“标记已解决”</span></div>`
+      : `<div class="endpoints"><span>${endpoints[0]}</span><span></span><span>${endpoints[1]}</span></div>`}
+    <div class="diff">${rows.map(r => `<div class="drow">${cell(r.l, r, false)}<div class="gap"></div>${cell(r.r, r, true)}</div>`).join("")}</div>
+    <div class="diff-footer"><span>蓝：修改　绿：新增　灰：删除</span><span class="spacer"></span><span>utf-8 · LF</span></div></section>`;
+}
+
+function bottom() {
+  const s = state.scenario;
+  if (s === "progress") {
+    return `<section class="bottom"><div class="bottom-tabs"><span>日志</span><span>Stash</span><span class="on">操作输出<span class="new-tag">新</span></span><span class="spacer"></span><span class="dim">git pull --no-rebase --ff-only --progress</span></div>
+      <div class="output">$ git pull --no-rebase --ff-only --progress origin feature/diff-viewer
+remote: Enumerating objects: 214, done.
+remote: Counting objects: 100% (214/214), done.
+remote: Compressing objects: 100% (96/96), done.
+Receiving objects:  ${state.progress}% (${Math.round(214 * state.progress / 100)}/214), 1.21 MiB | 3.40 MiB/s</div></section>`;
+  }
+  if (s === "stash") {
+    return `<section class="bottom"><div class="bottom-tabs"><span>日志（一期任务 04）</span><span class="on">Stash (2)<span class="new-tag">新</span></span><span>操作输出</span></div>
+      <div class="stash-body"><div class="stash-list">
+        <div class="srow sel"><span>stash@{0} · WIP 登录表单校验</span><span class="row" style="gap:3px"><button ${dis()}>应用</button><button ${dis()}>弹出</button><button ${dis()}>删除</button></span><small>feature/login · 10 分钟前 · 3 个文件 + 1 个未跟踪</small></div>
+        <div class="srow"><span>stash@{1} · On main: 临时调试日志</span><span></span><small>main · 2 天前 · 1 个文件</small></div>
+      </div><div class="stash-list">
+        <div class="group-label">已跟踪改动</div>
+        <div class="frow sel"><span class="st st-M">M</span><span class="path">src/login/form.tsx</span><span class="stat">+18 −4</span></div>
+        <div class="frow"><span class="st st-M">M</span><span class="path">src/login/validate.ts</span><span class="stat">+9 −0</span></div>
+        <div class="frow"><span class="st st-A">A</span><span class="path">src/login/rules.ts</span><span class="stat">+30 −0</span></div>
+        <div class="group-label">未跟踪文件</div>
+        <div class="frow"><span class="st st-U">U</span><span class="path">src/login/todo.md</span><span class="stat">+6</span></div>
+      </div></div></section>`;
+  }
+  return "<div></div>";
+}
+
+function statusbar() {
+  const s = state.scenario;
+  let right = `<span>本机 Git · 刷新不联网 · 缓存 12/16 MiB</span>`;
+  if (s === "progress") right = `<span class="progress">↓ 正在拉取 origin/feature/diff-viewer <span class="bar"><i style="width:${state.progress}%"></i></span>${state.progress}% <button>取消</button></span>`;
+  else if (s === "daily" && state.hunkDone) right = `<span class="status-ok">✓ 已暂存 1 个块</span><button>查看输出</button>` + right;
+  else if (s === "stash") right = `<span class="status-ok">✓ 已储藏 2 个文件（stash@{0}）</span><button>查看输出</button>` + right;
+  return `<footer class="statusbar"><span>D:\\Projects\\Research\\Oris · ${s === "detached" ? "detached @ 3f2a1c9" : "feature/diff-viewer ↑1 ↓2"} · ${state.scope === "staged" ? "已暂存" : state.scope === "all" ? "全部" : "未暂存"}</span><span class="spacer"></span>${right}</footer>`;
+}
+
+function popover() {
+  if (state.popover === "branch") {
+    return `<div class="pop" style="left:78px;top:40px;width:420px"><input class="pop-search" placeholder="搜索分支">
+      <div class="item" style="color:var(--blue)">＋ 新建分支…<span class="dim" style="margin-left:auto">从当前 HEAD</span></div><div class="sep"></div>
+      <div class="group-label">当前</div>
+      <div class="item">✓ <strong>feature/diff-viewer</strong><span class="dim">↑1 ↓2 · origin/feature/diff-viewer</span><span class="acts"><button>重命名</button><button>设置上游</button></span></div>
+      <div class="group-label">本地分支</div>
+      <div class="item force">main<span class="dim">origin/main</span><span class="acts"><button data-act="checkoutblocked">切换</button><button>合并到当前</button><button>重命名</button><button>删除</button></span></div>
+      <div class="item">release/0.2<span class="dim">未设置上游</span><span class="acts"><button>切换</button><button>合并到当前</button><button>设置上游</button><button>删除</button></span></div>
+      <div class="group-label">远端分支</div>
+      <div class="item">origin/feature/login<span class="acts"><button>检出为本地分支</button><button>合并到当前</button></span></div>
+      <div class="item">origin/main<span class="acts"><button>检出为本地分支</button><button>合并到当前</button></span></div>
+      <div class="sep"></div><div class="note">删除 / 重命名远端分支、remote 管理不在二期范围内。检出指定提交从 Git 日志的提交右键菜单进入。</div></div>`;
+  }
+  if (state.popover === "pullmenu") {
+    return `<div class="pop menu" style="right:88px;top:40px;width:330px">
+      <div class="item">✓ <span><strong>仅快进</strong>（默认）<small>分叉时失败，不会产生合并提交</small></span></div>
+      <div class="item">　<span><strong>合并远端改动</strong><small>必要时创建合并提交；冲突时进入只读冲突查看</small></span></div>
+      <div class="sep"></div>
+      <div class="note">ⓘ 本仓库配置了 pull.rebase=true。Oris 不支持 rebase，拉取将以合并方式执行（--no-rebase）。</div></div>`;
+  }
+  return "";
+}
+
+function dialog() {
+  const d = state.dialog;
+  if (!d) return "";
+  let h = "";
+  if (d === "discard") h = `<div class="dialog"><h3>丢弃 2 个文件的改动？</h3><div class="body">
+      <ul><li>src/api.ts（恢复为暂存区版本）</li><li>docs/notes/临时 草稿.md（<strong>未跟踪，将被删除</strong>）</li></ul>
+      丢弃前 Oris 会备份内容，可以在最近 20 次丢弃操作内撤销。</div>
+      <div class="foot"><button data-close>取消</button><button class="danger" data-act="dodiscard">丢弃</button></div></div>`;
+  if (d === "checkoutblocked") h = `<div class="dialog"><h3>无法直接切换到 main</h3><div class="body">
+      以下本地改动会被切换覆盖，Git 拒绝了切换：<ul><li>src/api.ts</li></ul>
+      可以先把当前改动储藏（包含未跟踪文件），再切换。切换完成后不会自动恢复，可以在 Stash 页签中恢复。</div>
+      <div class="foot"><button data-close>取消</button><button class="primary" data-close>stash 后切换</button></div></div>`;
+  if (d === "marker") h = `<div class="dialog"><h3>文件中仍有冲突标记</h3><div class="body">
+      src/core/projectStore.ts 中还有 <strong>2 处</strong> &lt;&lt;&lt;&lt;&lt;&lt;&lt; / &gt;&gt;&gt;&gt;&gt;&gt;&gt; 标记，可能尚未解决完。<br>确定要标记为已解决吗？</div>
+      <div class="foot"><button data-close>返回</button><button class="primary" data-act="forceresolve">仍然标记为已解决</button></div></div>`;
+  if (d === "abortmerge") h = `<div class="dialog"><h3>中止合并？</h3><div class="body">
+      仓库会回到合并开始之前的状态，<span class="irrev">已在冲突文件中做的修改会丢失</span>（git merge --abort）。</div>
+      <div class="foot"><button data-close>取消</button><button class="danger" data-close>中止合并</button></div></div>`;
+  if (d === "stashsave") h = `<div class="dialog"><h3>储藏本地改动</h3><div class="body">
+      <input type="text" placeholder="说明（可选）" value="WIP 登录表单校验">
+      <label><input type="radio" name="r" checked> 全部改动（5 个文件）</label>
+      <label><input type="radio" name="r"> 仅选中的 2 个文件</label>
+      <label><input type="checkbox" checked> 包含未跟踪文件</label></div>
+      <div class="foot"><button data-close>取消</button><button class="primary" data-close>储藏</button></div></div>`;
+  return `<div class="overlay">${h}</div>`;
+}
+function toast() {
+  if (state.toast === "discarded") return `<div class="toast">✓ 已丢弃 2 个文件的改动<button class="primary" data-act="undodiscard">撤销丢弃</button><button data-act="closetoast">✕</button></div>`;
+  return "";
+}
+
+function setScenario(id) {
+  timers.forEach(clearTimeout); timers = [];
+  Object.assign(state, { scenario: id, scope: "unstaged", dialog: null, toast: null, popover: null, bottom: null, resolved: new Set(), verified: false, progress: 0, stagedExtra: [], discarded: false, optimistic: null, hunkDone: null });
+  if (id === "branch") state.popover = "branch";
+  if (id === "discard") state.dialog = "discard";
+  if (id === "pullmenu") state.popover = "pullmenu";
+  if (id === "merge") state.selected = "src/core/projectStore.ts";
+  if (id === "stash") state.dialog = null;
+  if (id === "progress") {
+    state.progress = 18;
+    const tick = () => { state.progress = Math.min(96, state.progress + 7); render(); if (state.progress < 96) timers.push(setTimeout(tick, 700)); };
+    timers.push(setTimeout(tick, 700));
+  }
+  if (id === "verify") timers.push(setTimeout(() => { state.verified = true; render(); }, 4000));
+  render();
+}
+
+document.addEventListener("click", e => {
+  const t = e.target.closest("button, [data-file]");
+  if (!t) { if (state.popover && !e.target.closest(".pop")) { state.popover = null; render(); } return; }
+  if (t.disabled) return;
+  if (t.dataset.sc) return setScenario(t.dataset.sc);
+  if (t.hasAttribute("data-theme")) { state.theme = state.theme === "dark" ? "light" : "dark"; return render(); }
+  if (t.hasAttribute("data-close")) { state.dialog = null; return render(); }
+  if (t.dataset.scope) { state.scope = t.dataset.scope; return render(); }
+  if (t.dataset.stage) {
+    const p = t.dataset.stage; state.optimistic = p; render();
+    timers.push(setTimeout(() => { state.optimistic = null; state.stagedExtra.push(p); render(); }, 600));
+    return;
+  }
+  if (t.dataset.hunk) { state.hunkDone = Number(t.dataset.hunk); return render(); }
+  if (t.dataset.resolve) {
+    const p = t.dataset.resolve;
+    if (p === "src/core/projectStore.ts" && !state.resolved.has(p)) { state.dialog = "marker"; return render(); }
+    state.resolved.add(p); return render();
+  }
+  const act = t.dataset.act;
+  if (act === "branch") { state.popover = state.popover === "branch" ? null : "branch"; return render(); }
+  if (act === "pullmenu") { state.popover = state.popover === "pullmenu" ? null : "pullmenu"; return render(); }
+  if (act === "discard") { state.dialog = "discard"; return render(); }
+  if (act === "dodiscard") { state.dialog = null; state.discarded = true; state.toast = "discarded"; return render(); }
+  if (act === "undodiscard") { state.discarded = false; state.toast = null; return render(); }
+  if (act === "closetoast") { state.toast = null; return render(); }
+  if (act === "checkoutblocked") { state.popover = null; state.dialog = "checkoutblocked"; return render(); }
+  if (act === "forceresolve") { state.resolved.add("src/core/projectStore.ts"); state.dialog = null; return render(); }
+  if (act === "abortmerge") { state.dialog = "abortmerge"; return render(); }
+  if (act === "stashsave") { state.dialog = "stashsave"; return render(); }
+  if (t.dataset.file && !e.target.closest("button, input")) { state.selected = t.dataset.file; return render(); }
+});
+
+const params = new URLSearchParams(location.search);
+if (params.get("theme") === "light") state.theme = "light";
+setScenario(params.get("s") || "daily");
+</script>
+</body>
