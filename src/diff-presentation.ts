@@ -23,10 +23,10 @@ export function resolveDiffPresentation(
   const leftMissing = left.encoding === "missing";
   const rightMissing = right.encoding === "missing";
 
-  if ((status === "added" || status === "untracked") && leftMissing && !rightMissing) {
+  if ((status === "added" || status === "untracked" || status === "conflicted") && leftMissing && !rightMissing) {
     return { kind: "single", side: "b", tone: "inserted", empty: right.byteLength === 0 };
   }
-  if (status === "deleted" && rightMissing && !leftMissing) {
+  if ((status === "deleted" || status === "conflicted") && rightMissing && !leftMissing) {
     return { kind: "single", side: "a", tone: "deleted", empty: left.byteLength === 0 };
   }
   return { kind: "compare" };

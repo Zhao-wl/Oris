@@ -33,8 +33,14 @@ describe("纯新增/删除呈现判定", () => {
     expect(resolveDiffPresentation("modified", side("utf-8", 0, "index"), side("utf-8", 18))).toEqual({ kind: "compare" });
   });
 
-  it.each<FileChange["status"]>(["renamed", "conflicted", "typeChanged", "modified"])("%s 不因空内容或缺失编码误入纯文件模式", (status) => {
+  it.each<FileChange["status"]>(["renamed", "typeChanged", "modified"])("%s 不因空内容或缺失编码误入纯文件模式", (status) => {
     expect(resolveDiffPresentation(status, side("missing"), side("utf-8", 0))).toEqual({ kind: "compare" });
     expect(resolveDiffPresentation(status, side("utf-8", 0), side("missing"))).toEqual({ kind: "compare" });
   });
+});
+
+// Task 03: genuine missing stages now carry explicit presence and use the existing single-side reader.
+it("conflict missing stage is single-sided, existing empty stage remains a comparison", () => {
+  expect(resolveDiffPresentation("conflicted", side("missing"), side("utf-8", 0))).toEqual({kind:"single",side:"b",tone:"inserted",empty:true});
+  expect(resolveDiffPresentation("conflicted", side("utf-8", 0), side("utf-8", 0))).toEqual({kind:"compare"});
 });

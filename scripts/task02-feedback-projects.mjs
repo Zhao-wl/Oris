@@ -118,17 +118,12 @@ const initialOrder=await order();
 await evaluate(`document.querySelectorAll('.project-tab')[1].querySelectorAll('.project-action')[1].click()`);
 await switchProject(fixture.root);await new Promise(r=>setTimeout(r,1200));
 const afterAccess=await order();
-// Use native WebView drag initiation from the dedicated handle; selection stays unchanged.
+// 页签排序使用 Pointer Events（Tauri 在 Windows 上接管了原生 HTML5 拖放），这里直接模拟鼠标按下-移动-松开。
 const activeBefore=await evaluate(`document.querySelector('.project-tab.active').title`);
-let dragData;
-const dragListener=({data})=>{const message=JSON.parse(data);if(message.method==='Input.dragIntercepted')dragData=message.params.data};
-socket.addEventListener('message',dragListener);await call('Input.setInterceptDrags',{enabled:true});
-const points=await evaluate(`(()=>{const tabs=document.querySelectorAll('.project-tab');const from=tabs[1].querySelector('.project-drag').getBoundingClientRect();const to=tabs[0].getBoundingClientRect();return {from:{x:from.x+from.width/2,y:from.y+from.height/2},to:{x:to.x+to.width/2,y:to.y+to.height/2}}})()`);
+const points=await evaluate(`(()=>{const tabs=document.querySelectorAll('.project-tab');const from=tabs[1].getBoundingClientRect();const to=tabs[0].getBoundingClientRect();return {from:{x:from.x+from.width/2,y:from.y+from.height/2},to:{x:to.x+to.width/2,y:to.y+to.height/2}}})()`);
 await call('Input.dispatchMouseEvent',{type:'mouseMoved',...points.from});await call('Input.dispatchMouseEvent',{type:'mousePressed',button:'left',buttons:1,clickCount:1,...points.from});
 for(let i=1;i<=12;i++)await call('Input.dispatchMouseEvent',{type:'mouseMoved',button:'left',buttons:1,x:points.from.x+(points.to.x-points.from.x)*i/12,y:points.from.y+(points.to.y-points.from.y)*i/12});
-await new Promise(r=>setTimeout(r,250));if(!dragData)throw Error('Native drag did not start');
-for(const type of ['dragEnter','dragOver','drop'])await call('Input.dispatchDragEvent',{type,...points.to,data:dragData});
-await call('Input.dispatchMouseEvent',{type:'mouseReleased',button:'left',buttons:0,clickCount:1,...points.to});await call('Input.setInterceptDrags',{enabled:false});socket.removeEventListener('message',dragListener);
+await call('Input.dispatchMouseEvent',{type:'mouseReleased',button:'left',buttons:0,clickCount:1,...points.to});await new Promise(r=>setTimeout(r,250));
 const afterDrag=await order();const activeAfter=await evaluate(`document.querySelector('.project-tab.active').title`);
 await evaluate(`${buttonByText('↻ 本地刷新')}.click()`);await new Promise(r=>setTimeout(r,1500));
 const afterRefresh=await order();

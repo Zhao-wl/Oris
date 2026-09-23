@@ -163,6 +163,7 @@ flowchart LR
 | 快照持久化 | 每项目 2 MiB，最多 20 个项目 |
 | 操作输出保留 | 每仓库最近 1 次，256 KiB |
 | discard 备份记录 | 每仓库 20 次操作；单文件 50 MiB |
+| 配色方案数据 | 只加载当前使用的方案；跟随系统时额外预加载另一套 |
 
 ## 8. 安全边界
 
@@ -171,3 +172,61 @@ flowchart LR
 - 前端只能提交“操作描述”，Rust 负责参数构造、路径校验与 ref 解析，不提供通用的命令执行入口。
 - 不保存凭据；操作输出展示前先脱敏（URL 中的用户名和密码）。
 - 删除文件只允许发生在已校验的 worktree 路径内，不跟随符号链接。
+
+## 9. 设置与配色（任务 V2-06）
+
+### 9.1 设置框架
+
+- **SettingsStore**：一个带版本号的设置对象，按分类组织（`appearance`、`git`，以后按需增加）。设置写入应用数据目录，与项目列表使用同一种持久化机制；读取失败或版本不兼容时回退为默认值，并给出一次提示。
+- **分类注册**：每个分类声明自己的设置项（键、类型、默认值、校验函数、界面控件）。设置窗口按注册表渲染，新增分类不需要改框架代码。
+- **即时生效**：设置项变化后广播给订阅方（复用 V2-01 的小型 store），由订阅方增量更新，不整体重建界面。
+- **迁移**：首次启动新版本时，把现有的逐项目 Git 路径迁移为全局设置（取最近一次成功打开的项目所用的非空路径）；字号、浅深色原来没有持久化，使用默认值。旧的逐项目字段保留读取兼容，但不再写入。
+- **Git 路径校验**：修改后在后端执行一次 `git --version` 校验，并复用 §3 的“可执行文件 + mtime”缓存；校验失败时保留原来的有效值。新路径对之后的 Git 调用生效；已打开项目的常驻 `cat-file` 进程在下一次空闲回收后，使用新路径重新启动。
+
+### 9.2 配色流水线
+
+```mermaid
+flowchart LR
+ VS[VS Code 主题文件（固定提交）] --> Conv[转换脚本 scripts/import-vscode-themes]
+ Reg[移植的颜色注册表默认值与派生规则] --> Conv
+ Map[Oris 变量映射表 + scope→tag 映射] --> Conv
+ Conv --> Gen[src/themes/generated：每套方案一份数据]
+ Conv --> Report[对比度与缺失项报告]
+ Gen --> Runtime[运行时：CSS 变量 + CodeMirror 主题]
+```
+
+- 转换脚本解析 JSONC 与 `include` 继承链，用移植过来的注册表默认值（按 dark / light / hcDark / hcLight 区分，只移植映射表里用到的键）补齐缺失项，支持透明度、变亮、变暗这几种派生运算，然后输出 Oris 格式的方案数据。生成结果与来源提交、许可信息一起提交入库；运行时不解析 VS Code 格式的文件。
+- 同一来源提交重复运行，输出必须逐字节一致。
+- 运行时按需加载当前使用的方案数据；“跟随系统”模式下预加载另一套方案，保证系统切换时能立即生效。
+
+### 9.3 Oris 颜色变量映射（初版，由 V2-06 补全）
+
+| Oris 用途 | VS Code 颜色键（按顺序回退） |
+| --- | --- |
+| 主背景 / 编辑器背景 | `editor.background` |
+| 侧栏、面板 | `sideBar.background` → `panel.background` → `editor.background` |
+| 标题栏、项目栏 | `titleBar.activeBackground` → `editorGroupHeader.tabsBackground` → `sideBar.background` |
+| 正文 / 次要文字 / 行号 | `editor.foreground` → `foreground`；`descriptionForeground`；`editorLineNumber.foreground` |
+| 分隔线 | `panel.border` → `sideBar.border` → `editorGroup.border` → `contrastBorder` |
+| 列表悬停 / 选中 | `list.hoverBackground`；`list.activeSelectionBackground` + `list.activeSelectionForeground` |
+| 焦点与强调色 | `focusBorder` → `button.background` |
+| 按钮 | `button.background` / `button.foreground`；`button.secondaryBackground` / `button.secondaryForeground` |
+| 输入框、下拉框 | `input.*` → `dropdown.*` |
+| 开关开启态 | `inputOption.activeBackground` / `inputOption.activeBorder` |
+| 状态栏 | `statusBar.background` / `statusBar.foreground` |
+| 文本选中 / 同词匹配 / 搜索命中 | `editor.selectionBackground`；`editor.selectionHighlightBackground`；`editor.findMatchBackground` / `editor.findMatchHighlightBackground` |
+| 警告 / 错误 | `editorWarning.foreground`；`errorForeground` |
+| 文件状态字母 | `gitDecoration.*ResourceForeground` |
+| 滚动条 | `scrollbarSlider.*` |
+| 弹层阴影 | `widget.shadow` |
+| diff（P-V2-05 方案 A） | 修改：`editorGutter.modifiedBackground` 按统一透明度生成行底色与词级底色；新增：`diffEditor.insertedLineBackground` / `insertedTextBackground`，缺失时由 `editorGutter.addedBackground` 生成；删除：`editor.foreground` 与 `editor.background` 混合出中性灰；外缘色标列用 `editorGutter.*` |
+
+- 高对比类型额外使用 `contrastBorder` / `contrastActiveBorder`，界面切换到“描边代替底色”的样式分支。
+- 语法高亮：TextMate scope → Lezer tag 映射表按最长前缀匹配取色，生成 CodeMirror `HighlightStyle`；替换现在的 `@codemirror/theme-one-dark`。
+
+### 9.4 运行时应用
+
+- 界面颜色全部改为 CSS 变量。V2-06 首先把 `styles.css` 中写死的颜色（调研时 117 处十六进制值）收拢为变量；此后新增界面不得写死颜色（加一条静态检查）。
+- diff 阅读器的配色与字号放进 CodeMirror `Compartment`，切换时 `reconfigure`，不重建 `EditorView`。当前 `DiffViewer` 在 `dark`、`fontSize` 变化时整体重建，需要改掉。
+- 首屏无闪烁：`index.html` 中用一小段同步脚本读取已保存的方案标识与主题模式，在 React 挂载前写入根元素的类名和关键变量；跟随系统时读取 `prefers-color-scheme`，并监听变化（必要时辅以 Tauri 窗口主题事件）。
+- 图片阅读器的棋盘格背景、对话框、横幅统一使用变量。

@@ -10,7 +10,7 @@ const bridge = vi.hoisted(() => ({
   focused: false, focus: null as null | ((event: { payload: boolean }) => void),
   changed: null as null | ((event: { payload: string }) => void),
 }));
-vi.mock("./api", () => ({ openRepository: bridge.open, refreshRepository: bridge.refresh, readContentPair: bridge.read, closeRepository: bridge.close }));
+vi.mock("./api", () => ({ openRepository: bridge.open, refreshRepository: bridge.refresh, readContentPair: bridge.read, closeRepository: bridge.close, cancelContentRead: vi.fn(async () => {}) }));
 vi.mock("./diff", () => ({ calculateDiff: bridge.diff }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({
@@ -25,6 +25,7 @@ vi.mock("./FileTree", () => ({
   compareFiles: (a: { displayPath: string }, b: { displayPath: string }) => a.displayPath.localeCompare(b.displayPath),
   default: ({ files, onSelect }: { files: RepositorySnapshot["files"]; onSelect: (file: RepositorySnapshot["files"][number]) => void }) => <>{files.map(file => <button key={file.pathId} onClick={() => onSelect(file)}>{file.displayPath}</button>)}</>,
 }));
+vi.mock("./ImageViewer", () => ({ default: () => <div data-testid="image-viewer"/> }));
 import App from "./App";
 
 const repo = (id: string) => ({ repoId: id, displayName: id, worktreePath: `C:/${id}`, gitDir: `C:/${id}/.git`, commonDir: `C:/${id}/.git`, branch: "main" });
@@ -217,4 +218,133 @@ describe("controlled focus state integration (no native windows)", () => {
     await mount(); await focus(true); initial.resolve(false); await flush(); await tick(500);
     expect(bridge.refresh).toHaveBeenCalledTimes(1);
   });
+});
+describe("task03 conflict navigation and partial content", () => {
+ it("selects true versions, avoids cache and rejects superseded version requests", async()=>{
+  const conflict = snapshot("a");conflict.files[0].status="conflicted";
+  bridge.open.mockResolvedValue(conflict);
+  const first=pair("a");first.left.endpoint="stage2";first.right.endpoint="stage3";
+  bridge.read.mockResolvedValue(first);
+  await mount();
+  expect(bridge.read.mock.calls[0][6]).toEqual(["stage2","stage3"]);
+  const pending=deferred<ContentPair>();bridge.read.mockReturnValueOnce(pending.promise);
+  const change=async(selector:string,value:string)=>{await act(async()=>{const field=host.querySelector(selector) as HTMLSelectElement;field.value=value;field.dispatchEvent(new Event("change",{bubbles:true}));});await flush();};
+  await change('[aria-label="冲突左版本"]',"stage1");
+  const latest=pair("a","latest");latest.left.endpoint="stage1";latest.right.endpoint="workingTree";latest.left.details={state:"ready",reason:null,oid:"real-stage1-oid",mode:"100644",image:null};bridge.read.mockResolvedValueOnce(latest);
+  await change('[aria-label="冲突右版本"]',"workingTree");
+  expect(bridge.read.mock.calls.at(-1)?.[6]).toEqual(["stage1","workingTree"]);
+  expect(host.textContent).toContain("real-stage1-oid");
+  const outdated=pair("a","outdated");outdated.left.details={state:"ready",reason:null,oid:"stale-oid",mode:"100644",image:null};
+  await act(async()=>pending.resolve(outdated));await flush();
+  expect(host.textContent).not.toContain("stale-oid");expect(host.textContent).toContain("real-stage1-oid");
+ });
+ it("preserves usable text when the other endpoint fails and reports no false zero comparison",async()=>{
+  const conflict=snapshot("a");conflict.files[0].status="conflicted";bridge.open.mockResolvedValue(conflict);
+  const partial=pair("a");partial.left.text=null;partial.left.details={state:"unavailable",reason:"解码失败",oid:"failed-oid",mode:"100644",image:null};partial.degradation="解码失败";bridge.read.mockResolvedValue(partial);
+  await mount();expect(host.textContent).toContain("跨侧差异计数与导航不可计算");expect(host.querySelector('[data-testid="readable"]')).not.toBeNull();expect(bridge.diff).not.toHaveBeenCalled();expect(host.textContent).not.toContain("0 处差异");
+ });
+});
+
+it("task03 discards conflict content invalidated while reading and allows cancellation followed by another read", async()=>{
+  const conflict=snapshot("a");conflict.files[0].status="conflicted";bridge.open.mockResolvedValue(conflict);
+  const pending=deferred<ContentPair>();bridge.read.mockReturnValueOnce(pending.promise);
+  await mount();await act(async()=>bridge.changed?.({payload:"a"}));
+  const result=pair("a");result.left.endpoint="stage2";result.right.endpoint="stage3";
+  await act(async()=>pending.resolve(result));await flush();
+  expect(host.querySelector('[data-testid="readable"]')).toBeNull();expect(host.textContent).toContain("旧内容已丢弃");
+  const cancelled=deferred<ContentPair>();bridge.read.mockReturnValueOnce(cancelled.promise);
+  await click('.files button');
+  const button=[...host.querySelectorAll('button')].find(node=>node.textContent==="取消读取")!;
+  await act(async()=>button.click());await flush();await act(async()=>cancelled.resolve(result));await flush();
+  expect(host.querySelector('[data-testid="readable"]')).toBeNull();
+  bridge.read.mockResolvedValueOnce(result);await click('.files button');expect(host.querySelector('[data-testid="readable"]')).not.toBeNull();
+});
+it("task03 same-image reselect and watcher invalidation keep the image visible until a refresh proves it changed",async()=>{
+  const snap=snapshot("a");snap.files[0].displayPath="image.png";bridge.open.mockResolvedValue(snap);
+  const result=pair("a");result.displayPath="image.png";result.left.text=null;result.right.text=null;
+  const details={state:"ready" as const,reason:null,oid:null,mode:null,image:{mime:"image/png",base64:"AA==",width:2,height:3,displayWidth:2,displayHeight:3,orientation:1}};
+  result.left.details=details;result.right.details=details;bridge.read.mockResolvedValue(result);
+  await mount();expect(host.querySelector('[data-testid="image-viewer"]')).not.toBeNull();
+  await click('.files button');expect(host.querySelector('[data-testid="image-viewer"]')).not.toBeNull();expect(bridge.read).toHaveBeenCalledTimes(2);
+  await act(async()=>bridge.changed?.({payload:"a"}));await flush();expect(host.querySelector('[data-testid="image-viewer"]')).not.toBeNull();
+  await focus(true);await tick(3500);const refreshes=bridge.refresh.mock.calls.length;
+  await act(async()=>bridge.changed?.({payload:"a"}));await tick(400);
+  expect(bridge.refresh).toHaveBeenCalledTimes(refreshes+1);expect(bridge.read).toHaveBeenCalledTimes(2);expect(host.querySelector('[data-testid="image-viewer"]')).not.toBeNull();
+  // A continuous event stream (e.g. an editor rewriting caches) cannot postpone the refresh indefinitely.
+  for(let i=0;i<10;i++){await act(async()=>bridge.changed?.({payload:"a"}));await tick(200);}
+  expect(bridge.refresh).toHaveBeenCalledTimes(refreshes+2);expect(host.querySelector('[data-testid="image-viewer"]')).not.toBeNull();
+});
+it("JSON snapshot failure preserves the backend reason instead of generic operation failed", async () => {
+  const jsonSnapshot=snapshot("a");jsonSnapshot.files[0]={...jsonSnapshot.files[0],displayPath:"artifacts/task-03/build/debug/.fingerprint/block-buffer-6d3323bfb37c0008/lib-block_buffer.json",status:"untracked"};
+  bridge.open.mockResolvedValue(jsonSnapshot);
+  bridge.read.mockRejectedValue({kind:"staleRequest"});
+  await mount();
+  expect(host.querySelector(".state.error p")?.textContent).toContain("刷新");
+  expect(host.textContent).not.toContain("操作失败");
+});
+it("manual refresh retries unread JSON even when repository revision is unchanged", async()=>{
+  const snap=snapshot("a");snap.files[0].status="untracked";snap.files[0].displayPath="new.json";
+  bridge.open.mockResolvedValue(snap);bridge.refresh.mockResolvedValue(snap);
+  bridge.read.mockRejectedValueOnce({kind:"staleRequest"});
+  await mount();
+  const json=pair("a");json.left={...json.left,encoding:"missing",text:"",byteLength:0};json.right.text='{"valid":true}';bridge.read.mockResolvedValueOnce(json);
+  await act(async()=>[...host.querySelectorAll('button')].find(node=>node.textContent?.includes("本地刷新"))!.click());await flush();
+  expect(bridge.read).toHaveBeenCalledTimes(2);
+  expect(host.querySelector('[data-testid="readable"]')).not.toBeNull();
+});
+it("manual refresh keeps repeated JSON read failures visible",async()=>{
+  const snap=snapshot("a");snap.files[0].displayPath="new.json";
+  bridge.open.mockResolvedValue(snap);bridge.read.mockRejectedValue({kind:"io",message:"读取权限被拒绝"});
+  await mount();bridge.refresh.mockResolvedValue({...snap,revision:"r2"});
+  await act(async()=>[...host.querySelectorAll('button')].find(node=>node.textContent?.includes("本地刷新"))!.click());await flush();
+  expect(bridge.read).toHaveBeenCalledTimes(2);expect(host.querySelector('.state.error p')?.textContent).toContain("读取权限被拒绝");
+});
+
+it("unchanged automatic repository checks do not dismiss a content read failure", async()=>{
+  bridge.read.mockRejectedValue({kind:"io",message:"JSON读取权限被拒绝"});
+  await mount();await focus(true);await tick(500);
+  expect(bridge.refresh).toHaveBeenCalled();expect(bridge.read).toHaveBeenCalledTimes(1);
+  expect(host.querySelector('.state.error p')?.textContent).toContain("JSON读取权限被拒绝");
+});
+
+it("manual refresh queues once behind an automatic scan and completes while writes continue", async () => {
+  await mount(); await focus(true); await tick(200);
+  const slow = deferred<RepositorySnapshot>();
+  bridge.refresh.mockReturnValueOnce(slow.promise);
+  await tick(1600);
+  await act(async () => bridge.changed?.({ payload: "a" })); await tick(350);
+  const refreshButton = [...host.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent?.includes("本地刷新"))!;
+  expect(refreshButton.disabled).toBe(false);
+  await act(async () => refreshButton.click()); await flush();
+  expect(refreshButton.disabled).toBe(true);
+  const before = bridge.refresh.mock.calls.length;
+  for (let i = 0; i < 10; i++) { await act(async () => bridge.changed?.({ payload: "a" })); await tick(100); }
+  expect(bridge.refresh).toHaveBeenCalledTimes(before);
+  await act(async () => slow.resolve(snapshot("a", "r2"))); await flush(); await tick(1);
+  expect(bridge.refresh).toHaveBeenCalledTimes(before + 1);
+  expect(refreshButton.disabled).toBe(false);
+  expect(host.querySelector('[data-testid="readable"]')).not.toBeNull();
+  await focus(false); const blurred = bridge.refresh.mock.calls.length;
+  for (let i = 0; i < 10; i++) { await act(async () => bridge.changed?.({ payload: "a" })); await tick(250); }
+  expect(bridge.refresh).toHaveBeenCalledTimes(blurred);
+});
+it("path-specific unrelated writes preserve displayed conflict content", async () => {
+  bridge.open.mockResolvedValue({ ...snapshot("a"), files: [{ ...snapshot("a").files[0], status: "conflicted" }] });
+  bridge.read.mockResolvedValue({ ...pair("a"), left: { ...pair("a").left, endpoint: "stage2" }, right: { ...pair("a").right, endpoint: "stage3" } });
+  await mount();
+  expect(host.querySelector('[data-testid="readable"]')).not.toBeNull();
+  await act(async () => (bridge.changed as unknown as (event: { payload: unknown }) => void)?.({ payload: { repoId: "a", paths: ["generated/other.json"], global: false } }));
+  expect(host.querySelector('[data-testid="readable"]')).not.toBeNull();
+  await act(async () => (bridge.changed as unknown as (event: { payload: unknown }) => void)?.({ payload: { repoId: "a", paths: ["file.txt"], global: false } }));
+  expect(host.querySelector('[data-testid="readable"]')).toBeNull();
+});
+
+it("unrelated continuous events do not reject an in-flight conflict read", async () => {
+  bridge.open.mockResolvedValue({ ...snapshot("a"), files: [{ ...snapshot("a").files[0], status: "conflicted" }] });
+  const pending = deferred<ContentPair>(); bridge.read.mockReturnValueOnce(pending.promise);
+  await mount();
+  for (let i = 0; i < 10; i++) await act(async () => (bridge.changed as unknown as (event: { payload: unknown }) => void)?.({ payload: { repoId: "a", paths: ["generated/other.json"], global: false } }));
+  await act(async () => pending.resolve({ ...pair("a"), left: { ...pair("a").left, endpoint: "stage2" }, right: { ...pair("a").right, endpoint: "stage3" } })); await flush();
+  expect(host.querySelector('[data-testid="readable"]')).not.toBeNull();
+  expect(host.textContent).not.toContain("旧内容已丢弃"); expect(bridge.read).toHaveBeenCalledTimes(1);
 });
