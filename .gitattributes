@@ -1,0 +1,15 @@
+# 统一以 LF 存入仓库并检出，不依赖各机器的 core.autocrlf
+* text=auto eol=lf
+
+# Windows 脚本检出为 CRLF（cmd 批处理在 LF 下可能解析出错）
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# 二进制资源
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.ico binary
+*.icns binary
