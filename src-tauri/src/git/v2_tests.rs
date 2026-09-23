@@ -559,3 +559,21 @@ fn b02_binary_frame_carries_text_and_image_bytes_verbatim() {
     assert_eq!(&frame[8 + header_len + start..8 + header_len + start + len], png.as_slice());
     assert_eq!(header["pair"]["right"]["details"]["image"]["base64"], "");
 }
+
+/// 常驻 cat-file 不附带 conhost.exe（Windows）：避免每个常驻读取器额外约 11 MiB 的控制台宿主进程。
+#[cfg(windows)]
+#[test]
+fn resident_cat_file_has_no_console_host() {
+    let dir = init();
+    write(dir.path(), "f.txt", b"x\n");
+    git(dir.path(), &["add", "-A"]);
+    git(dir.path(), &["commit", "-qm", "c"]);
+    let oid = String::from_utf8(git(dir.path(), &["rev-parse", "HEAD:f.txt"])).unwrap().trim().to_owned();
+    let reader = object_reader::shared_reader(Path::new("git"), dir.path(), Duration::from_secs(30));
+    reader.with(|r| r.read_blob(&oid)).unwrap();
+    let pid = reader.with(|r| r.child_pid_for_test()).unwrap();
+    let query = format!("@(Get-CimInstance Win32_Process -Filter \"ParentProcessId={pid} AND Name='conhost.exe'\").Count");
+    let output = Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &query]).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "0");
+    reader.close();
+}
