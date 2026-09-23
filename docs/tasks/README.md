@@ -10,7 +10,7 @@
 | --- | --- | --- | --- |
 | [01 真实仓库文本 Diff 与双平台选型验证](01-repository-diff.md) | 打开仓库 → 选文件 → 阅读真实 diff；确定组件可行性 | 无 | Blocked：Windows 独立修复与对齐开关通过基础覆盖；macOS 真机待验证 |
 | [02 多项目与完整本地变更浏览](02-project-workspace.md) | 多项目切换 → 三种比较范围 → 外部变化更新 → 恢复阅读状态 | 01 Windows 基础通过；macOS 门禁保留 | Blocked：Windows 实现与基础覆盖通过；macOS GUI/WKWebView/watcher 真机待验证 |
-| [03 图片差异与冲突只读查看](03-image-conflict-diff.md) | 静态 PNG/JPEG/WebP 图片比较 → stages/WT 冲突版本阅读；仅两闭环 | 02 通过，原平台及 GUI 门禁保留 | Blocked／待平台验收：代码已交付（`2211753`），源码及非 GUI 基础覆盖通过；Windows WebView2 界面证据由界面验证批次补齐（V2-D27），macOS 待验证 |
+| [03 图片差异与冲突只读查看](03-image-conflict-diff.md) | 静态 PNG/JPEG/WebP 图片比较 → stages/WT 冲突版本阅读；仅两闭环 | 02 通过，原平台及 GUI 门禁保留 | Blocked／待平台验收：代码已交付（`2211753`），源码及非 GUI 基础覆盖通过；Windows WebView2 界面批次在 V1 基线上 16/17 项通过，混合切换受 F1 影响失败（[证据](../validation/task-03-windows-gui.md)），macOS 待验证 |
 | [04 提交、分支、版本比较与文件历史](04-history-branches.md) | 分支/提交 → 文件 diff → 两版本/文件历史；显式 fetch | 02、03 通过 | Pending |
 | [05 完整阅读体验与特殊文件](05-diff-experience.md) | 完善文本交互/编码 → 其他特殊内容 → 键盘与主题；复用 03 图片 | 02、03 通过；默认 04 后 | Pending（选区/搜索/viewport 阅读切片已提前实施） |
 | [06 双平台性能与可安装发布包](06-performance-release.md) | 全范围真实验收 → 性能预算 → 双平台安装/签名；一二期合并发布（V2-D19） | 03、04、05 与二期 V2-01–V2-06 通过 | Pending |
