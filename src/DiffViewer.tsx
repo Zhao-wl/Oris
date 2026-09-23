@@ -15,7 +15,8 @@ import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { javascript } from "@codemirror/lang-javascript";
 import { Change, getChunks, unifiedMergeView } from "@codemirror/merge";
 import { oneDark } from "@codemirror/theme-one-dark";
-import { diffMarkerGeometry, mapDiffPosition, scrollThumbGeometry, type DiffBoundaryPair, type DiffSide } from "./diff-scroll";
+import { diffMarkerGeometry, mapDiffPosition, railViewportStartLine, type DiffBoundaryPair, type DiffSide } from "./diff-scroll";
+import type { DiffPresentation } from "./diff-presentation";
 import { collectQueryMatches, createReadingQuery, type ReadingSearchOptions, type TextMatch } from "./search-model";
 import type { DiffDocument } from "./types";
 
@@ -50,6 +51,13 @@ interface SplitController {
   view: SplitView;
   navigate(index: number): void;
   settleViewport(onComplete: () => void): void;
+  destroy(): void;
+}
+
+interface SingleController {
+  view: EditorView;
+  chunks: Change[];
+  navigate(index: number): void;
   destroy(): void;
 }
 
@@ -754,11 +762,8 @@ function createRail(side: DiffSide, controls: string) {
   viewport.className = "diff-overview-viewport";
   viewport.setAttribute("aria-hidden", "true");
   markers.append(viewport);
-  const thumb = document.createElement("div");
-  thumb.className = "diff-overview-thumb";
-  thumb.setAttribute("aria-hidden", "true");
-  rail.append(markers, thumb);
-  return { rail, markers, thumb };
+  rail.append(markers);
+  return { rail, markers, viewport };
 }
 
 function installSplitResize(
@@ -844,6 +849,49 @@ interface ConnectorGeometry {
   bPaintBottom: number;
 }
 
+function renderRailMarkers(
+  rail: HTMLElement,
+  view: EditorView,
+  chunks: readonly Change[],
+  side: DiffSide,
+  navigate: (index: number) => void,
+  toneOverride?: Exclude<AlignmentTone, "neutral">
+) {
+  const markers = rail.querySelector<HTMLElement>(".diff-overview-markers")!;
+  const viewport = markers.querySelector<HTMLElement>(".diff-overview-viewport")!;
+  markers.replaceChildren(viewport);
+  const doc = view.state.doc;
+  const deviceMinimum = Math.max(1, 1 / Math.max(1, window.devicePixelRatio));
+  const occupied = new Map<string, { node: HTMLButtonElement; bottom: number }>();
+  chunks.forEach((chunk, index) => {
+    const from = side === "a" ? chunk.fromA : chunk.fromB;
+    const to = side === "a" ? chunk.toA : chunk.toB;
+    const tone = toneOverride ?? alignmentTone(chunk);
+    const marker = diffMarkerGeometry(rail.clientHeight, lineBoundary(doc, from), lineBoundary(doc, to), doc.lines, deviceMinimum);
+    const bucket = `${tone}:${Math.round(marker.top)}`;
+    const existing = occupied.get(bucket);
+    if (existing) {
+      const bottom = Math.max(existing.bottom, marker.top + marker.height);
+      existing.bottom = bottom;
+      existing.node.style.height = `${Math.max(deviceMinimum, bottom - Number.parseFloat(existing.node.style.top))}px`;
+      return;
+    }
+    const node = document.createElement("button");
+    node.type = "button";
+    node.className = `diff-overview-marker ${tone}`;
+    node.style.top = `${marker.top}px`;
+    node.style.height = `${marker.height}px`;
+    node.dataset.hunkIndex = String(index);
+    node.setAttribute("aria-label", `跳到第 ${index + 1} 个差异块`);
+    node.addEventListener("click", (event) => {
+      event.stopPropagation();
+      navigate(index);
+    });
+    markers.append(node);
+    occupied.set(bucket, { node, bottom: marker.top + marker.height });
+  });
+}
+
 function installSplitVisuals(split: SplitView, navigate: (index: number) => void) {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.classList.add("diff-connectors");
@@ -858,39 +906,7 @@ function installSplitVisuals(split: SplitView, navigate: (index: number) => void
 
   const markerNodes = (side: DiffSide) => {
     const rail = split.rails[side];
-    const markers = rail.querySelector<HTMLElement>(".diff-overview-markers")!;
-    const viewport = markers.querySelector<HTMLElement>(".diff-overview-viewport")!;
-    markers.replaceChildren(viewport);
-    const doc = (side === "a" ? split.a : split.b).state.doc;
-    const deviceMinimum = Math.max(1, 1 / Math.max(1, window.devicePixelRatio));
-    const occupied = new Map<string, { node: HTMLButtonElement; bottom: number }>();
-    split.chunks.forEach((chunk, index) => {
-      const from = side === "a" ? chunk.fromA : chunk.fromB;
-      const to = side === "a" ? chunk.toA : chunk.toB;
-      const tone = alignmentTone(chunk);
-      const marker = diffMarkerGeometry(rail.clientHeight, lineBoundary(doc, from), lineBoundary(doc, to), doc.lines, deviceMinimum);
-      const bucket = `${tone}:${Math.round(marker.top)}`;
-      const existing = occupied.get(bucket);
-      if (existing) {
-        const bottom = Math.max(existing.bottom, marker.top + marker.height);
-        existing.bottom = bottom;
-        existing.node.style.height = `${Math.max(deviceMinimum, bottom - Number.parseFloat(existing.node.style.top))}px`;
-        return;
-      }
-      const node = document.createElement("button");
-      node.type = "button";
-      node.className = `diff-overview-marker ${tone}`;
-      node.style.top = `${marker.top}px`;
-      node.style.height = `${marker.height}px`;
-      node.dataset.hunkIndex = String(index);
-      node.setAttribute("aria-label", `跳到第 ${index + 1} 个差异块`);
-      node.addEventListener("click", (event) => {
-        event.stopPropagation();
-        navigate(index);
-      });
-      markers.append(node);
-      occupied.set(bucket, { node, bottom: marker.top + marker.height });
-    });
+    renderRailMarkers(rail, side === "a" ? split.a : split.b, split.chunks, side, navigate);
   };
 
   const draw = () => {
@@ -1040,6 +1056,119 @@ function installSplitVisuals(split: SplitView, navigate: (index: number) => void
   };
 }
 
+function clampViewScroll(view: EditorView, value: number) {
+  return Math.min(Math.max(0, view.scrollDOM.scrollHeight - view.scrollDOM.clientHeight), Math.max(0, value));
+}
+
+function updateRailViewport(rail: HTMLElement, view: EditorView) {
+  const band = rail.querySelector<HTMLElement>(".diff-overview-viewport")!;
+  const doc = view.state.doc;
+  if (doc.length === 0) {
+    band.style.top = "0px";
+    band.style.height = `${rail.clientHeight}px`;
+    band.dataset.lineFrom = "0";
+    band.dataset.lineTo = "0";
+    band.dataset.lineTotal = "0";
+  } else {
+    const viewportRect = view.scrollDOM.getBoundingClientRect();
+    const topHeight = Math.max(0, Math.min(view.contentHeight, (viewportRect.top - view.documentTop) / view.scaleY));
+    const bottomHeight = Math.max(topHeight, Math.min(view.contentHeight, (viewportRect.bottom - view.documentTop) / view.scaleY));
+    const topBlock = view.lineBlockAtHeight(topHeight);
+    const bottomBlock = view.lineBlockAtHeight(bottomHeight);
+    const firstLine = Math.max(0, doc.lineAt(Math.min(doc.length, topBlock.from)).number - 1);
+    const lastLine = Math.max(firstLine + 1, doc.lineAt(Math.min(doc.length, bottomBlock.to)).number);
+    const top = rail.clientHeight * firstLine / doc.lines;
+    const bottom = rail.clientHeight * Math.min(doc.lines, lastLine) / doc.lines;
+    band.style.top = `${top}px`;
+    band.style.height = `${Math.max(2, bottom - top)}px`;
+    band.dataset.lineFrom = String(firstLine);
+    band.dataset.lineTo = String(Math.min(doc.lines, lastLine));
+    band.dataset.lineTotal = String(doc.lines);
+  }
+  const maximum = Math.max(0, view.scrollDOM.scrollHeight - view.scrollDOM.clientHeight);
+  rail.setAttribute("aria-valuemax", String(maximum));
+  rail.setAttribute("aria-valuenow", String(Math.round(view.scrollDOM.scrollTop)));
+  rail.setAttribute("aria-disabled", String(maximum <= 0));
+}
+
+function setViewFromRail(view: EditorView, rail: HTMLElement, pointerY: number, grabOffset: number) {
+  const doc = view.state.doc;
+  if (!doc.length) return;
+  const band = rail.querySelector<HTMLElement>(".diff-overview-viewport")!;
+  const lineFrom = Number(band.dataset.lineFrom ?? "0");
+  const lineTo = Number(band.dataset.lineTo ?? String(lineFrom + 1));
+  const visibleLines = Math.max(1, lineTo - lineFrom);
+  const startLine = railViewportStartLine(
+    rail.clientHeight,
+    band.getBoundingClientRect().height,
+    pointerY,
+    grabOffset,
+    doc.lines,
+    visibleLines
+  );
+  const block = view.lineBlockAt(doc.line(Math.min(doc.lines, startLine + 1)).from);
+  view.scrollDOM.scrollTop = clampViewScroll(view, block.top);
+}
+
+function installRailInput(rail: HTMLElement, view: EditorView, onUserInput: () => void) {
+  const band = rail.querySelector<HTMLElement>(".diff-overview-viewport")!;
+  let drag: { pointerId: number; grabOffset: number } | null = null;
+  const pointerDown = (event: PointerEvent) => {
+    if (event.button !== 0 || rail.getAttribute("aria-disabled") === "true") return;
+    onUserInput();
+    const rect = band.getBoundingClientRect();
+    drag = { pointerId: event.pointerId, grabOffset: event.clientY - rect.top };
+    band.setPointerCapture(event.pointerId);
+    event.stopPropagation();
+    event.preventDefault();
+  };
+  const pointerMove = (event: PointerEvent) => {
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const rect = rail.getBoundingClientRect();
+    setViewFromRail(view, rail, event.clientY - rect.top, drag.grabOffset);
+  };
+  const pointerEnd = (event: PointerEvent) => {
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    drag = null;
+    if (band.hasPointerCapture(event.pointerId)) band.releasePointerCapture(event.pointerId);
+  };
+  const railPointer = (event: PointerEvent) => {
+    if (event.button !== 0 || (event.target !== rail && event.target !== rail.querySelector(".diff-overview-markers"))) return;
+    onUserInput();
+    const rect = rail.getBoundingClientRect();
+    const bandHeight = band.getBoundingClientRect().height;
+    setViewFromRail(view, rail, event.clientY - rect.top, bandHeight / 2);
+    event.preventDefault();
+  };
+  const railKey = (event: KeyboardEvent) => {
+    let next: number | undefined;
+    if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = view.scrollDOM.scrollHeight;
+    else if (event.key === "PageUp") next = view.scrollDOM.scrollTop - view.scrollDOM.clientHeight;
+    else if (event.key === "PageDown") next = view.scrollDOM.scrollTop + view.scrollDOM.clientHeight;
+    else if (event.key === "ArrowUp") next = view.scrollDOM.scrollTop - view.defaultLineHeight;
+    else if (event.key === "ArrowDown") next = view.scrollDOM.scrollTop + view.defaultLineHeight;
+    if (next === undefined) return;
+    onUserInput();
+    view.scrollDOM.scrollTop = clampViewScroll(view, next);
+    event.preventDefault();
+  };
+  band.addEventListener("pointerdown", pointerDown);
+  band.addEventListener("pointermove", pointerMove);
+  band.addEventListener("pointerup", pointerEnd);
+  band.addEventListener("pointercancel", pointerEnd);
+  rail.addEventListener("pointerdown", railPointer);
+  rail.addEventListener("keydown", railKey);
+  return () => {
+    band.removeEventListener("pointerdown", pointerDown);
+    band.removeEventListener("pointermove", pointerMove);
+    band.removeEventListener("pointerup", pointerEnd);
+    band.removeEventListener("pointercancel", pointerEnd);
+    rail.removeEventListener("pointerdown", railPointer);
+    rail.removeEventListener("keydown", railKey);
+  };
+}
+
 function installScrollAndRails(split: SplitView, onVisualChange: () => void, onUserViewportChange: () => void) {
   let epoch = 0;
   let frame = 0;
@@ -1048,9 +1177,6 @@ function installScrollAndRails(split: SplitView, onVisualChange: () => void, onU
   const tokens: Partial<Record<DiffSide, { epoch: number; expected: number }>> = {};
   const viewFor = (side: DiffSide) => side === "a" ? split.a : split.b;
   const railFor = (side: DiffSide) => split.rails[side];
-  const clampScroll = (view: EditorView, value: number) => Math.min(
-    Math.max(0, view.scrollDOM.scrollHeight - view.scrollDOM.clientHeight), Math.max(0, value)
-  );
   const claim = (side: DiffSide, userInitiated = false) => {
     epoch += 1;
     master = side;
@@ -1074,49 +1200,18 @@ function installScrollAndRails(split: SplitView, onVisualChange: () => void, onU
   };
   const write = (side: DiffSide, value: number, writeEpoch: number) => {
     const target = viewFor(side).scrollDOM;
-    const next = clampScroll(viewFor(side), value);
+    const next = clampViewScroll(viewFor(side), value);
     tokens[side] = { epoch: writeEpoch, expected: next };
     target.scrollTop = next;
   };
-  const updateThumb = (side: DiffSide) => {
+  const updateRail = (side: DiffSide) => {
     const view = viewFor(side);
     const rail = railFor(side);
-    const thumb = rail.querySelector<HTMLElement>(".diff-overview-thumb")!;
-    const geometry = scrollThumbGeometry(rail.clientHeight, view.scrollDOM.scrollHeight, view.scrollDOM.clientHeight, view.scrollDOM.scrollTop);
-    thumb.style.top = `${geometry.top}px`;
-    thumb.style.height = `${geometry.height}px`;
-    thumb.dataset.scrollable = String(geometry.scrollable);
-    const band = rail.querySelector<HTMLElement>(".diff-overview-viewport")!;
-    const doc = view.state.doc;
-    if (doc.length === 0) {
-      band.style.top = "0px";
-      band.style.height = `${rail.clientHeight}px`;
-      band.dataset.lineFrom = "0";
-      band.dataset.lineTo = "0";
-      band.dataset.lineTotal = "0";
-    } else {
-      const viewportRect = view.scrollDOM.getBoundingClientRect();
-      const topHeight = Math.max(0, Math.min(view.contentHeight, (viewportRect.top - view.documentTop) / view.scaleY));
-      const bottomHeight = Math.max(topHeight, Math.min(view.contentHeight, (viewportRect.bottom - view.documentTop) / view.scaleY));
-      const topBlock = view.lineBlockAtHeight(topHeight);
-      const bottomBlock = view.lineBlockAtHeight(bottomHeight);
-      const firstLine = Math.max(0, doc.lineAt(Math.min(doc.length, topBlock.from)).number - 1);
-      const lastLine = Math.max(firstLine + 1, doc.lineAt(Math.min(doc.length, bottomBlock.to)).number);
-      const top = rail.clientHeight * firstLine / doc.lines;
-      const bottom = rail.clientHeight * Math.min(doc.lines, lastLine) / doc.lines;
-      band.style.top = `${top}px`;
-      band.style.height = `${Math.max(2, bottom - top)}px`;
-      band.dataset.lineFrom = String(firstLine);
-      band.dataset.lineTo = String(Math.min(doc.lines, lastLine));
-      band.dataset.lineTotal = String(doc.lines);
-    }
-    rail.setAttribute("aria-valuemax", String(Math.max(0, view.scrollDOM.scrollHeight - view.scrollDOM.clientHeight)));
-    rail.setAttribute("aria-valuenow", String(Math.round(view.scrollDOM.scrollTop)));
-    rail.setAttribute("aria-disabled", String(!geometry.scrollable));
+    updateRailViewport(rail, view);
   };
-  const updateThumbs = () => {
-    updateThumb("a");
-    updateThumb("b");
+  const updateRails = () => {
+    updateRail("a");
+    updateRail("b");
     onVisualChange();
   };
   const syncFrom = (side: DiffSide) => {
@@ -1128,7 +1223,7 @@ function installScrollAndRails(split: SplitView, onVisualChange: () => void, onU
     split.dom.dataset.syncSegment = String(mapped.segment);
     split.dom.dataset.syncSourceTop = String(source.scrollDOM.scrollTop);
     write(targetSide, mapped.value - target.scrollDOM.clientHeight / 3, epoch);
-    updateThumbs();
+    updateRails();
   };
   const scheduleSync = (side: DiffSide) => {
     pending = side;
@@ -1145,12 +1240,12 @@ function installScrollAndRails(split: SplitView, onVisualChange: () => void, onU
     const current = viewFor(side).scrollDOM.scrollTop;
     if (token && Math.abs(token.expected - current) <= 1) {
       delete tokens[side];
-      updateThumbs();
+      updateRails();
       return;
     }
     if (side !== master) claim(side);
     scheduleSync(side);
-    updateThumbs();
+    updateRails();
   };
   const listeners: Array<() => void> = [];
   for (const side of ["a", "b"] as const) {
@@ -1173,79 +1268,17 @@ function installScrollAndRails(split: SplitView, onVisualChange: () => void, onU
       scrollDOM.removeEventListener("keydown", keyboard);
     });
     const rail = railFor(side);
-    const thumb = rail.querySelector<HTMLElement>(".diff-overview-thumb")!;
-    let drag: { pointerId: number; startY: number; startScroll: number } | null = null;
-    const setFromRailDelta = (delta: number) => {
-      const view = viewFor(side);
-      const geometry = scrollThumbGeometry(rail.clientHeight, view.scrollDOM.scrollHeight, view.scrollDOM.clientHeight, view.scrollDOM.scrollTop);
-      if (!geometry.scrollable) return;
-      const trackRange = Math.max(1, rail.clientHeight - geometry.height);
-      const scrollRange = Math.max(0, view.scrollDOM.scrollHeight - view.scrollDOM.clientHeight);
-      view.scrollDOM.scrollTop = clampScroll(view, (drag?.startScroll ?? view.scrollDOM.scrollTop) + delta * scrollRange / trackRange);
-    };
-    const pointerDown = (event: PointerEvent) => {
-      if (event.button !== 0) return;
-      claim(side, true);
-      drag = { pointerId: event.pointerId, startY: event.clientY, startScroll: viewFor(side).scrollDOM.scrollTop };
-      thumb.setPointerCapture(event.pointerId);
-      event.preventDefault();
-    };
-    const pointerMove = (event: PointerEvent) => {
-      if (!drag || drag.pointerId !== event.pointerId) return;
-      setFromRailDelta(event.clientY - drag.startY);
-    };
-    const pointerEnd = (event: PointerEvent) => {
-      if (!drag || drag.pointerId !== event.pointerId) return;
-      drag = null;
-      if (thumb.hasPointerCapture(event.pointerId)) thumb.releasePointerCapture(event.pointerId);
-    };
-    const railPointer = (event: PointerEvent) => {
-      if (event.target !== rail && event.target !== rail.querySelector(".diff-overview-markers")) return;
-      claim(side, true);
-      const rect = rail.getBoundingClientRect();
-      const geometry = scrollThumbGeometry(rect.height, viewFor(side).scrollDOM.scrollHeight, viewFor(side).scrollDOM.clientHeight, viewFor(side).scrollDOM.scrollTop);
-      const y = event.clientY - rect.top;
-      viewFor(side).scrollDOM.scrollTop += y < geometry.top ? -viewFor(side).scrollDOM.clientHeight : viewFor(side).scrollDOM.clientHeight;
-      event.preventDefault();
-    };
-    const railKey = (event: KeyboardEvent) => {
-      const view = viewFor(side);
-      let next: number | undefined;
-      if (event.key === "Home") next = 0;
-      else if (event.key === "End") next = view.scrollDOM.scrollHeight;
-      else if (event.key === "PageUp") next = view.scrollDOM.scrollTop - view.scrollDOM.clientHeight;
-      else if (event.key === "PageDown") next = view.scrollDOM.scrollTop + view.scrollDOM.clientHeight;
-      else if (event.key === "ArrowUp") next = view.scrollDOM.scrollTop - view.defaultLineHeight;
-      else if (event.key === "ArrowDown") next = view.scrollDOM.scrollTop + view.defaultLineHeight;
-      if (next === undefined) return;
-      claim(side, true);
-      view.scrollDOM.scrollTop = clampScroll(view, next);
-      event.preventDefault();
-    };
-    thumb.addEventListener("pointerdown", pointerDown);
-    thumb.addEventListener("pointermove", pointerMove);
-    thumb.addEventListener("pointerup", pointerEnd);
-    thumb.addEventListener("pointercancel", pointerEnd);
-    rail.addEventListener("pointerdown", railPointer);
-    rail.addEventListener("keydown", railKey);
-    listeners.push(() => {
-      thumb.removeEventListener("pointerdown", pointerDown);
-      thumb.removeEventListener("pointermove", pointerMove);
-      thumb.removeEventListener("pointerup", pointerEnd);
-      thumb.removeEventListener("pointercancel", pointerEnd);
-      rail.removeEventListener("pointerdown", railPointer);
-      rail.removeEventListener("keydown", railKey);
-    });
+    listeners.push(installRailInput(rail, viewFor(side), () => claim(side, true)));
   }
-  const resize = new ResizeObserver(updateThumbs);
+  const resize = new ResizeObserver(updateRails);
   resize.observe(split.dom);
   resize.observe(split.a.scrollDOM);
   resize.observe(split.b.scrollDOM);
-  updateThumbs();
+  updateRails();
   return {
     beginProgramEpoch,
     write,
-    updateThumbs,
+    updateRails,
     destroy() {
       if (frame) cancelAnimationFrame(frame);
       resize.disconnect();
@@ -1335,10 +1368,10 @@ function createSplitView(
     onPositionChange(safeIndex + 1, chunks.length);
     alignmentController?.schedule(() => {
       positionTargets(false);
-      scrollController?.updateThumbs();
+      scrollController?.updateRails();
       visualController?.scheduleDraw();
     });
-    scrollController?.updateThumbs();
+    scrollController?.updateRails();
     visualController?.scheduleDraw();
   };
   visualController = installSplitVisuals(split, navigate);
@@ -1367,11 +1400,89 @@ function createSplitView(
   };
 }
 
+function createSingleView(
+  parent: HTMLElement,
+  text: string,
+  diffDocument: DiffDocument,
+  shared: Extension[],
+  presentation: Extract<DiffPresentation, { kind: "single" }>,
+  onPositionChange: (position: number, total: number) => void
+): SingleController {
+  const root = document.createElement("div");
+  root.className = `oris-single-view ${presentation.tone}`;
+  root.dataset.singleSide = presentation.side;
+  root.dataset.emptyFile = String(presentation.empty);
+  const pane = document.createElement("div");
+  pane.className = "oris-single-pane";
+  const rail = createRail(presentation.side, "oris-single-editor");
+  if (presentation.side === "a") root.append(rail.rail, pane);
+  else root.append(pane, rail.rail);
+  parent.append(root);
+
+  const view = new EditorView({ parent: pane, doc: text, extensions: shared });
+  view.dom.id = "oris-single-editor";
+  const lineClass = presentation.tone === "inserted" ? "oris-inserted-line" : "oris-deleted-line";
+  const lineDecorations = Array.from({ length: view.state.doc.lines }, (_, index) =>
+    Decoration.line({ class: lineClass }).range(view.state.doc.line(index + 1).from)
+  );
+  view.dispatch({ effects: StateEffect.appendConfig.of(EditorView.decorations.of(Decoration.set(lineDecorations))) });
+
+  if (presentation.empty) {
+    const state = document.createElement("div");
+    state.className = `oris-empty-file-state ${presentation.tone}`;
+    state.setAttribute("role", "status");
+    state.textContent = presentation.tone === "inserted" ? "新增空文件（0 字节）" : "删除空文件（0 字节）";
+    pane.append(state);
+  }
+
+  const chunks = diffDocument.hunks.map((change) => new Change(change.fromA, change.toA, change.fromB, change.toB));
+  const navigate = (index: number) => {
+    if (!chunks.length) return;
+    const safeIndex = (index + chunks.length) % chunks.length;
+    const chunk = chunks[safeIndex];
+    const pos = Math.min(presentation.side === "a" ? chunk.fromA : chunk.fromB, view.state.doc.length);
+    view.dispatch({ selection: { anchor: pos } });
+    const block = view.lineBlockAt(pos);
+    view.scrollDOM.scrollTop = clampViewScroll(view, block.top - view.scrollDOM.clientHeight / 3);
+    view.contentDOM.focus({ preventScroll: true });
+    onPositionChange(safeIndex + 1, chunks.length);
+  };
+  const markerChunks = chunks.length ? chunks : [new Change(0, 0, 0, 0)];
+  const update = () => {
+    updateRailViewport(rail.rail, view);
+    renderRailMarkers(rail.rail, view, markerChunks, presentation.side, navigate, presentation.tone);
+  };
+  const scroll = () => updateRailViewport(rail.rail, view);
+  view.scrollDOM.addEventListener("scroll", scroll, { passive: true });
+  const removeRailInput = installRailInput(rail.rail, view, () => undefined);
+  const resize = new ResizeObserver(update);
+  resize.observe(root);
+  resize.observe(view.scrollDOM);
+  update();
+  onPositionChange(chunks.length ? 1 : 0, chunks.length);
+
+  return {
+    view,
+    chunks,
+    navigate,
+    destroy() {
+      resize.disconnect();
+      removeRailInput();
+      view.scrollDOM.removeEventListener("scroll", scroll);
+      view.destroy();
+      root.remove();
+    }
+  };
+}
+
 export interface DiffViewerHandle {
   navigate(direction: -1 | 1): void;
+  navigateTo(index: number): void;
 }
 
 interface Props {
+  readingKey: string;
+  presentation: DiffPresentation;
   left: string;
   right: string;
   document: DiffDocument;
@@ -1387,21 +1498,44 @@ interface Props {
 }
 
 const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
-  { left, right, document, mode, highlight, collapsed, wrap, fontSize, dark, alignChanges, onPositionChange, onSplitLayoutChange },
+  { readingKey, presentation, left, right, document, mode, highlight, collapsed, wrap, fontSize, dark, alignChanges, onPositionChange, onSplitLayoutChange },
   ref
 ) {
   const host = useRef<HTMLDivElement>(null);
-  const runtime = useRef<{ split?: SplitController; unified?: EditorView; position: number }>({ position: 0 });
+  const runtime = useRef<{ split?: SplitController; single?: SingleController; unified?: EditorView; position: number }>({ position: 0 });
   const splitRatio = useRef(0.5);
+  const savedViewport = useRef<{ key: string; sides: { line: number; text: string; offset: number; left: number }[] } | null>(null);
+  const layoutKey = `${readingKey}:${presentation.kind === "single" ? `single-${presentation.side}` : "compare"}`;
 
   useImperativeHandle(ref, () => ({
+    navigateTo(index) {
+      const current = runtime.current;
+      const chunks = current.split?.view.chunks ?? current.single?.chunks ?? (current.unified ? getChunks(current.unified.state)?.chunks ?? [] : []);
+      if (!chunks.length) return;
+      current.position = Math.max(0, Math.min(chunks.length - 1, index));
+      if (current.split) {
+        current.split.navigate(current.position);
+        return;
+      }
+      if (current.single) {
+        current.single.navigate(current.position);
+        return;
+      }
+      const chunk = chunks[current.position];
+      if (chunk && current.unified) current.unified.dispatch({ effects: EditorView.scrollIntoView(chunk.fromB, { y: "center" }) });
+      onPositionChange(current.position + 1, chunks.length);
+    },
     navigate(direction) {
       const current = runtime.current;
-      const chunks = current.split?.view.chunks ?? (current.unified ? getChunks(current.unified.state)?.chunks ?? [] : []);
+      const chunks = current.split?.view.chunks ?? current.single?.chunks ?? (current.unified ? getChunks(current.unified.state)?.chunks ?? [] : []);
       if (!chunks.length) return;
       current.position = (current.position + direction + chunks.length) % chunks.length;
       if (current.split) {
         current.split.navigate(current.position);
+        return;
+      }
+      if (current.single) {
+        current.single.navigate(current.position);
         return;
       }
       const chunk = chunks[current.position];
@@ -1453,9 +1587,20 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
     const collapseUnchanged = collapsed ? { margin: 3, minSize: 5 } : undefined;
     const diffConfig = { override: () => document.changes.map((change) => new Change(change.fromA, change.toA, change.fromB, change.toB)) };
     let split: SplitController | undefined;
+    let single: SingleController | undefined;
     let unified: EditorView | undefined;
     let readingSearch: ReturnType<typeof installReadingSearch> | undefined;
-    if (mode === "split") {
+    if (presentation.kind === "single") {
+      single = createSingleView(
+        host.current,
+        presentation.side === "a" ? left : right,
+        document,
+        shared,
+        presentation,
+        onPositionChange
+      );
+      runtime.current = { single, position: 0 };
+    } else if (mode === "split") {
       split = createSplitView(
         host.current, left, right, document, shared, highlight, collapsed, alignChanges, splitRatio.current,
         (ratio, leftWidth) => {
@@ -1488,16 +1633,41 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
     }
     const searchViews: ReadingSearchView[] = split
       ? [{ view: split.view.a, side: "left" }, { view: split.view.b, side: "right" }]
+      : single ? [{ view: single.view, side: presentation.kind === "single" && presentation.side === "a" ? "left" : "right" }]
       : unified ? [{ view: unified, side: "unified" }] : [];
+    const saved = savedViewport.current;
+    if (saved?.key === layoutKey) {
+      const restore = () => searchViews.forEach(({ view }, index) => {
+        const anchor = saved.sides[index]; if (!anchor) return;
+        let number = Math.min(anchor.line, view.state.doc.lines);
+        // Keep the visible text as anchor when lines were inserted/deleted above it.
+        if (view.state.doc.line(number).text !== anchor.text) {
+          for (let distance = 1; distance < view.state.doc.lines; distance++) {
+            const candidates = [number + distance, number - distance];
+            const match = candidates.find(n => n > 0 && n <= view.state.doc.lines && view.state.doc.line(n).text === anchor.text);
+            if (match) { number = match; break; }
+          }
+        }
+        view.scrollDOM.scrollTop = Math.max(0, view.lineBlockAt(view.state.doc.line(number).from).top + anchor.offset);
+        view.scrollDOM.scrollLeft = anchor.left;
+      });
+      if (split) split.settleViewport(restore); else requestAnimationFrame(restore);
+    }
     readingSearch = installReadingSearch(host.current, searchViews, split ? (onComplete) => split?.settleViewport(onComplete) : undefined);
     return () => {
+      savedViewport.current = { key: layoutKey, sides: searchViews.map(({ view }) => {
+        const block = view.lineBlockAtHeight(view.scrollDOM.scrollTop);
+        const line = view.state.doc.lineAt(block.from);
+        return { line: line.number, text: line.text, offset: view.scrollDOM.scrollTop - block.top, left: view.scrollDOM.scrollLeft };
+      }) };
       readingSearch?.destroy();
       split?.destroy();
+      single?.destroy();
       unified?.destroy();
       runtime.current = { position: 0 };
       if (host.current) host.current.replaceChildren();
     };
-  }, [left, right, document, mode, highlight, collapsed, wrap, fontSize, dark, alignChanges, onPositionChange, onSplitLayoutChange]);
+  }, [layoutKey, left, right, document, mode, highlight, collapsed, wrap, fontSize, dark, alignChanges, onPositionChange, onSplitLayoutChange, presentation]);
 
   return <div className="diff-host" ref={host} aria-label="只读文件差异" />;
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { diffMarkerGeometry, mapDiffPosition, scrollThumbGeometry } from "./diff-scroll";
+import { diffMarkerGeometry, mapDiffPosition, railViewportStartLine } from "./diff-scroll";
 
 describe("分段 Diff 滚动映射", () => {
   it("N:N 段内保持 1:1", () => {
@@ -45,12 +45,14 @@ describe("分段 Diff 滚动映射", () => {
 });
 
 describe("Diff 外缘轨道几何", () => {
-  it("无溢出时 thumb 占满且不可拖", () => {
-    expect(scrollThumbGeometry(300, 200, 300, 0)).toEqual({ top: 0, height: 300, scrollable: false });
+  it("单轨 viewport 无可移动范围时停在首行", () => {
+    expect(railViewportStartLine(300, 300, 180, 40, 20, 20)).toBe(0);
   });
 
-  it("thumb 与真实滚动范围一致", () => {
-    expect(scrollThumbGeometry(300, 1200, 300, 450)).toEqual({ top: 112.5, height: 75, scrollable: true });
+  it("单轨 viewport 拖动映射到逻辑可见行范围", () => {
+    expect(railViewportStartLine(300, 75, 37.5, 37.5, 100, 25)).toBe(0);
+    expect(railViewportStartLine(300, 75, 150, 37.5, 100, 25)).toBe(38);
+    expect(railViewportStartLine(300, 75, 300, 37.5, 100, 25)).toBe(75);
   });
 
   it("零行 marker 保持最小可见刻度且不借用相邻整行", () => {

@@ -41,10 +41,10 @@ React 不接收通用 shell、任意文件写入或任意命令执行能力。�
 | 对象 | 必需信息与约束 |
 | --- | --- |
 | Repository | 稳定 RepoId、展示路径、规范化工作树路径、gitDir、commonDir；适配 `.git` 目录/文件，不自行猜测 |
-| Endpoint | Head/Index/WorkingTree/EmptyTree/Commit(OID)；ref 先解析 OID，不能把字符串直接当命令参数 |
+| Endpoint | Head/Index/WorkingTree/EmptyTree/Commit(OID)/ConflictStage(1/2/3, OID)；ref 先解析 OID，不能把字符串直接当命令参数 |
 | CompareRequest | RepoId、左/右端点、比较模式、路径标识、选项、requestId、revision |
 | FileChange | 独立旧/新路径、状态、是否二进制、可得的增删统计、重命名检测信息 |
-| ContentPair | 左右内容或有理由的不可用状态、编码/EOL/大小、内容标识、对应端点与 revision |
+| ContentPair | 左右文本/受控图片载荷或有理由的不可用状态；区分不存在、已有空内容、失败和超预算；编码/EOL/大小、内容标识、对应端点与 revision |
 | DiffDocument | 来源 contentId、空白规则、行级块、词级区间、导航锚点、完整/降级状态 |
 | Commit | OID、parents、作者/提交者/时间、message、相关 refs；排序与拓扑身份分开 |
 | TrackingStatus | localOID、upstreamRef/upstreamOID、ahead/behind 或原因、最后可信获取时间 |
@@ -75,6 +75,10 @@ CodeMirror 及其 merge 能力先做可行性验证；采用其 diff 或独立�
 
 行高变化、软换行、折叠、滚动与字体缩放后重新测量对应区间；中央连接带仅装饰比较关系，不提供应用差异操作。不能依赖私有 DOM 补丁作为长期方案而不记录升级风险。
 
+任务 03 仅增补两条读取路径：静态 PNG/JPEG/WebP 按签名/尺寸/字节预算预检后解码；冲突按 `ls-files --unmerged -z` 的真实 mode/OID/stage 获取原始 blob，并独立读取工作区。默认 stage 2→3，按需选择 Base/WT；不依冲突标记推断，不常驻四个完整版本，rebase 时不武断标“我的/远端”。
+
+图片共用画布坐标、等比缩放及透明背景，新增删除沿用单栏；切换释放图片资源并丢弃过期结果。一侧解码失败保留另一侧，不能把失败当空文件或无差异。仅增加上述必要状态与端点，不引入完整编码、LFS/submodule 解析或通用格式平台；特殊 mode 拒绝不安全的普通文件读取。原始对象不执行 filters/textconv，普通读取沿用只读边界。
+
 ## 6. 调度、缓存和监听
 
 - 当前可见仓库和文件优先；有界并发；切项目取消可取消工作并抛弃过期结果。
@@ -82,7 +86,7 @@ CodeMirror 及其 merge 能力先做可行性验证；采用其 diff 或独立�
 - 历史/文件列表虚拟化，历史图只绘制当前已加载范围及必要边缘关系。
 - Git 对象以 OID 缓存；WorkingTree/Index 以 revision/内容标识失效，mtime 不是充分的永恒一致性证明。
 - 文件监听覆盖当前仓库工作区与相关 gitDir/commonDir 元数据；合并事件，忽略 Oris 自己的应用数据。失焦停止高频工作，回到前台补核对；手动刷新永远可用。
-- 普通失败不自动反复重试。并发上限、内容预算由任务 01/05 实测固定，避免预建调度平台。
+- 普通失败不自动反复重试。并发上限、内容预算由任务 01/06 实测固定；新增图片预算由 03 在执行前固定，避免预建调度平台。
 
 ## 7. 只读边界与 fetch
 
@@ -107,4 +111,4 @@ V1 不提供自动更新服务。没有签名资源可交付明确标记的内�
 - [CodeMirror merge](https://github.com/codemirror/merge)（官方仓库说明已迁移，实施以其指向的当前源码为准）、[Monaco](https://github.com/microsoft/monaco-editor)。
 - [git-status](https://git-scm.com/docs/git-status)、[git-diff](https://git-scm.com/docs/git-diff)、[git-fetch](https://git-scm.com/docs/git-fetch)。
 
-上述方案是工程设计，不代表已经证明快于 Electron、达到内存预算或还原所有 JetBrains 行为。任务 01 提供选型证据，任务 05 提供发布规模证据。
+上述方案是工程设计，不代表已经证明快于 Electron、达到内存预算或还原所有 JetBrains 行为。任务 01 提供选型证据，任务 06 提供发布规模证据。

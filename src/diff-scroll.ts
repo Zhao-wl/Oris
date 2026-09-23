@@ -10,12 +10,6 @@ export interface MappedDiffPosition {
   segment: number;
 }
 
-export interface ScrollThumbGeometry {
-  top: number;
-  height: number;
-  scrollable: boolean;
-}
-
 export interface DiffMarkerGeometry {
   top: number;
   height: number;
@@ -70,25 +64,21 @@ export function mapDiffPosition(
   };
 }
 
-export function scrollThumbGeometry(
+export function railViewportStartLine(
   trackHeight: number,
-  scrollHeight: number,
-  clientHeight: number,
-  scrollTop: number,
-  minimumThumb = 24
-): ScrollThumbGeometry {
-  const track = Math.max(0, trackHeight);
-  const content = Math.max(0, scrollHeight);
-  const viewport = Math.max(0, clientHeight);
-  if (!track || content <= viewport || !content) return { top: 0, height: track, scrollable: false };
-  const height = Math.min(track, Math.max(minimumThumb, track * viewport / content));
-  const maximumTop = Math.max(0, track - height);
-  const maximumScroll = Math.max(1, content - viewport);
-  return {
-    top: maximumTop * Math.min(1, Math.max(0, scrollTop / maximumScroll)),
-    height,
-    scrollable: true
-  };
+  viewportHeight: number,
+  pointerY: number,
+  grabOffset: number,
+  lineCount: number,
+  visibleLineCount: number
+): number {
+  const lines = Math.max(1, Math.floor(lineCount));
+  const visible = Math.min(lines, Math.max(1, Math.floor(visibleLineCount)));
+  const maximumStart = Math.max(0, lines - visible);
+  const travel = Math.max(0, trackHeight - viewportHeight);
+  if (!travel || !maximumStart) return 0;
+  const viewportTop = Math.min(travel, Math.max(0, pointerY - grabOffset));
+  return Math.min(maximumStart, Math.max(0, Math.round(viewportTop / travel * maximumStart)));
 }
 
 export function diffMarkerGeometry(

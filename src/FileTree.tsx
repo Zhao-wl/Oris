@@ -1,5 +1,37 @@
-import type { CSSProperties } from "react";
+import { useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import type { FileChange } from "./types";
+
+export const compareFiles = (a: FileChange, b: FileChange) => {
+  const rank = (f: FileChange) => f.status === "deleted" ? 1 : f.status === "added" || f.status === "untracked" ? 2 : 0;
+  return rank(a) - rank(b) || (a.displayPath < b.displayPath ? -1 : a.displayPath > b.displayPath ? 1 : 0);
+};
+
+function TailPath({ path, fullPath }: { path: string; fullPath: string }) {
+  const host = useRef<HTMLSpanElement>(null);
+  const [label, setLabel] = useState(path);
+  useLayoutEffect(() => {
+    const element = host.current;
+    if (!element) return;
+    const canvas = document.createElement("canvas");
+    const context = canvas.getContext("2d")!;
+    const fit = () => {
+      context.font = getComputedStyle(element).font;
+      const width = element.clientWidth;
+      const chars = Array.from(path);
+      if (context.measureText(path).width <= width) { setLabel(path); return; }
+      let lo = 0, hi = chars.length;
+      while (lo < hi) {
+        const middle = Math.floor((lo + hi) / 2);
+        if (context.measureText("…" + chars.slice(middle).join("")).width > width) lo = middle + 1;
+        else hi = middle;
+      }
+      setLabel("…" + chars.slice(lo).join(""));
+    };
+    fit(); const observer = new ResizeObserver(fit); observer.observe(element);
+    return () => observer.disconnect();
+  }, [path]);
+  return <span className="file-path" ref={host} title={fullPath}>{label}</span>;
+}
 
 interface DirectoryNode {
   name: string;
@@ -22,6 +54,7 @@ function FileButton({ file, selectedPathId, onSelect, depth = 0, showPath = fals
   depth?: number;
   showPath?: boolean;
 }) {
+  const statusLabels = { added: "A", modified: "M", deleted: "D", renamed: "R", untracked: "?", conflicted: "U", typeChanged: "T" } as const;
   const label = showPath ? file.displayPath : file.displayPath.split("/").at(-1) ?? file.displayPath;
   return (
     <button
@@ -29,15 +62,16 @@ function FileButton({ file, selectedPathId, onSelect, depth = 0, showPath = fals
       role="option"
       aria-selected={file.pathId === selectedPathId}
       aria-label={file.displayPath}
+      title={file.oldDisplayPath ? `${file.oldDisplayPath} → ${file.displayPath}` : file.displayPath}
       className={file.pathId === selectedPathId ? "file selected" : "file"}
       style={{ "--tree-depth": depth } as CSSProperties}
       onClick={() => onSelect(file)}
     >
       <span className="file-icon">◇</span>
-      <span className="file-path" title={file.displayPath}>{label}</span>
-      <span className={`status ${file.status}`}>
-        {file.status === "deleted" ? "D" : file.status === "typeChanged" ? "T" : "M"}
-      </span>
+      <TailPath path={label} fullPath={file.displayPath}/>
+      {file.oldDisplayPath && <span className="old-path" title={file.oldDisplayPath}>← {file.oldDisplayPath}</span>}
+      {file.additions !== null && <span className="line-stat">+{file.additions} −{file.deletions ?? 0}</span>}
+      <span className={`status ${file.status}`}>{statusLabels[file.status]}</span>
     </button>
   );
 }
@@ -68,7 +102,7 @@ function Directory({ node, depth, selectedPathId, onSelect }: {
   onSelect(file: FileChange): void;
 }) {
   const directories = [...node.directories.values()].sort((a, b) => a.name.localeCompare(b.name));
-  const files = [...node.files].sort((a, b) => a.displayPath.localeCompare(b.displayPath));
+  const files = [...node.files].sort(compareFiles);
   const content = (
     <>
       {directories.map((directory) => (
@@ -101,7 +135,7 @@ function Directory({ node, depth, selectedPathId, onSelect }: {
 export default function FileTree({ files, selectedPathId, mode, onSelect }: Props) {
   if (mode === "flat") {
     return <>{[...files]
-      .sort((a, b) => a.displayPath.localeCompare(b.displayPath))
+      .sort(compareFiles)
       .map((file) => (
         <FileButton key={file.pathId} file={file} selectedPathId={selectedPathId} onSelect={onSelect} showPath />
       ))}</>;

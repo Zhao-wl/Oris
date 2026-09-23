@@ -7,11 +7,12 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "test": "vitest run",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "package": "powershell -NoProfile -File scripts/build-release.ps1"
   },
   "dependencies": {
-    "@codemirror/lang-javascript": "6.2.5",
     "@codemirror/commands": "6.8.1",
+    "@codemirror/lang-javascript": "6.2.5",
     "@codemirror/merge": "6.12.2",
     "@codemirror/search": "6.7.2",
     "@codemirror/state": "6.5.2",
@@ -27,6 +28,7 @@
     "@types/react": "19.1.16",
     "@types/react-dom": "19.1.9",
     "@vitejs/plugin-react": "5.0.4",
+    "jsdom": "29.1.1",
     "typescript": "5.9.2",
     "vite": "7.3.6",
     "vitest": "5.0.1"
