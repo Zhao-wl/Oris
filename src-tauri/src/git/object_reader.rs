@@ -260,7 +260,16 @@ impl ObjectReader {
         Self::new(git, worktree, idle, global_cache())
     }
     fn start(&mut self) -> Result<(), GitError> {
-        let mut child = readonly_command(&self.git, &self.worktree, &["cat-file", "--batch"])
+        let mut command = readonly_command(&self.git, &self.worktree, &["cat-file", "--batch"]);
+        #[cfg(windows)]
+        {
+            // 常驻进程不分配控制台：CREATE_NO_WINDOW 仍会为控制台程序创建隐藏的 conhost.exe
+            // （实测每个约 11 MiB 常驻）。cat-file --batch 只读管道、不启动其他程序，可安全使用 DETACHED_PROCESS。
+            use std::os::windows::process::CommandExt;
+            const DETACHED_PROCESS: u32 = 0x0000_0008;
+            command.creation_flags(DETACHED_PROCESS);
+        }
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -440,6 +449,10 @@ impl ObjectReader {
             Fetched::TooLarge(size) => BlobRead::TooLarge(size),
             Fetched::Missing => BlobRead::Missing,
         })
+    }
+    #[cfg(test)]
+    pub(crate) fn child_pid_for_test(&self) -> Option<u32> {
+        self.batch.as_ref().map(|batch| batch.child.id())
     }
     #[cfg(test)]
     pub(crate) fn kill_for_test(&mut self) {
