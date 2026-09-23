@@ -20,8 +20,8 @@
 3. [V2 技术方案](architecture/v2-architecture.md)：现状瓶颈、读写通道、数据层、缓存与资源上限。
 4. [V2 验收计划](validation/v2-acceptance.md)：B01–B22、性能与内存预算。
 5. [一期与二期混合发布 UI 参考图](design/04-mixed-release-ui-reference.md)：用户已确认的效果图参考；[首版二期提案](design/03-phase2-ui-proposal.md)保留作历史对照。
-6. [V2 任务清单](tasks/v2/README.md)：六项纵向任务与已确认顺序（V2-06 排期待定）。
-- 二期研究：[VS Code 配色方案与移植方式](research/08-vscode-color-themes.md)（任务 V2-06 依据）。
+6. [V2 任务清单](tasks/v2/README.md)：六项纵向任务与已确认顺序。
+- 二期研究：[VS Code 配色方案与移植方式](research/08-vscode-color-themes.md)（任务 V2-06 依据）；[设置窗口效果图](design/05-settings-ui.md)（布局已确认）。
 
 ## 文档约定
 

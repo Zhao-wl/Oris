@@ -1,6 +1,11 @@
 # V2-01 — 数据层与流畅度基础
 
-状态：Pending（未开始）。依赖：V1 03 完成。
+状态：Pending（未开始）。依赖：V1 03 代码已提交（`2211753`，V2-D27）。
+
+已有输入（2026-09-23）：
+- 预制模块 `src-tauri/src/git/status_v2.rs`、`src-tauri/src/git/object_reader.rs` 已合入 main（`cb99e07`），含 11 项真实临时仓库测试，尚未接入现有流程。
+- [Git 命令层探测](../../validation/v2-01-git-level-probe.md)与数据集生成器 `scripts/perf/` 已合入 main：一次 status 出列表的 P95 为 181 ms（S）/ 196 ms（L），旧做法三个范围共 11 个进程、P95 为 1066 / 2946 ms；增删统计不能阻塞文件列表。这只是 Git 命令层数据，不替代端到端基线。
+- 一期性能基线与 GUI 测量脚本由界面验证批次提供；本任务的性能验收使用同一脚本、同一机器。
 
 ## 用户闭环
 
