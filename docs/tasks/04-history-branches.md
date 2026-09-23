@@ -4,6 +4,8 @@
 
 编号迁移：2026-09-23 从原 03 顺延为 04，原范围保留。
 
+**预制模块已完成（2026-09-23，分支 `wip/v1-04-core`）**：`src-tauri/src/git/log.rs`、`src-tauri/src/git/refs.rs`、`src/history-graph.ts` 及真实临时仓库测试，只新增模块，未接入界面，任务状态仍为 Pending；A07–A10 均未验收。详见文末“预制模块与接入清单”。
+
 ## 用户闭环
 
 作为用户，我能从分支/提交进入文件差异，比较任意两个版本，追溯单文件历史，并显式更新远端跟踪状态而不切换工作分支。
@@ -30,3 +32,27 @@
 ## 交付与排除
 
 完整历史/分支调查链路与 fetch 边界证据；无分支写操作、共同基线增强、PR/Issue、凭据管理或终端。
+
+
+## 预制模块与接入清单
+
+以下只是读取与布局模块及其测试，**未接入界面**，不构成 A07–A10 的通过证据；R-REMOTE（显式 fetch）不在预制范围内。
+
+| 模块 | 内容 | 测试（`src-tauri/src/git/history_tests.rs`、`src/history-graph.test.ts`） |
+| --- | --- | --- |
+| `git/log.rs` `read_log` | `git log -z --topo-order --decorate=full --no-show-signature`，含 parents、作者、提交者、时间、消息、refs 装饰；第一页把起点 ref 解析为 OID 并写入游标，后续页用同一组 OID + `--skip`，分页期间 ref 移动不改变已显示提交的身份；单页上限 1000 | 线性 25 个提交分三页，第二页前分支前进仍返回原来的第 11–20 个提交 |
+| 搜索与筛选 | 作者 / 消息按字面量（`--fixed-strings`、忽略大小写）；SHA 前缀 ≥4 位解析为提交；按分支（完整引用名）筛选；选择分支不切换工作分支 | 含正则特殊字符的消息、作者、SHA 前缀、分支筛选、`branch --show-current` 不变 |
+| `commit_changes` | 根提交 `--root` 相对空树；合并提交默认第一个父节点，可指定任一父节点，非父节点拒绝 | 两个父节点分别得到不同文件集合；根提交全部为新增 |
+| `compare` / `swapped` | 两端点直接比较（非共同基线），先 `rev-parse --verify --end-of-options <ref>^{commit}` 固定 OID；交换方向复用已固定的 OID | ref 移动后原比较与交换方向都不读取新位置 |
+| `file_history` | `--follow --name-status -M`，每条记录给出该提交中的路径，改名提交标注 `renamed_from`（跟随边界）；`reached_origin` 表示已到达新增提交，否则说明记录不连续或还有下一页 | 改名前后四条记录、分页后到达起点、`../` 路径拒绝 |
+| `git/refs.rs` `read_refs` | 本地 / 远端跟踪分支（排除 `origin/HEAD` 符号引用）、当前工作分支、detached、空仓库；上游状态 `NoUpstream` / `Gone` / `Known{ahead,behind}` / `Unknown`，数字来自 `%(upstream:track)`（Git 按可达性计算），浅克隆记为 `Unknown` | 本地 bare remote：同步、领先、落后、分叉（与 `rev-list --left-right --count` 逐一核对）、上游已删除、无上游、detached、空仓库、浅克隆 |
+| 只读与安全 | 全部经只读通道（`--no-optional-locks`、禁用 external diff / textconv）；`--no-show-signature` 防止 `log.showSignature` 触发 GPG；以 `-` 开头的引用拒绝 | 配置 `log.showSignature=true`、`gpg.program`、`diff.external` 为标记脚本后全部读取，标记未出现，`.git`（不含 objects/logs）与工作区逐字节不变 |
+| `src/history-graph.ts` `layoutGraph` | 按真实 parents 计算泳道：子提交汇合、第二父节点开新泳道、穿过的泳道原样延续；分页边缘未加载的父提交以 `continuations` 标记，结果集外的父提交（筛选 / 搜索）同样只标延续，不伪造终点；布局按行顺序增量计算，加载下一页不改变已显示行 | 线性、分叉合并、交错的两条独立历史、分页边缘延续与下一页后前几行不变、筛选结果、octopus 合并、重复提交检测 |
+
+### 接入时需要改动的位置
+
+1. `src-tauri/src/lib.rs`：新增只读命令 `read_log`、`commit_changes`、`compare_revisions`、`file_history`、`read_refs`，参数为类型化结构（`LogQuery`、`LogCursor`、引用名），不接受任意 Git 参数；按仓库 generation 取消过期请求。
+2. 内容读取：提交 / 比较两端按 OID 读取，接入 V2-01 的 `ContentReader`（常驻 `cat-file --batch` 与 BlobCache）；新增“commit:path → OID”的 `ls-tree` 查询，图片仍走任务 03 的图片阅读器。历史中的合并提交不得用当前 index stages 冒充冲突版本（A09）。
+3. 前端：Git Log 视图（分支列表、提交图、提交列表、元信息，按[混合发布参考图](../design/04-mixed-release-ui-reference.md)）；提交列表使用 V2-01 的虚拟列表，滚动到底部时用 `next` 游标加载下一页，并把累积结果交给 `layoutGraph`；比较端点显示固定的 OID，ref 移动时提示刷新。
+4. watcher 的 `refs` 类事件（V2-01 已分类）触发分支列表与日志刷新。
+5. R-REMOTE 显式 fetch 与 A10 需另行实现与验收（写元数据，不属于本预制范围）。
