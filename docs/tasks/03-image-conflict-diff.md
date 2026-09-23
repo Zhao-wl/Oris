@@ -96,6 +96,8 @@
 
 2026-09-23 开发收尾复核及当前源码 release 见[任务 03 收尾记录](../validation/task-03-closeout.md)；整体平台验收门禁不变。
 
+2026-09-23 界面验证批次：在 V1 基线 release（`90ecf47`）的真实 WebView2 中，图片并排 / 滑动 / 缩放 / 透明 / 尺寸 / 方向、坏图与动画降级、冲突版本选择与 UD 缺失侧共 16 项通过；“30 次图片 / 文本 / 冲突混合切换”因 V1 刷新路径改写 index（F1）触发自身 watcher 而 8 次失败，因此 Windows 界面证据不齐全，状态保持 Blocked／待平台验收。详见[任务 03 Windows 界面证据](../validation/task-03-windows-gui.md)。真实 Windows 焦点与 macOS 未验证。
+
 整体阻塞项：真实 WebView2/WKWebView 显示交互、原生 watcher/focus、跨平台 GUI 30 次混合切换及全进程树峰值/稳态内存证据尚未完成。整体 A/B 与双平台最终验收保持未勾选，标准不降低；04–06 未启动，不释放后继。
 
 ## 完成与交付

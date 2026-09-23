@@ -356,13 +356,22 @@ async function runTrace() {
   const h = helpers(app);
   const result = { ...header, suite: "trace", notes: ["GIT_TRACE2_EVENT 指向目录时每个 Git 进程写一个文件；每个动作完成后再静置 1.5 s 统计新增文件（含后台补齐统计的进程）。"], actions: [] };
   const files = () => new Set(readdirSync(traceDir));
+  // 同时按动作记录前端发出的 IPC 命令（CDP Network 捕获 ipc.localhost 请求），用于解释 Git 进程来源。
+  const ipc = [];
+  app.cdp.on("Network.requestWillBeSent", (p) => {
+    if (!p.request.url.includes("ipc.localhost") || !p.request.postData) return;
+    const command = decodeURIComponent(new URL(p.request.url).pathname.slice(1));
+    if (!command.startsWith("plugin:")) ipc.push(command);
+  });
+  await app.cdp.call("Network.enable");
   const commands = (names) => [...names].map((name) => { try { const first = readFileSync(path.join(traceDir, name), "utf8").split("\n").map((l) => { try { return JSON.parse(l); } catch { return null; } }).find((e) => e?.event === "start"); return (first?.argv ?? []).slice(1).filter((a) => !a.startsWith("-c") && !/^core\.|^diff\./.test(a) && a !== "--no-optional-locks").join(" "); } catch { return "?"; } });
   const counted = async (name, action) => {
     const before = files();
+    ipc.length = 0;
     const r = await action();
     await sleep(1500);
     const added = [...files()].filter((f) => !before.has(f));
-    result.actions.push({ name, ok: r?.ok ?? true, ms: r?.ms, gitProcesses: added.length, commands: commands(added) });
+    result.actions.push({ name, ok: r?.ok ?? true, ms: r?.ms, gitProcesses: added.length, commands: commands(added), ipc: [...ipc] });
     log(name, added.length);
   };
   try {
