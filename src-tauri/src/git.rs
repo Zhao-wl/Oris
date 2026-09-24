@@ -1,6 +1,8 @@
 mod content;
+pub mod log;
 mod media;
 mod read_guard;
+pub mod refs;
 mod scan;
 #[allow(dead_code)]
 mod status_v2;
@@ -2642,3 +2644,5 @@ mod task03_cancel_tests {
 mod json_regression_tests;
 #[cfg(test)]
 mod v2_tests;
+#[cfg(test)]
+mod history_tests;
