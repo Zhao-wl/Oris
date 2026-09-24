@@ -79,7 +79,16 @@ pub struct RepositoryDetails {
     pub stats: ScopeStats,
     /// 修正后的“全部”范围（工作区 rename 配对、HEAD 与工作区相同的双层修改已剔除）。
     pub all: Vec<FileChange>,
+    /// status 报告修改但 numstat 无输出（规范化后内容一致）的文件；只可能出现在未暂存与“全部”范围。
+    pub content_unchanged: ScopeUnchanged,
     pub elapsed_ms: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScopeUnchanged {
+    pub unstaged: Vec<(String, UnchangedReason)>,
+    pub all: Vec<(String, UnchangedReason)>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -126,6 +135,7 @@ fn file(entry: &Entry, status: FileStatus, old: Option<(&Vec<u8>, &String)>) -> 
         status,
         additions: None,
         deletions: None,
+        content_unchanged: None,
     }
 }
 
@@ -195,6 +205,7 @@ pub(super) fn scope_lists(entries: &[Entry], has_head: bool) -> ScopeLists {
                         status: FileStatus::Deleted,
                         additions: None,
                         deletions: None,
+                        content_unchanged: None,
                     });
                 }
                 None
@@ -500,14 +511,65 @@ impl GitAdapter {
             staged: collect(&state.lists.staged, &staged),
             all: collect(&all, &all_stats),
         };
+        let content_unchanged = ScopeUnchanged {
+            unstaged: self.unchanged_files(state, &state.lists.unstaged, &unstaged, false),
+            all: if state.has_head { self.unchanged_files(state, &all, &all_stats, true) } else { Vec::new() },
+        };
         let details = Arc::new(RepositoryDetails {
             revision: state.revision.clone(),
             stats,
             all,
+            content_unchanged,
             elapsed_ms: started.elapsed().as_millis() as u64,
         });
         let _ = state.details.set(details.clone());
         Ok(details)
+    }
+
+    /// 工作区相对 index 的修改只由 stat 缓存判定（常见于 autocrlf 下编辑器改写行尾，文件大小变化），
+    /// 而 numstat 按规范化内容比较后没有输出：这类文件在列表中标注，而不是显示成无法解释的修改。
+    /// `head_scope` 为 true 时比较基准是 HEAD，只接受 index 与 HEAD 相同（X 为 `.`）的条目。
+    fn unchanged_files(
+        &self,
+        state: &ScanState,
+        list: &[FileChange],
+        stats: &HashMap<String, (Option<u64>, Option<u64>)>,
+        head_scope: bool,
+    ) -> Vec<(String, UnchangedReason)> {
+        list.iter()
+            .filter(|f| matches!(f.status, FileStatus::Modified) && !stats.contains_key(&f.path_id))
+            .filter_map(|f| {
+                let entry = state.entries.get(&f.path_id)?;
+                let index = entry.index.as_ref()?;
+                let same_mode = entry.worktree_mode.as_deref() == Some(index.mode.as_str());
+                if entry.conflict.is_some() || entry.y != b'M' || (head_scope && entry.x != b'.') || !same_mode || index.mode == "160000" {
+                    return None;
+                }
+                Some((f.path_id.clone(), self.unchanged_reason(&entry.path, &index.oid)))
+            })
+            .collect()
+    }
+
+    /// 两侧统一为 LF 后字节一致即为仅行尾变化；读取失败或超出上限时保守归为其他规范化。
+    fn unchanged_reason(&self, path: &[u8], oid: &str) -> UnchangedReason {
+        let lf = |bytes: &[u8]| -> Vec<u8> {
+            let mut out = Vec::with_capacity(bytes.len());
+            for (i, b) in bytes.iter().enumerate() {
+                if !(*b == b'\r' && bytes.get(i + 1) == Some(&b'\n')) {
+                    out.push(*b);
+                }
+            }
+            out
+        };
+        let Ok(relative) = std::str::from_utf8(path) else { return UnchangedReason::Normalized };
+        let Ok(worktree) = self.read_worktree(relative, MAX_TEXT_BYTES) else { return UnchangedReason::Normalized };
+        if worktree.len() > MAX_TEXT_BYTES {
+            return UnchangedReason::Normalized;
+        }
+        match self.reader.with(|r| r.read_blob_limited(oid, MAX_TEXT_BYTES)) {
+            Ok(object_reader::BlobRead::Bytes(blob)) if lf(&blob) == lf(&worktree) => UnchangedReason::Eol,
+            _ => UnchangedReason::Normalized,
+        }
     }
 
     fn empty_tree(&self) -> Result<String, GitError> {

@@ -55,6 +55,15 @@ describe("V2 project store", () => {
     expect(scopeView(snap, ready, "staged")).toMatchObject({ scope: "staged", statsReady: true });
   });
 
+  it("marks files whose content is unchanged after Git normalization, only in the reported scopes", () => {
+    const snap = snapshot();
+    const marked = { ...details(), stats: { unstaged: [], staged: [], all: [] }, contentUnchanged: { unstaged: [["a", "eol"]] } } as RepositoryDetails;
+    expect(filesForScope(snap, marked, "unstaged")[0]).toMatchObject({ pathId: "a", contentUnchanged: "eol", additions: null });
+    expect(filesForScope(snap, marked, "all").find((f) => f.pathId === "a")?.contentUnchanged).toBeUndefined();
+    // 旧版本后端的详情没有该字段。
+    expect(filesForScope(snapshot(), details(), "unstaged")[0].contentUnchanged).toBeUndefined();
+  });
+
   it("tracks verifying/dirty per project and blocks writes until verification completes", () => {
     const projects = new ProjectStore();
     expect(projects.canWrite("repo")).toBe(false);

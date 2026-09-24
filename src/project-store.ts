@@ -71,9 +71,12 @@ export function filesForScope(snapshot: RepositorySnapshot, details: RepositoryD
   let files = base;
   if (usable) {
     const stats = new Map(usable.stats[scope].map(([pathId, additions, deletions]) => [pathId, [additions, deletions] as const]));
+    const unchanged = new Map(usable.contentUnchanged?.[scope] ?? []);
     files = base.map((file) => {
       const stat = stats.get(file.pathId);
-      return stat ? { ...file, additions: stat[0], deletions: stat[1] } : file;
+      const reason = unchanged.get(file.pathId);
+      const next = stat ? { ...file, additions: stat[0], deletions: stat[1] } : file;
+      return reason ? { ...next, contentUnchanged: reason } : next;
     });
   }
   perSnapshot.set(key, files);
