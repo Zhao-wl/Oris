@@ -245,3 +245,6 @@ button:disabled { opacity:.45; cursor:default; }
 .git-facts dt { color:var(--dim); }
 .git-facts dd { margin:0; overflow-wrap:anywhere; }
 #settings-git { flex:1; min-width:280px; }
+.settings-notices { font-size:12px; color:var(--dim); }
+.settings-notices summary { cursor:pointer; }
+.settings-notices pre { max-height:220px; overflow:auto; margin:6px 0 0; padding:8px; white-space:pre-wrap; background:var(--bg); border:1px solid var(--border); border-radius:4px; font-size:11px; }

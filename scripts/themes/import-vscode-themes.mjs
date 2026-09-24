@@ -245,6 +245,24 @@ export async function generate() {
   await writeFile(path.join(output,'index.json'),JSON.stringify(index,null,2)+'\n');
   const report=['# 配色对比度报告','',`来源：microsoft/vscode ${commit}；Oris 原配色取自 src/styles.css。`,'','标准：普通文字 WCAG AA 4.5:1；半透明颜色按背景合成后计算。diff 词级检查文字对叠加色背景的对比度。','', '## 未达标或缺色','', '| 方案 | 项目 | 实测 | 阈值 |','| --- | --- | ---: | ---: |',...(failed.length?failed:['| — | 无 | — | — |']),'','## 映射后缺色','',...(missing.size?[...missing].sort().map(s=>`- ${s}`):['- 无']),'','说明：报告只记录问题，不自动修正色值。选区前景缺省时使用 editor.foreground；实际选区半透明背景按编辑器背景合成。',''].join('\n');
   await writeFile(path.join(output,'REPORT.md'),report);
+  // B22：发布包内含许可声明。原文逐字收录，随前端打包进 exe，在设置窗口中可查看。
+  const vscodeLicense=(await readFile(path.join(source,'LICENSE.txt'),'utf8')).replace(/\r\n/g,'\n').trim();
+  const colorsublime=(await readFile(path.join(source,'Colorsublime-Themes-NOTICE.txt'),'utf8')).replace(/\r\n/g,'\n').trim();
+  const notices=[
+    'Oris 配色方案的第三方许可声明',
+    '',
+    `19 套配色方案转换自 microsoft/vscode（提交 ${commit}）的内置主题；其中 9 套扩展主题（Abyss、Kimbie Dark、Monokai、Monokai Dimmed、Quiet Light、Red、Solarized Dark、Solarized Light、Tomorrow Night Blue）源自 Colorsublime-Themes。`,
+    '',
+    '==== Visual Studio Code ====',
+    '',
+    vscodeLicense,
+    '',
+    '==== Colorsublime-Themes ====',
+    '',
+    colorsublime,
+    '',
+  ].join('\n');
+  await writeFile(path.join(output,'NOTICES.txt'),notices);
   return {count:index.length,failures:failed.length,missing:missing.size};
 }
 if (process.argv[1] && path.resolve(process.argv[1])===fileURLToPath(import.meta.url)) console.log(await generate());

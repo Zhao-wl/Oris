@@ -30,11 +30,11 @@ describe('VS Code 配色导入', () => {
   });
   it('离线重复生成逐字节一致，且恰好 21 套', async () => {
     await generate();
-    const files=[...themes.map(([id])=>`${id}.json`),'oris-dark.json','oris-light.json','index.json','REPORT.md'];
+    const files=[...themes.map(([id])=>`${id}.json`),'oris-dark.json','oris-light.json','index.json','REPORT.md','NOTICES.txt'];
     const before=await Promise.all(files.map(f=>readFile(path.join(root,'src/themes/generated',f))));
     await generate();
     const after=await Promise.all(files.map(f=>readFile(path.join(root,'src/themes/generated',f))));
     expect(after.every((bytes,i)=>bytes.equals(before[i]))).toBe(true);
-    expect(JSON.parse(after.at(-2)).length).toBe(21);
+    expect(JSON.parse(after.at(-3)).length).toBe(21);
   });
 });
