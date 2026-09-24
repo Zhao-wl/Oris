@@ -102,10 +102,12 @@ impl GitAdapter {
             if summary.contains("Not possible to fast-forward") || summary.contains("not possible to fast-forward") || summary.contains("Diverging branches") {
                 return Ok(Step::confirm("diverged", note(format!("本地分支 {branch} 与 {upstream_label} 已分叉，无法仅快进。可以改用“合并远端改动”（会生成合并提交）；Oris 不做 rebase")), vec![]));
             }
-            let untracked = summary.contains("untracked working tree files would be");
-            if stashed.is_none() && !stash_first && (untracked || summary.contains("would be overwritten by merge") || summary.contains("Please commit your changes or stash them")) {
+            // 文件列表很长时 Git 的提示头会被挤出错误尾部：在全部输出中识别。
+            let full = Self::full_output(ctx, &result);
+            let untracked = full.contains("untracked working tree files would be") || full.contains("Please move or remove them before you merge");
+            if stashed.is_none() && !stash_first && (untracked || full.contains("would be overwritten by merge") || full.contains("Please commit your changes or stash them")) {
                 let reason = if untracked { "untrackedOverwritten" } else { "localChanges" };
-                let paths = summary.lines().filter_map(|l| l.strip_prefix('\t')).map(|l| l.trim().to_owned()).collect();
+                let paths = Self::listed_paths(&full);
                 return Ok(Step::confirm(reason, format!("工作区改动会被拉取覆盖，Git 拒绝拉取 {upstream_label}。可以先储藏{}再拉取，拉取后不会自动恢复", if untracked { "（含未跟踪文件）" } else { "" }), paths));
             }
         }

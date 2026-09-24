@@ -23,11 +23,6 @@ impl Target<'_> {
     }
 }
 
-/// 从 Git 的拒绝信息中取出被列出的路径（行首为制表符）。
-fn listed_paths(summary: &str) -> Vec<String> {
-    summary.lines().filter_map(|l| l.strip_prefix('\t')).map(|l| l.trim().to_owned()).filter(|l| !l.is_empty()).collect()
-}
-
 impl GitAdapter {
     /// 分支名校验（只读）：`check-ref-format --branch`，并拒绝会被 Git 展开的写法（`@{-1}` 等）与选项形式。
     pub fn check_branch_name(&self, name: &str) -> Result<(), GitError> {
@@ -107,13 +102,14 @@ impl GitAdapter {
         if result.success {
             return Ok(Step::ok(stash_note(&format!("已切换到 {label}"))));
         }
-        let summary = result.summary();
-        let local_changes = summary.contains("would be overwritten by checkout") || summary.contains("Please commit your changes or stash them");
-        let untracked = summary.contains("untracked working tree files would be");
+        // 文件列表很长时 Git 的提示头会被挤出错误尾部：在全部输出中识别。
+        let full = Self::full_output(ctx, &result);
+        let local_changes = full.contains("would be overwritten by checkout") || full.contains("Please commit your changes or stash them");
+        let untracked = full.contains("untracked working tree files would be") || full.contains("Please move or remove them before you switch");
         if !stash_first && (local_changes || untracked) {
             let reason = if untracked { "untrackedOverwritten" } else { "localChanges" };
             let what = if untracked { "未跟踪文件会被覆盖" } else { "工作区改动会被覆盖" };
-            return Ok(Step::confirm(reason, format!("Git 拒绝切换到 {label}：{what}。可以先储藏{}再切换，切换后不会自动恢复", if untracked { "（含未跟踪文件）" } else { "" }), listed_paths(&summary)));
+            return Ok(Step::confirm(reason, format!("Git 拒绝切换到 {label}：{what}。可以先储藏{}再切换，切换后不会自动恢复", if untracked { "（含未跟踪文件）" } else { "" }), Self::listed_paths(&full)));
         }
         Ok(Step::failed(stash_note(&Self::failure_message(&result, &format!("切换到 {label}")))))
     }
