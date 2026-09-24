@@ -335,8 +335,10 @@ impl GitAdapter {
                 wt.insert(id, stat);
             }
         }
-        let revision = hex::encode(revision.finalize());
+        // 进行中状态（MERGE_HEAD、rebase-merge/ 等）不一定改变 status 输出，也计入 revision，否则会复用旧的扫描状态。
         let in_progress = status_v2::detect_in_progress(&self.git_dir);
+        revision.update([u8::from(in_progress.merge), u8::from(in_progress.rebase), u8::from(in_progress.cherry_pick), u8::from(in_progress.revert), u8::from(in_progress.bisect)]);
+        let revision = hex::encode(revision.finalize());
         let entries = files
             .all
             .into_iter()
