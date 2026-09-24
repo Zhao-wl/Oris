@@ -514,6 +514,13 @@ async fn check_branch_name(repo_id: String, name: String, registry: State<'_, Re
         .map_err(|error| GitError::Runtime(error.to_string()))?
 }
 
+/// 合并进行中的默认合并信息（`.git/MERGE_MSG`，只读）；没有进行中的合并时为 None。
+#[cfg(feature = "desktop")]
+#[tauri::command]
+fn merge_message(repo_id: String, registry: State<'_, RepositoryRegistry>) -> Result<Option<String>, GitError> {
+    Ok(opened(&registry, &repo_id)?.adapter.merge_message())
+}
+
 /// 丢弃确认框的数据（只读）。
 #[cfg(feature = "desktop")]
 #[tauri::command]
@@ -640,7 +647,8 @@ pub fn run() {
             read_revision_pair,
             stash_list,
             stash_changes,
-            check_branch_name
+            check_branch_name,
+            merge_message
         ])
         .run(application_context())
         .expect("failed to run Oris");

@@ -176,7 +176,7 @@ describe("compare and file history (A09)", () => {
     // main 在外部前进：提示端点已移动，比较仍使用固定的 OID，直到用户选择按新位置重新比较。
     bridge.refs.mockImplementation(async () => refsView(O("9")));
     bridge.operation.mockResolvedValue({ opId: "op", repoId: "a", kind: "fetch", status: "succeeded", message: "已获取 origin", output: "", outputTruncated: false, snapshot: snap(), confirmation: null, backup: null, lockLeft: false, gitProcesses: 1, elapsedMs: 1 } satisfies OperationOutcome);
-    await click(button("⇣ 获取…"));
+    await click(q(".sync-button")); await click(button("获取…", q(".sync-popover")!));
     await click(button("获取", q(".fetch-dialog")!));
     expect(q(".log-moved")?.textContent).toContain("main 已移动到 99999999");
     const calls = bridge.compare.mock.calls.length;
@@ -203,7 +203,7 @@ describe("explicit fetch (A10)", () => {
   it("defaults to the upstream remote, runs one fetch operation and records Oris' completion time", async () => {
     bridge.operation.mockResolvedValue({ opId: "op", repoId: "a", kind: "fetch", status: "succeeded", message: "已获取 origin：1 个远端跟踪引用 / 标签有更新", output: "", outputTruncated: false, snapshot: snap(), confirmation: null, backup: null, lockLeft: false, gitProcesses: 1, elapsedMs: 1 } satisfies OperationOutcome);
     await mount();
-    await click(button("⇣ 获取…"));
+    await click(q(".sync-button")); await click(button("获取…", q(".sync-popover")!));
     const dialog = q(".fetch-dialog")!;
     expect(dialog.textContent).toContain("不修改工作区");
     expect((dialog.querySelector("select") as HTMLSelectElement).value).toBe("origin");
@@ -217,7 +217,7 @@ describe("explicit fetch (A10)", () => {
   it("asks the user to choose a remote when the current branch has no valid upstream", async () => {
     bridge.refs.mockImplementation(async () => ({ ...refsView(), defaultRemote: null }));
     await mount();
-    await click(button("⇣ 获取…"));
+    await click(q(".sync-button")); await click(button("获取…", q(".sync-popover")!));
     const dialog = q(".fetch-dialog")!;
     expect(button("获取", dialog).disabled).toBe(true);
     expect(dialog.textContent).toContain("请选择要获取的 remote");

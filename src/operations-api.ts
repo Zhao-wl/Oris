@@ -20,18 +20,24 @@ export type OperationRequest =
   | ({ kind: "checkout"; commit: string } & StashFirst)
   | { kind: "branchRename"; name: string; newName: string }
   | { kind: "branchDelete"; name: string; force?: boolean }
-  | { kind: "setUpstream"; name: string; upstream: string };
+  | { kind: "setUpstream"; name: string; upstream: string }
+  | ({ kind: "pull"; mode: "ffOnly" | "merge" } & StashFirst)
+  | { kind: "push"; remote?: string | null }
+  | { kind: "merge"; target: string; expected: string; noFf?: boolean }
+  | { kind: "mergeAbort" }
+  | { kind: "mergeCommit"; message: string };
 
 /** “stash 后切换”：Git 因工作区改动拒绝切换、用户确认后，先储藏（可含未跟踪文件）再切换，切换后不自动恢复。 */
 export interface StashFirst { stashFirst?: boolean; stashUntracked?: boolean }
 
 export type OperationKind = "stage" | "unstage" | "markResolved" | "discard" | "undoDiscard" | "commit" | "amend" | "undoCommit" | "fetch"
   | "stashPush" | "stashApply" | "stashPop" | "stashDrop"
-  | "branchCreate" | "branchSwitch" | "branchTrack" | "checkout" | "branchRename" | "branchDelete" | "setUpstream";
+  | "branchCreate" | "branchSwitch" | "branchTrack" | "checkout" | "branchRename" | "branchDelete" | "setUpstream"
+  | "pull" | "push" | "merge" | "mergeAbort" | "mergeCommit";
 export type OperationStatus = "succeeded" | "failed" | "cancelled" | "needsConfirmation";
 
 export interface Confirmation {
-  reason: "conflictMarkers" | "unrecoverable" | "modifiedSinceDiscard" | "localChanges" | "untrackedOverwritten" | "localExists" | "unmerged";
+  reason: "conflictMarkers" | "unrecoverable" | "modifiedSinceDiscard" | "localChanges" | "untrackedOverwritten" | "localExists" | "unmerged" | "diverged";
   message: string;
   paths: string[];
 }

@@ -49,6 +49,9 @@ export interface RefsView {
   defaultRemote: string | null;
   /** FETCH_HEAD 的修改时间，只用于判断外部工具是否在 Oris 记录之后又获取过。 */
   fetchHeadAt: number | null;
+  /** 影响拉取的配置（branch.<name>.rebase 或 pull.rebase）；Oris 始终以 --no-rebase 执行。 */
+  pullRebase?: string | null;
+  mergeFf?: string | null;
 }
 
 export const readLog = (repoId: string, query: LogQuery, cursor: LogCursor | null) => invoke<LogPage>("read_log", { repoId, query, cursor });
@@ -83,3 +86,6 @@ export const stashList = (repoId: string) => invoke<StashEntry[]>("stash_list", 
 export const stashChanges = (repoId: string, oid: string) => invoke<StashChanges>("stash_changes", { repoId, oid });
 /** 分支名校验（`check-ref-format --branch`）；无效时抛出带原因的错误。 */
 export const checkBranchName = (repoId: string, name: string) => invoke<void>("check_branch_name", { repoId, name });
+
+// ---------- V2-04：合并进行中的默认合并信息（只读） ----------
+export const mergeMessage = (repoId: string) => invoke<string | null>("merge_message", { repoId });

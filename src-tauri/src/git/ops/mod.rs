@@ -10,10 +10,15 @@ mod network;
 pub mod process;
 mod stage;
 mod stash;
+mod sync;
+#[cfg_attr(not(feature = "desktop"), allow(unused_imports))]
+pub use sync::PullMode;
 #[cfg(test)]
 mod branch_tests;
 #[cfg(test)]
 mod network_tests;
+#[cfg(test)]
+mod sync_tests;
 #[cfg(test)]
 mod tests;
 
@@ -125,6 +130,29 @@ pub enum OperationRequest {
         force: bool,
     },
     SetUpstream { name: String, upstream: String },
+    /// 拉取当前分支的上游（R-SYNC）：仅快进（默认）或合并，始终不 rebase；可先储藏。
+    Pull {
+        mode: PullMode,
+        #[serde(default)]
+        stash_first: bool,
+        #[serde(default)]
+        stash_untracked: bool,
+    },
+    /// 推送当前分支；没有上游时推送到所选 remote 并设为上游。
+    Push {
+        #[serde(default)]
+        remote: Option<String>,
+    },
+    /// 把分支或提交合并到当前分支（R-MERGE）；`expected` 为界面显示的目标 OID。
+    Merge {
+        target: String,
+        expected: String,
+        #[serde(default)]
+        no_ff: bool,
+    },
+    MergeAbort,
+    /// 所有冲突标记已解决后完成合并。
+    MergeCommit { message: String },
 }
 
 impl OperationRequest {
@@ -150,6 +178,11 @@ impl OperationRequest {
             Self::BranchRename { .. } => "branchRename",
             Self::BranchDelete { .. } => "branchDelete",
             Self::SetUpstream { .. } => "setUpstream",
+            Self::Pull { .. } => "pull",
+            Self::Push { .. } => "push",
+            Self::Merge { .. } => "merge",
+            Self::MergeAbort => "mergeAbort",
+            Self::MergeCommit { .. } => "mergeCommit",
         }
     }
 }
@@ -371,6 +404,11 @@ impl GitAdapter {
             OperationRequest::BranchRename { name, new_name } => self.op_branch_rename(name, new_name, ctx),
             OperationRequest::BranchDelete { name, force } => self.op_branch_delete(name, *force, ctx),
             OperationRequest::SetUpstream { name, upstream } => self.op_set_upstream(name, upstream, ctx),
+            OperationRequest::Pull { mode, stash_first, stash_untracked } => self.op_pull(*mode, *stash_first, *stash_untracked, ctx),
+            OperationRequest::Push { remote } => self.op_push(remote.as_deref(), ctx),
+            OperationRequest::Merge { target, expected, no_ff } => self.op_merge(target, expected, *no_ff, ctx),
+            OperationRequest::MergeAbort => self.op_merge_abort(ctx),
+            OperationRequest::MergeCommit { message } => self.op_merge_commit(message, ctx),
         }?;
         let git_processes = ctx.processes.load(std::sync::atomic::Ordering::SeqCst);
         // 需要确认时没有任何改动，不必刷新；其余结局（含失败与取消）都重新读取实际状态并如实报告。
@@ -438,6 +476,25 @@ impl GitAdapter {
     pub(super) fn write_git_pathless(&self, args: &[&str], ctx: &OpContext) -> Result<process::CallResult, GitError> {
         let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
         process::run_with(&self.git, &self.worktree, &args, None, true, &ctx.cancel, &ctx.log, &ctx.processes, process::RunOptions { idle: None, literal_pathspecs: false })
+    }
+
+    /// 本次操作到目前为止的全部输出（已脱敏，最多 256 KiB）。Git 的提示可能被很长的文件列表挤出错误尾部，识别时用它。
+    pub(super) fn full_output(ctx: &OpContext, result: &process::CallResult) -> String {
+        format!("{}\n{}", ctx.log.snapshot().0, result.stderr_tail)
+    }
+
+    /// Git 在拒绝时以制表符开头列出的路径（去重，最多 200 个）。
+    pub(super) fn listed_paths(text: &str) -> Vec<String> {
+        let mut paths: Vec<String> = Vec::new();
+        for line in text.lines().filter_map(|l| l.strip_prefix('\t')).map(str::trim).filter(|l| !l.is_empty()) {
+            if paths.len() >= 200 {
+                break;
+            }
+            if !paths.iter().any(|p| p == line) {
+                paths.push(line.to_owned());
+            }
+        }
+        paths
     }
 
     /// 失败摘要：外部锁冲突给出固定说明。
