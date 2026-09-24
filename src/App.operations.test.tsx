@@ -45,6 +45,8 @@ const rows = () => [...host.querySelectorAll(".file")].map((n) => n.getAttribute
 const row = (path: string) => host.querySelector(`.file[aria-label="${path}"]`) as HTMLElement;
 const rowButton = (path: string, label: string) => [...row(path).querySelectorAll("button")].find((b) => b.textContent === label) as HTMLButtonElement;
 const button = (label: string) => [...host.querySelectorAll("button")].find((b) => b.textContent === label) as HTMLButtonElement;
+const contextMenu = async (path: string) => { await act(async () => { row(path).dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 40, clientY: 60 })); }); await flush(); };
+const menuItem = (prefix: string) => [...host.querySelectorAll(".file-menu button")].find((b) => b.textContent!.startsWith(prefix)) as HTMLButtonElement | undefined;
 const click = async (element: HTMLElement) => { await act(async () => element.click()); await flush(); };
 const type = async (element: HTMLTextAreaElement, value: string) => {
   await act(async () => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(element, value); element.dispatchEvent(new Event("input", { bubbles: true })); });
@@ -132,7 +134,11 @@ describe("discard (B06)", () => {
     await mount();
     await click(row("a.txt").querySelector(".file-check") as HTMLElement);
     await click(row("new.txt").querySelector(".file-check") as HTMLElement);
-    await click(button("丢弃所选…"));
+    expect(rowButton("a.txt", "丢弃…")).toBeUndefined();
+    await contextMenu("a.txt");
+    expect(host.querySelector(".file-menu")?.textContent).toContain("已勾选 2 个文件");
+    expect(menuItem("暂存")?.textContent).toBe("暂存（2 个文件）");
+    await click(menuItem("丢弃…")!);
     const dialog = host.querySelector(".confirm-dialog")!;
     expect(dialog.querySelector("h3")?.textContent).toBe("丢弃 2 个文件的改动");
     expect(dialog.textContent).toContain("1 个是未跟踪文件");
@@ -142,7 +148,9 @@ describe("discard (B06)", () => {
     expect(bridge.operation).not.toHaveBeenCalled();
     bridge.prepareDiscard.mockResolvedValue({ scope: "unstaged", files: 1, untracked: 0, paths: ["a.txt"], unrecoverable: ["a.txt"], blocked: [] });
     bridge.operation.mockResolvedValue(outcome("discard", snap([change("new.txt", "untracked")], [], "r2"), { backup: { id: "b1", createdAt: 1, scope: "unstaged", files: 1, unrecoverable: 1, paths: ["a.txt"] } }));
-    await click(rowButton("a.txt", "丢弃…"));
+    await click(row("new.txt").querySelector(".file-check") as HTMLElement);
+    await contextMenu("a.txt");
+    await click(menuItem("丢弃…")!);
     expect(host.querySelector(".confirm-warning")?.textContent).toContain("不可撤销");
     await click(button("丢弃（含不可撤销）"));
     expect(bridge.operation).toHaveBeenCalledWith("a", "unstaged", expect.any(String), { kind: "discard", scope: "unstaged", pathIds: ["id-a.txt"], confirmedUnrecoverable: true });
@@ -151,10 +159,15 @@ describe("discard (B06)", () => {
   it("disables discard for gitlinks and conflicts with a reason; conflicts offer mark-resolved instead", async () => {
     bridge.open.mockResolvedValue(snap([{ ...change("sub"), gitlink: true }, change("c.txt", "conflicted")], [change("c.txt", "conflicted")]));
     await mount();
-    expect(rowButton("sub", "丢弃…").disabled).toBe(true);
-    expect(rowButton("sub", "丢弃…").title).toContain("gitlink");
+    await contextMenu("sub");
+    expect(menuItem("丢弃…")!.disabled).toBe(true);
+    expect(menuItem("丢弃…")!.title).toContain("gitlink");
     expect(rowButton("c.txt", "标记已解决")).toBeTruthy();
-    expect(rowButton("c.txt", "丢弃…")).toBeUndefined();
+    await act(async () => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })); }); await flush();
+    await contextMenu("c.txt");
+    expect(menuItem("标记已解决")).toBeTruthy();
+    expect(menuItem("丢弃…")!.disabled).toBe(true);
+    expect(menuItem("暂存")!.disabled).toBe(true);
   });
 });
 
