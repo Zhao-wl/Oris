@@ -149,7 +149,9 @@ describe("discard (B06)", () => {
     bridge.prepareDiscard.mockResolvedValue({ scope: "unstaged", files: 1, untracked: 0, paths: ["a.txt"], unrecoverable: ["a.txt"], blocked: [] });
     bridge.operation.mockResolvedValue(outcome("discard", snap([change("new.txt", "untracked")], [], "r2"), { backup: { id: "b1", createdAt: 1, scope: "unstaged", files: 1, unrecoverable: 1, paths: ["a.txt"] } }));
     await click(row("new.txt").querySelector(".file-check") as HTMLElement);
-    await contextMenu("a.txt");
+    // 只勾选了 a.txt：在未勾选的 new.txt 上右键，仍作用于勾选项。
+    await contextMenu("new.txt");
+    expect(host.querySelector(".file-menu")?.textContent).not.toContain("已勾选");
     await click(menuItem("丢弃…")!);
     expect(host.querySelector(".confirm-warning")?.textContent).toContain("不可撤销");
     await click(button("丢弃（含不可撤销）"));

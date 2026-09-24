@@ -320,10 +320,11 @@ async function functional() {
     check("B06 丢弃只在右键菜单提供（文件行与批量栏没有丢弃按钮）；gitlink 的丢弃菜单项不可用并说明原因", noRowDiscard && gitlinkItem?.disabled && /gitlink/.test(gitlinkItem.title), { gitlinkMenu, gitlinkShot });
     before = fingerprint(repos.discard);
     for (const p of ["a.txt", "bin.dat", "del.txt", "fresh/dir/new.bin"]) await ctx.evaluate(`window.__v2.check(${q(p)})`);
-    await ctx.evaluate(`window.__v2.openMenu('a.txt')`); await sleep(100);
+    // 右键点在未勾选的 sub 上：有勾选时菜单仍作用于全部勾选项。
+    await ctx.evaluate(`window.__v2.openMenu('sub')`); await sleep(100);
     const batchMenu = await ctx.evaluate(`window.__v2.menu()`);
     const batchMenuShot = await ctx.shot("b06-batch-context-menu");
-    check("右键菜单支持多选批量：对全部勾选项提供暂存与丢弃", batchMenu?.some((i) => i.text === "暂存（4 个文件）" && !i.disabled) && batchMenu?.some((i) => i.text === "丢弃…（4 个文件）" && !i.disabled), { batchMenu, batchMenuShot });
+    check("右键菜单支持多选批量：有勾选时（即使右键点在未勾选文件上）直接对全部勾选项暂存与丢弃", batchMenu?.some((i) => i.text === "暂存（4 个文件）" && !i.disabled) && batchMenu?.some((i) => i.text === "丢弃…（4 个文件）" && !i.disabled), { batchMenu, batchMenuShot });
     await ctx.evaluate(`window.__v2.menuItem('丢弃…').click()`);
     await ctx.waitUntil(`window.__v2.dialog()`, 10000);
     const discardDialog = await ctx.evaluate(`window.__v2.dialog()`);

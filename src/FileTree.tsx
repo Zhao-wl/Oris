@@ -134,13 +134,14 @@ function FileButton({ file, selectedPathId, onSelect, depth = 0, showPath = fals
 }
 
 /**
- * 右键菜单（丢弃只在这里提供）：作用于右键的文件；该文件已被勾选时作用于全部勾选项（批量）。
+ * 右键菜单（丢弃只在这里提供）：有勾选时直接作用于全部勾选项（批量），与右键点在哪个文件上无关；没有勾选时作用于右键的文件。
  * 暂存 / 取消暂存作用于其中的普通文件，冲突文件另有“标记已解决”；有任一文件不能丢弃时“丢弃…”不可用并说明原因。
  */
 function FileMenu({ menu, files, onClose }: { menu: { file: FileChange; x: number; y: number }; files: FileChange[]; onClose(): void }) {
   const actions = useContext(ActionsContext)!;
   const host = useRef<HTMLDivElement>(null);
-  const targets = actions.checked.has(menu.file.pathId) ? files.filter((file) => actions.checked.has(file.pathId)) : [menu.file];
+  const checkedFiles = files.filter((file) => actions.checked.has(file.pathId));
+  const targets = checkedFiles.length ? checkedFiles : [menu.file];
   const regular = targets.filter((file) => file.status !== "conflicted");
   const conflicts = targets.filter((file) => file.status === "conflicted");
   const blocked = targets.map((file) => rowActions(actions.scope, file)).find((a) => !a.discard)?.discardBlocked ?? null;
