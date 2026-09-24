@@ -1,5 +1,6 @@
 mod content;
 pub mod history;
+pub mod stash;
 pub mod log;
 mod media;
 pub mod ops;

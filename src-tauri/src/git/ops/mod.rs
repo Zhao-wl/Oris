@@ -3,11 +3,15 @@
 //!
 //! 前端只能提交 [`OperationRequest`] 这样的操作描述；参数由这里构造，路径一律校验后经
 //! `--pathspec-from-file=- --pathspec-file-nul` 传递。任何写操作都不自动重试。
+mod branch;
 mod commit;
 mod discard;
 mod network;
 pub mod process;
 mod stage;
+mod stash;
+#[cfg(test)]
+mod branch_tests;
 #[cfg(test)]
 mod network_tests;
 #[cfg(test)]
@@ -60,6 +64,67 @@ pub enum OperationRequest {
     UndoCommit { expected_head: String },
     /// 显式获取远端状态（R-REMOTE）：只更新远端跟踪引用等 Git 元数据。
     Fetch { remote: String },
+    /// 储藏（R-STASH）：可填说明、包含未跟踪文件、只储藏选中的路径。
+    StashPush {
+        #[serde(default)]
+        message: Option<String>,
+        #[serde(default)]
+        include_untracked: bool,
+        #[serde(default)]
+        path_ids: Option<Vec<String>>,
+    },
+    /// 应用 / 弹出 stash@{index}；执行前核对它仍指向 oid。
+    StashApply {
+        index: u32,
+        oid: String,
+        #[serde(default)]
+        pop: bool,
+    },
+    StashDrop { index: u32, oid: String },
+    /// 新建分支（R-BRANCHOP）：起点为 HEAD、完整分支名或提交 OID。
+    BranchCreate {
+        name: String,
+        start: String,
+        #[serde(default)]
+        switch: bool,
+        #[serde(default)]
+        stash_first: bool,
+        #[serde(default)]
+        stash_untracked: bool,
+    },
+    /// 切换到本地分支（完整名 refs/heads/…）。
+    BranchSwitch {
+        name: String,
+        #[serde(default)]
+        stash_first: bool,
+        #[serde(default)]
+        stash_untracked: bool,
+    },
+    /// 从远端跟踪分支（refs/remotes/…）建立本地跟踪分支并切换；`local_name` 为空时使用同名。
+    BranchTrack {
+        remote: String,
+        #[serde(default)]
+        local_name: Option<String>,
+        #[serde(default)]
+        stash_first: bool,
+        #[serde(default)]
+        stash_untracked: bool,
+    },
+    /// 检出指定提交（分离 HEAD）。
+    Checkout {
+        commit: String,
+        #[serde(default)]
+        stash_first: bool,
+        #[serde(default)]
+        stash_untracked: bool,
+    },
+    BranchRename { name: String, new_name: String },
+    BranchDelete {
+        name: String,
+        #[serde(default)]
+        force: bool,
+    },
+    SetUpstream { name: String, upstream: String },
 }
 
 impl OperationRequest {
@@ -74,6 +139,17 @@ impl OperationRequest {
             Self::Commit { amend: true, .. } => "amend",
             Self::UndoCommit { .. } => "undoCommit",
             Self::Fetch { .. } => "fetch",
+            Self::StashPush { .. } => "stashPush",
+            Self::StashApply { pop: false, .. } => "stashApply",
+            Self::StashApply { pop: true, .. } => "stashPop",
+            Self::StashDrop { .. } => "stashDrop",
+            Self::BranchCreate { .. } => "branchCreate",
+            Self::BranchSwitch { .. } => "branchSwitch",
+            Self::BranchTrack { .. } => "branchTrack",
+            Self::Checkout { .. } => "checkout",
+            Self::BranchRename { .. } => "branchRename",
+            Self::BranchDelete { .. } => "branchDelete",
+            Self::SetUpstream { .. } => "setUpstream",
         }
     }
 }
@@ -285,6 +361,16 @@ impl GitAdapter {
             OperationRequest::Commit { message, amend, keep_message, expected_head } => self.op_commit(message, *amend, *keep_message, expected_head.as_deref(), ctx),
             OperationRequest::UndoCommit { expected_head } => self.op_undo_commit(expected_head, ctx),
             OperationRequest::Fetch { remote } => self.op_fetch(remote, ctx),
+            OperationRequest::StashPush { message, include_untracked, path_ids } => self.op_stash_push(message.as_deref(), *include_untracked, path_ids.as_deref(), ctx),
+            OperationRequest::StashApply { index, oid, pop } => self.op_stash_apply(*index, oid, *pop, ctx),
+            OperationRequest::StashDrop { index, oid } => self.op_stash_drop(*index, oid, ctx),
+            OperationRequest::BranchCreate { name, start, switch, stash_first, stash_untracked } => self.op_branch_create(name, start, *switch, *stash_first, *stash_untracked, ctx),
+            OperationRequest::BranchSwitch { name, stash_first, stash_untracked } => self.op_branch_switch(name, *stash_first, *stash_untracked, ctx),
+            OperationRequest::BranchTrack { remote, local_name, stash_first, stash_untracked } => self.op_branch_track(remote, local_name.as_deref(), *stash_first, *stash_untracked, ctx),
+            OperationRequest::Checkout { commit, stash_first, stash_untracked } => self.op_checkout(commit, *stash_first, *stash_untracked, ctx),
+            OperationRequest::BranchRename { name, new_name } => self.op_branch_rename(name, new_name, ctx),
+            OperationRequest::BranchDelete { name, force } => self.op_branch_delete(name, *force, ctx),
+            OperationRequest::SetUpstream { name, upstream } => self.op_set_upstream(name, upstream, ctx),
         }?;
         let git_processes = ctx.processes.load(std::sync::atomic::Ordering::SeqCst);
         // 需要确认时没有任何改动，不必刷新；其余结局（含失败与取消）都重新读取实际状态并如实报告。
@@ -346,6 +432,12 @@ impl GitAdapter {
     pub(super) fn write_git(&self, args: &[&str], stdin: Option<Vec<u8>>, log_stdout: bool, ctx: &OpContext) -> Result<process::CallResult, GitError> {
         let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
         process::run(&self.git, &self.worktree, &args, stdin, log_stdout, &ctx.cancel, &ctx.log, &ctx.processes)
+    }
+
+    /// 不带用户路径、需要 Git 内部魔术路径的写命令（`GIT_LITERAL_PATHSPECS` 关闭，见 [`process::RunOptions`]）。
+    pub(super) fn write_git_pathless(&self, args: &[&str], ctx: &OpContext) -> Result<process::CallResult, GitError> {
+        let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
+        process::run_with(&self.git, &self.worktree, &args, None, true, &ctx.cancel, &ctx.log, &ctx.processes, process::RunOptions { idle: None, literal_pathspecs: false })
     }
 
     /// 失败摘要：外部锁冲突给出固定说明。
