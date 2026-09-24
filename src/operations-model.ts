@@ -64,7 +64,7 @@ export function rowActions(scope: CompareScope, file: FileChange): { primary: "s
 
 export const operationLabels: Record<OperationKind, string> = {
   stage: "暂存", unstage: "取消暂存", markResolved: "标记已解决", discard: "丢弃", undoDiscard: "撤销丢弃",
-  commit: "提交", amend: "修订提交", undoCommit: "撤销最近提交"
+  commit: "提交", amend: "修订提交", undoCommit: "撤销最近提交", fetch: "获取远端状态"
 };
 
 /** 仓库处于 Oris 不支持的进行中状态时的说明（写操作全部禁用，阅读正常）。 */

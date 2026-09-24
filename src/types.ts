@@ -1,6 +1,6 @@
 export type CompareScope = "unstaged" | "staged" | "all";
 export type ConflictVersion = "stage1" | "stage2" | "stage3" | "workingTree";
-export type Endpoint = ConflictVersion | "head" | "index" | "workingTree" | "emptyTree" | "unavailable";
+export type Endpoint = ConflictVersion | "head" | "index" | "workingTree" | "emptyTree" | "commit" | "unavailable";
 
 export interface GitInfo {
   executable: string;
