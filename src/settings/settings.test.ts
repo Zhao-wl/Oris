@@ -1,19 +1,21 @@
 import { describe, expect, it, vi } from "vitest";
 import schemeIndex from "../themes/generated/index.json";
-import { createSettingsRegistry, DEFAULT_SCHEME_OPTIONS, FONT_SIZE_MAX, FONT_SIZE_MIN, integerSetting, loadSettings, migrateGitExecutable, SETTINGS_KEY, SETTINGS_VERSION, SettingsStore } from "./index";
+import { createSettingsRegistry, DEFAULT_SCHEMES, FONT_SIZE_MAX, FONT_SIZE_MIN, integerSetting, loadSettings, migrateGitExecutable, SETTINGS_KEY, SETTINGS_VERSION, SettingsStore } from "./index";
 
 const memory = (initial: Record<string, string> = {}) => {
   const data = new Map(Object.entries(initial));
   return { getItem: (key: string) => data.get(key) ?? null, setItem: vi.fn((key: string, value: string) => { data.set(key, value); }), data };
 };
-const registry = (option: keyof typeof DEFAULT_SCHEME_OPTIONS = "oris") => createSettingsRegistry({ schemes: schemeIndex, defaults: DEFAULT_SCHEME_OPTIONS[option] });
+const registry = (defaults?: { lightScheme: string; darkScheme: string }) => createSettingsRegistry({ schemes: schemeIndex, defaults });
 const workspace = (projects: { gitExecutable: string; lastOpenedAt: number }[]) => JSON.stringify({ version: 2, activeRepoId: null, projects: projects.map((p, i) => ({ repo: { repoId: `r${i}` }, pinned: false, anchor: {}, ...p })) });
 
 describe("settings model, registry and persistence", () => {
-  it("builds defaults for both pending default-scheme options (P-V2-07) and keeps V1 diff semantics by default", () => {
-    const oris = loadSettings(memory(), registry("oris")).settings;
-    expect(oris).toMatchObject({ version: SETTINGS_VERSION, appearance: { themeMode: "dark", lightScheme: "oris-light", darkScheme: "oris-dark", fontSize: 13, diffColorMode: "oris" }, git: { executable: "" } });
-    const vscode = loadSettings(memory(), registry("vscode2026")).settings;
+  it("defaults to the Oris schemes (V2-D32) and still accepts other valid default ids", () => {
+    const oris = loadSettings(memory(), registry()).settings;
+    expect(DEFAULT_SCHEMES).toEqual({ lightScheme: "oris-light", darkScheme: "oris-dark" });
+    expect(oris).toMatchObject({ version: SETTINGS_VERSION, appearance: { themeMode: "dark", lightScheme: "oris-light", darkScheme: "oris-dark", fontSize: 13 }, git: { executable: "" } });
+    expect(oris.appearance).not.toHaveProperty("diffColorMode");
+    const vscode = loadSettings(memory(), registry({ lightScheme: "light-2026", darkScheme: "dark-2026" })).settings;
     expect(vscode.appearance).toMatchObject({ lightScheme: "light-2026", darkScheme: "dark-2026" });
     expect(() => createSettingsRegistry({ schemes: schemeIndex, defaults: { lightScheme: "dark-2026", darkScheme: "oris-dark" } })).toThrow();
   });
@@ -32,8 +34,7 @@ describe("settings model, registry and persistence", () => {
     expect(values).not.toHaveProperty("unknown");
     expect(corrected).toEqual(["appearance.lightScheme", "appearance.fontSize"]);
     expect(() => reg.register({ id: "git", label: "dup", order: 1, settings: [] })).toThrow();
-    const ui = reg.definition("appearance", "diffColorMode")!.ui;
-    expect(ui.pendingDecision).toBe("P-V2-05");
+    expect(reg.definition("appearance", "diffColorMode")).toBeUndefined();
     expect(reg.definition("appearance", "lightScheme")!.ui.options!.every((o) => !o.value.startsWith("dark"))).toBe(true);
     expect(reg.definition("appearance", "darkScheme")!.ui.options!.some((o) => o.value === "hc-dark")).toBe(true);
   });
