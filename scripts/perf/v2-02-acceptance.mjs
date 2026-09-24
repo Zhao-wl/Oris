@@ -191,6 +191,11 @@ async function start(profile, extraEnv = {}) {
   await call("Page.addScriptToEvaluateOnNewDocument", { source: PAGE_HELPERS + ";" + V2_HELPERS });
   await call("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
   await evaluate(PAGE_HELPERS); await evaluate(V2_HELPERS);
+  // 按时间记录前端发出的 IPC（CDP Network 捕获 ipc.localhost 请求），用于解释等待。
+  const ipc = [];
+  app.cdp.on("Network.requestWillBeSent", (p) => { if (p.request.url.includes("ipc.localhost")) { const cmd = decodeURIComponent(new URL(p.request.url).pathname.slice(1)); if (!cmd.startsWith("plugin:")) { ipc.push({ at: Date.now(), cmd, id: p.requestId }); if (ipc.length > 400) ipc.shift(); } } });
+  app.cdp.on("Network.loadingFinished", (p) => { const e = ipc.find((x) => x.id === p.requestId && x.ms === undefined); if (e) e.ms = Date.now() - e.at; });
+  await call("Network.enable");
   log(`已启动 PID ${app.pid}，核验 ${q(app.identity)}`);
   const waitUntil = (expr, timeout = 30000) => evaluate(`window.__op.waitUntil(() => (${expr}), ${timeout})`, timeout + 5000).then((r) => { if (!r.ok) throw new Error(`等待失败：${expr}`); return r; });
   const measure = (action, predicate, timeout = 15000) => evaluate(`window.__op.measure(() => { ${action} }, () => (${predicate}), ${timeout})`, timeout + 5000);
@@ -209,7 +214,8 @@ async function start(profile, extraEnv = {}) {
     await sleep(250);
   };
   const openTab = async (prefix) => { const active = await evaluate(`window.__v2.tab(${q(prefix)})?.classList.contains('active')`); if (!active) await evaluate(`window.__v2.tab(${q(prefix)}).click()`); await sleep(300); };
-  return { app, evaluate, waitUntil, measure, shot, settle, addProject, scope, openTab };
+  const recentIpc = (n = 20) => ipc.slice(-n).map((e) => ({ ago: Date.now() - e.at, cmd: e.cmd, ms: e.ms ?? "pending" }));
+  return { app, recentIpc, evaluate, waitUntil, measure, shot, settle, addProject, scope, openTab };
 }
 async function stop(ctx, force = false) {
   try { ctx.app.cdp.close(); } catch { /* 已关闭 */ }
@@ -407,8 +413,8 @@ async function functional() {
     await ctx.addProject(repos.commit);
     await ctx.settle();
     await ctx.openTab("提交");
-    await sleep(500);
-    check("B07 已推送的 HEAD：撤销与 amend 不可用并说明原因", await ctx.evaluate(`(() => { const b = window.__v2.button('撤销最近提交…'); return b.disabled && /origin\\/main/.test(b.title); })()`), await ctx.evaluate(`window.__v2.button('撤销最近提交…')?.title`));
+    await ctx.waitUntil(`(window.__v2.button('撤销最近提交…')?.title ?? '').includes('origin/main')`, 10000).catch(() => {});
+    check("B07 已推送的 HEAD：撤销与 amend 不可用并说明原因", await ctx.evaluate(`(() => { const b = window.__v2.button('撤销最近提交…'); return b.disabled && /origin\\/main/.test(b.title); })()`), { title: await ctx.evaluate(`window.__v2.button('撤销最近提交…')?.title`), debug: await ctx.evaluate(`(async () => { const ws = JSON.parse(localStorage.getItem('oris.workspace.v2')); try { return { active: ws.activeRepoId, head: await window.__TAURI_INTERNALS__.invoke('head_commit_info', { repoId: ws.activeRepoId }), ipc: IPCLOG, side: { loaded: document.querySelector('.commit-side')?.dataset.headOid, snapshot: document.querySelector('.commit-side')?.dataset.snapshotHead }, git: gitHead }; } catch (e) { return { error: String(e?.message ?? JSON.stringify(e)) }; } })()`.replace("gitHead", q(gitOut(repos.commit, ["rev-parse", "HEAD"]))).replace("IPCLOG", q(ctx.recentIpc()))) });
     const pushedShot = await ctx.shot("b07-pushed-protection");
     await ctx.evaluate(`window.__v2.clickRow('one.txt', '暂存')`);
     await ctx.settle();
