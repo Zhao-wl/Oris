@@ -136,7 +136,15 @@ fn file(entry: &Entry, status: FileStatus, old: Option<(&Vec<u8>, &String)>) -> 
         additions: None,
         deletions: None,
         content_unchanged: None,
+        gitlink: is_gitlink(entry),
     }
+}
+
+fn is_gitlink(entry: &Entry) -> bool {
+    const GITLINK: &str = "160000";
+    entry.head.as_ref().is_some_and(|s| s.mode == GITLINK)
+        || entry.index.as_ref().is_some_and(|s| s.mode == GITLINK)
+        || entry.worktree_mode.as_deref() == Some(GITLINK)
 }
 
 fn code_status(code: u8) -> Option<FileStatus> {
@@ -206,6 +214,7 @@ pub(super) fn scope_lists(entries: &[Entry], has_head: bool) -> ScopeLists {
                         additions: None,
                         deletions: None,
                         content_unchanged: None,
+                        gitlink: is_gitlink(entry),
                     });
                 }
                 None
