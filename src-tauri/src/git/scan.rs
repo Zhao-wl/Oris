@@ -136,7 +136,15 @@ fn file(entry: &Entry, status: FileStatus, old: Option<(&Vec<u8>, &String)>) -> 
         additions: None,
         deletions: None,
         content_unchanged: None,
+        gitlink: is_gitlink(entry),
     }
+}
+
+fn is_gitlink(entry: &Entry) -> bool {
+    const GITLINK: &str = "160000";
+    entry.head.as_ref().is_some_and(|s| s.mode == GITLINK)
+        || entry.index.as_ref().is_some_and(|s| s.mode == GITLINK)
+        || entry.worktree_mode.as_deref() == Some(GITLINK)
 }
 
 fn code_status(code: u8) -> Option<FileStatus> {
@@ -206,6 +214,7 @@ pub(super) fn scope_lists(entries: &[Entry], has_head: bool) -> ScopeLists {
                         additions: None,
                         deletions: None,
                         content_unchanged: None,
+                        gitlink: is_gitlink(entry),
                     });
                 }
                 None
@@ -326,8 +335,10 @@ impl GitAdapter {
                 wt.insert(id, stat);
             }
         }
-        let revision = hex::encode(revision.finalize());
+        // 进行中状态（MERGE_HEAD、rebase-merge/ 等）不一定改变 status 输出，也计入 revision，否则会复用旧的扫描状态。
         let in_progress = status_v2::detect_in_progress(&self.git_dir);
+        revision.update([u8::from(in_progress.merge), u8::from(in_progress.rebase), u8::from(in_progress.cherry_pick), u8::from(in_progress.revert), u8::from(in_progress.bisect)]);
+        let revision = hex::encode(revision.finalize());
         let entries = files
             .all
             .into_iter()

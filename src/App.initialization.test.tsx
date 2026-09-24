@@ -7,7 +7,7 @@ import { defaultAnchor, WORKSPACE_KEY } from "./workspace-model";
 
 const bridge = vi.hoisted(() => ({
   open: vi.fn(), refresh: vi.fn(), read: vi.fn(), close: vi.fn(), diff: vi.fn(), queryFocus: vi.fn(),
-  details: vi.fn(), activate: vi.fn(), loadSnapshot: vi.fn(), saveSnapshot: vi.fn(),
+  details: vi.fn(), activate: vi.fn(), loadSnapshot: vi.fn(), saveSnapshot: vi.fn(), operation: vi.fn(), prepareDiscard: vi.fn(),
   focused: false, focus: null as null | ((event: { payload: boolean }) => void),
   changed: null as null | ((event: { payload: string }) => void),
 }));
@@ -19,9 +19,12 @@ vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({
   isFocused: bridge.queryFocus,
   onFocusChanged: async (callback: typeof bridge.focus) => { bridge.focus = callback; return () => { if (bridge.focus === callback) bridge.focus = null; }; },
 }) }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: async (_name: string, callback: typeof bridge.changed) => {
+vi.mock("@tauri-apps/api/event", () => ({ listen: async (name: string, callback: typeof bridge.changed) => {
+  if (name !== "repository-invalidated") return () => {};
   bridge.changed = callback; return () => { if (bridge.changed === callback) bridge.changed = null; };
 } }));
+vi.mock("./operations-api", () => ({ runOperation: bridge.operation, cancelOperation: vi.fn(async () => true), lastOperation: vi.fn(async () => null),
+  prepareDiscard: bridge.prepareDiscard, discardBackups: vi.fn(async () => []), headCommitInfo: vi.fn(async () => null) }));
 vi.mock("./DiffViewer", () => ({ default: ({ readingKey }: { readingKey: string }) => <div data-testid="readable">{readingKey}</div> }));
 vi.mock("./FileTree", () => ({
   compareFiles: (a: { displayPath: string }, b: { displayPath: string }) => a.displayPath.localeCompare(b.displayPath),

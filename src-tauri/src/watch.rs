@@ -34,18 +34,78 @@ pub struct Invalidation {
     pub kinds: Vec<ChangeKind>,
 }
 
-/// 屏蔽窗口：手动刷新回写 index stat 缓存时，跳过由此产生的 `.git/index` 事件（V2-D09）。
+/// 屏蔽窗口（V2-D09、技术方案 §4）：
+/// - 手动刷新回写 index stat 缓存时，跳过由此产生的 `.git/index` 事件；
+/// - Oris 写操作期间该仓库的事件只合并、不下发（操作结束后由 OperationRunner 精确刷新）；
+///   结束后的尾窗口内只跳过写操作自身的回声：文件修改时间不晚于操作结束（含结束时的刷新）的事件，
+///   以及操作删除的路径。操作结束之后才发生的修改照常下发。
 #[derive(Default)]
-pub struct Suppression(Mutex<Option<Instant>>);
+pub struct Suppression {
+    index_until: Mutex<Option<Instant>>,
+    op: Mutex<OpWindow>,
+}
+
+#[derive(Default, Clone)]
+struct OpWindow {
+    active: bool,
+    tail_until: Option<Instant>,
+    ended_at: Option<std::time::SystemTime>,
+    /// 操作结束时不存在的工作区相对路径（操作删除的文件及其上级目录）。
+    absent: HashSet<String>,
+}
+
+/// 尾窗口内的事件是否只是写操作的回声。
+fn is_echo(window: &OpWindow, path: &Path, relative: Option<&str>) -> bool {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) => match (meta.modified(), window.ended_at) {
+            (Ok(modified), Some(ended)) => modified <= ended,
+            _ => false,
+        },
+        // 已不存在：工作区路径只有在操作结束时就不存在才算回声；`.git` 内的删除（如撤销根提交删除分支 ref）由操作刷新覆盖。
+        Err(_) => relative.is_none_or(|rel| window.absent.contains(rel)),
+    }
+}
+
 impl Suppression {
     pub fn index_for(&self, duration: Duration) {
-        *self.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(Instant::now() + duration);
+        *self.index_until.lock().unwrap_or_else(|p| p.into_inner()) = Some(Instant::now() + duration);
     }
     fn index_suppressed(&self) -> bool {
-        self.0
+        self.index_until
             .lock()
             .map(|g| g.is_some_and(|until| Instant::now() < until))
             .unwrap_or(false)
+    }
+    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+    pub fn begin_operation(&self) {
+        let mut op = self.op.lock().unwrap_or_else(|p| p.into_inner());
+        *op = OpWindow { active: true, ..OpWindow::default() };
+    }
+    /// 在操作（含结束时的精确刷新）完成后调用。`touched` 为操作改动的工作区相对路径（`/` 分隔），
+    /// 用于识别被删除的路径；`tail` 覆盖合并窗口内迟到的回声事件。
+    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+    pub fn end_operation(&self, worktree: &Path, touched: impl IntoIterator<Item = String>, tail: Duration) {
+        let mut absent = HashSet::new();
+        for path in touched {
+            let mut current = Some(path.as_str());
+            while let Some(rel) = current.filter(|r| !r.is_empty()) {
+                if std::fs::symlink_metadata(worktree.join(rel)).is_err() {
+                    absent.insert(rel.to_owned());
+                }
+                current = rel.rfind('/').map(|i| &rel[..i]);
+            }
+        }
+        let mut op = self.op.lock().unwrap_or_else(|p| p.into_inner());
+        *op = OpWindow { active: false, tail_until: Some(Instant::now() + tail), ended_at: Some(std::time::SystemTime::now()), absent };
+    }
+    /// None：不屏蔽；Some(窗口)：操作进行中（active）或处于尾窗口。
+    fn operation_state(&self) -> Option<OpWindow> {
+        let op = self.op.lock().unwrap_or_else(|p| p.into_inner());
+        if op.active || op.tail_until.is_some_and(|until| Instant::now() < until) {
+            Some(op.clone())
+        } else {
+            None
+        }
     }
 }
 
@@ -167,6 +227,11 @@ pub fn classify(
     suppression: &Suppression,
     paths: &[PathBuf],
 ) -> Option<Invalidation> {
+    let operation = suppression.operation_state();
+    if operation.as_ref().is_some_and(|op| op.active) {
+        return None;
+    }
+    let echo = |path: &Path, relative: Option<&str>| operation.as_ref().is_some_and(|op| is_echo(op, path, relative));
     let mut kinds = BTreeSet::new();
     let mut relative = BTreeSet::new();
     let mut global = false;
@@ -184,11 +249,11 @@ pub fn classify(
             let kind = if text.ends_with(".lock") || matches!(first, "objects" | "logs" | "lfs" | "hooks") {
                 None
             } else if text == "index" {
-                (!suppression.index_suppressed()).then_some(ChangeKind::Index)
+                (!suppression.index_suppressed() && !echo(path, None)).then_some(ChangeKind::Index)
             } else if text == "refs/stash" {
                 Some(ChangeKind::Stash)
             } else if text == "HEAD" || text == "packed-refs" || first == "refs" {
-                Some(ChangeKind::Refs)
+                (!echo(path, None)).then_some(ChangeKind::Refs)
             } else if matches!(first, "MERGE_HEAD" | "CHERRY_PICK_HEAD" | "REVERT_HEAD" | "BISECT_LOG" | "rebase-merge" | "rebase-apply") {
                 Some(ChangeKind::InProgress)
             } else if text.is_empty() {
@@ -213,13 +278,18 @@ pub fn classify(
             kinds.insert(ChangeKind::Worktree);
             continue;
         }
+        let relative_text = inner.to_string_lossy().replace('\\', "/");
         if inner.file_name().is_some_and(|name| name == ".gitignore") {
             reload_rules = true;
         } else if rules.ignored(path) {
             continue;
         }
+        // 写操作尾窗口：跳过操作自身的回声（修改时间不晚于操作结束，或操作删除的路径）。
+        if echo(path, Some(&relative_text)) {
+            continue;
+        }
         kinds.insert(ChangeKind::Worktree);
-        relative.insert(inner.to_string_lossy().replace('\\', "/"));
+        relative.insert(relative_text);
     }
     if reload_rules {
         rules.reload();
@@ -420,6 +490,37 @@ mod tests {
         assert_eq!(classify_paths(&[".git/index", ".git/HEAD"]).unwrap().kinds, vec![ChangeKind::Refs]);
         let overflow = classify("r", &root, &dirs, &rules, &suppression, &[PathBuf::new()]).unwrap();
         assert!(overflow.global);
+    }
+
+    /// 写操作屏蔽窗口：操作期间全部只合并不下发；尾窗口内只跳过操作自身的回声（修改时间不晚于操作结束、操作删除的路径），
+    /// 操作结束之后才发生的修改照常下发（即使路径与操作相同）。
+    #[test]
+    fn operation_window_swallows_own_echo_but_keeps_later_changes() {
+        let dir = repo();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        let rules = rules(&root);
+        let suppression = Suppression::default();
+        let dirs = vec![root.join(".git")];
+        let classify_paths = |paths: &[&str]| classify("r", &root, &dirs, &rules, &suppression, &paths.iter().map(|p| root.join(p)).collect::<Vec<_>>());
+        fs::write(root.join("other.txt"), b"old").unwrap();
+        suppression.begin_operation();
+        assert!(classify_paths(&["src/main.rs", ".git/index", ".git/HEAD", "other.txt"]).is_none(), "操作进行中全部只合并");
+        fs::write(root.join("src/main.rs"), b"written by the operation").unwrap();
+        fs::create_dir_all(root.join("gone/dir")).unwrap();
+        fs::write(root.join("gone/dir/file.txt"), b"x").unwrap();
+        fs::remove_dir_all(root.join("gone")).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        suppression.end_operation(&root, vec!["src/main.rs".to_owned(), "gone/dir/file.txt".to_owned()], Duration::from_secs(5));
+        assert!(classify_paths(&["src/main.rs", ".git/index", ".git/HEAD", "gone/dir/file.txt", "gone/dir", "gone", "other.txt"]).is_none(), "操作的回声与更早的修改被跳过");
+        std::thread::sleep(Duration::from_millis(20));
+        fs::write(root.join("src/main.rs"), b"edited by the user right after the operation").unwrap();
+        fs::write(root.join("other.txt"), b"new").unwrap();
+        let later = classify_paths(&["src/main.rs", "other.txt"]).unwrap();
+        assert_eq!(later.paths, vec!["other.txt".to_owned(), "src/main.rs".to_owned()], "操作结束后的修改照常下发");
+        fs::remove_file(root.join("other.txt")).unwrap();
+        assert_eq!(classify_paths(&["other.txt"]).unwrap().paths, vec!["other.txt".to_owned()], "操作之外的删除照常下发");
+        suppression.end_operation(&root, Vec::new(), Duration::ZERO);
+        assert_eq!(classify_paths(&[".git/index"]).unwrap().kinds, vec![ChangeKind::Index]);
     }
 
     #[test]

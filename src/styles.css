@@ -6,7 +6,7 @@ button, input, select { font: inherit; }
 button { cursor: pointer; }
 /* 默认值即 Oris 深色 / 浅色方案；配色运行时（src/themes/runtime.ts）把所选方案写到 <html> 行内样式上覆盖这些值。 */
 :root { --bg:#1e1f22; --panel:#2b2d30; --chrome:#26272b; --text:#bcbec4; --dim:#8b8d98; --border:#393b40; --hover:#334a74; --blue:#548af7; --diff-word-bg:#548af755; --toggle-on:#254b7b; --toggle-on-border:#6ea1ff; --toggle-off:#303136; }
-.app { display:grid; grid-template-rows:auto auto auto 1fr 25px; height:100%; color:var(--text); background:var(--bg); font-size:13px; }
+.app { display:grid; grid-template-rows:auto auto auto 1fr auto 25px; height:100%; color:var(--text); background:var(--bg); font-size:13px; }
 :root.theme-light { --bg:#fff; --panel:#f7f8fa; --chrome:#ebedf2; --text:#25272d; --dim:#737780; --border:#dfe1e5; --hover:#d4e2ff; --blue:#315ee7; --diff-word-bg:#548af744; --toggle-on:#d8e6ff; --toggle-on-border:#315ee7; --toggle-off:#f5f6f8; color-scheme:light; }
 .titlebar,.openbar,.toolbar,.endpoints,.tabbar,.statusbar,.diff-footer { display:flex; align-items:center; gap:8px; border-bottom:1px solid var(--border); }
 .titlebar { min-height:43px; padding:6px 12px; background:var(--chrome); }
@@ -56,7 +56,9 @@ button:disabled { opacity:.45; cursor:default; }
 .file-view-select { width:38px; min-width:38px; padding:4px 5px; font-size:16px; border-color:var(--border); background:var(--toggle-off); }
 .filter { margin:0 7px 7px; width:calc(100% - 14px); }
 .files { min-height:0; overflow-y:scroll; overflow-x:hidden; overscroll-behavior:contain; scrollbar-gutter:stable; }
-.file { display:flex; width:100%; align-items:center; border:0; border-radius:0; background:transparent; padding:6px 10px 6px calc(10px + var(--tree-depth, 0) * 17px); text-align:left; }
+.file { display:flex; width:100%; align-items:center; border:0; border-radius:0; background:transparent; padding:6px 10px 6px calc(10px + var(--tree-depth, 0) * 17px); text-align:left; cursor:pointer; user-select:none; }
+.file:hover { background:color-mix(in srgb, var(--hover) 45%, transparent); }
+.file:focus-visible { outline:2px solid var(--blue); outline-offset:-2px; }
 .file.selected { background:var(--hover); }
 .file-icon,.directory-icon { color:var(--dim); width:16px; flex:0 0 16px; }
 .file-path { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -257,3 +259,76 @@ button:disabled { opacity:.45; cursor:default; }
 .settings-notices { font-size:12px; color:var(--dim); }
 .settings-notices summary { cursor:pointer; }
 .settings-notices pre { max-height:220px; overflow:auto; margin:6px 0 0; padding:8px; white-space:pre-wrap; background:var(--bg); border:1px solid var(--border); border-radius:4px; font-size:11px; }
+
+/* 写操作（V2-02）：文件行入口、批量选择、右键菜单、确认框、底部 Git 区、状态栏结果。 */
+.file-actions { display:none; flex:none; gap:3px; margin-left:6px; }
+.file:hover .file-actions, .file.selected .file-actions, .file:focus-within .file-actions { display:flex; }
+.file-action { padding:1px 6px; font-size:11px; line-height:16px; background:var(--toggle-off); border-color:var(--border); }
+.file.pending { opacity:.7; }
+.line-stat.pending-mark { color:var(--warning, #d9a24f); }
+.file-menu { position:fixed; z-index:60; display:flex; flex-direction:column; min-width:160px; padding:4px; background:var(--panel); border:1px solid var(--border); border-radius:5px; box-shadow:0 8px 24px var(--widget-shadow, #0008); }
+.file-menu button { border:0; background:transparent; text-align:left; padding:5px 10px; }
+.file-menu button:not(:disabled):hover, .file-menu button:focus-visible { background:var(--hover); }
+.file-menu-note { padding:5px 10px; color:var(--dim); font-size:11px; }
+.file-menu button.danger:not(:disabled):hover { color:var(--error, #ff7b72); }
+
+.sidebar>footer { display:flex; align-items:center; gap:6px; min-height:33px; }
+.batch-bar { display:flex; align-items:center; gap:5px; flex-wrap:wrap; width:100%; }
+.batch-bar>span { color:var(--text); margin-right:auto; }
+.batch-bar button { padding:2px 7px; font-size:11px; }
+button.quiet { background:transparent; border-color:transparent; color:var(--dim); }
+button.quiet:not(:disabled):hover { color:var(--text); background:var(--hover); }
+button.danger:not(:disabled):hover { color:var(--error, #ff7b72); border-color:var(--error, #ff7b72); }
+.danger-button { color:var(--button-text, white); background:var(--error, #c9463d); border-color:var(--error, #c9463d); }
+.branch-counts { color:var(--dim); font-size:12px; white-space:nowrap; }
+.commit-entry { white-space:nowrap; }
+.op-banner { flex:none; padding:7px 12px; color:var(--text); background:color-mix(in srgb, var(--warning, #d9a24f) 16%, var(--panel)); border-bottom:1px solid color-mix(in srgb, var(--warning, #d9a24f) 55%, transparent); font-size:12px; }
+.git-panel { display:flex; flex-direction:column; min-height:0; background:var(--panel); border-top:1px solid var(--border); }
+.git-tabs { display:flex; align-items:center; gap:4px; height:31px; padding:0 8px; background:var(--chrome); }
+.git-tabs button { height:26px; padding:2px 10px; border-color:transparent; background:transparent; border-radius:4px 4px 0 0; }
+.git-tabs button.active { background:var(--panel); border-color:var(--border); border-bottom-color:var(--panel); box-shadow:inset 0 2px 0 var(--blue); }
+.git-body { height:196px; padding:10px 12px; overflow:auto; }
+.commit-layout { display:grid; grid-template-columns:minmax(280px,1fr) minmax(240px, 340px); gap:12px; }
+.commit-layout textarea { width:100%; height:100%; min-height:120px; resize:none; padding:8px; color:var(--text); background:var(--bg); border:1px solid var(--border); border-radius:4px; font:inherit; }
+.commit-layout textarea:focus-visible { outline:2px solid var(--blue); outline-offset:-1px; }
+.commit-side { display:flex; flex-direction:column; gap:6px; min-width:0; }
+.commit-side small { color:var(--dim); }
+.commit-side label { display:flex; align-items:center; gap:5px; }
+.commit-buttons { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+.commit-side .commit-reason { color:var(--warning, #d9a24f); }
+.commit-progress, .commit-result { display:flex; flex-direction:column; gap:4px; font-size:12px; min-width:0; }
+.commit-result.succeeded>span { color:var(--status-added, #4f9f64); }
+.commit-result.failed>span, .commit-result.cancelled>span { color:var(--error, #ff7b72); }
+.commit-progress pre, .commit-result pre, .output-main pre { margin:0; padding:6px 8px; max-height:110px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; color:var(--text); background:var(--bg); border:1px solid var(--border); border-radius:4px; font:11px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.output-layout { display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:12px; }
+.output-main { display:flex; flex-direction:column; gap:6px; min-width:0; }
+.output-main pre { max-height:none; flex:1; }
+.output-head { display:flex; align-items:center; gap:10px; }
+.output-head span { color:var(--dim); font-size:11px; }
+.output-status.succeeded { color:var(--status-added, #4f9f64); }
+.output-status.failed, .output-status.cancelled { color:var(--error, #ff7b72); }
+.output-message { margin:0; }
+.output-empty { margin:0; color:var(--dim); }
+.output-backups { display:flex; flex-direction:column; gap:6px; min-width:0; padding-left:12px; border-left:1px solid var(--border); overflow:auto; }
+.backup-row { display:flex; align-items:center; gap:8px; font-size:12px; }
+.backup-row>span { flex:1; min-width:0; }
+.backup-row small { display:block; overflow:hidden; color:var(--dim); text-overflow:ellipsis; white-space:nowrap; }
+.backup-row button { flex:none; padding:2px 7px; font-size:11px; }
+.op-status { max-width:55%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+button.op-status { padding:0 6px; border:0; background:transparent; font-size:11px; }
+.op-status.running { color:var(--blue); }
+.op-status.succeeded { color:var(--status-added, #4f9f64); }
+.op-status.failed, .op-status.cancelled { color:var(--error, #ff7b72); }
+.op-status.needsConfirmation { color:var(--warning, #d9a24f); }
+.op-undo { padding:0 6px; font-size:11px; }
+.dialog-overlay { position:fixed; inset:0; z-index:110; display:grid; place-items:center; background:color-mix(in srgb, var(--bg) 40%, #0009); }
+.confirm-dialog { width:min(520px, calc(100vw - 48px)); max-height:calc(100vh - 80px); display:flex; flex-direction:column; padding:16px; color:var(--text); background:var(--panel); border:1px solid var(--border); border-radius:7px; box-shadow:0 15px 40px var(--widget-shadow, #000a); }
+.confirm-dialog h3 { margin:0 0 10px; font-size:15px; }
+.confirm-dialog p { margin:0 0 8px; line-height:1.55; }
+.confirm-warning { padding:6px 8px; color:var(--error, #ff7b72); border:1px solid color-mix(in srgb, var(--error, #ff7b72) 55%, transparent); border-radius:4px; font-weight:600; }
+.confirm-items { margin:0 0 8px; padding:6px 8px 6px 24px; max-height:180px; overflow:auto; background:var(--bg); border:1px solid var(--border); border-radius:4px; font-size:12px; }
+.confirm-items li { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.confirm-items li.more { color:var(--dim); list-style:none; }
+.confirm-note { color:var(--dim); font-size:12px; }
+.confirm-footer { display:flex; justify-content:flex-end; gap:8px; margin-top:8px; }
+:root.theme-high-contrast .file-menu, :root.theme-high-contrast .confirm-dialog { outline:1px solid var(--toggle-on-border, var(--blue)); }
