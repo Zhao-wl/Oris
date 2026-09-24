@@ -1,6 +1,6 @@
 # V2 实施任务
 
-状态：V2-01 已完成（Windows，见下表）；V2-06 体验版已接入、待 P-V2-05／06／07 决定；其余 Pending。共同输入：[V2 产品规格](../../specs/v2-product.md)、[V2 技术方案](../../architecture/v2-architecture.md)、[V2 验收计划](../../validation/v2-acceptance.md)、[V2 决策登记](../../decisions/v2-decisions.md)。V1 任务总表见 [../README.md](../README.md)；V1 文档中“明确不支持”的列表只约束 V1 范围。
+状态：V2-01、V2-06 已完成（Windows，见下表）；其余 Pending。共同输入：[V2 产品规格](../../specs/v2-product.md)、[V2 技术方案](../../architecture/v2-architecture.md)、[V2 验收计划](../../validation/v2-acceptance.md)、[V2 决策登记](../../decisions/v2-decisions.md)。V1 任务总表见 [../README.md](../README.md)；V1 文档中“明确不支持”的列表只约束 V1 范围。
 
 ## 五条纵向任务
 
@@ -11,7 +11,7 @@
 | [V2-03 stash 与分支切换](03-stash-branch.md) | stash 保存 / 查看 / 恢复 → 新建 / 切换分支 → detached 检出 → 分支管理 | V2-02、V1 04 | Pending |
 | [V2-04 远端同步与合并](04-sync-merge.md) | pull / push（进度、取消）→ merge → 冲突只读查看 → 标记已解决 → 完成或中止 | V2-02、V1 03、V1 04 | Pending |
 | [V2-05 hunk 级暂存与丢弃](05-hunk-operations.md) | 在 diff 中逐 hunk 暂存 / 取消暂存 / 丢弃 | V2-02；默认在 V1 05 之后 | Pending |
-| [V2-06 设置与外观](06-settings-appearance.md) | 设置框架与分类 → Git / 字号 / 浅深色迁入 → 颜色变量化 → VS Code 配色方案移植 | V2-01 | In progress：设置窗口与配色体验版已接入，P-V2-05／06／07 待用户体验后决定 |
+| [V2-06 设置与外观](06-settings-appearance.md) | 设置框架与分类 → Git / 字号 / 浅深色迁入 → 颜色变量化 → VS Code 配色方案移植 | V2-01 | Done（Windows）：B19–B22 与配色 / 设置时延通过，V2-01 预算未退步；macOS 与真实系统主题切换未验证（[结果](../../validation/v2-06-results.md)） |
 
 ## 执行顺序（V2-D17，经 V2-D26 修订，用户已确认）
 
