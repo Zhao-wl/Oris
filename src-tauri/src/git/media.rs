@@ -1,5 +1,4 @@
 use super::*;
-use base64::engine::general_purpose::STANDARD;
 use image::{ImageDecoder, ImageFormat, ImageReader, Limits};
 use std::io::{Cursor, Read};
 
@@ -38,7 +37,10 @@ pub struct ImagePayload {
     #[serde(skip)]
     pub allocation_bytes: u64,
     pub mime: &'static str,
+    /// 仅用于 JSON 兼容；V2 通过二进制帧传输原始字节（`raw`），此字段保持为空。
     pub base64: String,
+    #[serde(skip)]
+    pub raw: Vec<u8>,
     pub width: u32,
     pub height: u32,
     pub display_width: u32,
@@ -223,7 +225,8 @@ fn inspect_image(
     Ok(ImagePayload {
         allocation_bytes,
         mime,
-        base64: STANDARD.encode(bytes),
+        base64: String::new(),
+        raw: bytes.to_vec(),
         width,
         height,
         display_width,
@@ -233,6 +236,7 @@ fn inspect_image(
 }
 
 impl GitAdapter {
+    #[cfg(test)]
     pub(super) fn read_side(
         &self,
         endpoint: &'static str,
@@ -240,12 +244,26 @@ impl GitAdapter {
         missing: bool,
         remaining: &mut ImageBudget,
     ) -> TextSide {
+        self.read_side_with(endpoint, relative, missing, remaining, |side| {
+            self.side_bytes(endpoint, relative, side)
+        })
+    }
+
+    /// 由调用方提供原始字节来源（V2：OID 对象或工作区文件），其余图片 / LFS / 文本处理与 V1 相同。
+    pub(super) fn read_side_with(
+        &self,
+        endpoint: &'static str,
+        relative: &str,
+        missing: bool,
+        remaining: &mut ImageBudget,
+        fetch: impl FnOnce(&mut TextSide) -> Result<Option<Vec<u8>>, GitError>,
+    ) -> TextSide {
         let mut side = text_side(endpoint, Vec::new(), missing).0;
         side.details = Some(details(if missing { "missing" } else { "ready" }));
         if missing {
             return side;
         }
-        let result = self.side_bytes(endpoint, relative, &mut side);
+        let result = fetch(&mut side);
         match result {
             Err(error) => {
                 reject(&mut side, "unavailable", error);
@@ -343,6 +361,53 @@ impl GitAdapter {
         Ok(bytes)
     }
 
+    /// 端点在 index / HEAD / stage 中不存在：与 V1 的“记录未找到”输出一致。
+    pub(super) fn not_found(side: &mut TextSide) {
+        side.text = Some(String::new());
+        side.encoding = "missing";
+        side.details = Some(details("missing"));
+    }
+
+    /// 按不可变 OID 读取对象字节：先核对 mode，再以 20 MiB 上限读取（常驻 cat-file，命中缓存时不启动进程）。
+    pub(super) fn object_bytes(
+        &self,
+        side: &mut TextSide,
+        oid: &str,
+        mode: &str,
+    ) -> Result<Option<Vec<u8>>, GitError> {
+        let info = side.details.as_mut().unwrap();
+        info.oid = Some(oid.to_owned());
+        info.mode = Some(mode.to_owned());
+        if mode != "100644" && mode != "100755" {
+            reject(
+                side,
+                "unsupported",
+                format!("不支持普通内容读取的 Git mode {mode}"),
+            );
+            return Ok(None);
+        }
+        match self
+            .reader
+            .with(|reader| reader.read_blob_limited(oid, MAX_IMAGE_BYTES))?
+        {
+            super::object_reader::BlobRead::Bytes(bytes) => {
+                side.byte_length = bytes.len();
+                side.details.as_mut().unwrap().size_known = true;
+                Ok(Some(bytes.to_vec()))
+            }
+            super::object_reader::BlobRead::TooLarge(size) => {
+                side.byte_length = size;
+                side.details.as_mut().unwrap().size_known = true;
+                reject(side, "overBudget", "输入超过每侧 20 MiB 读取预算");
+                Ok(None)
+            }
+            super::object_reader::BlobRead::Missing => Err(GitError::CommandFailed(format!(
+                "Git 对象不存在或不可读：{oid}"
+            ))),
+        }
+    }
+
+    #[cfg(test)]
     pub(super) fn source_still_matches(&self, side: &TextSide, relative: &str) -> bool {
         let Some(expected) = &side.source_id else {
             return true;
@@ -354,6 +419,7 @@ impl GitAdapter {
         matches!(self.side_bytes(side.endpoint, relative, &mut probe), Ok(Some(bytes)) if hash_bytes(&bytes) == *expected)
     }
 
+    #[cfg(test)]
     fn side_bytes(
         &self,
         endpoint: &str,
@@ -362,6 +428,19 @@ impl GitAdapter {
     ) -> Result<Option<Vec<u8>>, GitError> {
         validate_relative(relative)?;
         if endpoint == "workingTree" {
+            return self.worktree_bytes(relative, side);
+        }
+        self.v1_object_bytes(endpoint, relative, side)
+    }
+
+    /// 工作区一侧：逐层拒绝符号链接与非普通文件，20 MiB 有界读取。
+    pub(super) fn worktree_bytes(
+        &self,
+        relative: &str,
+        side: &mut TextSide,
+    ) -> Result<Option<Vec<u8>>, GitError> {
+        validate_relative(relative)?;
+        {
             let mut path = self.worktree.clone();
             for component in Path::new(relative).components() {
                 path.push(component);
@@ -396,8 +475,17 @@ impl GitAdapter {
                 reject(side, "overBudget", "读取期间输入超过 20 MiB");
                 return Ok(None);
             }
-            return Ok(Some(bytes));
+            Ok(Some(bytes))
         }
+    }
+
+    #[cfg(test)]
+    fn v1_object_bytes(
+        &self,
+        endpoint: &str,
+        relative: &str,
+        side: &mut TextSide,
+    ) -> Result<Option<Vec<u8>>, GitError> {
         let output = if endpoint == "head" {
             run_required(
                 &self.git,

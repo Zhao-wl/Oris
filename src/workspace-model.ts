@@ -179,6 +179,49 @@ export class ContentCache {
   }
 }
 
+/**
+ * DiffCache：按 (leftContentId, rightContentId, 阅读选项) 缓存 DiffDocument（技术方案 §5.3）。
+ * 内容寻址，不因 revision 变化整仓清空；只做 LRU 淘汰（16 MiB / 12 项）。
+ */
+export class DiffCache {
+  private entries = new Map<string, { document: DiffDocument; bytes: number }>();
+  private bytes = 0;
+
+  constructor(private readonly budget = CONTENT_CACHE_BUDGET, private readonly maximum = CONTENT_CACHE_ENTRIES) {}
+
+  static key(leftContentId: string, rightContentId: string, options = "") {
+    return `${leftContentId}:${rightContentId}:${options}`;
+  }
+
+  get(leftContentId: string, rightContentId: string, options = "") {
+    const key = DiffCache.key(leftContentId, rightContentId, options);
+    const entry = this.entries.get(key);
+    if (!entry) return undefined;
+    this.entries.delete(key);
+    this.entries.set(key, entry);
+    return entry.document;
+  }
+
+  /** `sourceBytes` 为两侧文本字节数，计入预算（解码文本由 ContentCache 持有，此处估算文档本身）。 */
+  set(leftContentId: string, rightContentId: string, document: DiffDocument, sourceBytes = 0, options = "") {
+    const key = DiffCache.key(leftContentId, rightContentId, options);
+    const bytes = 128 + (document.changes.length + document.hunks.length) * 48 + Math.min(sourceBytes, 64);
+    const prior = this.entries.get(key);
+    if (prior) { this.bytes -= prior.bytes; this.entries.delete(key); }
+    if (bytes > this.budget) return;
+    this.entries.set(key, { document, bytes });
+    this.bytes += bytes;
+    while (this.entries.size > this.maximum || this.bytes > this.budget) {
+      const oldest = this.entries.entries().next().value as [string, { document: DiffDocument; bytes: number }] | undefined;
+      if (!oldest) break;
+      this.entries.delete(oldest[0]);
+      this.bytes -= oldest[1].bytes;
+    }
+  }
+
+  stats() { return { entries: this.entries.size, bytes: this.bytes, budget: this.budget, maximum: this.maximum }; }
+}
+
 export const contentCacheKey = (repoId: string, scope: CompareScope, revision: string, pathId: string) =>
   `${repoId}:${scope}:${revision}:${pathId}`;
 

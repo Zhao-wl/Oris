@@ -5,7 +5,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { PAGE_HELPERS, decodePng, gitChildren, killOris, launchOris, machineInfo, percentile, processTree, removeDir, round, sha256File, slope, sleep, summarize } from "./gui-lib.mjs";
+import { PAGE_HELPERS, decodePng, gitChildren, killOris, launchOris, machineInfo, percentile, processTree, processTreeDetailed, removeDir, round, sha256File, slope, sleep, summarize } from "./gui-lib.mjs";
 import { GUI_ROOT, diffFingerprints, git, prepareCoreRepos, prepareTask03Repos, repositoryFingerprint } from "./gui-fixtures.mjs";
 
 const args = process.argv.slice(2);
@@ -18,6 +18,9 @@ const basePort = Number(option("port", 9361));
 const keep = args.includes("--keep");
 const mixedOps = Number(option("mixed", 200));
 const idleSeconds = Number(option("idle", 65));
+// 追加给测试实例的 WebView2 参数（内存优化试验用）；产品默认参数始终保留。
+const extraBrowserArgs = option("browser-args", "");
+const memoryProjects = Number(option("projects", 5));
 if (!exe) throw new Error("缺少 --exe");
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const outDir = path.join(projectRoot, "artifacts", "gui-probe", label);
@@ -27,13 +30,13 @@ const runDir = path.join(GUI_ROOT, `${label}-${stamp}`);
 mkdirSync(runDir, { recursive: true });
 const log = (...parts) => console.log(new Date().toISOString().slice(11, 23), ...parts);
 const save = (name, value) => { writeFileSync(path.join(outDir, name), JSON.stringify(value, null, 2)); log(`已写入 ${path.join(outDir, name)}`); };
-const header = { label, exe: path.resolve(exe), exeSha256: sha256File(exe), webView2LoaderSha256: existsSync(path.join(path.dirname(exe), "WebView2Loader.dll")) ? sha256File(path.join(path.dirname(exe), "WebView2Loader.dll")) : null, machine: machineInfo(), startedAt: new Date().toISOString(), runDir, method: "CDP 页面内派发 DOM 事件；MutationObserver/5 ms 轮询检测断言成立后，再等下一帧（rAF + setTimeout 0）记为完成。进程树内存来自 Win32_Process（工作集、私有字节），包含 oris.exe、WebView2 与 git 子进程。不调用任何窗口激活 API。" };
+const header = { browserArgs: extraBrowserArgs, label, exe: path.resolve(exe), exeSha256: sha256File(exe), webView2LoaderSha256: existsSync(path.join(path.dirname(exe), "WebView2Loader.dll")) ? sha256File(path.join(path.dirname(exe), "WebView2Loader.dll")) : null, machine: machineInfo(), startedAt: new Date().toISOString(), runDir, method: "CDP 页面内派发 DOM 事件；MutationObserver/5 ms 轮询检测断言成立后，再等下一帧（rAF + setTimeout 0）记为完成。进程树内存来自 Win32_Process（工作集、私有字节），包含 oris.exe、WebView2 与 git 子进程。不调用任何窗口激活 API。" };
 let portCounter = 0;
 const nextPort = () => basePort + (portCounter++);
 
 async function start(profileName, extraEnv = {}) {
   const profileDir = path.join(runDir, "profiles", profileName);
-  const app = await launchOris({ exe, profileDir, port: nextPort(), extraEnv, log });
+  const app = await launchOris({ exe, profileDir, port: nextPort(), extraEnv, log, browserArgs: extraBrowserArgs });
   await app.cdp.call("Runtime.enable");
   await app.cdp.call("Page.enable");
   await app.cdp.call("Page.addScriptToEvaluateOnNewDocument", { source: PAGE_HELPERS });
@@ -551,11 +554,78 @@ async function runTask03() {
   return result;
 }
 
+
+// ------------------------------ memory（V2-D28 分层内存） ------------------------------
+async function runMemory() {
+  const repos = await prepareCoreRepos(path.join(runDir, "memory-repos"), memoryProjects);
+  const P = repos.map((r) => r.path);
+  const app = await start("memory", { ORIS_APP_CACHE_DIR: path.join(runDir, "app-cache-memory") });
+  await app.cdp.call("Performance.enable");
+  const h = helpers(app);
+  const result = { ...header, suite: "memory", projects: memoryProjects, notes: ["framework = WebView2 进程组；tools = Git 子进程（含 conhost）；oris = oris.exe；jsHeap 为页面 JS 堆（位于 WebView2 渲染进程内，已含在 framework 中，单列供参考）。privateWorkingSet 不含共享页，是各进程独占的物理内存；workingSet 相加会重复计算共享的运行库。"], samples: {} };
+  const sample = async (tag) => {
+    const tree = processTreeDetailed(app.pid);
+    const metrics = (await app.cdp.call("Performance.getMetrics")).metrics;
+    const pick = (name) => metrics.find((m) => m.name === name)?.value ?? 0;
+    return { tag, at: Date.now(), layers: tree.layers, processes: tree.processes, jsHeapUsedMiB: round(pick("JSHeapUsedSize") / 1048576), jsHeapTotalMiB: round(pick("JSHeapTotalSize") / 1048576), domNodes: pick("Nodes") };
+  };
+  try {
+    await h.waitUntil(`document.querySelector('.project-empty')`);
+    result.samples.start = await sample("启动后空项目");
+    for (const p of P) { await h.addProject(p, 65); await sleep(300); }
+    for (const p of [...P, P[0]]) { await h.switchProject(p); await sleep(200); }
+    let active = 0;
+    const hot = [];
+    for (let i = 0; i < 30; i++) { active = (active + 1) % P.length; await sleep(400); hot.push(await h.switchProject(P[active])); }
+    result.latency = { hotSwitch: summarize(hot) };
+    await sleep(3000);
+    const steady = [];
+    for (let i = 0; i < 5; i++) { steady.push(await sample(`稳态 ${i}`)); await sleep(1000); }
+    result.samples.steady = steady;
+    const median = (list, pickValue) => percentile(list.map(pickValue), 0.5);
+    result.steadyMedian = Object.fromEntries(["framework", "tools", "oris", "total"].map((layer) => [layer, {
+      workingSetMiB: median(steady, (x) => x.layers[layer].workingSetMiB),
+      privateWorkingSetMiB: median(steady, (x) => x.layers[layer].privateWorkingSetMiB),
+      privateMiB: median(steady, (x) => x.layers[layer].privateMiB)
+    }]));
+    result.steadyMedian.jsHeapUsedMiB = median(steady, (x) => x.jsHeapUsedMiB);
+    let seed = 20260923;
+    const rand = (n) => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed % n; };
+    const trend = [];
+    const ops = { project: [], file: [], scope: [] };
+    let activeProject = 0;
+    await h.switchProject(P[0]); await sleep(1000);
+    for (let i = 1; i <= mixedOps; i++) {
+      const kind = ["project", "file", "scope"][rand(3)];
+      let r = null;
+      if (kind === "project") { activeProject = (activeProject + 1 + rand(P.length - 1)) % P.length; r = await h.switchProject(P[activeProject]); }
+      else if (kind === "scope") { const label = ["未暂存", "已暂存", "全部"][rand(3)]; r = await h.measure(`window.__op.scopeButton(${q(label)}).click()`, `window.__op.footer().includes(${q(label)}) && !window.__op.loading() && (window.__op.rows().length === 0 || (window.__op.selected() && window.__op.readyFor(window.__op.selected(), null) === true))`, 20000); }
+      else { const list = (await h.rows()).slice(0, 30); const p = list[rand(list.length)]; if (p) r = await h.measure(h.selectFileAction(p), `window.__op.tab() === ${q(p)} && !window.__op.loading() && (document.querySelector('.cm-editor') || document.querySelector('.image-viewer') || document.querySelector('.state'))`); }
+      if (r) ops[kind].push(r);
+      if (i % 20 === 0) { await sleep(300); trend.push({ afterOps: i, ...(await sample(`混合 ${i}`)) }); }
+      await sleep(120);
+    }
+    result.samples.mixed = trend;
+    result.latency.mixed = Object.fromEntries(Object.entries(ops).map(([k, v]) => [k, summarize(v)]));
+    const growth = (layer, key) => { const a = trend[0]?.layers[layer][key], b = trend.at(-1)?.layers[layer][key]; return a ? round(((b - a) / a) * 100) : null; };
+    result.mixedGrowthPct = Object.fromEntries(["framework", "tools", "oris", "total"].map((layer) => [layer, { workingSet: growth(layer, "workingSetMiB"), privateWorkingSet: growth(layer, "privateWorkingSetMiB"), private: growth(layer, "privateMiB") }]));
+    await sleep(idleSeconds * 1000);
+    result.samples.idle = await sample(`静置 ${idleSeconds} s`);
+  } catch (error) {
+    result.error = String(error.stack ?? error);
+    log("memory 失败", error);
+  } finally {
+    result.stop = await stop(app);
+    save("memory.json", result);
+  }
+  return result;
+}
+
 const suites = suite === "all" ? ["core", "trace", "restart", "task03"] : suite.split(",");
 const summary = {};
 for (const name of suites) {
   log(`=== 套件 ${name} ===`);
-  const run = { core: runCore, restart: runRestart, trace: runTrace, task03: runTask03 }[name];
+  const run = { core: runCore, restart: runRestart, trace: runTrace, task03: runTask03, memory: runMemory }[name];
   if (!run) throw new Error(`未知套件 ${name}`);
   const r = await run();
   summary[name] = r.error ? `失败：${r.error.split("\n")[0]}` : "完成";

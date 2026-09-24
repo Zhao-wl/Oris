@@ -182,22 +182,25 @@ function reportLine(theme, label, foreground, background, threshold, base = '#ff
 
 async function orisTheme(id, name, type, light) {
   const css=await readFile(path.join(root,'src/styles.css'),'utf8');
-  const block=css.match(new RegExp(`\\.app${light ? '\\.light' : ''}\\s*\\{([^}]*)\\}`))?.[1];
+  // 默认变量块：深色在 `:root { --bg… }`，浅色在 `:root.theme-light { … }`（V2-06 起颜色收拢为变量）。
+  const block=css.match(light ? /:root\.theme-light\s*\{([^}]*)\}/ : /:root\s*\{(\s*--bg[^}]*)\}/)?.[1];
   if (!block) throw new Error(`找不到 ${id} 的 CSS 变量`);
   const variables=Object.fromEntries([...block.matchAll(/(--[\w-]+)\s*:\s*([^;]+)/g)].map(([,k,v])=>[k,v.trim()]));
-  const status=css.match(/\.status\s*\{[^}]*color:\s*(#[0-9a-fA-F]+)/)?.[1];
-  const statusClass=key=>css.match(new RegExp(`\\.status\\.${key}[^{}]*\\{\\s*color:\\s*(#[0-9a-fA-F]+)`))?.[1];
+  // 颜色可能写成 `var(--status-x, #回退)`：取回退色，即 Oris 原配色。
+  const color=String.raw`color:\s*(?:var\(--[\w-]+,\s*)?(#[0-9a-fA-F]+)`;
+  const status=css.match(new RegExp(String.raw`\.status\s*\{[^}]*` + color))?.[1];
+  const statusClass=key=>css.match(new RegExp(String.raw`\.status\.` + key + String.raw`[^{}]*\{\s*` + color))?.[1];
   if (!status || !statusClass('added') || !statusClass('deleted')) throw new Error('找不到 Oris 文件状态颜色');
   Object.assign(variables, {
     '--status-modified':status, '--status-added':statusClass('added'),
     '--status-deleted':statusClass('deleted'), '--status-renamed':statusClass('renamed'),
     '--status-type-changed':statusClass('typeChanged'), '--status-conflicted':statusClass('conflicted'),
   });
-  const selectionRule=light ? /\.light \.diff-host \.cm-content ::selection\s*\{([^}]*)\}/ : /\.diff-host \.cm-content ::selection\s*\{([^}]*)\}/;
+  const selectionRule=light ? /:root\.theme-light \.diff-host \.cm-content ::selection\s*\{([^}]*)\}/ : /\n\.diff-host \.cm-content ::selection\s*\{([^}]*)\}/;
   const selection=css.match(selectionRule)?.[1];
   if (!selection) throw new Error(`找不到 ${id} 的选区颜色`);
-  variables['--text-selection']=selection.match(/background:\s*(#[0-9a-fA-F]+)/)?.[1] ?? null;
-  variables['--text-selection-fg']=selection.match(/color:\s*(#[0-9a-fA-F]+)/)?.[1] ?? null;
+  variables['--text-selection']=selection.match(/background:\s*(?:var\(--[\w-]+,\s*)?(#[0-9a-fA-F]+)/)?.[1] ?? null;
+  variables['--text-selection-fg']=selection.match(/(?:^|;)\s*color:\s*(?:var\(--[\w-]+,\s*)?(#[0-9a-fA-F]+)/)?.[1] ?? null;
   const line=light ? { modified:'#e2edfb',added:'#e3f2df',deleted:'#e7e7e8' } : { modified:'#283d53aa',added:'#294436aa',deleted:'#3c3f41' };
   const marker=light ? { modified:'#6a9de6',added:'#74ad78',deleted:'#9ca0a8' } : { modified:'#548af7',added:'#4f9f64',deleted:'#85888f' };
   const diff={ oris:Object.fromEntries(['modified','added','deleted'].map(k=>[k,{marker:marker[k],line:line[k],word:k==='modified'?variables['--diff-word-bg']:withAlpha(marker[k],.34)}])) };

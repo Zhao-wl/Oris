@@ -67,16 +67,33 @@ describe("theme runtime", () => {
     expect(oris.modifiedLeft).toEqual(scheme.diff.oris.modified);
     expect(oris.modifiedRight).toEqual(scheme.diff.oris.modified);
     expect(oris.deleted).toEqual(scheme.diff.oris.deleted);
-    expect(vscode.modifiedLeft).toEqual(scheme.diff.vscode.deleted);
-    expect(vscode.modifiedRight).toEqual(scheme.diff.vscode.added);
+    expect(vscode.modifiedLeft).toEqual(scheme.diff.vscode!.deleted);
+    expect(vscode.modifiedRight).toEqual(scheme.diff.vscode!.added);
     expect(vscode.deleted.marker).not.toBe(oris.deleted.marker);
     const root = document.createElement("div");
     applyScheme(scheme, "oris", root);
     const orisWord = root.style.getPropertyValue("--diff-modified-left-word");
     applyScheme(scheme, "vscode", root);
-    expect(root.style.getPropertyValue("--diff-modified-left-word")).toBe(scheme.diff.vscode.deleted.word);
+    expect(root.style.getPropertyValue("--diff-modified-left-word")).toBe(scheme.diff.vscode!.deleted.word);
     expect(root.style.getPropertyValue("--diff-modified-left-word")).not.toBe(orisWord);
     expect(root.dataset.diffColorMode).toBe("vscode");
+  });
+
+  it("removes variables left over from the previous scheme and falls back to red deletions for Oris schemes", async () => {
+    const root = document.createElement("div");
+    const vscodeScheme = await loadScheme("dark-2026");
+    applyScheme(vscodeScheme, "oris", root);
+    expect(root.style.getPropertyValue("--search-match")).not.toBe("");
+    const oris = await loadScheme("oris-dark");
+    applyScheme(oris, "oris", root);
+    expect(root.style.getPropertyValue("--search-match")).toBe("");
+    expect(root.style.getPropertyValue("--bg")).toBe(oris.variables["--bg"]);
+    expect(oris.diff.vscode).toBeNull();
+    const colors = diffColors(oris, "vscode");
+    expect(colors.deleted.marker).toBe("#f14c4c");
+    expect(colors.modifiedRight).toEqual(colors.added);
+    applyScheme(oris, "vscode", root);
+    expect(root.style.getPropertyValue("--diff-deleted-marker")).toBe("#f14c4c");
   });
 
   it("builds a HighlightStyle from scope→tag rules, including modifier tags", async () => {

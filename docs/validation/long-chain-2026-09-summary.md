@@ -79,3 +79,9 @@
 Remove-Item -LiteralPath D:\Projects\Research\Oris\artifacts\gui-probe, D:\Projects\Research\Oris\artifacts\long-chain -Recurse -Force
 Remove-Item -LiteralPath D:\Projects\Research\Oris-builds\v1-baseline, D:\Projects\Research\Oris-builds\v2-01 -Recurse -Force
 ```
+
+## 后续（2026-09-24）
+
+- 用户确认 P-V2-09：内存预算分层（V2-D28），数值按 V2-01 结果中的建议（V2-D29，私有工作集口径）。WebView2 实验中只有“窗口失焦时切到低内存目标级别”明显有效且不影响前台操作，已实现；`--disable-gpu`、V8 `--optimize-for-size` 无实际收益，不采用。
+- 按新预算重新验收后 V2-01 通过（Windows），`feat/v2-01` 已合入 main；同一分支还带有 V2-06 设置与配色体验版（P-V2-05／06／07 待用户体验后决定）。
+- 测量探针修复 PID 复用问题：此前进程树可能误纳入无关进程（实测 Unity、WPS），强制结束改为只结束核验过的本轮进程。
