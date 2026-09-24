@@ -695,3 +695,17 @@ fn write_channel_does_not_run_fsmonitor_or_external_diff_commands() {
     assert_eq!(h.run(OperationRequest::Commit { message: "m".into(), amend: false, keep_message: false, expected_head: None }).status, OpStatus::Succeeded);
     assert!(!marker.exists());
 }
+
+/// 外部开始 rebase 时 status 输出可能不变：扫描仍要报告进行中状态（写操作据此全部禁用）。
+#[test]
+fn in_progress_state_changes_the_revision_even_when_status_output_is_identical() {
+    let dir = base_repo();
+    let p = dir.path();
+    let a = adapter(p);
+    let first = a.snapshot_v2("1".into(), CompareScope::Unstaged, false).unwrap();
+    let _ = a.details(&first.revision).unwrap();
+    fs::create_dir_all(p.join(".git/rebase-merge")).unwrap();
+    let second = a.snapshot_v2("2".into(), CompareScope::Unstaged, false).unwrap();
+    assert_ne!(first.revision, second.revision);
+    assert!(second.in_progress.as_ref().unwrap().rebase);
+}
