@@ -34,27 +34,32 @@ function powershell(script) {
   return result.stdout;
 }
 
-/** 读取全部进程（只读 CIM 查询），返回以 rootPid 为根的进程树及内存合计。 */
-export function processTree(rootPid) {
-  const raw = powershell("Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,WorkingSetSize,PrivatePageCount,CreationDate,CommandLine | ConvertTo-Json -Compress");
-  const all = JSON.parse(raw);
+/**
+ * 由平铺进程表构造以 rootPid 为根的树。Windows 会复用 PID：父进程退出后，其 PID 可能分配给无关进程，
+ * 于是更早启动的无关进程会“看起来”是它的子进程。因此要求子进程创建时间不早于父进程（created 为 FILETIME）。
+ */
+export function buildTree(all, rootPid) {
   const children = new Map();
-  for (const p of all) {
-    if (!children.has(p.ParentProcessId)) children.set(p.ParentProcessId, []);
-    children.get(p.ParentProcessId).push(p);
-  }
-  const root = all.find((p) => p.ProcessId === rootPid);
-  if (!root) return { alive: false, processes: [], workingSetMiB: 0, privateMiB: 0, git: 0 };
-  const tree = [];
-  const stack = [root];
-  const seen = new Set();
+  for (const p of all) { if (!children.has(p.ppid)) children.set(p.ppid, []); children.get(p.ppid).push(p); }
+  const root = all.find((p) => p.pid === rootPid);
+  if (!root) return null;
+  const tree = [], stack = [root], seen = new Set();
   while (stack.length) {
     const next = stack.pop();
-    if (seen.has(next.ProcessId)) continue;
-    seen.add(next.ProcessId);
-    tree.push(next);
-    for (const child of children.get(next.ProcessId) ?? []) stack.push(child);
+    if (seen.has(next.pid)) continue;
+    seen.add(next.pid); tree.push(next);
+    for (const c of children.get(next.pid) ?? []) if (c.pid !== next.pid && Number(c.created) >= Number(next.created)) stack.push(c);
   }
+  return tree;
+}
+const CREATED = "@{ n = 'created'; e = { if ($_.CreationDate) { $_.CreationDate.ToFileTimeUtc() } else { 0 } } }";
+
+/** 读取全部进程（只读 CIM 查询），返回以 rootPid 为根的进程树及内存合计。 */
+export function processTree(rootPid) {
+  const raw = powershell(`Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,WorkingSetSize,PrivatePageCount,${CREATED},CommandLine | ConvertTo-Json -Compress`);
+  const all = JSON.parse(raw).map((p) => ({ ...p, pid: p.ProcessId, ppid: p.ParentProcessId }));
+  const tree = buildTree(all, rootPid);
+  if (!tree) return { alive: false, processes: [], workingSetMiB: 0, privateMiB: 0, git: 0 };
   const mib = (bytes) => bytes / 1024 / 1024;
   return {
     alive: true,
@@ -85,16 +90,12 @@ export function processRole(name, commandLine = "") {
  */
 export function processTreeDetailed(rootPid) {
   const raw = powershell(`
-$procs = Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,WorkingSetSize,PrivatePageCount,CommandLine
+$procs = Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,WorkingSetSize,PrivatePageCount,CommandLine,${CREATED}
 $perf = @{}; Get-CimInstance Win32_PerfRawData_PerfProc_Process | ForEach-Object { $perf[[int]$_.IDProcess] = [int64]$_.WorkingSetPrivate }
-$procs | ForEach-Object { [pscustomobject]@{ pid = $_.ProcessId; ppid = $_.ParentProcessId; name = $_.Name; ws = [int64]$_.WorkingSetSize; priv = [int64]$_.PrivatePageCount; pws = $perf[[int]$_.ProcessId]; cmd = $_.CommandLine } } | ConvertTo-Json -Compress -Depth 3`);
+$procs | ForEach-Object { [pscustomobject]@{ pid = $_.ProcessId; ppid = $_.ParentProcessId; name = $_.Name; created = [int64]$_.created; ws = [int64]$_.WorkingSetSize; priv = [int64]$_.PrivatePageCount; pws = $perf[[int]$_.ProcessId]; cmd = $_.CommandLine } } | ConvertTo-Json -Compress -Depth 3`);
   const all = JSON.parse(raw);
-  const children = new Map();
-  for (const p of all) { if (!children.has(p.ppid)) children.set(p.ppid, []); children.get(p.ppid).push(p); }
-  const root = all.find((p) => p.pid === rootPid);
-  if (!root) return { alive: false, processes: [] };
-  const tree = [], stack = [root], seen = new Set();
-  while (stack.length) { const next = stack.pop(); if (seen.has(next.pid)) continue; seen.add(next.pid); tree.push(next); for (const c of children.get(next.pid) ?? []) stack.push(c); }
+  const tree = buildTree(all, rootPid);
+  if (!tree) return { alive: false, processes: [] };
   const mib = (bytes) => round(Number(bytes ?? 0) / 1048576);
   const processes = tree.map((p) => ({ pid: p.pid, role: processRole(p.name, p.cmd ?? ""), workingSetMiB: mib(p.ws), privateWorkingSetMiB: mib(p.pws), privateMiB: mib(p.priv) }));
   const sum = (list, key) => round(list.reduce((total, p) => total + p[key], 0));
@@ -238,8 +239,11 @@ export async function killOris({ pid, exePath, child, force = false }) {
     spawnSync("taskkill", ["/PID", String(pid)], { encoding: "utf8" });
     if (await waitExit(10000)) return { closed: true, how: "graceful" };
   }
-  spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { encoding: "utf8" });
-  return { closed: await waitExit(10000), how: "forced-tree" };
+  // 只结束带 PID 复用防护的进程树里、名称属于 Oris / WebView2 / Git 的进程；子进程先于父进程结束。
+  const own = /^(oris|msedgewebview2|git|git-remote-.*|conhost)\.exe$/i;
+  const tree = (processTree(pid).processes ?? []).filter((p) => p.pid === pid || own.test(p.name));
+  for (const p of tree.reverse()) spawnSync("taskkill", ["/PID", String(p.pid), "/F"], { encoding: "utf8" });
+  return { closed: await waitExit(10000), how: "forced-verified-tree", killed: tree.map((p) => `${p.name}:${p.pid}`) };
 }
 
 export function removeDir(dir, allowedRoot) {
