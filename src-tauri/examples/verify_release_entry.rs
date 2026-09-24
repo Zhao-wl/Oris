@@ -38,8 +38,10 @@ fn main() {
             if !(path.ends_with(".js") || path.ends_with(".css")) {
                 continue;
             }
+            // Vite 打包产物在 /assets/ 下；public/ 中的同源脚本（如首屏配色 /boot.js）位于根目录。
+            let top_level = path.starts_with('/') && !path[1..].contains('/');
             assert!(
-                path.starts_with("/assets/"),
+                path.starts_with("/assets/") || top_level,
                 "unexpected resource URL: {path}"
             );
             let bytes = context
