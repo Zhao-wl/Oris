@@ -16,6 +16,10 @@
 6. **真实焦点测试必须隔离。** 必须进行真实焦点切换测试时，使用专用测试窗口或隔离桌面；若当前环境无法在不干扰用户的条件下完成，明确记录该项未验证并继续其他工作，不得借用 Codex 或其他非测试应用窗口制造失焦。
 7. **完整清理测试资源。** 测试结束、失败或中断时，清理本轮创建的测试资源。不得结束用户已有应用，不得遗留覆盖窗口；清理操作同样受上述实例识别和窗口操作边界约束。
 
+## 构建
+
+Windows 上的 desktop / release 构建（`npm run package`、`scripts/build-release.ps1`、带 desktop 特性的 `cargo check` / `cargo build`）在 PowerShell 中执行。Git Bash 的 PATH 顺序会让 tauri-winres 调用的 windres 预处理失败（`windres: preprocessing failed`）。委派构建任务时在提示词里写明使用 PowerShell。
+
 ### 交付报告要求
 
 涉及 GUI 验证的交付必须说明：修改了哪些危险调用、如何确保不再操作其他应用窗口，以及真实焦点测试的已验证范围和未验证项。不得把模拟焦点、静态检查或未执行的测试表述为真实 Windows 焦点测试通过。
