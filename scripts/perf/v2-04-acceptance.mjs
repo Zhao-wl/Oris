@@ -6,7 +6,7 @@
 //   --only real 需要 --run-id：在 %TEMP%\oris-remote\<run-id>\v2-04 下克隆 AgentHub，只创建 / 推送 / 删除 oris-test/<run-id>/ 分支。
 import { spawnSync } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync, mkdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
@@ -160,7 +160,14 @@ const slowScript = (name, seconds, exec) => {
 async function localSuite() {
   const r = localFixture();
   report.fixtures = r;
-  const ctx = await start("local", { ORIS_NETWORK_IDLE_TIMEOUT_MS: "4000" });
+  const traceDir = path.join(runDir, "trace");
+  mkdirSync(traceDir, { recursive: true });
+  const ctx = await start("local", { ORIS_NETWORK_IDLE_TIMEOUT_MS: "4000", GIT_TRACE2_EVENT: traceDir });
+  report.processes = {};
+  const traces = () => new Set(readdirSync(traceDir));
+  const commandOf = (name) => { try { const first = readFileSync(path.join(traceDir, name), "utf8").split("\n").map((l) => { try { return JSON.parse(l); } catch { return null; } }).find((x) => x?.event === "start"); return (first?.argv ?? []).slice(1).filter((a) => !a.startsWith("-c") && !/^core\.|^diff\.|^[A-Z]:/i.test(a) && a !== "-C" && a !== "--no-optional-locks").slice(0, 3).join(" "); } catch { return "?"; } };
+  /** 统计一个动作（含其后 1.5 s 内的后台补齐）启动的 Git 进程（包括 Git 自己派生的传输进程）。 */
+  const traced = async (name, action) => { const before = traces(); const result = await action(); await sleep(1500); const added = [...traces()].filter((f) => !before.has(f)); report.processes[name] = { count: added.length, commands: added.map(commandOf).sort() }; return result; };
   try {
     await ctx.waitUntil(`document.querySelector('.project-empty')`);
     await ctx.addProject(r.local);
@@ -179,10 +186,10 @@ async function localSuite() {
     check("B11 同步入口：当前分支、上游与领先 / 落后持续可见；B17 打开入口与对话框不改仓库", summary.includes("● main → origin/main") && summary.includes("已同步") && (await ctx.evaluate(`window.__s.counts()`)) === "↑0 ↓0" && e.changedCount === 0, { summary, e, shot: await ctx.shot("b11-sync-popover") });
     // ---------- B11 获取 → 仅快进 ----------
     put(r.other, "b.txt", "remote 1\n"); const remote1 = commitAll(r.other, "remote 1"); git(r.other, ["push", "-q", "origin", "main"]);
-    await ctx.fetch();
+    await traced("fetch", () => ctx.fetch());
     await ctx.waitUntil(`window.__s.counts() === '↑0 ↓1'`, 15000);
     before = fingerprint(r.local);
-    await ctx.pull("ffOnly"); await ctx.settle();
+    await traced("pull 仅快进", async () => { await ctx.pull("ffOnly"); await ctx.settle(); });
     let status = await ctx.evaluate(`window.__s.opStatus()`);
     e = evidence("pull 仅快进", r.local, before, ["head", "index", "worktree", "remote-refs"]);
     check("B11 拉取（仅快进，默认）：HEAD 快进到上游，领先 / 落后刷新为 0/0", status.cls.includes("succeeded") && status.text.includes("快进") && git(r.local, ["rev-parse", "HEAD"]) === remote1 && e.unexpected.length === 0 && (await ctx.evaluate(`window.__s.counts()`)) === "↑0 ↓0", { status, e });
@@ -206,7 +213,7 @@ async function localSuite() {
     git(r.local, ["config", "--unset", "pull.rebase"]);
     // ---------- B11 推送（有上游）与被拒绝 ----------
     before = fingerprint(r.local);
-    await ctx.push(); await ctx.settle();
+    await traced("push 到上游", async () => { await ctx.push(); await ctx.settle(); });
     status = await ctx.evaluate(`window.__s.opStatus()`);
     e = evidence("push 到上游", r.local, before, ["remote-refs"]);
     check("B11 推送当前分支到上游", status.cls.includes("succeeded") && bareRef(r.bare, "refs/heads/main") === git(r.local, ["rev-parse", "HEAD"]) && e.unexpected.length === 0, { status, e });
@@ -313,7 +320,7 @@ async function localSuite() {
     check("B13 合并（遵循 merge.ff）：可快进时快进", git(r.local, ["rev-parse", "HEAD"]) === topic && e.unexpected.length === 0, { e, status: await ctx.evaluate(`window.__s.opStatus()`) });
     git(r.local, ["reset", "-q", "--hard", "origin/main"]); await ctx.refresh();
     before = fingerprint(r.local);
-    await mergeVia("topic", true);
+    await traced("merge（总是创建合并提交）", () => mergeVia("topic", true));
     e = evidence("merge 总是创建合并提交", r.local, before, ["head", "index", "worktree"]);
     check("B13 合并（总是创建合并提交）：生成两个父节点的合并提交", parents(r.local, "HEAD") === 2 && git(r.local, ["log", "-1", "--format=%s"]) === "Merge branch 'topic'" && e.unexpected.length === 0, { e });
     git(r.local, ["reset", "-q", "--hard", "origin/main"]);
@@ -328,7 +335,7 @@ async function localSuite() {
     await ctx.waitUntil(`window.__op.tab() === 'a.txt' && window.__s.conflictToolbar()`, 15000);
     const conflictShot = await ctx.shot("b13-merge-conflict");
     await ctx.click(`window.__s.button('中止合并…', document.querySelector('.merge-banner'))`);
-    await ctx.confirmDialog("中止合并"); await ctx.settle();
+    await traced("中止合并", async () => { await ctx.confirmDialog("中止合并"); await ctx.settle(); });
     e = evidence("中止合并", r.local, before, ["index"]);
     check("B13 冲突：横幅显示冲突数，“查看冲突”进入只读冲突阅读；中止合并后恢复到合并前（HEAD、index 条目、工作区）", !existsSync(path.join(r.local, ".git", "MERGE_HEAD")) && git(r.local, ["rev-parse", "HEAD"]) === mainHead && git(r.local, ["ls-files", "-s"]) === indexBefore && read(r.local, "a.txt") === "main side\n" && e.unexpected.length === 0 && !(await ctx.evaluate(`window.__s.banner()`)), { e, conflictShot });
     await mergeVia("clash", false);
@@ -344,7 +351,7 @@ async function localSuite() {
     await ctx.waitUntil(`document.querySelector('.merge-commit-dialog textarea')?.value.startsWith('Merge branch')`);
     const defaultMessage = await ctx.evaluate(`document.querySelector('.merge-commit-dialog textarea').value`);
     await ctx.evaluate(`window.__s.setIn(document.querySelector('.merge-commit-dialog'), 'textarea', ${q("Merge branch 'clash'\n\n在外部解决了 a.txt")})`);
-    await ctx.click(`window.__s.button('完成合并', document.querySelector('.merge-commit-dialog'))`); await ctx.settle();
+    await traced("完成合并", async () => { await ctx.click(`window.__s.button('完成合并', document.querySelector('.merge-commit-dialog'))`); await ctx.settle(); });
     check("B13 在外部解决 → 标记已解决（残留冲突标记时先警告）→ 完成合并（默认信息可编辑）", defaultMessage.startsWith("Merge branch 'clash'") && parents(r.local, "HEAD") === 2 && git(r.local, ["log", "-1", "--format=%B"]).includes("在外部解决了 a.txt") && !existsSync(path.join(r.local, ".git", "MERGE_HEAD")) && !(await ctx.evaluate(`window.__s.banner()`)), { defaultMessage });
     // ---------- B14 外部 rebase 进行中 ----------
     // rb 从合并前的 main（a.txt = main side）出发，变基到 clash（a.txt = clash side）时冲突。
