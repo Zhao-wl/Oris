@@ -21,6 +21,10 @@ pub struct RefsView {
     /// `FETCH_HEAD` 的修改时间（毫秒）。只用于判断外部工具是否在 Oris 记录的获取之后又获取过；
     /// 它不等于某次获取的确切成功时间。
     pub fetch_head_at: Option<u64>,
+    /// 影响拉取的配置：当前分支的 `branch.<name>.rebase`，没有时为 `pull.rebase`。Oris 始终以 `--no-rebase` 执行。
+    pub pull_rebase: Option<String>,
+    /// `merge.ff`（合并时遵循）。
+    pub merge_ff: Option<String>,
 }
 
 fn is_oid(value: &str) -> bool {
@@ -84,6 +88,12 @@ impl GitAdapter {
             .max()
             .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_millis() as u64);
-        Ok(RefsView { refs, default_remote, fetch_head_at })
+        let config = |key: &str| {
+            run_readonly(&self.git, &self.worktree, &["config", "--get", key]).ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+        };
+        let current = refs.head.branch.as_deref().and_then(|b| b.strip_prefix("refs/heads/")).map(str::to_owned);
+        let pull_rebase = current.as_deref().and_then(|b| config(&format!("branch.{b}.rebase"))).or_else(|| config("pull.rebase"));
+        let merge_ff = config("merge.ff");
+        Ok(RefsView { refs, default_remote, fetch_head_at, pull_rebase, merge_ff })
     }
 }
