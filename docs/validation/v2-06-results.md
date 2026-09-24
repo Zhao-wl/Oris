@@ -6,9 +6,9 @@
 
 ## 版本
 
-- 分支 `feat/v2-06`（自 main `daf09bf`）。验收构建之后同步了 main 的 `7cfed3a`（另一方的“内容未变文件折叠区”，只改文件列表），同步后单元测试与静态颜色检查通过，界面验收未重跑。
-- 验收构建：`Oris-builds/v2-06/target/release/oris.exe`（SHA-256 `5D7DF8529EE3…`，由 `scripts/build-release.ps1` 在 PowerShell 中构建，入口资源检查通过）。
-- 测试：前端 128 项（含配色生成器 5 项、静态颜色检查 2 项）、后端 67 项通过、5 项忽略；`tsc -b` 通过。
+- 分支 `feat/v2-06`（自 main `daf09bf`），合入 main 为 `e40c3ed`（同时包含 main 上的“内容未变文件折叠区”`7cfed3a` 与“阅读位置提示可关闭”`a4c6d97`，App.tsx 同一行冲突已合并保留双方改动）。
+- 验收构建：分支构建 `Oris-builds/v2-06`（SHA-256 `5D7DF8529EE3…`，上文 21 套截图与时延出自该构建）；合并后在 `Oris-builds/v2-06-main`（`EF7C2E92B357…`）上重跑界面验收，16 项检查全部通过，切换配色 P95 57.6 ms、打开设置 P95 8.0 ms。均由 `scripts/build-release.ps1` 在 PowerShell 中构建。
+- 测试：合并后前端 130 项（含配色生成器 5 项、静态颜色检查 2 项）、后端 67 项通过、5 项忽略；`tsc -b` 通过。
 
 ## 用户决定的落地
 
