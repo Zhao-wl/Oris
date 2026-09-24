@@ -1,5 +1,11 @@
 import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type JSX } from "react";
-import type { FileChange } from "./types";
+import type { ContentUnchanged, FileChange } from "./types";
+
+/** 列表标注与说明：status 按 stat 缓存报修改，但规范化后内容一致（常见于 autocrlf 下编辑器改写行尾）。 */
+export const contentUnchangedLabels: Record<ContentUnchanged, { short: string; detail: string }> = {
+  eol: { short: "仅行尾", detail: "仅行尾（CRLF/LF）变化：Git 按行尾规则规范化后内容与比较基准一致，暂存不会产生内容变化" },
+  normalized: { short: "内容未变", detail: "Git 规范化（如 clean filter / 行尾规则）后内容与比较基准一致，暂存不会产生内容变化" }
+};
 
 export const compareFiles = (a: FileChange, b: FileChange) => {
   const rank = (f: FileChange) => f.status === "deleted" ? 1 : f.status === "added" || f.status === "untracked" ? 2 : 0;
@@ -78,7 +84,8 @@ function FileButton({ file, selectedPathId, onSelect, depth = 0, showPath = fals
       <span className="file-icon">◇</span>
       <TailPath path={label} fullPath={file.displayPath}/>
       {file.oldDisplayPath && <span className="old-path" title={file.oldDisplayPath}>← {file.oldDisplayPath}</span>}
-      {file.additions !== null ? <span className="line-stat">+{file.additions} −{file.deletions ?? 0}</span>
+      {file.contentUnchanged ? <span className="line-stat unchanged" title={contentUnchangedLabels[file.contentUnchanged].detail}>{contentUnchangedLabels[file.contentUnchanged].short}</span>
+        : file.additions !== null ? <span className="line-stat">+{file.additions} −{file.deletions ?? 0}</span>
         : statsPending && file.status !== "conflicted" && <span className="line-stat pending" title="增删统计正在后台补齐">…</span>}
       <span className={`status ${file.status}`}>{statusLabels[file.status]}</span>
     </button>
