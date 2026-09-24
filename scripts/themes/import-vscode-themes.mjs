@@ -152,6 +152,18 @@ export function resolveTheme(colors, type) {
   variables['--status-deleted'] = gray;
   variables['--status-renamed'] = variables['--status-modified'];
   variables['--status-type-changed'] = variables['--status-modified'];
+  // 强调色（描边、当前命中文字、概览轨道视口）：样式表回退值是 Oris 原配色，
+  // 所以 VS Code 方案必须给出明确值；来源没有定义时用透明 / 当前文字色，与 VS Code 的外观一致。
+  const hc = type.startsWith('hc');
+  variables['--search-match-border'] = pick('editor.findMatchBorder') ?? (hc ? pick('contrastActiveBorder') : null) ?? 'transparent';
+  variables['--search-other-border'] = pick('editor.findMatchHighlightBorder') ?? (hc ? pick('contrastBorder') : null) ?? 'transparent';
+  variables['--search-match-text'] = pick('editor.findMatchForeground') ?? 'currentColor';
+  variables['--selection-outline'] = hc ? pick('contrastActiveBorder') ?? 'transparent' : 'transparent';
+  variables['--same-word-border'] = pick('editor.selectionHighlightBorder') ?? 'transparent';
+  variables['--overview-viewport-bg'] = pick('scrollbarSlider.background') ?? 'transparent';
+  variables['--overview-viewport-border'] = pick('scrollbarSlider.hoverBackground') ?? 'transparent';
+  variables['--overview-viewport-active'] = pick('scrollbarSlider.activeBackground') ?? 'transparent';
+  variables['--overview-viewport-shadow'] = 'transparent';
   const oris = {
     modified: { marker: modified, line: withAlpha(modified, .23), word: withAlpha(modified, .34) },
     added: { marker: added, line: pick('diffEditor.insertedLineBackground') ?? withAlpha(added,.2), word: pick('diffEditor.insertedTextBackground') ?? withAlpha(added,.3) },
