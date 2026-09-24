@@ -4,8 +4,9 @@ import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { defaultHighlightStyle } from "@codemirror/language";
 import { oneDarkHighlightStyle } from "@codemirror/theme-one-dark";
+import bootScript from "../../public/boot.js?raw";
 import {
-  AppearanceRuntime, applyBootAppearance, applyScheme, appearanceExtensions, createAppearanceCompartments, diffColors,
+  AppearanceRuntime, applyBootAppearance, applyScheme, CRITICAL_VARIABLES, appearanceExtensions, createAppearanceCompartments, diffColors,
   HIGH_CONTRAST_CLASS, highlightStyleFor, loadScheme, loadedSchemeIds, readBootCache, reconfigureAppearance, resetSchemeCacheForTest, resolveTag, schemeIndex
 } from "./runtime";
 
@@ -24,7 +25,7 @@ function fakeMedia(initialDark: boolean) {
   };
 }
 
-const appearance = { themeMode: "dark" as const, lightScheme: "oris-light", darkScheme: "dark-2026", fontSize: 13, diffColorMode: "oris" as const };
+const appearance = { themeMode: "dark" as const, lightScheme: "oris-light", darkScheme: "dark-2026", fontSize: 13 };
 
 beforeEach(() => { resetSchemeCacheForTest(); document.documentElement.removeAttribute("style"); document.documentElement.className = ""; });
 afterEach(() => vi.restoreAllMocks());
@@ -40,60 +41,50 @@ describe("theme runtime", () => {
     expect(schemeIndex.length).toBe(21);
   });
 
-  it("applies CSS variables, removes missing ones and marks high-contrast schemes", async () => {
+  it("applies CSS variables and marks high-contrast schemes (no Oris fallback leaks into them)", async () => {
     const root = document.createElement("div");
     const dark = await loadScheme("dark-2026");
-    applyScheme(dark, "oris", root);
+    applyScheme(dark, root);
     expect(root.style.getPropertyValue("--bg")).toBe(dark.variables["--bg"]);
     expect(root.classList.contains(HIGH_CONTRAST_CLASS)).toBe(false);
     expect(root.classList.contains("theme-dark")).toBe(true);
     root.style.setProperty("--search-other", "red");
     const hc = await loadScheme("hc-dark");
-    expect(hc.variables["--search-other"]).toBeNull();
-    applyScheme(hc, "oris", root);
-    expect(root.style.getPropertyValue("--search-other")).toBe("");
+    expect(hc.variables["--search-other"]).toBe("transparent");
+    applyScheme(hc, root);
+    expect(root.style.getPropertyValue("--search-other")).toBe("transparent");
     expect(root.classList.contains(HIGH_CONTRAST_CLASS)).toBe(true);
     expect(root.dataset.schemeType).toBe("hcDark");
     const light = await loadScheme("hc-light");
-    applyScheme(light, "oris", root);
+    applyScheme(light, root);
     expect(root.classList.contains("theme-light")).toBe(true);
     expect(root.style.colorScheme).toBe("light");
   });
 
-  it("provides both diff color sets (P-V2-05): oris modified blue vs vscode deleted/added pair", async () => {
+  it("uses the Oris diff semantics (V2-D30): modified on both sides, colors taken from the scheme", async () => {
     const scheme = await loadScheme("dark-2026");
-    const oris = diffColors(scheme, "oris");
-    const vscode = diffColors(scheme, "vscode");
-    expect(oris.modifiedLeft).toEqual(scheme.diff.oris.modified);
-    expect(oris.modifiedRight).toEqual(scheme.diff.oris.modified);
-    expect(oris.deleted).toEqual(scheme.diff.oris.deleted);
-    expect(vscode.modifiedLeft).toEqual(scheme.diff.vscode!.deleted);
-    expect(vscode.modifiedRight).toEqual(scheme.diff.vscode!.added);
-    expect(vscode.deleted.marker).not.toBe(oris.deleted.marker);
+    const colors = diffColors(scheme);
+    expect(colors.modifiedLeft).toEqual(scheme.diff.oris.modified);
+    expect(colors.modifiedRight).toEqual(scheme.diff.oris.modified);
+    expect(colors.deleted).toEqual(scheme.diff.oris.deleted);
+    expect(colors.added).toEqual(scheme.diff.oris.added);
     const root = document.createElement("div");
-    applyScheme(scheme, "oris", root);
-    const orisWord = root.style.getPropertyValue("--diff-modified-left-word");
-    applyScheme(scheme, "vscode", root);
-    expect(root.style.getPropertyValue("--diff-modified-left-word")).toBe(scheme.diff.vscode!.deleted.word);
-    expect(root.style.getPropertyValue("--diff-modified-left-word")).not.toBe(orisWord);
-    expect(root.dataset.diffColorMode).toBe("vscode");
+    applyScheme(scheme, root);
+    expect(root.style.getPropertyValue("--diff-modified-left-word")).toBe(scheme.diff.oris.modified.word);
+    expect(root.style.getPropertyValue("--diff-modified-right-line")).toBe(scheme.diff.oris.modified.line);
+    expect(root.style.getPropertyValue("--diff-deleted-marker")).toBe(scheme.diff.oris.deleted.marker);
   });
 
-  it("removes variables left over from the previous scheme and falls back to red deletions for Oris schemes", async () => {
+  it("removes variables left over from the previous scheme", async () => {
     const root = document.createElement("div");
     const vscodeScheme = await loadScheme("dark-2026");
-    applyScheme(vscodeScheme, "oris", root);
+    applyScheme(vscodeScheme, root);
     expect(root.style.getPropertyValue("--search-match")).not.toBe("");
     const oris = await loadScheme("oris-dark");
-    applyScheme(oris, "oris", root);
+    applyScheme(oris, root);
     expect(root.style.getPropertyValue("--search-match")).toBe("");
     expect(root.style.getPropertyValue("--bg")).toBe(oris.variables["--bg"]);
-    expect(oris.diff.vscode).toBeNull();
-    const colors = diffColors(oris, "vscode");
-    expect(colors.deleted.marker).toBe("#f14c4c");
-    expect(colors.modifiedRight).toEqual(colors.added);
-    applyScheme(oris, "vscode", root);
-    expect(root.style.getPropertyValue("--diff-deleted-marker")).toBe("#f14c4c");
+    expect(root.style.getPropertyValue("--diff-deleted-marker")).toBe(oris.diff.oris.deleted.marker);
   });
 
   it("builds a HighlightStyle from scope→tag rules, including modifier tags", async () => {
@@ -175,5 +166,19 @@ describe("theme runtime", () => {
     // 深色记录尚不存在时不改动根元素（沿用样式表默认配色）。
     expect(applyBootAppearance(storage, document.createElement("div"), () => ({ matches: true }))).toBeNull();
     expect(applyBootAppearance(memory(), document.createElement("div"))).toBeNull();
+  });
+
+  it("public/boot.js (runs before the stylesheet) applies the same first-paint colours as applyBootAppearance", async () => {
+    const runtime = new AppearanceRuntime({ root: document.createElement("div"), storage: localStorage, matchMedia: fakeMedia(true).matchMedia });
+    await runtime.apply({ ...appearance, themeMode: "dark", darkScheme: "hc-dark" });
+    const expected = document.createElement("div");
+    applyBootAppearance(localStorage, expected, () => ({ matches: true }));
+    const root = document.documentElement;
+    new Function(bootScript)();
+    for (const name of CRITICAL_VARIABLES) expect(root.style.getPropertyValue(name)).toBe(expected.style.getPropertyValue(name));
+    expect(root.classList.contains(HIGH_CONTRAST_CLASS)).toBe(true);
+    expect(root.classList.contains("theme-dark")).toBe(true);
+    expect(root.dataset.scheme).toBe("hc-dark");
+    localStorage.clear();
   });
 });

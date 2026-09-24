@@ -12,8 +12,6 @@ export interface SettingUi {
   min?: number;
   max?: number;
   step?: number;
-  /** 例如“待用户决定”的产品项，界面可据此标注。 */
-  pendingDecision?: string;
 }
 
 export interface SettingDefinition<T = unknown> {

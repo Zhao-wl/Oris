@@ -12,7 +12,6 @@ import schemeIndexData from "./generated/index.json";
 
 export type SchemeType = "light" | "dark" | "hcLight" | "hcDark";
 export type ThemeMode = "light" | "dark" | "system";
-export type DiffColorMode = "oris" | "vscode";
 
 export interface SchemeIndexEntry {
   id: string;
@@ -42,8 +41,8 @@ export interface Scheme {
   variables: Record<string, string | null>;
   diff: {
     oris: { modified: DiffTone; added: DiffTone; deleted: DiffTone };
-    /** Oris 自有方案没有这一组（null），见 VSCODE_FALLBACK。 */
-    vscode: { added: DiffTone; deleted: DiffTone } | null;
+    /** 生成数据中保留的 VS Code“新增绿、删除红”取值；V2-D30 选定 Oris 语义后运行时不再使用。 */
+    vscode?: { added: DiffTone; deleted: DiffTone } | null;
   };
   highlight: HighlightRule[];
 }
@@ -53,7 +52,6 @@ export interface AppearanceInput {
   lightScheme: string;
   darkScheme: string;
   fontSize: number;
-  diffColorMode: DiffColorMode;
 }
 
 export const schemeIndex = schemeIndexData as SchemeIndexEntry[];
@@ -101,33 +99,18 @@ export function activeSchemeId(appearance: Pick<AppearanceInput, "themeMode" | "
 }
 
 /**
- * 两组 diff 颜色（P-V2-05 待用户决定，两种都提供）：
- * - `oris`：修改蓝、新增绿、删除灰；修改块左右两侧都用“修改”色；
- * - `vscode`：新增绿、删除红；修改块左侧按删除、右侧按新增着色。
+ * diff 颜色（V2-D30）：沿用 V1 已确认的“修改蓝、新增绿、删除灰”，色值取自方案；
+ * 修改块左右两侧都用“修改”色。变量名保留左右之分，便于样式按侧取色。
  */
-export function diffColors(scheme: Scheme, mode: DiffColorMode) {
-  if (mode === "oris") {
-    const { modified, added, deleted } = scheme.diff.oris;
-    return { added, deleted, modifiedLeft: modified, modifiedRight: modified };
-  }
-  const vscode = scheme.diff.vscode ?? VSCODE_FALLBACK[isDarkType(scheme.type) ? "dark" : "light"];
-  const { added, deleted } = vscode;
-  return { added, deleted, modifiedLeft: deleted, modifiedRight: added };
+export function diffColors(scheme: Scheme) {
+  const { modified, added, deleted } = scheme.diff.oris;
+  return { added, deleted, modifiedLeft: modified, modifiedRight: modified };
 }
 
-/**
- * Oris 自有方案在“新增绿、删除红”语义下使用的颜色：新增沿用方案自身的绿色，
- * 删除取 VS Code Dark+/Light+ 的删除色（`diffEditor.removedLineBackground` 等），属于体验版工程取值。
- */
-export const VSCODE_FALLBACK: Record<"dark" | "light", { added: DiffTone; deleted: DiffTone }> = {
-  dark: { added: { marker: "#4f9f64", line: "#294436aa", word: "#4f9f6457" }, deleted: { marker: "#f14c4c", line: "#ff000033", word: "#ff00004d" } },
-  light: { added: { marker: "#74ad78", line: "#e3f2df", word: "#74ad7857" }, deleted: { marker: "#e51400", line: "#ff000026", word: "#ff000040" } }
-};
-
 /** 方案应用为根元素上的 CSS 变量（含 diff 颜色变量）；高对比方案额外加类名，界面切换到描边样式分支。 */
-export function schemeVariables(scheme: Scheme, mode: DiffColorMode): Record<string, string | null> {
+export function schemeVariables(scheme: Scheme): Record<string, string | null> {
   const variables: Record<string, string | null> = { ...scheme.variables };
-  const colors = diffColors(scheme, mode);
+  const colors = diffColors(scheme);
   for (const [name, tone] of Object.entries(colors)) {
     const prefix = `--diff-${name.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`;
     variables[`${prefix}-marker`] = tone.marker;
@@ -141,8 +124,8 @@ export const HIGH_CONTRAST_CLASS = "theme-high-contrast";
 
 const appliedVariables = new WeakMap<HTMLElement, Set<string>>();
 
-export function applyScheme(scheme: Scheme, mode: DiffColorMode, root: HTMLElement = document.documentElement) {
-  const variables = schemeVariables(scheme, mode);
+export function applyScheme(scheme: Scheme, root: HTMLElement = document.documentElement) {
+  const variables = schemeVariables(scheme);
   // 上一套方案设置、而这一套没有的变量要移除，否则会残留旧颜色（样式表中的回退值随之生效）。
   const previous = appliedVariables.get(root) ?? new Set<string>();
   const current = new Set<string>();
@@ -158,7 +141,6 @@ export function applyScheme(scheme: Scheme, mode: DiffColorMode, root: HTMLEleme
   root.classList.toggle("theme-light", !dark);
   root.dataset.scheme = scheme.id;
   root.dataset.schemeType = scheme.type;
-  root.dataset.diffColorMode = mode;
   root.style.colorScheme = dark ? "dark" : "light";
 }
 
@@ -371,7 +353,7 @@ export class AppearanceRuntime {
     const generation = ++this.generation;
     const scheme = await loadScheme(activeSchemeId(appearance, systemDark));
     if (generation !== this.generation) return scheme;
-    applyScheme(scheme, appearance.diffColorMode, this.options.root);
+    applyScheme(scheme, this.options.root);
     if (this.options.storage) writeBootCache(this.options.storage, appearance.themeMode, [scheme]);
     this.options.onApplied?.(scheme, appearance);
     return scheme;

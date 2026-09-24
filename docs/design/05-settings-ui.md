@@ -1,6 +1,6 @@
 # 设置窗口 UI 交互参考图
 
-状态：**用户已确认效果图布局**（2026-09-23）；P-V2-05、P-V2-06、P-V2-07 的产品选择仍待单独决定。本图依据 [一期与二期混合发布 UI 参考图](04-mixed-release-ui-reference.md)、[V1 已确认 UI 基准](02-approved-ui.md)、[V2 产品规格](../specs/v2-product.md)的 R-SETTINGS / R-APPEARANCE、[任务 V2-06](../tasks/v2/06-settings-appearance.md)、[研究 08](../research/08-vscode-color-themes.md)与 [V2 决策](../decisions/v2-decisions.md)绘制。布局、配色与组件风格沿用 04；示例项目、Git 路径、版本、校验反馈与色板均是演示数据，不是生产实现或真实颜色效果的证明。
+状态：**用户已确认效果图布局**（2026-09-23）。P-V2-05／06／07 已于 2026-09-24 决定（V2-D30–V2-D32：Oris diff 语义、19 套完整移植、默认 Oris 配色），效果图中的决策演示控件不进入正式实现。本图依据 [一期与二期混合发布 UI 参考图](04-mixed-release-ui-reference.md)、[V1 已确认 UI 基准](02-approved-ui.md)、[V2 产品规格](../specs/v2-product.md)的 R-SETTINGS / R-APPEARANCE、[任务 V2-06](../tasks/v2/06-settings-appearance.md)、[研究 08](../research/08-vscode-color-themes.md)与 [V2 决策](../decisions/v2-decisions.md)绘制。布局、配色与组件风格沿用 04；示例项目、Git 路径、版本、校验反馈与色板均是演示数据，不是生产实现或真实颜色效果的证明。
 
 [打开可交互设置窗口效果图](oris-settings.html)
 
