@@ -114,6 +114,8 @@ pub struct CallResult {
     pub stdout: Vec<u8>,
     pub stderr_tail: String,
     pub cancelled: bool,
+    /// 超过无输出超时被终止（网络操作，技术方案 §4）。
+    pub timed_out: bool,
 }
 
 impl CallResult {
@@ -127,6 +129,7 @@ impl CallResult {
 }
 
 /// 在写通道上执行一条 Git 命令。`log_stdout` 为 false 时 stdout 作为数据返回，不进入操作输出。
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     git: &Path,
     cwd: &Path,
@@ -137,8 +140,24 @@ pub fn run(
     log: &OutputLog,
     counter: &std::sync::atomic::AtomicU32,
 ) -> Result<CallResult, GitError> {
+    run_with(git, cwd, args, stdin, log_stdout, cancel, log, counter, None)
+}
+
+/// 同 [`run`]，另可设置“无输出超时”：stdout / stderr 连续 `idle` 没有任何输出时终止整个进程树。
+#[allow(clippy::too_many_arguments)]
+pub fn run_with(
+    git: &Path,
+    cwd: &Path,
+    args: &[&OsStr],
+    stdin: Option<Vec<u8>>,
+    log_stdout: bool,
+    cancel: &CancelHandle,
+    log: &OutputLog,
+    counter: &std::sync::atomic::AtomicU32,
+    idle: Option<Duration>,
+) -> Result<CallResult, GitError> {
     if cancel.is_cancelled() {
-        return Ok(CallResult { success: false, code: None, stdout: Vec::new(), stderr_tail: String::new(), cancelled: true });
+        return Ok(CallResult { success: false, code: None, stdout: Vec::new(), stderr_tail: String::new(), cancelled: true, timed_out: false });
     }
     let mut command = write_command(git, cwd);
     command.args(args).stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -211,9 +230,12 @@ pub fn run(
     // 读取直到两个管道都关闭；hook 派生的后台进程可能继续持有管道，因此 git 退出后最多再等 500 ms。
     let mut exited_at: Option<std::time::Instant> = None;
     let mut status = None;
+    let mut last_output = std::time::Instant::now();
+    let mut timed_out = false;
     loop {
         match receiver.recv_timeout(Duration::from_millis(50)) {
             Ok((is_err, chunk)) => {
+                last_output = std::time::Instant::now();
                 if !is_err && !log_stdout {
                     if stdout_data.len() + chunk.len() <= STDOUT_LIMIT {
                         stdout_data.extend_from_slice(&chunk);
@@ -229,6 +251,11 @@ pub fn run(
             if let Ok(Some(done)) = child.try_wait() {
                 status = Some(done);
                 exited_at = Some(std::time::Instant::now());
+            } else if !timed_out && idle.is_some_and(|idle| last_output.elapsed() >= idle) {
+                timed_out = true;
+                if let Some(tree) = cancel.tree.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
+                    tree.terminate();
+                }
             }
         } else if exited_at.is_some_and(|at| at.elapsed() > Duration::from_millis(500)) {
             break;
@@ -250,7 +277,7 @@ pub fn run(
     let cancelled = cancel.is_cancelled();
     let tail: Vec<&String> = stderr_lines.iter().filter(|l| !l.trim().is_empty()).collect();
     let stderr_tail = tail[tail.len().saturating_sub(12)..].iter().map(|l| redact(l)).collect::<Vec<_>>().join("\n");
-    Ok(CallResult { success: status.success() && !cancelled, code: status.code(), stdout: stdout_data, stderr_tail, cancelled })
+    Ok(CallResult { success: status.success() && !cancelled && !timed_out, code: status.code(), stdout: stdout_data, stderr_tail, cancelled, timed_out })
 }
 
 /// 可整体终止的进程树。

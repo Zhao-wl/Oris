@@ -5,8 +5,11 @@
 //! `--pathspec-from-file=- --pathspec-file-nul` 传递。任何写操作都不自动重试。
 mod commit;
 mod discard;
+mod network;
 pub mod process;
 mod stage;
+#[cfg(test)]
+mod network_tests;
 #[cfg(test)]
 mod tests;
 
@@ -55,6 +58,8 @@ pub enum OperationRequest {
         expected_head: Option<String>,
     },
     UndoCommit { expected_head: String },
+    /// 显式获取远端状态（R-REMOTE）：只更新远端跟踪引用等 Git 元数据。
+    Fetch { remote: String },
 }
 
 impl OperationRequest {
@@ -68,6 +73,7 @@ impl OperationRequest {
             Self::Commit { amend: false, .. } => "commit",
             Self::Commit { amend: true, .. } => "amend",
             Self::UndoCommit { .. } => "undoCommit",
+            Self::Fetch { .. } => "fetch",
         }
     }
 }
@@ -146,11 +152,13 @@ pub struct OpContext<'a> {
     pub log: OutputLog<'a>,
     pub backups: &'a BackupStore,
     pub processes: AtomicU32,
+    /// 网络操作的无输出超时（默认 60 s，见 `network.rs`）。
+    pub network_idle: std::time::Duration,
 }
 
 impl<'a> OpContext<'a> {
     pub fn new(op_id: String, cancel: Arc<CancelHandle>, backups: &'a BackupStore, sink: &'a (dyn Fn(&str) + Sync)) -> Self {
-        Self { op_id, cancel, log: OutputLog::new(sink), backups, processes: AtomicU32::new(0) }
+        Self { op_id, cancel, log: OutputLog::new(sink), backups, processes: AtomicU32::new(0), network_idle: network::network_idle() }
     }
 }
 
@@ -276,6 +284,7 @@ impl GitAdapter {
             OperationRequest::UndoDiscard { backup_id, overwrite } => self.op_undo_discard(backup_id, *overwrite, ctx),
             OperationRequest::Commit { message, amend, keep_message, expected_head } => self.op_commit(message, *amend, *keep_message, expected_head.as_deref(), ctx),
             OperationRequest::UndoCommit { expected_head } => self.op_undo_commit(expected_head, ctx),
+            OperationRequest::Fetch { remote } => self.op_fetch(remote, ctx),
         }?;
         let git_processes = ctx.processes.load(std::sync::atomic::Ordering::SeqCst);
         // 需要确认时没有任何改动，不必刷新；其余结局（含失败与取消）都重新读取实际状态并如实报告。
