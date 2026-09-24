@@ -64,6 +64,12 @@ button:disabled { opacity:.45; cursor:default; }
 .line-stat { margin-left:auto; color:var(--dim); font-size:10px; white-space:nowrap; }
 .line-stat.pending { opacity:.6; letter-spacing:1px; }
 .unchanged-note { color:var(--dim); margin-right:10px; }
+.unchanged-fold { margin-top:4px; }
+.fold-divider { display:flex; align-items:center; gap:8px; width:100%; height:22px; padding:0 10px; border:0; background:none; color:var(--dim); font-size:11px; cursor:pointer; }
+.fold-divider::before, .fold-divider::after { content:""; flex:1; border-top:1px solid var(--border); }
+.fold-divider:hover, .fold-divider.has-selection { color:var(--text); }
+.fold-divider:hover::before, .fold-divider:hover::after { border-top-color:var(--dim); }
+.fold-label { white-space:nowrap; }
 .line-stat.unchanged { border:1px solid var(--border); border-radius:3px; padding:0 4px; }
 .tree-row { display:flex; align-items:center; gap:2px; min-height:27px; padding:4px 8px 4px calc(8px + var(--tree-depth, 0) * 17px); cursor:pointer; user-select:none; box-sizing:border-box; }
 .tree-row.open>.directory-chevron { transform:rotate(90deg); }
