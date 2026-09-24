@@ -90,8 +90,13 @@ export default function HistoryPanel(props: Props) {
     });
   }, [repoId, filter, search]);
 
+  /** 正在续读的游标（同步标记）：滚动事件连续到达时，同一页只请求一次。 */
+  const inflight = useRef<string | null>(null);
   const loadMore = useCallback(() => {
     if (!cursor || logLoading) return;
+    const key = `${logRequest.current}:${cursor.skip}`;
+    if (inflight.current === key) return;
+    inflight.current = key;
     const request = logRequest.current;
     setLogLoading(true);
     void readLog(repoId, { refs: [], search: search && search.text.trim() ? { kind: search.kind, text: search.text.trim() } : null, pageSize: PAGE_SIZE }, cursor).then((page) => {
@@ -99,7 +104,7 @@ export default function HistoryPanel(props: Props) {
       // 游标固定了起点 OID：追加的提交不会改变已显示提交的身份与顺序。
       setCommits((current) => { const seen = new Set(current.map((c) => c.oid)); return [...current, ...page.commits.filter((c) => !seen.has(c.oid))]; });
       setCursor(page.next); setLogLoading(false);
-    }, (error) => { if (request === logRequest.current && !isStale(error)) { setLogLoading(false); setLogError(errorText(error)); } });
+    }, (error) => { if (inflight.current === key) inflight.current = null; if (request === logRequest.current && !isStale(error)) { setLogLoading(false); setLogError(errorText(error)); } });
   }, [repoId, cursor, logLoading, search]);
 
   useEffect(() => { loadRefs(); }, [loadRefs, refsVersion]);
@@ -295,12 +300,14 @@ const laneClass = (lane: number) => `lane-${lane % 6}`;
 const CommitRow = memo(function CommitRow({ row, commit, top, graphWidth, loaded, selected, head, onPick, onMenu }: { row: GraphRow; commit: CommitInfo; top: number; graphWidth: number; loaded: ReadonlySet<string>; selected: boolean; head: boolean; onPick(): void; onMenu(x: number, y: number): void }) {
   const segments = rowSegments(row, loaded);
   const refs = commit.refs.filter((r) => r.kind !== "head");
+  // HEAD 标注：来自该页日志自身的装饰（与分支列表是否已读取无关）。
+  const isHead = head || commit.refs.some((r) => r.kind === "head");
   return <div id={`commit-${commit.oid}`} role="option" aria-selected={selected} data-endpoint data-oid={commit.oid} className={`log-row${selected ? " selected" : ""}`} style={{ position: "absolute", top, left: 0, right: 0, height: ROW_HEIGHT }} onClick={onPick} onContextMenu={(event) => { event.preventDefault(); onPick(); onMenu(event.clientX, event.clientY); }}>
     <svg className="log-graph" width={graphWidth} height={ROW_HEIGHT} aria-hidden="true">
       {segments.map((s, i) => <line key={i} className={`${laneClass(s.lane)}${s.dashed ? " dashed" : ""}`} x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2}/>)}
-      <circle className={`${laneClass(row.lane)}${commit.parents.length > 1 ? " merge" : ""}${head ? " head" : ""}`} cx={nodeX(row)} cy={ROW_HEIGHT / 2} r={commit.parents.length > 1 ? 4 : 3.5}/>
+      <circle className={`${laneClass(row.lane)}${commit.parents.length > 1 ? " merge" : ""}${isHead ? " head" : ""}`} cx={nodeX(row)} cy={ROW_HEIGHT / 2} r={commit.parents.length > 1 ? 4 : 3.5}/>
     </svg>
-    <span className="log-subject">{head && <span className="ref-chip head">HEAD</span>}{refs.map((r) => <span key={r.name} className={`ref-chip ${r.kind}${r.current ? " current" : ""}`} title={r.name}>{shortRef(r.name)}</span>)}{commit.subject || "（无提交信息）"}</span>
+    <span className="log-subject">{isHead && <span className="ref-chip head">HEAD</span>}{refs.map((r) => <span key={r.name} className={`ref-chip ${r.kind}${r.current ? " current" : ""}`} title={r.name}>{shortRef(r.name)}</span>)}{commit.subject || "（无提交信息）"}</span>
     <span className="log-author" title={commit.authorEmail}>{commit.authorName}</span>
     <span className="log-date">{time(commit.authorTime)}</span>
     <span className="log-sha">{shortOid(commit.oid)}</span>

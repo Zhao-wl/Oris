@@ -421,7 +421,8 @@ pub fn file_history(git: &Path, worktree: &Path, start: &str, path: &str, page_s
     }
     let count_arg = format!("--max-count={}", skip + page_size + 1);
     let mut args: Vec<&str> = LOG_BASE.to_vec();
-    args.extend_from_slice(&["-z", "--follow", "--name-status", "-M", FORMAT, &count_arg, &tip, "--", path]);
+    // 合并提交与第一个父节点比较（Git ≥ 2.31）：合并中解决冲突改动了该文件时也出现在历史中。
+    args.extend_from_slice(&["-z", "--follow", "--diff-merges=first-parent", "--name-status", "-M", FORMAT, &count_arg, &tip, "--", path]);
     let raw = run_required(git, worktree, &args)?.stdout;
     let mut entries = Vec::new();
     for (commit, files) in parse_records(&raw)?.into_iter().skip(skip) {
