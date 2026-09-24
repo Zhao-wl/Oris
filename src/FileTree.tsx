@@ -306,6 +306,11 @@ export default function FileTree({ files, selectedPathId, mode, statsPending = f
   const unchanged = useMemo(() => files.filter((file) => file.contentUnchanged), [files]);
   const [menu, setMenu] = useState<{ file: FileChange; x: number; y: number; targets: string[] } | null>(null);
   const anchor = useRef<string | null>(null);
+  // 最新的选择（含尚未重渲染的连续点击），每次渲染按 props 重置。
+  const latest = useRef<string[]>([]);
+  latest.current = actions && actions.selection.size > 1 ? [...actions.selection] : selectedPathId ? [selectedPathId] : [];
+  const focused = useRef(selectedPathId);
+  focused.current = selectedPathId;
   // 列表的显示顺序（Shift 连续选择按此计算）。
   const order = useMemo(() => {
     const sortedUnchanged = [...unchanged].sort(compareFiles);
@@ -317,29 +322,34 @@ export default function FileTree({ files, selectedPathId, mode, statsPending = f
   const context = useMemo<ActionsContextValue | null>(() => {
     if (!actions) return null;
     const byId = new Map(files.map((file) => [file.pathId, file]));
-    const multi = actions.selection.size > 1;
-    const current = multi ? [...actions.selection] : selectedPathId ? [selectedPathId] : [];
+    const apply = (ids: string[], focus: FileChange | null) => {
+      latest.current = ids;
+      if (focus) focused.current = focus.pathId;
+      actions.onSelection(ids, focus);
+    };
     const clickRow = (file: FileChange, { toggle, range }: { toggle: boolean; range: boolean }) => {
+      const current = latest.current;
       if (range) {
-        const from = order.indexOf(anchor.current ?? selectedPathId ?? file.pathId);
+        const from = order.indexOf(anchor.current ?? focused.current ?? file.pathId);
         const to = order.indexOf(file.pathId);
         const [start, end] = from < 0 ? [to, to] : [Math.min(from, to), Math.max(from, to)];
-        actions.onSelection(order.slice(start, end + 1), file);
+        apply(order.slice(start, end + 1), file);
       } else if (toggle) {
         anchor.current = file.pathId;
         if (current.includes(file.pathId)) {
           const next = current.filter((id) => id !== file.pathId);
           if (!next.length) return;
-          actions.onSelection(next, file.pathId === selectedPathId ? byId.get(next[0]) ?? null : null);
-        } else actions.onSelection([...current, file.pathId], file);
+          apply(next, file.pathId === focused.current ? byId.get(next[0]) ?? null : null);
+        } else apply([...current, file.pathId], file);
       } else {
         anchor.current = file.pathId;
-        actions.onSelection([file.pathId], file);
+        apply([file.pathId], file);
       }
     };
     const openMenu = (file: FileChange, x: number, y: number) => {
-      if (multi && actions.selection.has(file.pathId)) { setMenu({ file, x, y, targets: [...actions.selection] }); return; }
-      if (file.pathId !== selectedPathId || multi) clickRow(file, { toggle: false, range: false });
+      const current = latest.current;
+      if (current.length > 1 && current.includes(file.pathId)) { setMenu({ file, x, y, targets: [...current] }); return; }
+      if (file.pathId !== focused.current || current.length > 1) clickRow(file, { toggle: false, range: false });
       setMenu({ file, x, y, targets: [file.pathId] });
     };
     return { ...actions, selectedPathId, clickRow, openMenu };
