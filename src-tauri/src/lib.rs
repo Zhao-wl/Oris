@@ -4,7 +4,7 @@ mod snapshot_store;
 mod watch;
 
 #[cfg(feature = "desktop")]
-use git::{CompareScope, ConflictVersion, GitAdapter, GitError, RepositoryDetails, RepositorySnapshot};
+use git::{ops, CompareScope, ConflictVersion, GitAdapter, GitError, RepositoryDetails, RepositorySnapshot};
 #[cfg(feature = "desktop")]
 use std::{
     collections::HashMap,
@@ -67,6 +67,23 @@ struct WatcherRegistry(Mutex<watch::WatchLru>);
 
 #[cfg(feature = "desktop")]
 struct Snapshots(snapshot_store::SnapshotStore);
+
+/// discard 备份记录（应用数据目录，技术方案 §6）。
+#[cfg(feature = "desktop")]
+struct Backups(ops::BackupStore);
+
+/// 写操作结束后识别自身回声事件的尾窗口（覆盖 200 ms 合并窗口内迟到的事件）；窗口内只跳过修改时间不晚于操作结束的事件。
+#[cfg(feature = "desktop")]
+const OPERATION_ECHO_TAIL: std::time::Duration = std::time::Duration::from_millis(1500);
+
+#[cfg(feature = "desktop")]
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OperationLine {
+    repo_id: String,
+    op_id: String,
+    line: String,
+}
 
 #[cfg(feature = "desktop")]
 fn start_watcher(app: &tauri::AppHandle, adapter: &GitAdapter) -> Result<watch::RepoWatcher, GitError> {
@@ -304,6 +321,89 @@ fn remove_snapshot(worktree_path: String, store: State<'_, Snapshots>) {
     store.0.remove(&worktree_path);
 }
 
+/// 执行一个写操作（R-OPSAFE）：仓库级写锁（忙时直接拒绝）、watcher 屏蔽窗口、输出逐行推送、结束后精确刷新。
+#[cfg(feature = "desktop")]
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn run_operation(
+    repo_id: String,
+    scope: CompareScope,
+    op_id: String,
+    request: ops::OperationRequest,
+    registry: State<'_, RepositoryRegistry>,
+    watchers: State<'_, WatcherRegistry>,
+    runner: State<'_, ops::Runner>,
+    app: tauri::AppHandle,
+) -> Result<ops::OperationOutcome, GitError> {
+    let opened = opened(&registry, &repo_id)?;
+    let guard = runner.begin(&repo_id)?;
+    let suppression = watchers.0.lock().map_err(|_| GitError::Registry)?.get(&repo_id).map(|w| w.suppression.clone());
+    if let Some(suppression) = &suppression {
+        suppression.begin_operation();
+    }
+    let runner = runner.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let backups = app.state::<Backups>();
+        let emitter = app.clone();
+        let (line_repo, line_op) = (repo_id.clone(), op_id.clone());
+        let sink = move |line: &str| {
+            let _ = emitter.emit("operation-output", OperationLine { repo_id: line_repo.clone(), op_id: line_op.clone(), line: line.to_owned() });
+        };
+        let ctx = ops::OpContext::new(op_id, guard.cancel.clone(), &backups.0, &sink);
+        let outcome = opened.adapter.run_operation(request, scope, &ctx);
+        if let Some(suppression) = &suppression {
+            let touched = outcome.as_ref().map(|o| o.touched.clone()).unwrap_or_default();
+            suppression.end_operation(opened.adapter.worktree(), touched, OPERATION_ECHO_TAIL);
+        }
+        drop(guard);
+        if let Ok(outcome) = &outcome {
+            runner.record(outcome);
+        }
+        outcome
+    })
+    .await
+    .map_err(|error| GitError::Runtime(error.to_string()))?
+}
+
+/// 取消该仓库正在运行的写操作（终止整个进程树）；返回是否有操作被取消。
+#[cfg(feature = "desktop")]
+#[tauri::command]
+fn cancel_operation(repo_id: String, runner: State<'_, ops::Runner>) -> bool {
+    runner.cancel(&repo_id)
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+fn last_operation(repo_id: String, runner: State<'_, ops::Runner>) -> Option<ops::LastOperation> {
+    runner.last(&repo_id)
+}
+
+/// 丢弃确认框的数据（只读）。
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn prepare_discard(repo_id: String, scope: CompareScope, path_ids: Vec<String>, registry: State<'_, RepositoryRegistry>) -> Result<ops::DiscardPlan, GitError> {
+    let opened = opened(&registry, &repo_id)?;
+    tauri::async_runtime::spawn_blocking(move || opened.adapter.prepare_discard(scope, &path_ids))
+        .await
+        .map_err(|error| GitError::Runtime(error.to_string()))?
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+fn discard_backups(repo_id: String, registry: State<'_, RepositoryRegistry>, backups: State<'_, Backups>) -> Result<Vec<ops::BackupSummary>, GitError> {
+    Ok(opened(&registry, &repo_id)?.adapter.discard_backups(&backups.0))
+}
+
+/// 提交面板的 HEAD 信息与已推送判断（只读）。
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn head_commit_info(repo_id: String, registry: State<'_, RepositoryRegistry>) -> Result<Option<ops::HeadCommitInfo>, GitError> {
+    let opened = opened(&registry, &repo_id)?;
+    tauri::async_runtime::spawn_blocking(move || opened.adapter.head_commit_info())
+        .await
+        .map_err(|error| GitError::Runtime(error.to_string()))?
+}
+
 /// WebView2 内存目标级别（技术方案 §7 / V2-D28）：窗口失焦或最小化时设为 Low，WebView2 主动回收缓存；
 /// 获得焦点时恢复 Normal。`ORIS_WEBVIEW_MEMORY_TARGET=low|normal` 只用于测量时固定级别。
 #[cfg(all(feature = "desktop", windows))]
@@ -346,6 +446,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(RepositoryRegistry::default())
         .manage(WatcherRegistry::default())
+        .manage(ops::Runner::default())
         .setup(|app| {
             // ORIS_APP_CACHE_DIR 仅供隔离测试实例使用；未设置时用系统应用缓存目录。
             let base = std::env::var_os("ORIS_APP_CACHE_DIR")
@@ -353,6 +454,13 @@ pub fn run() {
                 .or_else(|| app.path().app_cache_dir().ok())
                 .unwrap_or_else(std::env::temp_dir);
             app.manage(Snapshots(snapshot_store::SnapshotStore::new(base.join("snapshots"))));
+            // discard 备份写入应用数据目录；ORIS_APP_DATA_DIR（或隔离测试用的 ORIS_APP_CACHE_DIR）可覆盖。
+            let data = std::env::var_os("ORIS_APP_DATA_DIR")
+                .or_else(|| std::env::var_os("ORIS_APP_CACHE_DIR"))
+                .map(std::path::PathBuf::from)
+                .or_else(|| app.path().app_data_dir().ok())
+                .unwrap_or_else(std::env::temp_dir);
+            app.manage(Backups(ops::BackupStore::new(data.join("discard-backups"))));
             #[cfg(windows)]
             if let Some(low) = webview_memory::forced() {
                 webview_memory::apply(app.handle(), "main", low);
@@ -381,7 +489,13 @@ pub fn run() {
             save_snapshot,
             load_snapshot,
             remove_snapshot,
-            validate_git
+            validate_git,
+            run_operation,
+            cancel_operation,
+            last_operation,
+            prepare_discard,
+            discard_backups,
+            head_commit_info
         ])
         .run(application_context())
         .expect("failed to run Oris");
