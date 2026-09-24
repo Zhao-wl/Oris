@@ -261,7 +261,6 @@ button:disabled { opacity:.45; cursor:default; }
 .settings-notices pre { max-height:220px; overflow:auto; margin:6px 0 0; padding:8px; white-space:pre-wrap; background:var(--bg); border:1px solid var(--border); border-radius:4px; font-size:11px; }
 
 /* 写操作（V2-02）：文件行入口、批量选择、右键菜单、确认框、底部 Git 区、状态栏结果。 */
-.file-check { flex:none; margin:0 5px 0 0; width:13px; height:13px; accent-color:var(--blue); cursor:pointer; }
 .file-actions { display:none; flex:none; gap:3px; margin-left:6px; }
 .file:hover .file-actions, .file.selected .file-actions, .file:focus-within .file-actions { display:flex; }
 .file-action { padding:1px 6px; font-size:11px; line-height:16px; background:var(--toggle-off); border-color:var(--border); }
@@ -272,12 +271,11 @@ button:disabled { opacity:.45; cursor:default; }
 .file-menu button:not(:disabled):hover, .file-menu button:focus-visible { background:var(--hover); }
 .file-menu-note { padding:5px 10px; color:var(--dim); font-size:11px; }
 .file-menu button.danger:not(:disabled):hover { color:var(--error, #ff7b72); }
-.batch-hint { color:var(--dim); font-size:11px; }
+
 .sidebar>footer { display:flex; align-items:center; gap:6px; min-height:33px; }
 .batch-bar { display:flex; align-items:center; gap:5px; flex-wrap:wrap; width:100%; }
 .batch-bar>span { color:var(--text); margin-right:auto; }
-.batch-bar button, .select-all { padding:2px 7px; font-size:11px; }
-.select-all { margin-left:auto; }
+.batch-bar button { padding:2px 7px; font-size:11px; }
 button.quiet { background:transparent; border-color:transparent; color:var(--dim); }
 button.quiet:not(:disabled):hover { color:var(--text); background:var(--hover); }
 button.danger:not(:disabled):hover { color:var(--error, #ff7b72); border-color:var(--error, #ff7b72); }

@@ -48,6 +48,8 @@ const button = (label: string) => [...host.querySelectorAll("button")].find((b) 
 const contextMenu = async (path: string) => { await act(async () => { row(path).dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 40, clientY: 60 })); }); await flush(); };
 const menuItem = (prefix: string) => [...host.querySelectorAll(".file-menu button")].find((b) => b.textContent!.startsWith(prefix)) as HTMLButtonElement | undefined;
 const click = async (element: HTMLElement) => { await act(async () => element.click()); await flush(); };
+const clickWith = async (path: string, modifiers: MouseEventInit) => { await act(async () => { row(path).dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ...modifiers })); }); await flush(); };
+const selectedRows = () => [...host.querySelectorAll(".file.selected")].map((n) => n.getAttribute("aria-label"));
 const type = async (element: HTMLTextAreaElement, value: string) => {
   await act(async () => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(element, value); element.dispatchEvent(new Event("input", { bubbles: true })); });
   await flush();
@@ -116,14 +118,41 @@ describe("stage / unstage (B05, B16)", () => {
     expect(rowButton("a.txt", "暂存").disabled).toBe(false);
   });
 
-  it("batch-stages checked files; checkboxes only select targets", async () => {
-    bridge.operation.mockResolvedValue(outcome("stage", snap([], [change("a.txt"), change("b.txt")], "r2")));
+  it("Ctrl / Shift + click build a multi-selection; right-click stages all selected; the row button stages only its own file", async () => {
+    bridge.open.mockResolvedValue(snap([change("a.txt"), change("b.txt"), change("c.txt"), change("d.txt")], []));
+    bridge.operation.mockResolvedValue(outcome("stage", snap([change("a.txt"), change("c.txt"), change("d.txt")], [change("b.txt")], "r2")));
     await mount();
-    await click(row("a.txt").querySelector(".file-check") as HTMLElement);
-    await click(row("b.txt").querySelector(".file-check") as HTMLElement);
+    expect(host.querySelector(".file-check")).toBeNull();
+    await clickWith("a.txt", {});
+    await clickWith("c.txt", { shiftKey: true });
+    expect(selectedRows()).toEqual(["a.txt", "b.txt", "c.txt"]);
+    await clickWith("b.txt", { ctrlKey: true });
+    expect(selectedRows()).toEqual(["a.txt", "c.txt"]);
+    await clickWith("b.txt", { ctrlKey: true });
+    expect(selectedRows()).toEqual(["a.txt", "b.txt", "c.txt"]);
+    expect(host.querySelector(".sidebar > footer")?.textContent).toContain("已选 3 个");
     expect(bridge.operation).not.toHaveBeenCalled();
-    await click(button("暂存所选"));
-    expect(bridge.operation).toHaveBeenCalledWith("a", "unstaged", expect.any(String), { kind: "stage", pathIds: ["id-a.txt", "id-b.txt"] });
+    // 行上的按钮只作用于该行，即使该行在多选中。
+    await click(rowButton("b.txt", "暂存"));
+    expect(bridge.operation).toHaveBeenLastCalledWith("a", "unstaged", expect.any(String), { kind: "stage", pathIds: ["id-b.txt"] });
+    bridge.operation.mockClear();
+    expect(rows()).toEqual(["a.txt", "c.txt", "d.txt"]);
+    await clickWith("a.txt", {});
+    await clickWith("c.txt", { ctrlKey: true });
+    await contextMenu("c.txt");
+    expect(host.querySelector(".file-menu")?.textContent).toContain("已选中 2 个文件");
+    await click(menuItem("暂存")!);
+    expect(bridge.operation).toHaveBeenCalledWith("a", "unstaged", expect.any(String), { kind: "stage", pathIds: ["id-a.txt", "id-c.txt"] });
+  });
+
+  it("right-clicking an unselected file selects only that file", async () => {
+    bridge.open.mockResolvedValue(snap([change("a.txt"), change("b.txt"), change("c.txt")], []));
+    await mount();
+    await clickWith("a.txt", {});
+    await clickWith("b.txt", { ctrlKey: true });
+    await contextMenu("c.txt");
+    expect(selectedRows()).toEqual(["c.txt"]);
+    expect(host.querySelector(".file-menu")?.textContent).not.toContain("已选中");
   });
 });
 
@@ -132,11 +161,11 @@ describe("discard (B06)", () => {
     bridge.open.mockResolvedValue(snap([change("a.txt"), change("new.txt", "untracked")], []));
     bridge.prepareDiscard.mockResolvedValue({ scope: "unstaged", files: 2, untracked: 1, paths: ["a.txt", "new.txt"], unrecoverable: [], blocked: [] });
     await mount();
-    await click(row("a.txt").querySelector(".file-check") as HTMLElement);
-    await click(row("new.txt").querySelector(".file-check") as HTMLElement);
+    await clickWith("a.txt", {});
+    await clickWith("new.txt", { ctrlKey: true });
     expect(rowButton("a.txt", "丢弃…")).toBeUndefined();
     await contextMenu("a.txt");
-    expect(host.querySelector(".file-menu")?.textContent).toContain("已勾选 2 个文件");
+    expect(host.querySelector(".file-menu")?.textContent).toContain("已选中 2 个文件");
     expect(menuItem("暂存")?.textContent).toBe("暂存（2 个文件）");
     await click(menuItem("丢弃…")!);
     const dialog = host.querySelector(".confirm-dialog")!;
@@ -148,10 +177,9 @@ describe("discard (B06)", () => {
     expect(bridge.operation).not.toHaveBeenCalled();
     bridge.prepareDiscard.mockResolvedValue({ scope: "unstaged", files: 1, untracked: 0, paths: ["a.txt"], unrecoverable: ["a.txt"], blocked: [] });
     bridge.operation.mockResolvedValue(outcome("discard", snap([change("new.txt", "untracked")], [], "r2"), { backup: { id: "b1", createdAt: 1, scope: "unstaged", files: 1, unrecoverable: 1, paths: ["a.txt"] } }));
-    await click(row("new.txt").querySelector(".file-check") as HTMLElement);
-    // 只勾选了 a.txt：在未勾选的 new.txt 上右键，仍作用于勾选项。
-    await contextMenu("new.txt");
-    expect(host.querySelector(".file-menu")?.textContent).not.toContain("已勾选");
+    await clickWith("a.txt", {});
+    await contextMenu("a.txt");
+    expect(host.querySelector(".file-menu")?.textContent).not.toContain("已选中");
     await click(menuItem("丢弃…")!);
     expect(host.querySelector(".confirm-warning")?.textContent).toContain("不可撤销");
     await click(button("丢弃（含不可撤销）"));
