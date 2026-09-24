@@ -5,6 +5,7 @@
 //! 起点 ref 在第一页解析为 OID 并固定在游标里，后续分页不受 ref 移动影响，已显示提交的身份不变。
 #![cfg_attr(not(test), allow(dead_code))]
 use super::{run_required, GitError};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -101,6 +102,9 @@ pub enum ChangeStatus {
 pub struct ChangedFile {
     pub path: String,
     pub old_path: Option<String>,
+    /// 原始路径字节的 base64url（与本地变化的 pathId 相同编码），供按提交读取内容。
+    pub path_id: String,
+    pub old_path_id: Option<String>,
     pub status: ChangeStatus,
 }
 
@@ -131,9 +135,11 @@ pub struct FileHistoryEntry {
     pub commit: CommitInfo,
     /// 该提交中文件的路径。
     pub path: String,
+    pub path_id: String,
     pub status: ChangeStatus,
     /// 此提交把文件从该路径改名而来（rename 跟随边界）。
     pub renamed_from: Option<String>,
+    pub renamed_from_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -283,10 +289,11 @@ fn parse_name_status(tokens: &[&[u8]]) -> Result<Vec<ChangedFile>, GitError> {
             return Err(GitError::CommandFailed("变化文件列表截断".into()));
         }
         let path_at = |j: usize| String::from_utf8_lossy(tokens[j]).into_owned();
+        let id_at = |j: usize| URL_SAFE_NO_PAD.encode(tokens[j]);
         if paired {
-            files.push(ChangedFile { old_path: Some(path_at(i + 1)), path: path_at(i + 2), status });
+            files.push(ChangedFile { old_path: Some(path_at(i + 1)), path: path_at(i + 2), old_path_id: Some(id_at(i + 1)), path_id: id_at(i + 2), status });
         } else {
-            files.push(ChangedFile { old_path: None, path: path_at(i + 1), status });
+            files.push(ChangedFile { old_path: None, path: path_at(i + 1), old_path_id: None, path_id: id_at(i + 1), status });
         }
         i += needed + 1;
     }
@@ -419,8 +426,10 @@ pub fn file_history(git: &Path, worktree: &Path, start: &str, path: &str, page_s
     let mut entries = Vec::new();
     for (commit, files) in parse_records(&raw)?.into_iter().skip(skip) {
         let Some(file) = files.into_iter().next() else { continue };
-        let renamed_from = matches!(file.status, ChangeStatus::Renamed).then(|| file.old_path.clone()).flatten();
-        entries.push(FileHistoryEntry { commit, path: file.path, status: file.status, renamed_from });
+        let renamed = matches!(file.status, ChangeStatus::Renamed);
+        let renamed_from = renamed.then(|| file.old_path.clone()).flatten();
+        let renamed_from_id = renamed.then(|| file.old_path_id.clone()).flatten();
+        entries.push(FileHistoryEntry { commit, path: file.path, path_id: file.path_id, status: file.status, renamed_from, renamed_from_id });
     }
     let more = entries.len() > page_size;
     entries.truncate(page_size);

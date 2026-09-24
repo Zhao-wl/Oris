@@ -652,7 +652,7 @@ fn b16_one_write_per_repository_external_lock_is_reported_not_removed_and_no_ret
 
 #[test]
 fn b16_lock_failure_during_command_is_explained() {
-    let result = process::CallResult { success: false, code: Some(128), stdout: Vec::new(), stderr_tail: "fatal: Unable to create 'C:/r/.git/index.lock': File exists.".into(), cancelled: false };
+    let result = process::CallResult { success: false, code: Some(128), stdout: Vec::new(), stderr_tail: "fatal: Unable to create 'C:/r/.git/index.lock': File exists.".into(), cancelled: false, timed_out: false };
     let message = GitAdapter::failure_message(&result, "暂存");
     assert!(message.contains("锁文件已存在") && message.contains("不会自动重试"), "{message}");
 }

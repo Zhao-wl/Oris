@@ -322,3 +322,123 @@ fn history_reads_never_run_signature_programs_or_change_the_repository() {
     assert!(!marker.exists(), "签名 / 外部 diff 程序被执行");
     assert_eq!(before, state(p));
 }
+
+// ------------------------------ 任务 04 接入：按提交读取两端内容（A09） ------------------------------
+
+fn pid(path: &str) -> String {
+    URL_SAFE_NO_PAD.encode(path.as_bytes())
+}
+
+fn open_adapter(p: &Path) -> GitAdapter {
+    GitAdapter::open(p.to_string_lossy().into_owned(), None).unwrap()
+}
+
+#[test]
+fn tree_entry_maps_commit_and_path_to_the_object_oid() {
+    let dir = init();
+    let p = dir.path();
+    let first = commit(p, "dir/中文 name.txt", "one\n", "one", 0);
+    let second = commit(p, "dir/中文 name.txt", "two\n", "two", 1);
+    let adapter = open_adapter(p);
+    for oid in [&first, &second] {
+        let entry = adapter.tree_entry(oid, "dir/中文 name.txt").unwrap().unwrap();
+        assert_eq!(entry.oid, git(p, &["rev-parse", &format!("{oid}:dir/中文 name.txt")]));
+        assert_eq!(entry.mode, "100644");
+    }
+    assert!(adapter.tree_entry(&second, "missing.txt").unwrap().is_none());
+    assert!(adapter.tree_entry(&second, "dir").unwrap().is_some_and(|e| e.mode == "040000"), "目录不是可读取的文件");
+    assert!(adapter.tree_entry("HEAD", "dir/中文 name.txt").is_err(), "只接受已固定的 OID");
+    assert!(adapter.tree_entry(&second, "../x").is_err());
+}
+
+#[test]
+fn revision_pairs_cover_root_parents_rename_and_images_without_touching_index_stages() {
+    use image::{DynamicImage, ImageFormat, RgbaImage};
+    let png = |w: u32| {
+        let mut output = std::io::Cursor::new(vec![]);
+        DynamicImage::ImageRgba8(RgbaImage::from_pixel(w, 2, image::Rgba([w as u8, 9, 9, 255]))).write_to(&mut output, ImageFormat::Png).unwrap();
+        output.into_inner()
+    };
+    let dir = init();
+    let p = dir.path();
+    fs::write(p.join("pic.png"), png(2)).unwrap();
+    let root = commit(p, "shared.txt", "base\n", "root", 0);
+    git(p, &["switch", "-qc", "topic"]);
+    fs::write(p.join("pic.png"), png(5)).unwrap();
+    commit(p, "shared.txt", "topic side\n", "topic", 1);
+    git(p, &["switch", "-q", "main"]);
+    commit(p, "shared.txt", "main side\n", "main", 2);
+    let merged = Command::new("git").arg("-C").arg(p).args(["-c", "commit.gpgsign=false", "merge", "-q", "topic"]).output().unwrap();
+    assert!(!merged.status.success(), "夹具需要冲突");
+    fs::write(p.join("shared.txt"), "resolved\n").unwrap();
+    git(p, &["add", "-A"]);
+    git_env(p, &["commit", "-qm", "merge topic"], Some("1700000300 +0000"));
+    let merge = git(p, &["rev-parse", "HEAD"]);
+    let (first, second) = (git(p, &["rev-parse", "HEAD^1"]), git(p, &["rev-parse", "HEAD^2"]));
+    git(p, &["mv", "shared.txt", "renamed.txt"]);
+    let renamed = commit(p, "renamed.txt", "resolved\n", "rename", 4);
+    // 当前 index 再制造一个 shared.txt / renamed.txt 的冲突：历史读取不得用这些 stage 冒充。
+    git(p, &["switch", "-qc", "later", &first]);
+    commit(p, "renamed.txt", "conflict A\n", "later", 5);
+    git(p, &["switch", "-q", "main"]);
+    let conflicted = Command::new("git").arg("-C").arg(p).args(["-c", "commit.gpgsign=false", "merge", "-q", "later"]).output().unwrap();
+    assert!(!conflicted.status.success());
+    assert!(!git(p, &["ls-files", "-u"]).is_empty(), "index 中应有冲突 stage");
+    let before = state(p);
+    let adapter = open_adapter(p);
+    let read = |left: Option<&str>, right: &str, path: &str, old: Option<&str>| {
+        adapter.read_revision_pair("r".into(), left, right, &pid(path), old.map(pid).as_deref(), || false).unwrap()
+    };
+    // 根提交相对空树。
+    let root_pair = read(None, &root, "shared.txt", None);
+    assert_eq!((root_pair.left.endpoint, root_pair.left.encoding), ("emptyTree", "missing"));
+    assert_eq!(root_pair.right.text.as_deref(), Some("base\n"));
+    // 合并提交：分别相对两个父节点。
+    let against_first = read(Some(&first), &merge, "shared.txt", None);
+    assert_eq!((against_first.left.text.as_deref(), against_first.right.text.as_deref()), (Some("main side\n"), Some("resolved\n")));
+    let against_second = read(Some(&second), &merge, "shared.txt", None);
+    assert_eq!(against_second.left.text.as_deref(), Some("topic side\n"));
+    assert_eq!(against_second.right.details.as_ref().and_then(|d| d.oid.clone()), Some(git(p, &["rev-parse", &format!("{merge}:shared.txt")])));
+    // rename：左侧按原路径读取。
+    let rename_pair = read(Some(&merge), &renamed, "renamed.txt", Some("shared.txt"));
+    assert_eq!((rename_pair.left.text.as_deref(), rename_pair.right.text.as_deref()), (Some("resolved\n"), Some("resolved\n")));
+    // 右侧提交中不存在（删除）：记为缺失，不伪造空文件。
+    let deleted = read(Some(&merge), &renamed, "shared.txt", None);
+    assert_eq!((deleted.left.encoding, deleted.right.encoding), ("utf-8", "missing"));
+    // 图片走图片阅读器：两端都带解码后的尺寸。
+    let image = read(Some(&first), &merge, "pic.png", None);
+    let size = |side: &TextSide| side.details.as_ref().and_then(|d| d.image.as_ref()).map(|i| (i.width, i.height));
+    assert_eq!((size(&image.left), size(&image.right)), (Some((2, 2)), Some((5, 2))));
+    // 当前 index 的冲突 stage 与历史读取无关：内容来自提交树。
+    let theirs = git(p, &["rev-parse", ":3:renamed.txt"]);
+    let history_right = read(Some(&merge), &renamed, "renamed.txt", Some("shared.txt"));
+    let oid = history_right.right.details.as_ref().and_then(|d| d.oid.clone()).unwrap();
+    assert_eq!(oid, git(p, &["rev-parse", &format!("{renamed}:renamed.txt")]), "历史内容必须来自提交树");
+    for pair in [&history_right, &against_first, &against_second] {
+        for side in [&pair.left, &pair.right] {
+            assert_ne!(side.details.as_ref().and_then(|d| d.oid.clone()), Some(theirs.clone()), "不得读取当前 index 的冲突 stage");
+        }
+    }
+    assert_eq!(before, state(p), "历史读取不改变仓库");
+}
+
+#[test]
+fn history_entry_points_accept_only_typed_references() {
+    use super::history::validate_reference;
+    for good in ["HEAD", "refs/heads/main", "refs/remotes/origin/feature/x", "refs/tags/v1.0", &"a".repeat(40)] {
+        assert!(validate_reference(good).is_ok(), "{good}");
+    }
+    for bad in ["main", "--all", "-n1", "HEAD~1", "HEAD^2", "refs/heads/a..b", "refs/heads/", "a b", "HEAD:path", "refs/heads/x\nHEAD", "@{u}", &"a".repeat(39)] {
+        assert!(validate_reference(bad).is_err(), "{bad}");
+    }
+    let dir = init();
+    let p = dir.path();
+    commit(p, "a.txt", "1\n", "one", 0);
+    let adapter = open_adapter(p);
+    assert!(adapter.history_log(&LogQuery { refs: vec!["--all".into()], search: None, page_size: 5 }, None).is_err());
+    assert!(adapter.history_compare("HEAD", "--output=x").is_err());
+    assert!(adapter.history_file("HEAD", &pid("../a.txt"), 5, None).is_err());
+    let refs = adapter.history_refs().unwrap();
+    assert_eq!(refs.default_remote, None, "无上游时不指定默认 remote");
+    assert!(refs.refs.remotes.is_empty());
+}

@@ -41,6 +41,8 @@ pub struct Branch {
     pub current: bool,
     /// 仅本地分支有上游信息；远端跟踪分支为 None。
     pub tracking: Option<Tracking>,
+    /// 本地分支上游所属的 remote（`branch.<name>.remote`）；远端跟踪分支为其所属 remote。
+    pub remote: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,6 +63,8 @@ pub struct RefsSnapshot {
     pub local: Vec<Branch>,
     pub remote: Vec<Branch>,
     pub shallow: bool,
+    /// 已配置的 remote 名称（`git remote`）。
+    pub remotes: Vec<String>,
 }
 
 /// 解析 `%(upstream:track,nobracket)`：空字符串表示与上游一致。
@@ -102,17 +106,17 @@ pub fn read_refs(git: &Path, worktree: &Path) -> Result<RefsSnapshot, GitError> 
         worktree,
         &[
             "for-each-ref",
-            "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(upstream)%00%(upstream:track,nobracket)%00%(symref)",
+            "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(upstream)%00%(upstream:track,nobracket)%00%(symref)%00%(upstream:remotename)",
             "refs/heads",
             "refs/remotes",
         ],
     )?;
     let text = String::from_utf8_lossy(&output.stdout).into_owned();
-    let rows: Vec<Vec<&str>> = text.lines().map(|line| line.split('\0').collect()).filter(|f: &Vec<&str>| f.len() == 6).collect();
+    let rows: Vec<Vec<&str>> = text.lines().map(|line| line.split('\0').collect()).filter(|f: &Vec<&str>| f.len() == 7).collect();
     let existing: HashSet<&str> = rows.iter().map(|f| f[0]).collect();
     let (mut local, mut remote) = (Vec::new(), Vec::new());
     for fields in &rows {
-        let (full_name, oid, object_type, upstream, track, symref) = (fields[0], fields[1], fields[2], fields[3], fields[4], fields[5]);
+        let (full_name, oid, object_type, upstream, track, symref, remote_name) = (fields[0], fields[1], fields[2], fields[3], fields[4], fields[5], fields[6]);
         // refs/remotes/<remote>/HEAD 是指向默认分支的符号引用，不作为独立分支。
         if !symref.is_empty() || object_type != "commit" {
             continue;
@@ -138,6 +142,7 @@ pub fn read_refs(git: &Path, worktree: &Path) -> Result<RefsSnapshot, GitError> 
                 oid: oid.to_owned(),
                 current: head.branch.as_deref() == Some(full_name),
                 tracking: Some(tracking),
+                remote: (!remote_name.is_empty()).then(|| remote_name.to_owned()),
             });
         } else if let Some(name) = full_name.strip_prefix("refs/remotes/") {
             remote.push(Branch {
@@ -147,8 +152,18 @@ pub fn read_refs(git: &Path, worktree: &Path) -> Result<RefsSnapshot, GitError> 
                 oid: oid.to_owned(),
                 current: false,
                 tracking: None,
+                remote: None,
             });
         }
     }
-    Ok(RefsSnapshot { head, local, remote, shallow })
+    let remotes: Vec<String> = run_readonly(git, worktree, &["remote"])
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect())
+        .unwrap_or_default();
+    // 远端跟踪分支按最长匹配的 remote 名归属（remote 名本身可以含 `/`）。
+    for branch in &mut remote {
+        branch.remote = remotes.iter().filter(|r| branch.name.starts_with(&format!("{r}/"))).max_by_key(|r| r.len()).cloned();
+    }
+    Ok(RefsSnapshot { head, local, remote, shallow, remotes })
 }
