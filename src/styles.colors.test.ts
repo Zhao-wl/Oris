@@ -1,6 +1,5 @@
-import { readFileSync } from "node:fs";
-import path from "node:path";
 import { expect, it } from "vitest";
+import stylesheet from "./styles.css?raw";
 
 /**
  * 禁止写死颜色（V2-06 接入清单第 4 条）：界面颜色必须来自配色方案写入的 CSS 变量。
@@ -46,7 +45,8 @@ function findOffenders(source: string) {
 }
 
 it("styles.css has no hard-coded non-neutral colors outside variable fallbacks and the :root defaults", () => {
-  expect(findOffenders(readFileSync(path.join(__dirname, "styles.css"), "utf8"))).toEqual([]);
+  expect(stylesheet.length).toBeGreaterThan(1000);
+  expect(findOffenders(stylesheet)).toEqual([]);
 });
 
 it("the check itself catches a colored literal and accepts fallbacks and neutral grays", () => {
