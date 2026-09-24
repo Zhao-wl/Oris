@@ -106,8 +106,10 @@ button:disabled { opacity:.45; cursor:default; }
 .right-endpoint .encoding { margin-left:auto; white-space:nowrap; }
 .encoding { text-transform:none; }
 .content { min-height:0; position:relative; overflow:hidden; }
-.selection-notice { position:absolute; top:10px; left:50%; z-index:20; display:flex; max-width:min(760px,calc(100% - 24px)); transform:translateX(-50%); gap:8px; align-items:center; padding:8px 12px; border:1px solid color-mix(in srgb, var(--warning, #d9a24f) 55%, transparent); border-radius:5px; background:var(--panel); box-shadow:0 4px 16px var(--widget-shadow, #0006); color:var(--text); pointer-events:none; }
+.selection-notice { position:absolute; top:10px; left:50%; z-index:20; display:flex; max-width:min(760px,calc(100% - 24px)); transform:translateX(-50%); gap:8px; align-items:center; padding:8px 12px; border:1px solid color-mix(in srgb, var(--warning, #d9a24f) 55%, transparent); border-radius:5px; background:var(--panel); box-shadow:0 4px 16px var(--widget-shadow, #0006); color:var(--text); }
 .selection-notice strong { color:var(--warning, #d9a24f); white-space:nowrap; }
+.selection-notice button { flex:none; margin-left:4px; padding:0 6px; border:0; background:transparent; color:var(--dim); font-size:16px; line-height:1; cursor:pointer; }
+.selection-notice button:hover { color:var(--text); }
 .state { position:absolute; inset:0; display:grid; place-content:center; z-index:2; background:var(--bg); }
 .state p { max-width:640px; white-space:pre-wrap; }.state.error strong { color:var(--error, #ff7b72); }.state.warning strong { color:var(--warning, #d9a24f); }
 .diff-host { position:relative; height:100%; min-height:0; overflow:hidden; }
