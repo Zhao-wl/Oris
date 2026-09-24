@@ -117,12 +117,12 @@ export default function App() {
   const pendingStats = statsPending(runtime?.snapshot, runtime?.details);
 
   // ---------- 写操作（V2-02）：每个仓库的运行中操作、实时输出、最近结果与可撤销的丢弃 ----------
-  interface RepoOps { running: RunningOperation | null; lines: string[]; last: OperationRecord | null; lastCommit: OperationRecord | null; backups: BackupSummary[] }
+  interface RepoOps { running: RunningOperation | null; lines: string[]; last: OperationRecord | null; lastCommit: OperationRecord | null; backups: BackupSummary[]; lastBackup: BackupSummary | null }
   const opStore = useRef(createStore<Record<string, RepoOps>>({})).current;
   const repoOps = useStore(opStore, (map) => (activeRepoId ? map[activeRepoId] : undefined));
   const updateOps = useCallback((repoId: string, patch: Partial<RepoOps> | ((current: RepoOps) => Partial<RepoOps>)) => {
     opStore.set((map) => {
-      const current = map[repoId] ?? { running: null, lines: [], last: null, lastCommit: null, backups: [] };
+      const current = map[repoId] ?? { running: null, lines: [], last: null, lastCommit: null, backups: [], lastBackup: null };
       return { ...map, [repoId]: { ...current, ...(typeof patch === "function" ? patch(current) : patch) } };
     });
   }, [opStore]);
@@ -660,7 +660,9 @@ export default function App() {
     }
     opRunning.current.delete(repoId);
     const commitKind = ["commit", "amend", "undoCommit"].includes(outcome.kind);
-    updateOps(repoId, { running: null, last: record(outcome), ...(commitKind ? { lastCommit: record(outcome) } : {}) });
+    // 状态栏的“撤销丢弃”只针对本次丢弃返回的备份，不依赖异步刷新的备份列表。
+    const lastBackup = outcome.kind === "discard" && outcome.status === "succeeded" ? outcome.backup : null;
+    updateOps(repoId, { running: null, last: record(outcome), lastBackup, ...(commitKind ? { lastCommit: record(outcome) } : {}) });
     if (outcome.kind === "discard" || outcome.kind === "undoDiscard") void discardBackups(repoId).then((backups) => updateOps(repoId, { backups }), () => {});
     if (outcome.snapshot) {
       const result = outcome.snapshot;
@@ -842,6 +844,6 @@ export default function App() {
       onCommit={commit} onUndoCommit={(head) => void undoCommit(head)} onUndoDiscard={(id) => void undoDiscard(id)} onCancel={() => { if (activeRepoId) void cancelOperation(activeRepoId); }}/>
     {confirmState && <ConfirmDialog request={confirmState} onConfirm={() => { confirmState.resolve(true); setConfirmState(null); }} onCancel={() => { confirmState.resolve(false); setConfirmState(null); }}/>}
     {settingsOpen && <SettingsDialog settings={settings} onClose={() => setSettingsOpen(false)} gitInUse={snapshot ? { executable: snapshot.git.executable, version: snapshot.git.version, minimumVersion: snapshot.git.minimumVersion } : null}/>}
-    <footer className="statusbar"><span>{snapshot ? `${snapshot.repo.worktreePath} · ${snapshot.repo.branch} · ${scopeLabels[scope].short}` : "多项目 → 本地差异浏览"}</span><span className="spacer"/>{repoOps?.running ? <span className="op-status running" role="status">⟳ 正在{operationLabels[repoOps.running.kind]}…</span> : repoOps?.last && <button type="button" className={`op-status ${repoOps.last.status}`} title="查看最近一次操作的 Git 输出" onClick={() => setGitTab("output")}>{repoOps.last.status === "succeeded" ? "✓" : repoOps.last.status === "cancelled" ? "■" : repoOps.last.status === "needsConfirmation" ? "?" : "✗"} {repoOps.last.message}</button>}{!repoOps?.running && repoOps?.last?.kind === "discard" && repoOps.last.status === "succeeded" && repoOps.backups[0] && <button type="button" className="op-undo" disabled={!!writeBlocked} onClick={() => void undoDiscard(repoOps.backups[0].id)}>撤销丢弃</button>}<span>本机 Git · 缓存 {cache.current.stats().entries}/{cache.current.stats().budget / 1024 / 1024} MiB</span></footer>
+    <footer className="statusbar"><span>{snapshot ? `${snapshot.repo.worktreePath} · ${snapshot.repo.branch} · ${scopeLabels[scope].short}` : "多项目 → 本地差异浏览"}</span><span className="spacer"/>{repoOps?.running ? <span className="op-status running" role="status">⟳ 正在{operationLabels[repoOps.running.kind]}…</span> : repoOps?.last && <button type="button" className={`op-status ${repoOps.last.status}`} title="查看最近一次操作的 Git 输出" onClick={() => setGitTab("output")}>{repoOps.last.status === "succeeded" ? "✓" : repoOps.last.status === "cancelled" ? "■" : repoOps.last.status === "needsConfirmation" ? "?" : "✗"} {repoOps.last.message}</button>}{!repoOps?.running && repoOps?.lastBackup && <button type="button" className="op-undo" disabled={!!writeBlocked} title={`撤销刚才丢弃的 ${repoOps.lastBackup.files} 个文件`} onClick={() => void undoDiscard(repoOps.lastBackup!.id)}>撤销丢弃</button>}<span>本机 Git · 缓存 {cache.current.stats().entries}/{cache.current.stats().budget / 1024 / 1024} MiB</span></footer>
   </main>;
 }
