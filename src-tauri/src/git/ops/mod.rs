@@ -10,10 +10,15 @@ mod network;
 pub mod process;
 mod stage;
 mod stash;
+mod sync;
+#[cfg_attr(not(feature = "desktop"), allow(unused_imports))]
+pub use sync::PullMode;
 #[cfg(test)]
 mod branch_tests;
 #[cfg(test)]
 mod network_tests;
+#[cfg(test)]
+mod sync_tests;
 #[cfg(test)]
 mod tests;
 
@@ -125,6 +130,29 @@ pub enum OperationRequest {
         force: bool,
     },
     SetUpstream { name: String, upstream: String },
+    /// 拉取当前分支的上游（R-SYNC）：仅快进（默认）或合并，始终不 rebase；可先储藏。
+    Pull {
+        mode: PullMode,
+        #[serde(default)]
+        stash_first: bool,
+        #[serde(default)]
+        stash_untracked: bool,
+    },
+    /// 推送当前分支；没有上游时推送到所选 remote 并设为上游。
+    Push {
+        #[serde(default)]
+        remote: Option<String>,
+    },
+    /// 把分支或提交合并到当前分支（R-MERGE）；`expected` 为界面显示的目标 OID。
+    Merge {
+        target: String,
+        expected: String,
+        #[serde(default)]
+        no_ff: bool,
+    },
+    MergeAbort,
+    /// 所有冲突标记已解决后完成合并。
+    MergeCommit { message: String },
 }
 
 impl OperationRequest {
@@ -150,6 +178,11 @@ impl OperationRequest {
             Self::BranchRename { .. } => "branchRename",
             Self::BranchDelete { .. } => "branchDelete",
             Self::SetUpstream { .. } => "setUpstream",
+            Self::Pull { .. } => "pull",
+            Self::Push { .. } => "push",
+            Self::Merge { .. } => "merge",
+            Self::MergeAbort => "mergeAbort",
+            Self::MergeCommit { .. } => "mergeCommit",
         }
     }
 }
@@ -371,6 +404,11 @@ impl GitAdapter {
             OperationRequest::BranchRename { name, new_name } => self.op_branch_rename(name, new_name, ctx),
             OperationRequest::BranchDelete { name, force } => self.op_branch_delete(name, *force, ctx),
             OperationRequest::SetUpstream { name, upstream } => self.op_set_upstream(name, upstream, ctx),
+            OperationRequest::Pull { mode, stash_first, stash_untracked } => self.op_pull(*mode, *stash_first, *stash_untracked, ctx),
+            OperationRequest::Push { remote } => self.op_push(remote.as_deref(), ctx),
+            OperationRequest::Merge { target, expected, no_ff } => self.op_merge(target, expected, *no_ff, ctx),
+            OperationRequest::MergeAbort => self.op_merge_abort(ctx),
+            OperationRequest::MergeCommit { message } => self.op_merge_commit(message, ctx),
         }?;
         let git_processes = ctx.processes.load(std::sync::atomic::Ordering::SeqCst);
         // 需要确认时没有任何改动，不必刷新；其余结局（含失败与取消）都重新读取实际状态并如实报告。

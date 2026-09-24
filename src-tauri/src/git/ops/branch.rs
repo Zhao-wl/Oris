@@ -57,8 +57,28 @@ impl GitAdapter {
         Ok(short.to_owned())
     }
 
-    fn current_branch_ref(&self) -> Option<String> {
+    pub(super) fn current_branch_ref(&self) -> Option<String> {
         run_readonly(&self.git, &self.worktree, &["symbolic-ref", "-q", "HEAD"]).ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+    }
+
+    /// 操作前储藏（“stash 后切换 / 拉取”）：成功时返回新 stash 的 OID（没有可储藏的改动时为 None）；
+    /// 储藏被取消或失败时返回应直接结束操作的 Step。
+    pub(super) fn stash_before(&self, purpose: &str, untracked: bool, ctx: &OpContext) -> Result<Result<Option<String>, Step>, GitError> {
+        let before = self.stash_oid(0)?;
+        let message = format!("Oris：{purpose}前储藏");
+        let mut args = vec!["stash", "push", "-m", message.as_str()];
+        if untracked {
+            args.push("--include-untracked");
+        }
+        let result = self.write_git_pathless(&args, ctx)?;
+        if result.cancelled {
+            return Ok(Err(Step::cancelled(format!("储藏已取消，未{purpose}"))));
+        }
+        if !result.success {
+            return Ok(Err(Step::failed(format!("{}，未{purpose}", Self::failure_message(&result, &format!("{purpose}前储藏"))))));
+        }
+        let after = self.stash_oid(0)?;
+        Ok(Ok(after.filter(|oid| Some(oid) != before.as_ref())))
     }
 
     /// 切换（可先储藏）。Git 因本地改动或会被覆盖的未跟踪文件拒绝时，返回需要确认的“stash 后切换”。
@@ -66,22 +86,9 @@ impl GitAdapter {
         let label = target.label();
         let mut stashed = None;
         if stash_first {
-            let before = self.stash_oid(0)?;
-            let message = format!("Oris：切换到 {label} 前储藏");
-            let mut args = vec!["stash", "push", "-m", message.as_str()];
-            if stash_untracked {
-                args.push("--include-untracked");
-            }
-            let result = self.write_git_pathless(&args, ctx)?;
-            if result.cancelled {
-                return Ok(Step::cancelled("储藏已取消，未切换"));
-            }
-            if !result.success {
-                return Ok(Step::failed(format!("{}，未切换", Self::failure_message(&result, "切换前储藏"))));
-            }
-            let after = self.stash_oid(0)?;
-            if after.is_some() && after != before {
-                stashed = after;
+            match self.stash_before(&format!("切换到 {label} "), stash_untracked, ctx)? {
+                Ok(oid) => stashed = oid,
+                Err(step) => return Ok(step),
             }
         }
         let args: Vec<&str> = match &target {
