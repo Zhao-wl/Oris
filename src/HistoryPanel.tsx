@@ -31,6 +31,8 @@ interface Props {
   /** V2-03：提交右键“检出（分离 HEAD）”“从这里新建分支”。 */
   onCheckout?(oid: string): void;
   onNewBranch?(start: { ref: string; label: string }): void;
+  /** V2-04：把提交或分支合并到当前分支。 */
+  onMerge?(target: { ref: string; oid: string; label: string }): void;
   writeBlocked?: string | null;
 }
 
@@ -48,7 +50,7 @@ interface Menu { x: number; y: number; endpoint: PinnedEndpoint }
 
 /** 底部 Git 区“日志”页（R-HISTORY / R-BRANCH / R-COMPARE / R-FILEHISTORY）：分支列表、提交图与列表、提交详情。只读，选择分支只筛选历史。 */
 export default function HistoryPanel(props: Props) {
-  const { repoId, refsVersion, hidden, fileHistoryRequest, activeKey, onOpenFile, onFetch, fetchBlocked, fetchText, onRefs, onCheckout, onNewBranch, writeBlocked } = props;
+  const { repoId, refsVersion, hidden, fileHistoryRequest, activeKey, onOpenFile, onFetch, fetchBlocked, fetchText, onRefs, onCheckout, onNewBranch, onMerge, writeBlocked } = props;
   const [refs, setRefs] = useState<RefsView | null>(null);
   const [refsError, setRefsError] = useState<string | null>(null);
   const [filter, setFilter] = useState<string | null>(null);
@@ -290,7 +292,8 @@ export default function HistoryPanel(props: Props) {
     </aside>
     {menu && <EndpointMenu menu={menu} hasStart={!!compareStart} blocked={writeBlocked ?? null} onClose={() => setMenu(null)} onStart={() => { setCompareStart(menu.endpoint); setMenu(null); }} onCompare={() => compareWith(menu.endpoint)}
       onCheckout={onCheckout && menu.endpoint.ref === menu.endpoint.oid ? () => { setMenu(null); onCheckout(menu.endpoint.oid); } : undefined}
-      onNewBranch={onNewBranch ? () => { setMenu(null); onNewBranch({ ref: menu.endpoint.ref, label: menu.endpoint.label }); } : undefined}/>}
+      onNewBranch={onNewBranch ? () => { setMenu(null); onNewBranch({ ref: menu.endpoint.ref, label: menu.endpoint.label }); } : undefined}
+      onMerge={onMerge && menu.endpoint.ref !== refs?.head.branch && menu.endpoint.oid !== refs?.head.oid ? () => { setMenu(null); onMerge({ ref: menu.endpoint.ref, oid: menu.endpoint.oid, label: shortRef(menu.endpoint.label) }); } : undefined}/>}
   </div>;
 }
 
@@ -393,7 +396,7 @@ function FileHistoryDetail({ mode }: { mode: Extract<Mode, { kind: "file" }> }) 
   </div>;
 }
 
-function EndpointMenu({ menu, hasStart, blocked, onClose, onStart, onCompare, onCheckout, onNewBranch }: { menu: Menu; hasStart: boolean; blocked: string | null; onClose(): void; onStart(): void; onCompare(): void; onCheckout?(): void; onNewBranch?(): void }) {
+function EndpointMenu({ menu, hasStart, blocked, onClose, onStart, onCompare, onCheckout, onNewBranch, onMerge }: { menu: Menu; hasStart: boolean; blocked: string | null; onClose(): void; onStart(): void; onCompare(): void; onCheckout?(): void; onNewBranch?(): void; onMerge?(): void }) {
   const host = useRef<HTMLDivElement>(null);
   useEffect(() => {
     host.current?.querySelector<HTMLButtonElement>("button")?.focus();
@@ -409,5 +412,6 @@ function EndpointMenu({ menu, hasStart, blocked, onClose, onStart, onCompare, on
     <button type="button" role="menuitem" disabled={!hasStart} title={hasStart ? undefined : "先把另一个提交或分支设为比较起点"} onClick={onCompare}>与比较起点比较（A → 此处）</button>
     {onCheckout && <button type="button" role="menuitem" disabled={!!blocked} title={blocked ?? "检出该提交查看（分离 HEAD），不移动任何分支"} onClick={onCheckout}>检出（分离 HEAD）</button>}
     {onNewBranch && <button type="button" role="menuitem" disabled={!!blocked} title={blocked ?? undefined} onClick={onNewBranch}>从这里新建分支…</button>}
+    {onMerge && <button type="button" role="menuitem" disabled={!!blocked} title={blocked ?? undefined} onClick={onMerge}>合并到当前分支…</button>}
   </div>;
 }

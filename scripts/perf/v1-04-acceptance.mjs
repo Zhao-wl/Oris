@@ -452,7 +452,7 @@ async function remoteSuite() {
   const ctx = await start("remote", { GIT_TRACE2_EVENT: traceDir, ORIS_NETWORK_IDLE_TIMEOUT_MS: "4000" });
   const traces = () => new Set(readdirSync(traceDir));
   const fetchVia = async (remote, choose = false) => {
-    await ctx.click(`window.__op.button('⇣ 获取…')`);
+    await ctx.click(`window.__op.button('⇣ 获取…') ?? document.querySelector('.sync-button')`); if (await ctx.evaluate(`!!document.querySelector('.sync-popover')`)) await ctx.click(`[...document.querySelectorAll('.sync-popover button')].find((b) => b.textContent === '获取…')`);
     await ctx.waitUntil(`!!window.__h.fetchDialog() && !window.__h.fetchDialog().textContent.includes('正在读取 remote')`);
     if (choose) await ctx.evaluate(`window.__h.setSelect(window.__h.fetchDialog().querySelector('select'), ${q(remote)})`);
     await sleep(150);
@@ -495,7 +495,7 @@ async function remoteSuite() {
     // 外部 fetch 之后：时间显示为未知。
     await sleep(6000);
     git(r.local, ["fetch", "-q", "--no-prune"]);
-    await ctx.click(`window.__op.button('⇣ 获取…')`);
+    await ctx.click(`window.__op.button('⇣ 获取…') ?? document.querySelector('.sync-button')`); if (await ctx.evaluate(`!!document.querySelector('.sync-popover')`)) await ctx.click(`[...document.querySelectorAll('.sync-popover button')].find((b) => b.textContent === '获取…')`);
     await ctx.waitUntil(`!!window.__h.fetchDialog() && window.__h.fetchDialog().textContent.includes('时间未知')`, 15000);
     check("A10 外部工具获取后，获取时间显示为未知", true, await ctx.evaluate(`window.__h.fetchDialog().textContent`));
     await ctx.click(`window.__h.button('取消', window.__h.fetchDialog())`);
@@ -503,7 +503,7 @@ async function remoteSuite() {
     git(r.local, ["remote", "add", "backup", r.bare]);
     git(r.local, ["switch", "-q", "solo"]);
     await ctx.click(`window.__op.button('↻ 本地刷新')`); await ctx.waitUntil(`!window.__op.loading()`); await sleep(800);
-    await ctx.click(`window.__op.button('⇣ 获取…')`);
+    await ctx.click(`window.__op.button('⇣ 获取…') ?? document.querySelector('.sync-button')`); if (await ctx.evaluate(`!!document.querySelector('.sync-popover')`)) await ctx.click(`[...document.querySelectorAll('.sync-popover button')].find((b) => b.textContent === '获取…')`);
     await ctx.waitUntil(`!!window.__h.fetchDialog() && !window.__h.fetchDialog().textContent.includes('正在读取 remote')`);
     const noUpstream = await ctx.evaluate(`({ text: window.__h.fetchDialog().textContent, disabled: window.__h.button('获取', window.__h.fetchDialog()).disabled })`);
     await ctx.click(`window.__h.button('取消', window.__h.fetchDialog())`);
@@ -618,7 +618,7 @@ async function realSuite() {
       const before = fingerprint(clone);
       const beforeIndex = git(clone, ["ls-files", "-s"]);
       const started = Date.now();
-      await ctx.click(`window.__op.button('⇣ 获取…')`);
+      await ctx.click(`window.__op.button('⇣ 获取…') ?? document.querySelector('.sync-button')`); if (await ctx.evaluate(`!!document.querySelector('.sync-popover')`)) await ctx.click(`[...document.querySelectorAll('.sync-popover button')].find((b) => b.textContent === '获取…')`);
       await ctx.waitUntil(`!!window.__h.fetchDialog() && !window.__h.fetchDialog().textContent.includes('正在读取 remote')`);
       await ctx.click(`window.__h.button('获取', window.__h.fetchDialog())`);
       await ctx.waitUntil(`!window.__h.running() && window.__h.opStatus()`, 120000);

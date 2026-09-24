@@ -10,6 +10,8 @@ export interface BranchActions {
   onRename(branch: Branch): void;
   onDelete(branch: Branch): void;
   onSetUpstream(branch: Branch): void;
+  /** V2-04：把该分支合并到当前分支。 */
+  onMerge?(branch: Branch): void;
 }
 
 /**
@@ -62,6 +64,7 @@ export default function BranchPopover({ repoId, refsVersion, blocked, actions, o
           <button type="button" role="menuitem" disabled={!!blocked} onClick={() => act(() => actions.onNew({ ref: branch.fullName, label: branch.name }))}>从这里新建分支…</button>
           <button type="button" role="menuitem" disabled={!!blocked} onClick={() => act(() => actions.onRename(branch))}>重命名…</button>
           <button type="button" role="menuitem" disabled={!!blocked || !refs?.remote.length} title={!refs?.remote.length ? "没有远端跟踪分支" : undefined} onClick={() => act(() => actions.onSetUpstream(branch))}>{branch.tracking && branch.tracking.state !== "noUpstream" ? "更换上游…" : "设置上游…"}</button>
+          {actions.onMerge && !branch.current && <button type="button" role="menuitem" disabled={!!blocked || !!refs?.head.detached} title={refs?.head.detached ? "分离 HEAD 时不能合并" : undefined} onClick={() => act(() => actions.onMerge!(branch))}>合并到当前分支…</button>}
           <button type="button" role="menuitem" className="danger" disabled={!!blocked || branch.current} title={branch.current ? "不能删除当前分支，请先切换到其他分支" : undefined} onClick={() => act(() => actions.onDelete(branch))}>删除…</button>
         </div>}
       </div>)}
@@ -70,6 +73,7 @@ export default function BranchPopover({ repoId, refsVersion, blocked, actions, o
         <span className="branch-row-name" title={`${branch.fullName} @ ${shortOid(branch.oid)}`}>{branch.name}</span>
         <button type="button" disabled={!!blocked} title={blocked ?? "建立同名本地跟踪分支并切换"} onClick={() => act(() => actions.onTrack(branch))}>检出</button>
         <button type="button" aria-label={`从 ${branch.name} 新建分支`} disabled={!!blocked} onClick={() => act(() => actions.onNew({ ref: branch.fullName, label: branch.name }))}>新建…</button>
+        {actions.onMerge && <button type="button" aria-label={`把 ${branch.name} 合并到当前分支`} disabled={!!blocked || !!refs?.head.detached} title={refs?.head.detached ? "分离 HEAD 时不能合并" : blocked ?? undefined} onClick={() => act(() => actions.onMerge!(branch))}>合并…</button>}
       </div>)}
       {refs && !local.length && !remote.length && <div className="log-empty">没有匹配的分支</div>}
     </div>
