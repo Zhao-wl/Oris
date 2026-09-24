@@ -1,6 +1,7 @@
 mod content;
 pub mod log;
 mod media;
+pub mod ops;
 mod read_guard;
 pub mod refs;
 mod scan;
@@ -62,6 +63,12 @@ pub enum GitError {
     #[error("预取已跳过：{0}")]
     #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
     Skipped(String),
+    #[error("该仓库正在执行另一个写操作，请等待其结束")]
+    OperationBusy,
+    #[error("{0}")]
+    ExternalLock(String),
+    #[error("{0}")]
+    WriteBlocked(String),
 }
 
 // Tauri must receive the Display reason for unit/struct variants too, not only tuple payloads.
@@ -86,6 +93,9 @@ impl Serialize for GitError {
             Self::Runtime(_) => "runtime",
             Self::Io(_) => "io",
             Self::Skipped(_) => "skipped",
+            Self::OperationBusy => "operationBusy",
+            Self::ExternalLock(_) => "externalLock",
+            Self::WriteBlocked(_) => "writeBlocked",
         };
         let mut value = serializer.serialize_struct("GitError", 2)?;
         value.serialize_field("kind", kind)?;
@@ -127,6 +137,9 @@ pub struct FileChange {
     /// status 报告修改，但 Git 规范化后内容与比较基准一致（后台统计补齐）。
     #[serde(skip_serializing_if = "Option::is_none")]
     content_unchanged: Option<UnchangedReason>,
+    /// 子模块条目（gitlink，mode 160000）：不提供丢弃（R-DISCARD）。
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    gitlink: bool,
 }
 
 /// 内容未变的原因：`eol` 为仅行尾（CRLF/LF）不同；`normalized` 为其他规范化（如 clean filter）。
@@ -1085,6 +1098,7 @@ fn upsert_change(
         additions: None,
         deletions: None,
         content_unchanged: None,
+        gitlink: false,
     };
     if let Some(existing) = files.iter_mut().find(|file| file.path_id == path_id) {
         *existing = value;
