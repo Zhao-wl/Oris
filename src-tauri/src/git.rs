@@ -124,6 +124,17 @@ pub struct FileChange {
     status: FileStatus,
     additions: Option<u64>,
     deletions: Option<u64>,
+    /// status 报告修改，但 Git 规范化后内容与比较基准一致（后台统计补齐）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content_unchanged: Option<UnchangedReason>,
+}
+
+/// 内容未变的原因：`eol` 为仅行尾（CRLF/LF）不同；`normalized` 为其他规范化（如 clean filter）。
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum UnchangedReason {
+    Eol,
+    Normalized,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Hash)]
@@ -385,6 +396,13 @@ impl GitAdapter {
             apply(&mut lists.unstaged, &details.stats.unstaged);
             apply(&mut lists.staged, &details.stats.staged);
             apply(&mut lists.all, &details.stats.all);
+            let mark = |list: &mut Vec<FileChange>, unchanged: &[(String, UnchangedReason)]| {
+                for file in list.iter_mut() {
+                    file.content_unchanged = unchanged.iter().find(|(id, _)| *id == file.path_id).map(|(_, r)| *r);
+                }
+            };
+            mark(&mut lists.unstaged, &details.content_unchanged.unstaged);
+            mark(&mut lists.all, &details.content_unchanged.all);
         }
         let files = lists.get(scope).clone();
         RepositorySnapshot {
@@ -1066,6 +1084,7 @@ fn upsert_change(
         status,
         additions: None,
         deletions: None,
+        content_unchanged: None,
     };
     if let Some(existing) = files.iter_mut().find(|file| file.path_id == path_id) {
         *existing = value;

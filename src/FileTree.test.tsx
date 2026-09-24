@@ -38,6 +38,18 @@ it("renders only a window of rows above the virtual threshold, in flat and tree 
   await act(async () => root.unmount());
 });
 
+it("labels files whose content is unchanged after normalization instead of showing counts", async () => {
+  const root = createRoot(host);
+  const files = make(2);
+  files[0] = { ...files[0], contentUnchanged: "eol" };
+  files[1] = { ...files[1], contentUnchanged: "normalized" };
+  await act(async () => root.render(<FileTree files={files} selectedPathId={null} mode="flat" statsPending onSelect={() => {}} />));
+  const labels = [...host.querySelectorAll(".line-stat.unchanged")];
+  expect(labels.map((node) => node.textContent)).toEqual(["仅行尾", "内容未变"]);
+  expect(labels[0].getAttribute("title")).toContain("CRLF/LF");
+  await act(async () => root.unmount());
+});
+
 it("shows a placeholder, never 0, while background stats are pending", async () => {
   const root = createRoot(host);
   const files = make(2);

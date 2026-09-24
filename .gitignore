@@ -16,12 +16,7 @@ src-tauri/gen/
 *.pdb
 
 # 验证运行产物（截图、日志、夹具 JSON）；结论写入 docs/validation/
-artifacts/*/runtime/
-artifacts/*-feedback/
-# 任务内独立 Cargo 构建目录
-artifacts/*/build/
-# 源码哈希清单与 git 提交哈希重复，不入库
-artifacts/*/SHA256SUMS.txt
+artifacts/
 
 # 测试覆盖率
 coverage/
