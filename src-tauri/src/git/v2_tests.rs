@@ -607,16 +607,3 @@ fn stat_only_eol_rewrite_is_marked_content_unchanged() {
     assert!(marks.contains(&(eol, Some(UnchangedReason::Eol))));
     assert!(marks.contains(&(real, None)));
 }
-
-#[test]
-#[ignore]
-fn debug_real_repo_content_unchanged() {
-    let a = adapter(Path::new(r"E:\Tap4fun\X15\client"));
-    let snap = a.snapshot_v2("1".into(), CompareScope::Unstaged, false).unwrap();
-    let details = a.details(&snap.revision).unwrap();
-    for f in &snap.files { eprintln!("FILE {} {:?}", f.display_path, f.status); }
-    for (id, a, d) in &details.stats.unstaged { eprintln!("STAT {} {:?} {:?}", String::from_utf8_lossy(&URL_SAFE_NO_PAD.decode(id).unwrap()), a, d); }
-    eprintln!("UNCHANGED {:?}", details.content_unchanged);
-    let st = a.scan_state(&snap.revision).unwrap();
-    for f in &snap.files { let e = st.entries.get(&f.path_id).unwrap(); eprintln!("ENTRY {} x={} y={} idx={:?} wt={:?}", f.display_path, e.x as char, e.y as char, e.index, e.worktree_mode); }
-}
