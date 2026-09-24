@@ -36,7 +36,7 @@ function powershell(script) {
 
 /** 读取全部进程（只读 CIM 查询），返回以 rootPid 为根的进程树及内存合计。 */
 export function processTree(rootPid) {
-  const raw = powershell("Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,WorkingSetSize,PrivatePageCount,CreationDate | ConvertTo-Json -Compress");
+  const raw = powershell("Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,WorkingSetSize,PrivatePageCount,CreationDate,CommandLine | ConvertTo-Json -Compress");
   const all = JSON.parse(raw);
   const children = new Map();
   for (const p of all) {
@@ -63,6 +63,52 @@ export function processTree(rootPid) {
     privateMiB: round(mib(tree.reduce((sum, p) => sum + Number(p.PrivatePageCount), 0))),
     git: tree.filter((p) => /^git(-remote.*)?\.exe$/i.test(p.Name) || /^git\.exe$/i.test(p.Name)).length,
     catFile: null
+  };
+}
+
+/** WebView2 / Git 进程的角色：由命令行 `--type=` 与 `--utility-sub-type=` 判断。 */
+export function processRole(name, commandLine = "") {
+  const lower = name.toLowerCase();
+  if (lower === "oris.exe") return "oris";
+  if (lower === "git.exe") return /cat-file --batch/.test(commandLine) ? "git-cat-file" : "git";
+  if (lower === "conhost.exe") return "conhost";
+  if (lower !== "msedgewebview2.exe") return lower;
+  const type = /--type=([\w-]+)/.exec(commandLine)?.[1];
+  if (!type) return "webview-browser";
+  if (type === "utility") return `webview-utility:${/--utility-sub-type=([\w.]+)/.exec(commandLine)?.[1] ?? "?"}`;
+  return `webview-${type}`;
+}
+
+/**
+ * 详细采样：每个进程的角色、工作集、私有工作集（不含共享页，来自性能计数器）与私有提交。
+ * 性能计数器查询较慢（约 1–2 s），只用于内存套件。
+ */
+export function processTreeDetailed(rootPid) {
+  const raw = powershell(`
+$procs = Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,WorkingSetSize,PrivatePageCount,CommandLine
+$perf = @{}; Get-CimInstance Win32_PerfRawData_PerfProc_Process | ForEach-Object { $perf[[int]$_.IDProcess] = [int64]$_.WorkingSetPrivate }
+$procs | ForEach-Object { [pscustomobject]@{ pid = $_.ProcessId; ppid = $_.ParentProcessId; name = $_.Name; ws = [int64]$_.WorkingSetSize; priv = [int64]$_.PrivatePageCount; pws = $perf[[int]$_.ProcessId]; cmd = $_.CommandLine } } | ConvertTo-Json -Compress -Depth 3`);
+  const all = JSON.parse(raw);
+  const children = new Map();
+  for (const p of all) { if (!children.has(p.ppid)) children.set(p.ppid, []); children.get(p.ppid).push(p); }
+  const root = all.find((p) => p.pid === rootPid);
+  if (!root) return { alive: false, processes: [] };
+  const tree = [], stack = [root], seen = new Set();
+  while (stack.length) { const next = stack.pop(); if (seen.has(next.pid)) continue; seen.add(next.pid); tree.push(next); for (const c of children.get(next.pid) ?? []) stack.push(c); }
+  const mib = (bytes) => round(Number(bytes ?? 0) / 1048576);
+  const processes = tree.map((p) => ({ pid: p.pid, role: processRole(p.name, p.cmd ?? ""), workingSetMiB: mib(p.ws), privateWorkingSetMiB: mib(p.pws), privateMiB: mib(p.priv) }));
+  const sum = (list, key) => round(list.reduce((total, p) => total + p[key], 0));
+  const layer = (filter) => { const list = processes.filter(filter); return { count: list.length, workingSetMiB: sum(list, "workingSetMiB"), privateWorkingSetMiB: sum(list, "privateWorkingSetMiB"), privateMiB: sum(list, "privateMiB") }; };
+  return {
+    alive: true,
+    processes,
+    // V2-D28 分层：外部框架（WebView2）与工具（Git 子进程）、Oris 自身、总计。
+    layers: {
+      framework: layer((p) => p.role.startsWith("webview")),
+      tools: layer((p) => p.role.startsWith("git") || p.role === "conhost"),
+      oris: layer((p) => p.role === "oris"),
+      total: layer(() => true)
+    }
   };
 }
 
@@ -103,19 +149,28 @@ async function fetchJson(url) {
  * 启动一个隔离的 Oris 测试实例：独立 WebView2 profile、CDP 端口；
  * 核验 PID、可执行文件完整路径、主窗口句柄以及 CDP 端口属于本实例进程树。
  */
-export async function launchOris({ exe, profileDir, port, extraEnv = {}, log = () => {} }) {
+export async function launchOris({ exe, profileDir, port, extraEnv = {}, log = () => {}, browserArgs: extraArgs = "", productDefaults = true }) {
   const exePath = path.resolve(exe);
   if (!existsSync(exePath)) throw new Error(`exe 不存在：${exePath}`);
   mkdirSync(profileDir, { recursive: true });
   const listening = powershell(`@(Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue).Count`).trim();
   if (listening !== "0") throw new Error(`CDP 端口 ${port} 已被占用，拒绝连接非本轮实例`);
+  // WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS 会替换 wry 的默认参数，因此在这里补回产品默认的
+  // --disable-features（Chromium 同名参数只认最后一个，所有要关闭的功能合并在一个参数里）。
+  const features = ["CalculateNativeWinOcclusion", ...(productDefaults ? ["msWebOOUI", "msPdfOOUI", "msSmartScreenProtection"] : [])];
+  const others = [];
+  for (const token of extraArgs.split(/\s+/).filter(Boolean)) {
+    if (token.startsWith("--disable-features=")) features.push(...token.slice("--disable-features=".length).split(",").filter(Boolean));
+    else others.push(token);
+  }
   const browserArgs = [
     `--remote-debugging-port=${port}`,
-    // 测试窗口可能被其他窗口遮挡；关闭遮挡/后台节流，保证 rAF 与计时器不被暂停。两次测量使用同一配置。
-    "--disable-features=CalculateNativeWinOcclusion",
+    // 测试窗口可能被其他窗口遮挡；关闭遮挡/后台节流，保证 rAF 与计时器不被暂停。所有对比使用同一配置。
+    `--disable-features=${[...new Set(features)].join(",")}`,
     "--disable-backgrounding-occluded-windows",
     "--disable-renderer-backgrounding",
-    "--disable-background-timer-throttling"
+    "--disable-background-timer-throttling",
+    ...others
   ].join(" ");
   const env = { ...process.env, WEBVIEW2_USER_DATA_FOLDER: profileDir, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: browserArgs, ...extraEnv };
   const spawnedAt = Date.now();

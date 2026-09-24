@@ -276,6 +276,14 @@ fn cancel_content_read(repo_id: Option<String>, registry: State<'_, RepositoryRe
 
 #[cfg(feature = "desktop")]
 #[tauri::command]
+async fn validate_git(executable: Option<String>) -> Result<git::GitValidation, GitError> {
+    tauri::async_runtime::spawn_blocking(move || git::validate_git(executable))
+        .await
+        .map_err(|error| GitError::Runtime(error.to_string()))
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
 fn save_snapshot(worktree_path: String, json: String, store: State<'_, Snapshots>) -> Result<bool, GitError> {
     store
         .0
@@ -296,6 +304,37 @@ fn remove_snapshot(worktree_path: String, store: State<'_, Snapshots>) {
     store.0.remove(&worktree_path);
 }
 
+/// WebView2 内存目标级别（技术方案 §7 / V2-D28）：窗口失焦或最小化时设为 Low，WebView2 主动回收缓存；
+/// 获得焦点时恢复 Normal。`ORIS_WEBVIEW_MEMORY_TARGET=low|normal` 只用于测量时固定级别。
+#[cfg(all(feature = "desktop", windows))]
+mod webview_memory {
+    use tauri::Manager;
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2_19, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
+    };
+    use windows_core::Interface;
+
+    pub fn forced() -> Option<bool> {
+        match std::env::var("ORIS_WEBVIEW_MEMORY_TARGET").ok()?.as_str() {
+            "low" => Some(true),
+            "normal" => Some(false),
+            _ => None,
+        }
+    }
+
+    pub fn apply<R: tauri::Runtime>(app: &tauri::AppHandle<R>, label: &str, low: bool) {
+        let Some(window) = app.get_webview_window(label) else { return };
+        let _ = window.with_webview(move |webview| unsafe {
+            let Ok(core) = webview.controller().CoreWebView2() else { return };
+            // 旧版 WebView2 Runtime 不支持该接口时静默跳过。
+            if let Ok(core) = core.cast::<ICoreWebView2_19>() {
+                let level = if low { COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW } else { COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL };
+                let _ = core.SetMemoryUsageTargetLevel(level);
+            }
+        });
+    }
+}
+
 #[cfg(feature = "desktop")]
 pub fn application_context() -> tauri::Context<tauri::Wry> {
     tauri::generate_context!()
@@ -314,7 +353,22 @@ pub fn run() {
                 .or_else(|| app.path().app_cache_dir().ok())
                 .unwrap_or_else(std::env::temp_dir);
             app.manage(Snapshots(snapshot_store::SnapshotStore::new(base.join("snapshots"))));
+            #[cfg(windows)]
+            if let Some(low) = webview_memory::forced() {
+                webview_memory::apply(app.handle(), "main", low);
+            }
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            #[cfg(windows)]
+            if webview_memory::forced().is_none() {
+                use tauri::Manager;
+                if let tauri::WindowEvent::Focused(focused) = event {
+                    webview_memory::apply(window.app_handle(), window.label(), !*focused);
+                }
+            }
+            #[cfg(not(windows))]
+            let _ = (window, event);
         })
         .invoke_handler(tauri::generate_handler![
             open_repository,
@@ -326,7 +380,8 @@ pub fn run() {
             cancel_content_read,
             save_snapshot,
             load_snapshot,
-            remove_snapshot
+            remove_snapshot,
+            validate_git
         ])
         .run(application_context())
         .expect("failed to run Oris");

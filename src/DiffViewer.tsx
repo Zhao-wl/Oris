@@ -15,6 +15,7 @@ import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { javascript } from "@codemirror/lang-javascript";
 import { Change, getChunks, unifiedMergeView } from "@codemirror/merge";
 import { oneDark } from "@codemirror/theme-one-dark";
+import { appearanceExtensions, createAppearanceCompartments, fontSizeTheme, reconfigureAppearance, type AppearanceCompartments, type Scheme } from "./themes/runtime";
 import { chainedWheelDelta, diffMarkerGeometry, mapDiffPosition, railViewportStartLine, type DiffBoundaryPair, type DiffSide } from "./diff-scroll";
 import type { DiffPresentation } from "./diff-presentation";
 import { collectQueryMatches, createReadingQuery, type ReadingSearchOptions, type TextMatch } from "./search-model";
@@ -51,6 +52,8 @@ interface SplitController {
   view: SplitView;
   navigate(index: number): void;
   settleViewport(onComplete: () => void): void;
+  /** 外观（字号、配色）reconfigure 后重新测量对齐、连接带与轨道。 */
+  refreshLayout(): void;
   /** keepViews 为 true 时只拆除控制器与外层 DOM，EditorView 留给下一个文件复用。 */
   destroy(keepViews?: boolean): void;
 }
@@ -1505,6 +1508,11 @@ function createSplitView(
       if (alignmentController) alignmentController.schedule(onComplete);
       else onComplete();
     },
+    refreshLayout() {
+      alignmentController?.schedule();
+      visualController?.scheduleMeasure();
+      scrollController?.updateRails();
+    },
     destroy(keepViews = false) {
       alignmentController?.destroy();
       removeCollapse?.();
@@ -1617,14 +1625,15 @@ interface Props {
   collapsed: boolean;
   wrap: boolean;
   fontSize: number;
-  dark: boolean;
+  /** 当前配色方案；为 null（尚未加载）时沿用 V1 的 one-dark。 */
+  scheme: Scheme | null;
   alignChanges: boolean;
   onPositionChange(position: number, total: number): void;
   onSplitLayoutChange(ratio: number, leftWidth: number): void;
 }
 
 const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
-  { readingKey, presentation, left, right, document, mode, highlight, collapsed, wrap, fontSize, dark, alignChanges, onPositionChange, onSplitLayoutChange },
+  { readingKey, presentation, left, right, document, mode, highlight, collapsed, wrap, fontSize, scheme, alignChanges, onPositionChange, onSplitLayoutChange },
   ref
 ) {
   const host = useRef<HTMLDivElement>(null);
@@ -1633,6 +1642,10 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
   /** 按阅读键保存的阅读位置（最近 32 个），切回同一文件时恢复。 */
   const savedViewports = useRef(new Map<string, { line: number; text: string; offset: number; left: number }[]>());
   const pool = useRef<EditorPool>({});
+  // 配色与字号放在 Compartment 中：切换时 reconfigure，不重建编辑器（技术方案 §9.4）。
+  const compartments = useRef<AppearanceCompartments>(createAppearanceCompartments());
+  const appearance = useRef({ scheme, fontSize });
+  appearance.current = { scheme, fontSize };
   const layoutKey = `${readingKey}:${presentation.kind === "single" ? `single-${presentation.side}` : "compare"}`;
 
   useImperativeHandle(ref, () => ({
@@ -1705,12 +1718,14 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
         }
       }),
       EditorView.theme({
-        "&": { fontSize: `${fontSize}px`, height: "100%" },
+        "&": { height: "100%" },
         ".cm-scroller": { fontFamily: "JetBrains Mono, Cascadia Code, SFMono-Regular, Consolas, monospace" },
         ".cm-content": { caretColor: "transparent" }
       }),
       ...(wrap ? [EditorView.lineWrapping] : []),
-      ...(dark ? [oneDark] : [])
+      ...(appearance.current.scheme
+        ? appearanceExtensions(compartments.current, appearance.current.scheme, appearance.current.fontSize)
+        : [compartments.current.theme.of(oneDark), compartments.current.highlight.of([]), compartments.current.fontSize.of(fontSizeTheme(appearance.current.fontSize))])
     ];
     const collapseUnchanged = collapsed ? { margin: 3, minSize: 5 } : undefined;
     const diffConfig = { override: () => document.changes.map((change) => new Change(change.fromA, change.toA, change.fromB, change.toB)) };
@@ -1797,7 +1812,15 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
       runtime.current = { position: 0 };
       if (host.current) host.current.replaceChildren();
     };
-  }, [layoutKey, left, right, document, mode, highlight, collapsed, wrap, fontSize, dark, alignChanges, onPositionChange, onSplitLayoutChange, presentation]);
+  }, [layoutKey, left, right, document, mode, highlight, collapsed, wrap, alignChanges, onPositionChange, onSplitLayoutChange, presentation]);
+
+  useEffect(() => {
+    const views = pool.current;
+    const live = [views.a, views.b, views.single, views.unified].filter((view): view is EditorView => !!view);
+    reconfigureAppearance(live, compartments.current, scheme, fontSize);
+    const frame = requestAnimationFrame(() => runtime.current.split?.refreshLayout());
+    return () => cancelAnimationFrame(frame);
+  }, [scheme, fontSize]);
 
   // 在主 effect 之后声明：卸载时先拆除控制器，再销毁复用池中的编辑器。
   useEffect(() => () => {

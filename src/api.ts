@@ -58,3 +58,13 @@ export const cancelContentRead = (repoId?: string) => invoke<void>("cancel_conte
 export const saveSnapshot = (worktreePath: string, json: string) => invoke<boolean>("save_snapshot", { worktreePath, json });
 export const loadSnapshot = (worktreePath: string) => invoke<string | null>("load_snapshot", { worktreePath });
 export const removeSnapshot = (worktreePath: string) => invoke<void>("remove_snapshot", { worktreePath });
+
+export interface GitValidation {
+  ok: boolean;
+  executable: string;
+  version: string | null;
+  minimumVersion: string;
+  error: string | null;
+}
+/** 设置窗口修改 Git 路径时校验（执行一次 `git --version`，不访问任何仓库）。null 表示自动发现。 */
+export const validateGit = (executable: string | null) => invoke<GitValidation>("validate_git", { executable });
