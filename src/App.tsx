@@ -605,17 +605,18 @@ export default function App() {
   };
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (target?.matches("input, textarea, select, [contenteditable=true]")) return;
-      if (event.altKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
-        event.preventDefault(); navigateFile(event.key === "ArrowUp" ? -1 : 1); return;
-      }
-      if ((event.ctrlKey || event.metaKey) && event.key === ",") { event.preventDefault(); setSettingsOpen(true); return; }
-      if ((event.ctrlKey || event.metaKey) && ["=", "+", "-", "0"].includes(event.key)) {
+      // 设置与字号快捷键不与文字输入冲突，焦点在输入框（如 diff 搜索框）时也生效（V2-D25）。
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key === ",") { event.preventDefault(); setSettingsOpen(true); return; }
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && ["=", "+", "-", "0"].includes(event.key)) {
         event.preventDefault();
         const next = event.key === "0" ? FONT_SIZE_DEFAULT : Math.min(FONT_SIZE_MAX, Math.max(FONT_SIZE_MIN, fontSize + (event.key === "-" ? -1 : 1)));
         settings.update("appearance", "fontSize", next);
         return;
+      }
+      const target = event.target;
+      if (target instanceof Element && target.matches("input, textarea, select, [contenteditable=true]")) return;
+      if (event.altKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+        event.preventDefault(); navigateFile(event.key === "ArrowUp" ? -1 : 1); return;
       }
       if ((event.ctrlKey || event.metaKey) && /^[1-9]$/.test(event.key)) {
         const project = workspaceState.projects[Number(event.key) - 1];
