@@ -4,8 +4,9 @@ import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { defaultHighlightStyle } from "@codemirror/language";
 import { oneDarkHighlightStyle } from "@codemirror/theme-one-dark";
+import bootScript from "../../public/boot.js?raw";
 import {
-  AppearanceRuntime, applyBootAppearance, applyScheme, appearanceExtensions, createAppearanceCompartments, diffColors,
+  AppearanceRuntime, applyBootAppearance, applyScheme, CRITICAL_VARIABLES, appearanceExtensions, createAppearanceCompartments, diffColors,
   HIGH_CONTRAST_CLASS, highlightStyleFor, loadScheme, loadedSchemeIds, readBootCache, reconfigureAppearance, resetSchemeCacheForTest, resolveTag, schemeIndex
 } from "./runtime";
 
@@ -165,5 +166,19 @@ describe("theme runtime", () => {
     // 深色记录尚不存在时不改动根元素（沿用样式表默认配色）。
     expect(applyBootAppearance(storage, document.createElement("div"), () => ({ matches: true }))).toBeNull();
     expect(applyBootAppearance(memory(), document.createElement("div"))).toBeNull();
+  });
+
+  it("public/boot.js (runs before the stylesheet) applies the same first-paint colours as applyBootAppearance", async () => {
+    const runtime = new AppearanceRuntime({ root: document.createElement("div"), storage: localStorage, matchMedia: fakeMedia(true).matchMedia });
+    await runtime.apply({ ...appearance, themeMode: "dark", darkScheme: "hc-dark" });
+    const expected = document.createElement("div");
+    applyBootAppearance(localStorage, expected, () => ({ matches: true }));
+    const root = document.documentElement;
+    new Function(bootScript)();
+    for (const name of CRITICAL_VARIABLES) expect(root.style.getPropertyValue(name)).toBe(expected.style.getPropertyValue(name));
+    expect(root.classList.contains(HIGH_CONTRAST_CLASS)).toBe(true);
+    expect(root.classList.contains("theme-dark")).toBe(true);
+    expect(root.dataset.scheme).toBe("hc-dark");
+    localStorage.clear();
   });
 });
