@@ -474,3 +474,22 @@ button.op-status { padding:0 6px; border:0; background:transparent; font-size:11
 .stash-text small { display:block; color:var(--dim); font-size:11px; }
 .stash-actions { display:flex; gap:4px; flex:none; }
 .stash-actions button { padding:1px 7px; font-size:11px; }
+
+/* ---------- V2-04：同步入口、拉取 / 推送 / 合并对话框、合并进行中横幅 ---------- */
+.sync-button { padding:2px 8px; border-color:transparent; background:transparent; font-size:12px; white-space:nowrap; }
+.sync-button[aria-expanded="true"] { background:var(--hover); border-color:var(--border); }
+.sync-popover { width:320px; }
+.sync-summary { display:flex; flex-direction:column; gap:2px; padding:4px 2px; }
+.sync-summary small { color:var(--dim); font-size:11px; }
+.sync-summary .log-track { margin-left:0; }
+.sync-row { display:flex; align-items:center; gap:8px; padding:6px 3px; border-top:1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+.sync-row > span { flex:1; display:flex; flex-direction:column; }
+.sync-row small { color:var(--dim); font-size:11px; }
+.sync-row button, .sync-hint button { padding:1px 8px; font-size:11px; }
+.sync-hint { display:flex; align-items:center; gap:6px; padding:2px 3px 6px; color:var(--warning, #d9a24f); font-size:11px; }
+.sync-reason { color:var(--dim); font-size:11px; }
+.pull-rebase-note { font-weight:400; }
+.merge-commit-dialog textarea { width:100%; min-height:90px; padding:6px 8px; color:var(--text); background:var(--bg); border:1px solid var(--border); border-radius:4px; font:12px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; resize:vertical; }
+.merge-banner { display:flex; align-items:center; gap:10px; }
+.merge-banner span:not(.spacer) { color:var(--dim); }
+.merge-banner button { padding:1px 8px; font-size:12px; }
