@@ -174,7 +174,12 @@ const V2_HELPERS = String.raw`
     commitReason() { return document.querySelector('.commit-reason')?.textContent ?? null; },
     button(text) { return qa('button').find((b) => b.textContent === text) ?? null; },
     banner() { return document.querySelector('.op-banner')?.textContent ?? null; },
-    backups() { return qa('.backup-row').map((n) => n.textContent); }
+    backups() { return qa('.backup-row').map((n) => n.textContent); },
+    openMenu(path) { const r = window.__op.row(path); if (!r) throw new Error('没有行 ' + path); const b = r.getBoundingClientRect(); r.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: b.left + 40, clientY: b.top + 10 })); },
+    menu() { const m = document.querySelector('.file-menu'); return m ? qa('.file-menu button').map((b) => ({ text: b.textContent, disabled: b.disabled, title: b.title })) : null; },
+    menuItem(prefix) { return qa('.file-menu button').find((b) => b.textContent.startsWith(prefix)) ?? null; },
+    closeMenu() { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); },
+    async menuAction(path, prefix) { window.__v2.openMenu(path); await new Promise((r) => setTimeout(r, 50)); const b = window.__v2.menuItem(prefix); if (!b) throw new Error('右键菜单没有 ' + prefix); if (b.disabled) throw new Error('菜单项不可用 ' + prefix + '：' + b.title); b.click(); }
   };
   return true;
 })()`;
@@ -250,7 +255,7 @@ async function functional() {
     for (const p of ["del.txt", "old-name.txt", "new-name.txt", "空 格/中文 #[x].txt", "untracked file.txt"]) await ctx.evaluate(`window.__v2.check(${q(p)})`);
     await sleep(200);
     const batchShot = await ctx.shot("b05-batch-selection");
-    await traced("stage 批量 5 个", () => ctx.measure(`window.__v2.button('暂存所选').click()`, `window.__op.rows().length === 0`, 5000));
+    await traced("stage 批量 5 个（右键菜单）", () => ctx.measure(`window.__v2.openMenu('del.txt'); setTimeout(() => window.__v2.menuItem('暂存').click(), 30)`, `window.__op.rows().length === 0`, 5000));
     await ctx.settle();
     e = evidence("stage 批量（删除、rename 两端、特殊字符、未跟踪）", repos.stage, before, fingerprint(repos.stage), ["index"]);
     const cached = gitOut(repos.stage, ["diff", "--cached", "--name-status", "-M"]);
@@ -300,11 +305,20 @@ async function functional() {
     // ---------- B06 discard ----------
     await ctx.addProject(repos.discard);
     await ctx.settle();
-    const gitlinkTitle = await ctx.evaluate(`(() => { const b = window.__v2.rowButton('sub', '丢弃…'); return b ? { disabled: b.disabled, title: b.title } : null; })()`);
-    check("B06 gitlink 不可丢弃并说明原因", gitlinkTitle?.disabled && /gitlink/.test(gitlinkTitle.title), gitlinkTitle);
+    const noRowDiscard = await ctx.evaluate(`!window.__v2.rowButton('a.txt', '丢弃…') && !window.__v2.button('丢弃所选…')`);
+    await ctx.evaluate(`window.__v2.openMenu('sub')`); await sleep(100);
+    const gitlinkMenu = await ctx.evaluate(`window.__v2.menu()`);
+    const gitlinkShot = await ctx.shot("b06-gitlink-menu");
+    await ctx.evaluate(`window.__v2.closeMenu()`); await sleep(100);
+    const gitlinkItem = gitlinkMenu?.find((i) => i.text.startsWith("丢弃"));
+    check("B06 丢弃只在右键菜单提供（文件行与批量栏没有丢弃按钮）；gitlink 的丢弃菜单项不可用并说明原因", noRowDiscard && gitlinkItem?.disabled && /gitlink/.test(gitlinkItem.title), { gitlinkMenu, gitlinkShot });
     before = fingerprint(repos.discard);
     for (const p of ["a.txt", "bin.dat", "del.txt", "fresh/dir/new.bin"]) await ctx.evaluate(`window.__v2.check(${q(p)})`);
-    await ctx.evaluate(`window.__v2.button('丢弃所选…').click()`);
+    await ctx.evaluate(`window.__v2.openMenu('a.txt')`); await sleep(100);
+    const batchMenu = await ctx.evaluate(`window.__v2.menu()`);
+    const batchMenuShot = await ctx.shot("b06-batch-context-menu");
+    check("右键菜单支持多选批量：对全部勾选项提供暂存与丢弃", batchMenu?.some((i) => i.text === "暂存（4 个文件）" && !i.disabled) && batchMenu?.some((i) => i.text === "丢弃…（4 个文件）" && !i.disabled), { batchMenu, batchMenuShot });
+    await ctx.evaluate(`window.__v2.menuItem('丢弃…').click()`);
     await ctx.waitUntil(`window.__v2.dialog()`, 10000);
     const discardDialog = await ctx.evaluate(`window.__v2.dialog()`);
     const discardShot = await ctx.shot("b06-discard-confirm");
@@ -325,7 +339,8 @@ async function functional() {
     const worktreeOnly = (f) => Object.fromEntries(Object.entries(f.entries).filter(([k]) => !k.startsWith(".git") && !k.startsWith("sub/.git")));
     check("B06 撤销丢弃：工作区逐字节恢复（CRLF、二进制、删除状态、未跟踪）", undoButton && q(worktreeOnly(restored)) === q(worktreeOnly(before)) && readFileSync(path.join(repos.discard, "a.txt")).equals(Buffer.from("worktree edit\r\nwith CRLF\r\n")), { e });
     // 丢弃后又被修改：再次确认。
-    await ctx.measure(`window.__v2.clickRow('a.txt', '丢弃…')`, `window.__v2.dialog()`, 10000);
+    await ctx.evaluate(`window.__v2.menuAction('a.txt', '丢弃…')`);
+    await ctx.waitUntil(`window.__v2.dialog()`, 10000);
     await ctx.evaluate(`window.__v2.dialogButton('丢弃')`);
     await ctx.waitUntil(`window.__v2.opStatus()?.text.includes('已丢弃')`, 15000);
     await ctx.settle();
@@ -352,7 +367,8 @@ async function functional() {
     await ctx.waitUntil(`!!window.__op.row('huge.log.bin')`, 20000);
     await ctx.settle();
     before = fingerprint(repos.discard);
-    await ctx.measure(`window.__v2.clickRow('huge.log.bin', '丢弃…')`, `window.__v2.dialog()`, 15000);
+    await ctx.evaluate(`window.__v2.menuAction('huge.log.bin', '丢弃…')`);
+    await ctx.waitUntil(`window.__v2.dialog()`, 15000);
     const hugeDialog = await ctx.evaluate(`window.__v2.dialog()`);
     const hugeShot = await ctx.shot("b06-unrecoverable-confirm");
     await ctx.evaluate(`window.__v2.dialogButton('丢弃（含不可撤销）')`);
@@ -370,7 +386,7 @@ async function functional() {
     const indexBefore = gitOut(repos.discardAll, ["ls-files", "-s"]);
     before = fingerprint(repos.discardAll);
     for (const p of allRows) await ctx.evaluate(`window.__v2.check(${q(p)})`);
-    await ctx.evaluate(`window.__v2.button('丢弃所选…').click()`);
+    await ctx.evaluate(`window.__v2.menuAction(${q(allRows[0])}, '丢弃…')`);
     await ctx.waitUntil(`window.__v2.dialog()`, 10000);
     const allDialog = await ctx.evaluate(`window.__v2.dialog()`);
     await traced("discard 全部范围", async () => { await ctx.evaluate(`window.__v2.dialogButton('丢弃')`); await ctx.waitUntil(`window.__v2.opStatus()?.text.includes('已丢弃')`, 15000); });
@@ -546,7 +562,7 @@ async function functional() {
     await ctx.openTab("提交");
     await sleep(600);
     await ctx.openTab("操作输出");
-    await ctx.evaluate(`window.__v2.clickRow('change.txt', '丢弃…')`);
+    await ctx.evaluate(`window.__v2.menuAction('change.txt', '丢弃…')`);
     await ctx.waitUntil(`window.__v2.dialog()`, 10000);
     await ctx.evaluate(`window.__v2.dialogButton('取消')`);
     await ctx.evaluate(`window.__op.projectTab(${q(repos.hooks)}).querySelector('.project-switch').click()`);

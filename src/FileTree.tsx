@@ -103,7 +103,6 @@ function FileButton({ file, selectedPathId, onSelect, depth = 0, showPath = fals
       actions.openMenu(file, rect.left + 24, rect.bottom);
     }
   };
-  const showDiscard = !!allowed && (allowed.discard || (!!allowed.discardBlocked && actions!.scope !== "staged" && file.status !== "conflicted"));
   return (
     <div
       key={file.pathId}
@@ -128,21 +127,25 @@ function FileButton({ file, selectedPathId, onSelect, depth = 0, showPath = fals
         : statsPending && file.status !== "conflicted" && <span className="line-stat pending" title="增删统计正在后台补齐">…</span>}
       {actions && allowed && <span className="file-actions">
         {allowed.primary && <button type="button" className="file-action" disabled={!!actions.disabledReason || file.pending} title={actions.disabledReason ?? `${actionLabels[allowed.primary]} ${file.displayPath}`} onClick={(event) => run(event, allowed.primary!)}>{actionLabels[allowed.primary]}</button>}
-        {showDiscard && <button type="button" className="file-action danger" disabled={!allowed.discard || !!actions.disabledReason || file.pending} title={allowed.discardBlocked ?? actions.disabledReason ?? `丢弃 ${file.displayPath} 的改动（可撤销）`} onClick={(event) => run(event, "discard")}>丢弃…</button>}
       </span>}
       <span className={`status ${file.status}`}>{statusLabels[file.status]}</span>
     </div>
   );
 }
 
-/** 右键菜单：作用于该文件；该文件已被勾选时作用于全部勾选项。 */
+/**
+ * 右键菜单（丢弃只在这里提供）：作用于右键的文件；该文件已被勾选时作用于全部勾选项（批量）。
+ * 暂存 / 取消暂存作用于其中的普通文件，冲突文件另有“标记已解决”；有任一文件不能丢弃时“丢弃…”不可用并说明原因。
+ */
 function FileMenu({ menu, files, onClose }: { menu: { file: FileChange; x: number; y: number }; files: FileChange[]; onClose(): void }) {
   const actions = useContext(ActionsContext)!;
   const host = useRef<HTMLDivElement>(null);
   const targets = actions.checked.has(menu.file.pathId) ? files.filter((file) => actions.checked.has(file.pathId)) : [menu.file];
-  const allowed = targets.map((file) => rowActions(actions.scope, file));
-  const primary = allowed.every((a) => a.primary && a.primary === allowed[0].primary) ? allowed[0].primary : null;
-  const discard = allowed.every((a) => a.discard);
+  const regular = targets.filter((file) => file.status !== "conflicted");
+  const conflicts = targets.filter((file) => file.status === "conflicted");
+  const blocked = targets.map((file) => rowActions(actions.scope, file)).find((a) => !a.discard)?.discardBlocked ?? null;
+  const pending = targets.some((file) => file.pending) ? "等待 Git 确认上一次操作" : null;
+  const disabled = actions.disabledReason ?? pending;
   useEffect(() => {
     host.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
     const close = (event: Event) => { if (!host.current?.contains(event.target as Node)) onClose(); };
@@ -151,12 +154,16 @@ function FileMenu({ menu, files, onClose }: { menu: { file: FileChange; x: numbe
     window.addEventListener("keydown", key, true);
     return () => { window.removeEventListener("pointerdown", close, true); window.removeEventListener("keydown", key, true); };
   }, [onClose]);
-  const act = (action: FileAction) => { onClose(); actions.onAction(action, targets); };
-  const suffix = targets.length > 1 ? `（${targets.length} 个文件）` : "";
+  const act = (action: FileAction, list: FileChange[]) => { onClose(); actions.onAction(action, list); };
+  const count = (list: FileChange[]) => (targets.length > 1 ? `（${list.length} 个文件）` : "");
+  const stagingLabel = actions.scope === "staged" ? "取消暂存" : "暂存";
+  const stagingReason = actions.scope === "all" ? "“全部”范围不区分暂存区，请在“未暂存”范围暂存" : !regular.length ? "所选都是冲突文件，请使用“标记已解决”" : null;
   return <div ref={host} className="file-menu" role="menu" style={{ left: menu.x, top: menu.y }} aria-label="文件操作">
-    {primary && <button type="button" role="menuitem" disabled={!!actions.disabledReason} title={actions.disabledReason ?? undefined} onClick={() => act(primary)}>{actionLabels[primary]}{suffix}</button>}
-    {actions.scope !== "staged" && <button type="button" role="menuitem" disabled={!discard || !!actions.disabledReason} title={allowed.find((a) => a.discardBlocked)?.discardBlocked ?? actions.disabledReason ?? undefined} onClick={() => act("discard")}>丢弃…{suffix}</button>}
-    {!primary && actions.scope === "staged" && <span className="file-menu-note">所选文件没有共同的操作</span>}
+    {targets.length > 1 && <span className="file-menu-note">已勾选 {targets.length} 个文件</span>}
+    <button type="button" role="menuitem" disabled={!!disabled || !!stagingReason} title={disabled ?? stagingReason ?? undefined} onClick={() => act(actions.scope === "staged" ? "unstage" : "stage", regular)}>{stagingLabel}{count(regular)}</button>
+    {conflicts.length > 0 && <button type="button" role="menuitem" disabled={!!disabled} title={disabled ?? undefined} onClick={() => act("markResolved", conflicts)}>标记已解决{count(conflicts)}</button>}
+    {actions.scope !== "staged" && <button type="button" role="menuitem" className="danger" disabled={!!disabled || !!blocked} title={disabled ?? blocked ?? "丢弃前会备份，可撤销"} onClick={() => act("discard", targets)}>丢弃…{count(targets)}</button>}
+    {actions.scope === "staged" && <span className="file-menu-note">已暂存范围不提供丢弃，请先取消暂存</span>}
   </div>;
 }
 
