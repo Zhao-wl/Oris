@@ -661,8 +661,9 @@ export default function App() {
     opRunning.current.delete(repoId);
     const commitKind = ["commit", "amend", "undoCommit"].includes(outcome.kind);
     // 状态栏的“撤销丢弃”只针对本次丢弃返回的备份，不依赖异步刷新的备份列表。
-    const lastBackup = outcome.kind === "discard" && outcome.status === "succeeded" ? outcome.backup : null;
-    updateOps(repoId, { running: null, last: record(outcome), lastBackup, ...(commitKind ? { lastCommit: record(outcome) } : {}) });
+    const succeeded = outcome.status === "succeeded";
+    const backupPatch = outcome.kind === "discard" && succeeded ? { lastBackup: outcome.backup } : request.kind === "undoDiscard" && succeeded && opStore.get()[repoId]?.lastBackup?.id === request.backupId ? { lastBackup: null } : {};
+    updateOps(repoId, { running: null, last: record(outcome), ...backupPatch, ...(commitKind ? { lastCommit: record(outcome) } : {}) });
     if (outcome.kind === "discard" || outcome.kind === "undoDiscard") void discardBackups(repoId).then((backups) => updateOps(repoId, { backups }), () => {});
     if (outcome.snapshot) {
       const result = outcome.snapshot;

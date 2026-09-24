@@ -72,9 +72,9 @@ struct Snapshots(snapshot_store::SnapshotStore);
 #[cfg(feature = "desktop")]
 struct Backups(ops::BackupStore);
 
-/// 写操作结束后跳过自身回声事件的尾窗口（覆盖 200 ms 合并窗口内迟到的事件）。
+/// 写操作结束后识别自身回声事件的尾窗口（覆盖 200 ms 合并窗口内迟到的事件）；窗口内只跳过修改时间不晚于操作结束的事件。
 #[cfg(feature = "desktop")]
-const OPERATION_ECHO_TAIL: std::time::Duration = std::time::Duration::from_millis(400);
+const OPERATION_ECHO_TAIL: std::time::Duration = std::time::Duration::from_millis(1500);
 
 #[cfg(feature = "desktop")]
 #[derive(Clone, serde::Serialize)]
@@ -353,7 +353,7 @@ async fn run_operation(
         let outcome = opened.adapter.run_operation(request, scope, &ctx);
         if let Some(suppression) = &suppression {
             let touched = outcome.as_ref().map(|o| o.touched.clone()).unwrap_or_default();
-            suppression.end_operation(touched, OPERATION_ECHO_TAIL);
+            suppression.end_operation(opened.adapter.worktree(), touched, OPERATION_ECHO_TAIL);
         }
         drop(guard);
         if let Ok(outcome) = &outcome {
