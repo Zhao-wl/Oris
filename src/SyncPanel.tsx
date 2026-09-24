@@ -83,7 +83,7 @@ export function PullDialog({ refs, blocked, onConfirm, onCancel }: { refs: RefsV
     <button type="button" onClick={onCancel}>取消</button>
     <button type="button" className="primary" disabled={!!reason} onClick={() => onConfirm(mode)}>拉取</button>
   </>}>
-    <p>来源：{upstream ?? "—"}{tracking?.state === "known" ? `（本地快照：落后 ${tracking.behind}、领先 ${tracking.ahead}；拉取时会先获取最新状态）` : ""}</p>
+    <p>{!refs ? "正在读取当前分支与上游…" : `来源：${upstream ?? "—"}`}{tracking?.state === "known" ? `（本地快照：落后 ${tracking.behind}、领先 ${tracking.ahead}；拉取时会先获取最新状态）` : ""}</p>
     <label className="dialog-check"><input type="radio" name="pull-mode" aria-label="仅快进" checked={mode === "ffOnly"} onChange={() => setMode("ffOnly")}/> 仅快进（默认）：本地没有上游之外的提交时才更新</label>
     <label className="dialog-check"><input type="radio" name="pull-mode" aria-label="合并远端改动" checked={mode === "merge"} onChange={() => setMode("merge")}/> 合并远端改动：生成一个合并提交</label>
     {rebase && <p className="confirm-warning pull-rebase-note">你的 Git 配置了 pull.rebase={rebase}：Oris 不做 rebase，会以合并方式执行（--no-rebase）。</p>}
@@ -106,7 +106,7 @@ export function PushDialog({ refs, blocked, onConfirm, onCancel }: { refs: RefsV
     <button type="button" onClick={onCancel}>取消</button>
     <button type="button" className="primary" disabled={!!reason} onClick={() => onConfirm(upstream ? null : remote)}>推送</button>
   </>}>
-    {upstream ? <p>目标：{shortRef(upstream)}{tracking?.state === "known" ? `。将推送领先的 ${tracking.ahead} 个提交（基于本地快照）` : ""}</p>
+    {!refs ? <p>正在读取当前分支与上游…</p> : upstream ? <p>目标：{shortRef(upstream)}{tracking?.state === "known" ? `。将推送领先的 ${tracking.ahead} 个提交（基于本地快照）` : ""}</p>
       : <>
         <p>分支 {current?.name ?? "—"} 还没有上游：推送到所选 remote 的同名分支，并设为上游。</p>
         <label className="dialog-field">remote<select aria-label="推送的 remote" value={remote} onChange={(event) => setRemote(event.target.value)}>

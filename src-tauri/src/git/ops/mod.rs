@@ -478,6 +478,25 @@ impl GitAdapter {
         process::run_with(&self.git, &self.worktree, &args, None, true, &ctx.cancel, &ctx.log, &ctx.processes, process::RunOptions { idle: None, literal_pathspecs: false })
     }
 
+    /// 本次操作到目前为止的全部输出（已脱敏，最多 256 KiB）。Git 的提示可能被很长的文件列表挤出错误尾部，识别时用它。
+    pub(super) fn full_output(ctx: &OpContext, result: &process::CallResult) -> String {
+        format!("{}\n{}", ctx.log.snapshot().0, result.stderr_tail)
+    }
+
+    /// Git 在拒绝时以制表符开头列出的路径（去重，最多 200 个）。
+    pub(super) fn listed_paths(text: &str) -> Vec<String> {
+        let mut paths: Vec<String> = Vec::new();
+        for line in text.lines().filter_map(|l| l.strip_prefix('\t')).map(str::trim).filter(|l| !l.is_empty()) {
+            if paths.len() >= 200 {
+                break;
+            }
+            if !paths.iter().any(|p| p == line) {
+                paths.push(line.to_owned());
+            }
+        }
+        paths
+    }
+
     /// 失败摘要：外部锁冲突给出固定说明。
     pub(super) fn failure_message(result: &process::CallResult, what: &str) -> String {
         let summary = result.summary();

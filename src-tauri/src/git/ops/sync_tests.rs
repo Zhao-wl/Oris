@@ -491,3 +491,27 @@ fn b14_external_rebase_cherry_pick_revert_and_bisect_block_every_new_write() {
         leave();
     }
 }
+
+#[test]
+fn b11_long_refusal_lists_are_still_recognised_as_local_changes() {
+    // 回归：Git 列出的文件很多时，“Your local changes … would be overwritten”提示被挤出错误尾部（只保留最后 12 行）。
+    let r = remote_setup();
+    for i in 0..30 {
+        write(&r.other, &format!("many/f{i:02}.txt"), "base\n");
+    }
+    git_in(&r.other, &["add", "-A"]);
+    git_in(&r.other, &["commit", "-qm", "many"]);
+    git_in(&r.other, &["push", "-q", "origin", "main"]);
+    git_in(&r.local, &["pull", "-q", "--no-rebase"]);
+    for i in 0..30 {
+        write(&r.other, &format!("many/f{i:02}.txt"), "remote\n");
+        write(&r.local, &format!("many/f{i:02}.txt"), "local edit\n");
+    }
+    git_in(&r.other, &["commit", "-qam", "remote edits many"]);
+    git_in(&r.other, &["push", "-q", "origin", "main"]);
+    let outcome = Harness::new(&r.local).run(pull(PullMode::FfOnly));
+    assert_eq!(outcome.status, OpStatus::NeedsConfirmation, "{}", outcome.message);
+    let confirmation = outcome.confirmation.unwrap();
+    assert_eq!(confirmation.reason, "localChanges");
+    assert_eq!(confirmation.paths.len(), 30, "{:?}", confirmation.paths);
+}
