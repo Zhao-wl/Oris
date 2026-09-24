@@ -13,7 +13,7 @@ import { schemeIndex } from "./themes/runtime";
 let root: Root;
 let host: HTMLDivElement;
 let store: SettingsStore;
-let onClose: ReturnType<typeof vi.fn>;
+let onClose: ReturnType<typeof vi.fn<() => void>>;
 const memory = () => { const data = new Map<string, string>(); return { getItem: (k: string) => data.get(k) ?? null, setItem: (k: string, v: string) => void data.set(k, v) }; };
 const render = async () => { await act(async () => root.render(<SettingsDialog settings={store} onClose={onClose} gitInUse={{ executable: "C:/Git/cmd/git.exe", version: "2.44.0", minimumVersion: "2.31.0" }}/>)); };
 const click = async (element: Element) => { await act(async () => element.dispatchEvent(new MouseEvent("click", { bubbles: true }))); };
@@ -23,7 +23,7 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
   store = new SettingsStore(memory(), createSettingsRegistry({ schemes: schemeIndex, defaults: DEFAULT_SCHEME_OPTIONS.oris }));
-  onClose = vi.fn();
+  onClose = vi.fn<() => void>();
   validateGit.mockReset();
 });
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
