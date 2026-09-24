@@ -65,7 +65,8 @@ async function start(profile) {
     writeFileSync(file, Buffer.from(data, "base64"));
     return file;
   };
-  const key = (k, mods = {}) => evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: ${q(k)}, ctrlKey: ${!!mods.ctrl}, bubbles: true, cancelable: true }))`);
+  // 键盘事件派发给当前焦点元素（与真实按键的 target 一致）；没有焦点时为 body。
+  const key = (k, mods = {}) => evaluate(`(document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent('keydown', { key: ${q(k)}, ctrlKey: ${!!mods.ctrl}, bubbles: true, cancelable: true }))`);
   return { app, call, evaluate, waitUntil, measure, click, shot, key };
 }
 async function stop(s) { try { s.app.cdp.close(); } catch { /* 已关闭 */ } const r = await killOris(s.app); log(`实例 ${s.app.pid} 已结束：${r.how}`); return r; }
@@ -95,11 +96,14 @@ try {
   // 阅读状态：滚动、选中一个词（CDP 鼠标双击）、打开搜索
   await evaluate(`(() => { document.querySelectorAll('.cm-editor').forEach((n, i) => { n.__orisMark = 'editor-' + i; }); const sc = document.querySelectorAll('.cm-scroller'); sc.forEach((n) => { n.scrollTop = 60; }); return sc.length; })()`);
   await sleep(300);
-  const point = await evaluate(`(() => { const lines = [...document.querySelectorAll('.oris-split-pane.right .cm-line, .cm-editor:last-of-type .cm-line')]; for (const line of lines) { const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT); let t; while ((t = walker.nextNode())) { const i = t.data.indexOf('value'); if (i >= 0) { const r = document.createRange(); r.setStart(t, i); r.setEnd(t, i + 5); const b = r.getBoundingClientRect(); if (b.width > 0 && b.top > 60) return { x: b.left + b.width / 2, y: b.top + b.height / 2 }; } } } return null; })()`);
+  const point = await evaluate(`(() => { const pane = document.querySelector('.oris-split-pane.right .cm-scroller') ?? [...document.querySelectorAll('.cm-scroller')].pop(); const box = pane.getBoundingClientRect(); const lines = [...pane.querySelectorAll('.cm-line')]; for (const line of lines) { const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT); let t; while ((t = walker.nextNode())) { const i = t.data.indexOf('value'); if (i >= 0) { const r = document.createRange(); r.setStart(t, i); r.setEnd(t, i + 5); const b = r.getBoundingClientRect(); if (b.width > 0 && b.top > box.top + 4 && b.bottom < box.bottom - 4 && b.left > box.left && b.right < box.right) return { x1: b.left + 0.5, x2: b.right - 0.5, y: b.top + b.height / 2 }; } } } return null; })()`);
   if (point) {
-    await call("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", clickCount: 2, x: point.x, y: point.y });
-    await call("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", clickCount: 2, x: point.x, y: point.y });
+    // CDP 注入的拖选（与任务 01 选区检查相同的方式）
+    await call("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", clickCount: 1, x: point.x1, y: point.y });
+    await call("Input.dispatchMouseEvent", { type: "mouseMoved", button: "left", buttons: 1, x: point.x2, y: point.y });
+    await call("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", clickCount: 1, x: point.x2, y: point.y });
   }
+  report.checks.selectionPoint = point;
   await sleep(300);
   await key("f", { ctrl: true });
   await sleep(400);
@@ -144,7 +148,7 @@ try {
 
   // 字号：快捷键与设置同步、不重建编辑器
   const fontTimes = [];
-  for (const k of ["=", "=", "-", "0"]) fontTimes.push(await measure(`document.dispatchEvent(new KeyboardEvent('keydown', { key: ${q(k)}, ctrlKey: true, bubbles: true, cancelable: true }))`, `true`));
+  for (const [k, size] of [["=", "14px"], ["=", "15px"], ["-", "14px"], ["0", "13px"]]) fontTimes.push(await measure(`(document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent('keydown', { key: ${q(k)}, ctrlKey: true, bubbles: true, cancelable: true }))`, `getComputedStyle(document.querySelector('.cm-content')).fontSize === ${q(size)}`));
   await key("=", { ctrl: true });
   await sleep(300);
   const fontState = await evaluate(`({ size: getComputedStyle(document.querySelector('.cm-content')).fontSize })`);

@@ -165,7 +165,14 @@ export function resolveTheme(colors, type) {
   variables['--overview-viewport-active'] = pick('scrollbarSlider.activeBackground') ?? 'transparent';
   variables['--overview-viewport-shadow'] = 'transparent';
   // 高对比方案在 VS Code 中不定义其他命中底色与浮层阴影（靠描边区分）；给透明值，避免落到样式表中的 Oris 回退色。
-  if (hc) { variables['--search-other'] ??= 'transparent'; variables['--widget-shadow'] ??= 'transparent'; }
+  if (hc) {
+    variables['--search-other'] ??= 'transparent'; variables['--widget-shadow'] ??= 'transparent';
+    // 高对比方案不定义同词 / 搜索命中底色，映射回退会落到选区底色（hc-dark 为纯白），命中文字看不清。
+    // 与 VS Code 一致改为透明底色 + 描边（selectionHighlightBorder / findMatchBorder，缺省为 contrastActiveBorder）。
+    if (!colors['editor.selectionHighlightBackground']) variables['--same-word'] = 'transparent';
+    if (!colors['editor.findMatchBackground']) variables['--search-match'] = 'transparent';
+    variables['--same-word-border'] = pick('editor.selectionHighlightBorder', 'contrastActiveBorder') ?? 'transparent';
+  }
   const oris = {
     modified: { marker: modified, line: withAlpha(modified, .23), word: withAlpha(modified, .34) },
     added: { marker: added, line: pick('diffEditor.insertedLineBackground') ?? withAlpha(added,.2), word: pick('diffEditor.insertedTextBackground') ?? withAlpha(added,.3) },
