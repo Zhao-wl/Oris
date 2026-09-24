@@ -85,3 +85,4 @@ Remove-Item -LiteralPath D:\Projects\Research\Oris-builds\v1-baseline, D:\Projec
 - 用户确认 P-V2-09：内存预算分层（V2-D28），数值按 V2-01 结果中的建议（V2-D29，私有工作集口径）。WebView2 实验中只有“窗口失焦时切到低内存目标级别”明显有效且不影响前台操作，已实现；`--disable-gpu`、V8 `--optimize-for-size` 无实际收益，不采用。
 - 按新预算重新验收后 V2-01 通过（Windows），`feat/v2-01` 已合入 main；同一分支还带有 V2-06 设置与配色体验版（P-V2-05／06／07 待用户体验后决定）。
 - 测量探针修复 PID 复用问题：此前进程树可能误纳入无关进程（实测 Unity、WPS），强制结束改为只结束核验过的本轮进程。
+- 用户决定 P-V2-05／06／07（A、19 套完整移植、Oris 默认，V2-D30–V2-D32）；V2-06 正式实现与 Windows 验收完成（[V2-06 结果](v2-06-results.md)）。

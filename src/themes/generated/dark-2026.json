@@ -50,7 +50,16 @@
     "--widget-shadow": "#0000005c",
     "--status-deleted": "#636566",
     "--status-renamed": "#e5ba7d",
-    "--status-type-changed": "#e5ba7d"
+    "--status-type-changed": "#e5ba7d",
+    "--search-match-border": "transparent",
+    "--search-other-border": "transparent",
+    "--search-match-text": "currentColor",
+    "--selection-outline": "transparent",
+    "--same-word-border": "transparent",
+    "--overview-viewport-bg": "#A8A9AA85",
+    "--overview-viewport-border": "#A8A9AA90",
+    "--overview-viewport-active": "#A8A9AA9C",
+    "--overview-viewport-shadow": "transparent"
   },
   "diff": {
     "oris": {
