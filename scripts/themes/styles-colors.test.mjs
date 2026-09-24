@@ -1,5 +1,9 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
-import stylesheet from "./styles.css?raw";
+
+const stylesheet = readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../src/styles.css"), "utf8");
 
 /**
  * 禁止写死颜色（V2-06 接入清单第 4 条）：界面颜色必须来自配色方案写入的 CSS 变量。
@@ -8,7 +12,7 @@ import stylesheet from "./styles.css?raw";
  */
 const BRAND_SELECTORS = [".logo"];
 
-function stripFallbacks(css: string) {
+function stripFallbacks(css) {
   let previous;
   do {
     previous = css;
@@ -17,7 +21,7 @@ function stripFallbacks(css: string) {
   return css;
 }
 
-function channels(color: string): number[] | null {
+function channels(color) {
   const hex = /^#([0-9a-f]{3,8})$/i.exec(color)?.[1];
   if (hex) {
     const full = hex.length <= 4 ? [...hex].map((c) => c + c).join("") : hex;
@@ -27,11 +31,11 @@ function channels(color: string): number[] | null {
   return fn ? fn.split(/[\s,/]+/).slice(0, 3).map(Number) : null;
 }
 
-const isNeutral = (color: string) => { const c = channels(color); return !!c && c.every((v) => v === c[0]); };
+const isNeutral = (color) => { const c = channels(color); return !!c && c.every((v) => v === c[0]); };
 
-function findOffenders(source: string) {
+function findOffenders(source) {
   const css = source.replace(/\/\*[\s\S]*?\*\//g, "");
-  const offenders: string[] = [];
+  const offenders = [];
   for (const rule of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
     const selector = rule[1].trim();
     if (/^:root(\.theme-light)?$/.test(selector)) continue;
