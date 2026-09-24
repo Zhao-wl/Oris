@@ -60,7 +60,7 @@ struct OpenRepository {
 }
 
 #[cfg(feature = "desktop")]
-const HISTORY_KINDS: usize = 6;
+const HISTORY_KINDS: usize = 8;
 
 /// 历史类只读请求的种类（各自独立的代次）。
 #[cfg(feature = "desktop")]
@@ -72,6 +72,8 @@ enum HistoryKind {
     FileHistory = 3,
     Refs = 4,
     Content = 5,
+    StashList = 6,
+    StashChanges = 7,
 }
 
 /// 在后台线程执行一个历史类读取；`fresh` 为 true 时使同种类的旧请求过期（分页续读传 false，沿用当前代次）。
@@ -459,7 +461,8 @@ async fn file_history(repo_id: String, start: String, path_id: String, page_size
 #[tauri::command]
 async fn read_refs(repo_id: String, registry: State<'_, RepositoryRegistry>) -> Result<git::history::RefsView, GitError> {
     let opened = opened(&registry, &repo_id)?;
-    history_call(opened, HistoryKind::Refs, true, move |adapter, _| adapter.history_refs()).await
+    // 分支弹层、日志页、获取确认框可能同时读取 refs：读取廉价且结果相同，彼此不取消（fresh = false）。
+    history_call(opened, HistoryKind::Refs, false, move |adapter, _| adapter.history_refs()).await
 }
 
 /// 历史版本的两端内容：`left` 为 None 表示空树；两端都是已固定的提交 OID（不读取 index 或工作区）。
@@ -483,6 +486,32 @@ async fn read_revision_pair(
         Ok(tauri::ipc::Response::new(pair.encode_frame()))
     })
     .await
+}
+
+/// stash 列表（R-STASH，只读）。
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn stash_list(repo_id: String, registry: State<'_, RepositoryRegistry>) -> Result<Vec<git::stash::StashEntry>, GitError> {
+    let opened = opened(&registry, &repo_id)?;
+    history_call(opened, HistoryKind::StashList, true, move |adapter, _| adapter.stash_list()).await
+}
+
+/// 某条 stash 的内容：已跟踪部分与未跟踪部分（只读）。
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn stash_changes(repo_id: String, oid: String, registry: State<'_, RepositoryRegistry>) -> Result<git::stash::StashChanges, GitError> {
+    let opened = opened(&registry, &repo_id)?;
+    history_call(opened, HistoryKind::StashChanges, true, move |adapter, _| adapter.stash_changes(&oid)).await
+}
+
+/// 分支名校验（`check-ref-format --branch`，只读）：新建、重命名对话框在提交前使用。
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn check_branch_name(repo_id: String, name: String, registry: State<'_, RepositoryRegistry>) -> Result<(), GitError> {
+    let opened = opened(&registry, &repo_id)?;
+    tauri::async_runtime::spawn_blocking(move || opened.adapter.check_branch_name(&name))
+        .await
+        .map_err(|error| GitError::Runtime(error.to_string()))?
 }
 
 /// 丢弃确认框的数据（只读）。
@@ -608,7 +637,10 @@ pub fn run() {
             compare_revisions,
             file_history,
             read_refs,
-            read_revision_pair
+            read_revision_pair,
+            stash_list,
+            stash_changes,
+            check_branch_name
         ])
         .run(application_context())
         .expect("failed to run Oris");

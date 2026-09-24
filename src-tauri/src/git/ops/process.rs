@@ -140,10 +140,26 @@ pub fn run(
     log: &OutputLog,
     counter: &std::sync::atomic::AtomicU32,
 ) -> Result<CallResult, GitError> {
-    run_with(git, cwd, args, stdin, log_stdout, cancel, log, counter, None)
+    run_with(git, cwd, args, stdin, log_stdout, cancel, log, counter, RunOptions::default())
 }
 
-/// 同 [`run`]，另可设置“无输出超时”：stdout / stderr 连续 `idle` 没有任何输出时终止整个进程树。
+/// 单条命令的附加选项。
+#[derive(Clone, Copy)]
+pub struct RunOptions {
+    /// “无输出超时”：stdout / stderr 连续这么久没有任何输出时终止整个进程树（网络操作）。
+    pub idle: Option<Duration>,
+    /// 设置 `GIT_LITERAL_PATHSPECS=1`（默认）。命令不带用户路径、依赖 Git 内部的 `:/` 等魔术路径时
+    /// （如不带路径的 `stash push --include-untracked`）必须关闭，否则 Git 内部的清理匹配不到任何文件。
+    pub literal_pathspecs: bool,
+}
+
+impl Default for RunOptions {
+    fn default() -> Self {
+        Self { idle: None, literal_pathspecs: true }
+    }
+}
+
+/// 同 [`run`]，带 [`RunOptions`]。
 #[allow(clippy::too_many_arguments)]
 pub fn run_with(
     git: &Path,
@@ -154,12 +170,16 @@ pub fn run_with(
     cancel: &CancelHandle,
     log: &OutputLog,
     counter: &std::sync::atomic::AtomicU32,
-    idle: Option<Duration>,
+    options: RunOptions,
 ) -> Result<CallResult, GitError> {
+    let idle = options.idle;
     if cancel.is_cancelled() {
         return Ok(CallResult { success: false, code: None, stdout: Vec::new(), stderr_tail: String::new(), cancelled: true, timed_out: false });
     }
     let mut command = write_command(git, cwd);
+    if !options.literal_pathspecs {
+        command.env_remove("GIT_LITERAL_PATHSPECS");
+    }
     command.args(args).stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
     ProcessTree::prepare(&mut command);
     let mut child = command.spawn().map_err(|e| GitError::GitUnavailable(e.to_string()))?;
