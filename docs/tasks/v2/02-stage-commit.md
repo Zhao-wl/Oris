@@ -1,6 +1,6 @@
 # V2-02 — 暂存、丢弃与提交
 
-状态：功能完成，性能复测暂缓（2026-09-24）：B05–B08、B16、B17 通过（Windows）；性能复测受并行任务干扰，用户决定另行安排；分支 `feat/v2-02` 未合入 main。见 [V2-02 结果](../../validation/v2-02-results.md)。依赖：V2-01；[一二期混合发布参考图](../../design/04-mixed-release-ui-reference.md)已获用户确认，UI 前置条件满足（V2-D18）。
+状态：功能完成并已合入 main，性能复测暂缓（2026-09-24）：B05–B08、B16、B17 通过（Windows）；性能复测受并行任务干扰，用户决定另行安排并先合入。见 [V2-02 结果](../../validation/v2-02-results.md)。依赖：V2-01；[一二期混合发布参考图](../../design/04-mixed-release-ui-reference.md)已获用户确认，UI 前置条件满足（V2-D18）。
 
 ## 用户闭环
 
