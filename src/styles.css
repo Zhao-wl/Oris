@@ -332,3 +332,102 @@ button.op-status { padding:0 6px; border:0; background:transparent; font-size:11
 .confirm-note { color:var(--dim); font-size:12px; }
 .confirm-footer { display:flex; justify-content:flex-end; gap:8px; margin-top:8px; }
 :root.theme-high-contrast .file-menu, :root.theme-high-contrast .confirm-dialog { outline:1px solid var(--toggle-on-border, var(--blue)); }
+
+/* ---------- 任务 04：日志页（分支、提交图与列表、提交详情）、历史阅读、获取远端状态 ---------- */
+.git-body.log-layout { height:300px; padding:0; display:grid; grid-template-columns:minmax(170px, 220px) minmax(0, 1fr) minmax(260px, 360px); overflow:hidden; }
+.git-body.log-layout[hidden] { display:none; }
+.log-branches, .log-detail { display:flex; flex-direction:column; min-width:0; min-height:0; overflow:auto; padding:6px 8px; gap:4px; font-size:12px; }
+.log-branches { border-right:1px solid var(--border); }
+.log-detail { border-left:1px solid var(--border); }
+.log-head { display:flex; align-items:center; gap:6px; }
+.log-head button { padding:1px 8px; font-size:11px; }
+.log-current { color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.log-current strong { color:var(--text); font-weight:600; }
+.log-track { margin-left:6px; color:var(--blue); font-size:11px; white-space:nowrap; }
+.log-track.gone, .log-track.unknown { color:var(--warning, #d9a24f); }
+.log-track.noUpstream { color:var(--dim); }
+.log-fetch-time, .log-note { color:var(--dim); font-size:11px; }
+.log-note.warning { color:var(--warning, #d9a24f); }
+.log-error { color:var(--error, #ff7b72); font-size:12px; white-space:pre-wrap; }
+.log-group { padding:6px 2px 2px; color:var(--dim); font-size:11px; font-weight:600; }
+.log-branch-list { display:flex; flex-direction:column; min-height:0; }
+.log-branch { display:flex; align-items:center; gap:4px; width:100%; padding:3px 6px; border-color:transparent; background:transparent; text-align:left; font-size:12px; }
+.log-branch-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.log-branch.current .log-branch-name { font-weight:600; }
+.log-branch.browsing { background:var(--hover); box-shadow:inset 2px 0 0 var(--blue); }
+.log-commits-pane { display:flex; flex-direction:column; min-width:0; min-height:0; }
+.log-toolbar { display:flex; align-items:center; gap:5px; padding:5px 8px; border-bottom:1px solid var(--border); font-size:12px; }
+.log-toolbar input { flex:0 1 260px; min-width:100px; padding:3px 7px; }
+.log-toolbar button, .log-toolbar select { padding:2px 7px; font-size:12px; }
+.log-count { color:var(--dim); font-size:11px; white-space:nowrap; }
+.log-file-title { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.log-compare-start { display:flex; align-items:center; gap:6px; padding:3px 8px; color:var(--text); background:color-mix(in srgb, var(--blue) 14%, var(--panel)); border-bottom:1px solid var(--border); font-size:11px; }
+.log-compare-start button { padding:0 6px; font-size:11px; }
+.log-commits { position:relative; flex:1; min-height:0; overflow:auto; outline:none; }
+.log-commits:focus-visible { box-shadow:inset 0 0 0 1px var(--blue); }
+.log-row { display:flex; align-items:center; gap:8px; padding-right:8px; font-size:12px; cursor:default; white-space:nowrap; }
+.log-row:hover { background:color-mix(in srgb, var(--hover) 55%, transparent); }
+.log-row.selected { background:var(--hover); }
+.log-graph { flex:none; overflow:visible; }
+.log-graph line { stroke:var(--blue); stroke-width:1.6; }
+.log-graph line.dashed { stroke-dasharray:2 3; opacity:.7; }
+.log-graph circle { fill:var(--blue); stroke:var(--panel); stroke-width:1.5; }
+.log-graph circle.merge { fill:var(--panel); stroke:var(--blue); stroke-width:2; }
+.log-graph circle.head { stroke:var(--text); stroke-width:2; }
+.log-graph .lane-1 { stroke:var(--status-added, #4f9f64); }
+.log-graph circle.lane-1:not(.merge) { fill:var(--status-added, #4f9f64); }
+.log-graph .lane-2 { stroke:var(--status-renamed, #d9a24f); }
+.log-graph circle.lane-2:not(.merge) { fill:var(--status-renamed, #d9a24f); }
+.log-graph .lane-3 { stroke:var(--status-conflicted, #ff7b72); }
+.log-graph circle.lane-3:not(.merge) { fill:var(--status-conflicted, #ff7b72); }
+.log-graph .lane-4 { stroke:var(--status-type-changed, #d9a24f); }
+.log-graph circle.lane-4:not(.merge) { fill:var(--status-type-changed, #d9a24f); }
+.log-graph .lane-5 { stroke:var(--status-deleted, #9ca0a8); }
+.log-graph circle.lane-5:not(.merge) { fill:var(--status-deleted, #9ca0a8); }
+.log-graph circle.merge.lane-1, .log-graph circle.merge.lane-2, .log-graph circle.merge.lane-3, .log-graph circle.merge.lane-4, .log-graph circle.merge.lane-5 { fill:var(--panel); }
+.log-subject { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.log-author { flex:0 0 110px; overflow:hidden; color:var(--dim); text-overflow:ellipsis; }
+.log-date { flex:0 0 142px; color:var(--dim); font-size:11px; }
+.log-sha { flex:none; color:var(--dim); font:11px ui-monospace, SFMono-Regular, Consolas, monospace; }
+.ref-chip { display:inline-block; margin-right:4px; padding:0 5px; border:1px solid var(--border); border-radius:8px; color:var(--dim); font-size:10px; line-height:15px; vertical-align:1px; }
+.ref-chip.local { color:var(--blue); border-color:color-mix(in srgb, var(--blue) 50%, transparent); }
+.ref-chip.local.current { color:var(--button-text, white); background:var(--blue); }
+.ref-chip.remote { color:var(--status-added, #4f9f64); border-color:color-mix(in srgb, var(--status-added, #4f9f64) 50%, transparent); }
+.ref-chip.tag { color:var(--status-renamed, #d9a24f); border-color:color-mix(in srgb, var(--status-renamed, #d9a24f) 50%, transparent); }
+.ref-chip.head { color:var(--text); border-color:var(--text); font-weight:700; }
+.log-empty { padding:10px; color:var(--dim); font-size:12px; }
+.log-continuation { position:absolute; left:8px; right:8px; padding:3px 0 8px; color:var(--dim); font-size:11px; }
+.log-detail-body { display:flex; flex-direction:column; gap:3px; min-width:0; }
+.log-detail-subject { font-size:13px; overflow-wrap:anywhere; }
+.log-meta { color:var(--dim); font-size:11px; overflow-wrap:anywhere; }
+.log-sha-full { font:11px ui-monospace, SFMono-Regular, Consolas, monospace; user-select:all; color:var(--text); }
+.log-parents { display:flex; flex-wrap:wrap; align-items:center; gap:4px; }
+.parent-pick { padding:0 6px; font-size:11px; }
+.parent-pick.active { background:var(--toggle-on); border-color:var(--toggle-on-border); }
+.log-body { margin:2px 0; padding:5px 7px; max-height:80px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; color:var(--text); background:var(--bg); border:1px solid var(--border); border-radius:4px; font:11px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.log-files, .log-history { margin:0; padding:0; list-style:none; }
+.log-files li { display:flex; align-items:center; gap:4px; }
+.log-files li.active, .log-history li.active { background:var(--hover); }
+.log-file, .log-history-row { display:flex; align-items:center; gap:6px; flex:1; min-width:0; padding:2px 5px; border-color:transparent; background:transparent; text-align:left; font-size:12px; }
+.log-file-path { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.log-file-old { flex:0 1 auto; min-width:0; overflow:hidden; color:var(--dim); font-size:11px; text-overflow:ellipsis; white-space:nowrap; }
+.log-file-history { padding:0 5px; font-size:11px; }
+.status-letter { flex:0 0 12px; font-weight:700; color:var(--status-modified, #5ca4ff); }
+.status-letter.added, .status-letter.copied { color:var(--status-added, #4f9f64); }
+.status-letter.deleted { color:var(--status-deleted, #9ca0a8); }
+.status-letter.renamed, .status-letter.typeChanged { color:var(--status-renamed, #d9a24f); }
+.log-history { flex:1; min-height:0; overflow:auto; }
+.log-history li { border-bottom:1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+.log-history li.selected { box-shadow:inset 2px 0 0 var(--blue); }
+.log-history-row .log-subject { flex:1 1 40%; }
+.log-history-row .log-file-path { flex:1 1 30%; color:var(--dim); }
+.log-rename-boundary { padding:0 8px 3px 26px; color:var(--warning, #d9a24f); font-size:11px; }
+.log-more { align-self:flex-start; margin:6px 8px; padding:2px 10px; font-size:12px; }
+.log-moved { display:flex; flex-wrap:wrap; align-items:center; gap:6px; padding:4px 6px; color:var(--text); background:color-mix(in srgb, var(--warning, #d9a24f) 16%, var(--panel)); border:1px solid color-mix(in srgb, var(--warning, #d9a24f) 55%, transparent); border-radius:4px; font-size:11px; }
+.log-moved button { padding:0 6px; font-size:11px; }
+.history-badge { margin-left:8px; padding:0 6px; color:var(--button-text, white); background:var(--blue); border-radius:8px; font-size:11px; white-space:nowrap; }
+.fetch-entry { white-space:nowrap; }
+.fetch-dialog code { font-size:11px; }
+.fetch-remote { display:flex; align-items:center; gap:6px; margin:4px 0; }
+.fetch-remote select { min-width:200px; }
+.fetch-reason { flex:1; color:var(--dim); font-size:12px; align-self:center; }
