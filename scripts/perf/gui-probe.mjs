@@ -20,6 +20,7 @@ const mixedOps = Number(option("mixed", 200));
 const idleSeconds = Number(option("idle", 65));
 // 追加给测试实例的 WebView2 参数（内存优化试验用）；产品默认参数始终保留。
 const extraBrowserArgs = option("browser-args", "");
+const memoryProjects = Number(option("projects", 5));
 if (!exe) throw new Error("缺少 --exe");
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const outDir = path.join(projectRoot, "artifacts", "gui-probe", label);
@@ -556,12 +557,12 @@ async function runTask03() {
 
 // ------------------------------ memory（V2-D28 分层内存） ------------------------------
 async function runMemory() {
-  const repos = await prepareCoreRepos(path.join(runDir, "memory-repos"));
+  const repos = await prepareCoreRepos(path.join(runDir, "memory-repos"), memoryProjects);
   const P = repos.map((r) => r.path);
   const app = await start("memory", { ORIS_APP_CACHE_DIR: path.join(runDir, "app-cache-memory") });
   await app.cdp.call("Performance.enable");
   const h = helpers(app);
-  const result = { ...header, suite: "memory", notes: ["framework = WebView2 进程组；tools = Git 子进程（含 conhost）；oris = oris.exe；jsHeap 为页面 JS 堆（位于 WebView2 渲染进程内，已含在 framework 中，单列供参考）。privateWorkingSet 不含共享页，是各进程独占的物理内存；workingSet 相加会重复计算共享的运行库。"], samples: {} };
+  const result = { ...header, suite: "memory", projects: memoryProjects, notes: ["framework = WebView2 进程组；tools = Git 子进程（含 conhost）；oris = oris.exe；jsHeap 为页面 JS 堆（位于 WebView2 渲染进程内，已含在 framework 中，单列供参考）。privateWorkingSet 不含共享页，是各进程独占的物理内存；workingSet 相加会重复计算共享的运行库。"], samples: {} };
   const sample = async (tag) => {
     const tree = processTreeDetailed(app.pid);
     const metrics = (await app.cdp.call("Performance.getMetrics")).metrics;
