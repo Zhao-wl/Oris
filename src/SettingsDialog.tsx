@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { validateGit, type GitValidation } from "./api";
 import { DEFAULT_SCHEMES, FONT_SIZE_MAX, FONT_SIZE_MIN, useSettings, type SettingsStore } from "./settings";
 import { schemeIndex, type SchemeIndexEntry } from "./themes/runtime";
+import notices from "./themes/generated/NOTICES.txt?raw";
 
 interface Props {
   settings: SettingsStore;
@@ -53,6 +54,10 @@ function AppearancePage({ settings }: { settings: SettingsStore }) {
       <small>Ctrl/Cmd + = / - / 0</small>
     </div>
     <p className="settings-note">diff 颜色：蓝为修改、绿为新增、灰为删除，色值随配色方案变化。修改即时生效并自动保存。</p>
+    <details className="settings-notices">
+      <summary>配色方案的第三方许可（VS Code、Colorsublime，MIT）</summary>
+      <pre>{notices}</pre>
+    </details>
   </div>;
 }
 

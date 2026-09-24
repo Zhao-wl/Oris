@@ -35,6 +35,9 @@ it("lists all 21 schemes (V2-D31), tags defaults and high contrast, and applies 
   expect(options.length).toBe(21);
   expect(host.querySelectorAll('[role="option"] .scheme-tag').length).toBe(4);
   expect(host.textContent).not.toMatch(/首批|第二批|待决定/);
+  const notice = host.querySelector(".settings-notices pre")!.textContent!;
+  expect(notice).toContain("Microsoft Corporation");
+  expect(notice).toContain("Copyright (c) 2015 Colorsublime.com");
   const dark2026 = [...options].find((o) => o.textContent?.includes("Dark 2026"))!;
   await click(dark2026);
   expect(store.get().appearance.darkScheme).toBe("dark-2026");
