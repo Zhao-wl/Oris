@@ -428,6 +428,7 @@ async function functional() {
     check("B07 amend 并入暂存：信息不变，提交包含新文件", gitOut(repos.commit, ["log", "-1", "--format=%s"]) === "feat: 改过的信息" && gitOut(repos.commit, ["ls-tree", "--name-only", "HEAD"]).includes("two.txt") && e.unexpected.length === 0, { e });
     // 撤销普通提交。
     const headBeforeUndo = gitOut(repos.commit, ["rev-parse", "HEAD"]);
+    await ctx.waitUntil(`!window.__v2.button('撤销最近提交…').disabled && window.__v2.button('撤销最近提交…').title.includes(${q(headBeforeUndo.slice(0, 8))})`, 10000);
     before = fingerprint(repos.commit);
     await ctx.evaluate(`window.__v2.button('撤销最近提交…').click()`);
     await ctx.waitUntil(`window.__v2.dialog()`, 10000);

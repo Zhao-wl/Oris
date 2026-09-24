@@ -15,6 +15,8 @@ interface Props {
   stagedCount: number;
   /** HEAD / 上游变化的键：变化时重新读取 HEAD 信息。 */
   headKey: string;
+  /** 当前快照中的 HEAD OID；HEAD 信息与之不一致时视为正在读取，修订与撤销暂不可用。 */
+  headOid: string | null;
   mergeInProgress: boolean;
   blockedReason: string | null;
   running: RunningOperation | null;
@@ -46,10 +48,13 @@ export default function GitPanel(props: Props) {
   </section>;
 }
 
-function CommitTab({ repoId, stagedCount, headKey, mergeInProgress, blockedReason, running, lines, lastCommit, onCommit, onUndoCommit, onCancel }: Props & { repoId: string }) {
+function CommitTab({ repoId, stagedCount, headKey, headOid, mergeInProgress, blockedReason, running, lines, lastCommit, onCommit, onUndoCommit, onCancel }: Props & { repoId: string }) {
   const [message, setMessage] = useState(() => loadDraft(localStorage, repoId));
   const [amend, setAmend] = useState(false);
-  const [head, setHead] = useState<HeadCommitInfo | null>(null);
+  const [loadedHead, setHead] = useState<HeadCommitInfo | null>(null);
+  // 只使用与当前快照 HEAD 一致的信息，避免对旧 HEAD 执行修订或撤销（后端还会按 expectedHead 再核对一次）。
+  const head = loadedHead && loadedHead.oid === headOid ? loadedHead : null;
+  const headLoading = !!headOid && !head;
   const [headError, setHeadError] = useState<string | null>(null);
   const savedDraft = useRef(message);
   useEffect(() => {
@@ -71,11 +76,12 @@ function CommitTab({ repoId, stagedCount, headKey, mergeInProgress, blockedReaso
   const keepMessage = amend && !!head && message.trim() === head.message.trim();
   const pushedReason = head?.pushed ? `HEAD 已包含在上游 ${head.upstream ?? ""} 中：修订与撤销需要强制推送，Oris 不支持，请在命令行处理` : null;
   const commitBlocked = blockedReason
+    ?? (amend && headLoading ? "正在读取 HEAD…" : null)
     ?? (amend && !head ? "还没有提交，无法修订" : null)
     ?? (amend ? pushedReason : null) ?? (amend && mergeInProgress ? "合并进行中不能修订提交" : null)
     ?? (!amend && stagedCount === 0 ? "没有已暂存的内容：先在“未暂存”范围暂存文件" : null)
     ?? (!keepMessage && !message.trim() ? "请填写提交信息（首行为摘要）" : null);
-  const undoBlocked = blockedReason ?? (!head ? "还没有提交" : null) ?? pushedReason ?? (mergeInProgress ? "合并进行中不能撤销提交" : null) ?? (head?.detached && head.parents.length === 0 ? "分离 HEAD 上的根提交不能撤销" : null);
+  const undoBlocked = blockedReason ?? (headLoading ? "正在读取 HEAD…" : null) ?? (!head ? "还没有提交" : null) ?? pushedReason ?? (mergeInProgress ? "合并进行中不能撤销提交" : null) ?? (head?.detached && head.parents.length === 0 ? "分离 HEAD 上的根提交不能撤销" : null);
   const submit = async () => {
     if (commitBlocked) return;
     const outcome = await onCommit(message, amend, keepMessage, amend ? head?.oid ?? null : null);
