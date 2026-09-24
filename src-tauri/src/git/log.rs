@@ -359,7 +359,7 @@ pub fn read_log(git: &Path, worktree: &Path, query: &LogQuery, cursor: Option<&L
     Ok(LogPage { commits, next, tips })
 }
 
-fn diff_tree(git: &Path, worktree: &Path, args: &[&str]) -> Result<Vec<ChangedFile>, GitError> {
+pub(super) fn diff_tree(git: &Path, worktree: &Path, args: &[&str]) -> Result<Vec<ChangedFile>, GitError> {
     let mut all = vec!["diff-tree", "-r", "-z", "--no-commit-id", "--no-ext-diff", "--no-textconv", "--name-status", "-M"];
     all.extend_from_slice(args);
     let raw = run_required(git, worktree, &all)?.stdout;

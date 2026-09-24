@@ -70,7 +70,7 @@ impl GitAdapter {
     /// 在写通道上运行网络命令（带无输出超时）。
     pub(super) fn network_git(&self, args: &[&str], ctx: &OpContext) -> Result<process::CallResult, GitError> {
         let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
-        process::run_with(&self.git, &self.worktree, &args, None, true, &ctx.cancel, &ctx.log, &ctx.processes, Some(ctx.network_idle))
+        process::run_with(&self.git, &self.worktree, &args, None, true, &ctx.cancel, &ctx.log, &ctx.processes, process::RunOptions { idle: Some(ctx.network_idle), literal_pathspecs: true })
     }
 
     /// 网络命令结束后的说明：取消 / 超时 / 失败（附认证提示）。成功时返回 None。
