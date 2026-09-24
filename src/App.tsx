@@ -622,11 +622,13 @@ export default function App() {
   const writeBlocked = writeBlockedReason({ snapshot, verifying: !!runtime?.verifying, running: runningLabel });
   const inProgressNotice = unsupportedInProgress(snapshot);
   const stagedCount = runtime?.snapshot?.scopes?.staged.filter((file) => file.status !== "conflicted").length ?? 0;
-  useEffect(() => { setChecked(new Set()); }, [activeRepoId, scope]);
+  // 切换项目 / 范围时清空批量选择；已为空时保持同一引用，避免多余的重渲染。
+  useEffect(() => { setChecked((current) => (current.size ? new Set() : current)); }, [activeRepoId, scope]);
+  // 丢弃记录只在打开“操作输出”页时读取（丢弃 / 撤销后另行刷新），不在每次切换项目时读取。
   useEffect(() => {
-    if (!activeRepoId) return;
+    if (!activeRepoId || gitTab !== "output") return;
     void discardBackups(activeRepoId).then((backups) => updateOps(activeRepoId, { backups }), () => {});
-  }, [activeRepoId, updateOps]);
+  }, [activeRepoId, gitTab, updateOps]);
 
   const record = (outcome: OperationOutcome): OperationRecord => ({ kind: outcome.kind, status: outcome.status, message: outcome.message, output: outcome.output, outputTruncated: outcome.outputTruncated, at: Date.now() });
 
