@@ -13,7 +13,7 @@ enum Source<'a> {
     Worktree,
 }
 
-fn decode_path(id: &str) -> Result<String, GitError> {
+pub(super) fn decode_path(id: &str) -> Result<String, GitError> {
     let bytes = URL_SAFE_NO_PAD.decode(id).map_err(|_| GitError::UnsafePath)?;
     let relative = String::from_utf8(bytes).map_err(|_| GitError::UnsupportedPathEncoding)?;
     validate_relative(&relative)?;
@@ -203,6 +203,80 @@ impl GitAdapter {
             display_path: change.display_path.clone(),
             left,
             right,
+            stale: false,
+            degradation,
+        })
+    }
+}
+
+fn is_commit_oid(value: &str) -> bool {
+    (value.len() == 40 || value.len() == 64) && value.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// 历史版本（任务 04）：两端都是已固定的提交 OID，按 `ls-tree` 查到的对象 OID 经常驻 cat-file 读取。
+/// 从不读取 index 或工作区，因此历史中的合并提交不会用当前 index 的冲突 stage 冒充（A09）。
+impl GitAdapter {
+    /// commit:path → 对象（mode + OID）。只读 `ls-tree`，路径按字面量匹配；该提交中没有此路径时返回 None。
+    pub fn tree_entry(&self, commit: &str, relative: &str) -> Result<Option<Stage>, GitError> {
+        if !is_commit_oid(commit) {
+            return Err(GitError::CommandFailed(format!("无效的提交 OID：{commit}")));
+        }
+        validate_relative(relative)?;
+        let output = run_required(&self.git, &self.worktree, &["ls-tree", "-z", "--full-tree", commit, "--", relative])?;
+        for record in output.stdout.split(|b| *b == 0).filter(|r| !r.is_empty()) {
+            let Some(tab) = record.iter().position(|b| *b == b'\t') else { continue };
+            if &record[tab + 1..] != relative.as_bytes() {
+                continue;
+            }
+            let meta = String::from_utf8_lossy(&record[..tab]).into_owned();
+            let mut parts = meta.split(' ');
+            if let (Some(mode), Some(_kind), Some(oid)) = (parts.next(), parts.next(), parts.next()) {
+                return Ok(Some(Stage { mode: mode.to_owned(), oid: oid.to_owned() }));
+            }
+        }
+        Ok(None)
+    }
+
+    /// 读取某文件在两个提交中的内容。`left` 为 None 表示空树（根提交相对空树）；
+    /// `old_path_id` 为 rename 时左侧的原路径。
+    pub fn read_revision_pair(
+        &self,
+        request_id: String,
+        left: Option<&str>,
+        right: &str,
+        path_id: &str,
+        old_path_id: Option<&str>,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<ContentPair, GitError> {
+        let relative = decode_path(path_id)?;
+        let old_relative = old_path_id.map(decode_path).transpose()?.unwrap_or_else(|| relative.clone());
+        let mut budget = ImageBudget::default();
+        let left_side = match left {
+            None => self.side_from("emptyTree", &old_relative, Source::Missing, &mut budget),
+            Some(commit) => match self.tree_entry(commit, &old_relative)? {
+                Some(stage) => self.side_from("commit", &old_relative, Source::Object(&stage), &mut budget),
+                None => self.side_from("commit", &old_relative, Source::NotFound, &mut budget),
+            },
+        };
+        if cancelled() {
+            return Err(GitError::StaleRequest);
+        }
+        let right_side = match self.tree_entry(right, &relative)? {
+            Some(stage) => self.side_from("commit", &relative, Source::Object(&stage), &mut budget),
+            None => self.side_from("commit", &relative, Source::NotFound, &mut budget),
+        };
+        if cancelled() {
+            return Err(GitError::StaleRequest);
+        }
+        let degradation = [left_side.details.as_ref(), right_side.details.as_ref()].into_iter().flatten().find_map(|d| d.reason.clone());
+        Ok(ContentPair {
+            request_id,
+            repo_id: self.repo_id.clone(),
+            revision: format!("{}..{right}", left.unwrap_or("empty")),
+            path_id: path_id.to_owned(),
+            display_path: relative,
+            left: left_side,
+            right: right_side,
             stale: false,
             degradation,
         })

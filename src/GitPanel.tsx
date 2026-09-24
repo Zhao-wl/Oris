@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { headCommitInfo, type BackupSummary, type HeadCommitInfo, type OperationKind, type OperationOutcome, type OperationStatus } from "./operations-api";
 import { loadDraft, operationLabels, saveDraft } from "./operations-model";
 import { errorText } from "./error-message";
 
-export type GitTab = "commit" | "output";
+export type GitTab = "log" | "commit" | "output";
 
 export interface RunningOperation { opId: string; kind: OperationKind }
 export interface OperationRecord { kind: OperationKind; status: OperationStatus; message: string; output: string; outputTruncated?: boolean; at: number }
@@ -28,21 +28,25 @@ interface Props {
   onUndoCommit(head: HeadCommitInfo): void;
   onUndoDiscard(backupId: string): void;
   onCancel(): void;
+  /** “日志”页内容（任务 04）：挂载后保持，切换页签时只隐藏，保留已加载的历史与选择。 */
+  logContent?: ReactNode;
 }
 
 const statusText: Record<OperationStatus, string> = { succeeded: "成功", failed: "失败", cancelled: "已取消", needsConfirmation: "等待确认" };
 const statusMark: Record<OperationStatus, string> = { succeeded: "✓", failed: "✗", cancelled: "■", needsConfirmation: "?" };
 
-/** 底部 Git 区（混合发布参考图）：可收起的“提交”与“操作输出”页签。日志与 Stash 页签随 V1 04 / V2-03 加入。 */
+/** 底部 Git 区（混合发布参考图）：可收起的“日志”“提交”与“操作输出”页签。Stash 页签随 V2-03 加入。 */
 export default function GitPanel(props: Props) {
   const { repoId, tab, onTab, stagedCount, running } = props;
   return <section className={`git-panel${tab ? " open" : ""}`} aria-label="Git 区">
     <div className="git-tabs" role="tablist">
+      <button type="button" role="tab" aria-selected={tab === "log"} className={tab === "log" ? "active" : ""} onClick={() => onTab(tab === "log" ? null : "log")}>日志</button>
       <button type="button" role="tab" aria-selected={tab === "commit"} className={tab === "commit" ? "active" : ""} onClick={() => onTab(tab === "commit" ? null : "commit")}>提交 · {stagedCount}</button>
       <button type="button" role="tab" aria-selected={tab === "output"} className={tab === "output" ? "active" : ""} onClick={() => onTab(tab === "output" ? null : "output")}>操作输出{running ? " ⟳" : ""}</button>
       <span className="spacer"/>
       <button type="button" className="git-fold" onClick={() => onTab(tab ? null : "commit")} aria-label={tab ? "收起 Git 区" : "展开 Git 区"}>{tab ? "收起 ↓" : "展开 ↑"}</button>
     </div>
+    {props.logContent}
     {tab === "commit" && repoId && <CommitTab key={repoId} {...props} repoId={repoId}/>}
     {tab === "output" && <OutputTab {...props}/>}
   </section>;

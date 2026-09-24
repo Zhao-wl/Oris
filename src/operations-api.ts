@@ -9,9 +9,10 @@ export type OperationRequest =
   | { kind: "discard"; scope: CompareScope; pathIds: string[]; confirmedUnrecoverable?: boolean }
   | { kind: "undoDiscard"; backupId: string; overwrite?: boolean }
   | { kind: "commit"; message: string; amend?: boolean; keepMessage?: boolean; expectedHead?: string | null }
-  | { kind: "undoCommit"; expectedHead: string };
+  | { kind: "undoCommit"; expectedHead: string }
+  | { kind: "fetch"; remote: string };
 
-export type OperationKind = "stage" | "unstage" | "markResolved" | "discard" | "undoDiscard" | "commit" | "amend" | "undoCommit";
+export type OperationKind = "stage" | "unstage" | "markResolved" | "discard" | "undoDiscard" | "commit" | "amend" | "undoCommit" | "fetch";
 export type OperationStatus = "succeeded" | "failed" | "cancelled" | "needsConfirmation";
 
 export interface Confirmation {

@@ -1,10 +1,10 @@
 # 04 — 提交、分支、版本比较与文件历史
 
-状态：Pending（未开始）。依赖：02、03 验收通过；不因编号同步自动开工。
+状态：**Done（Windows）**（2026-09-24，[结果](../validation/v1-04-results.md)）：A07–A10、B17 只读回归、键盘浏览与渐进加载（计数类）通过，真实远端 AgentHub 的 SSH / HTTPS fetch 通过。**macOS 未验证；性能计时与内存未测**（按用户安排另行测量）。依赖口径按 V2-D33（沿用 V2-D27：02、03 Windows 基础通过 + 代码已提交）。
 
 编号迁移：2026-09-23 从原 03 顺延为 04，原范围保留。
 
-**预制模块已完成（2026-09-23，分支 `wip/v1-04-core`）**：`src-tauri/src/git/log.rs`、`src-tauri/src/git/refs.rs`、`src/history-graph.ts` 及真实临时仓库测试，只新增模块，未接入界面，任务状态仍为 Pending；A07–A10 均未验收。详见文末“预制模块与接入清单”。
+**预制模块已完成（2026-09-23，分支 `wip/v1-04-core`）**：`src-tauri/src/git/log.rs`、`src-tauri/src/git/refs.rs`、`src/history-graph.ts` 及真实临时仓库测试。2026-09-24 已按文末“接入清单”接入界面并完成验收（`feat/v1-04`）。
 
 ## 用户闭环
 
@@ -22,12 +22,12 @@
 
 ## 验收
 
-- [ ] A07：线性、分叉、merge、root、分页边缘拓扑与 refs/OID 一致；搜索/筛选不改变仓库。
-- [ ] A08：ahead/behind 用真实可达性核对；无上游/gone 不显示伪 0；选择分支前后 HEAD/index/工作区不变。
-- [ ] A09：比较方向、ref 固定、历史及 rename 边界；所有入口复用统一 diff 语义。接入任务 03 的静态图片阅读器，验证 commit/OID 双端、根提交和不同父节点；历史 merge 不用当前 index stages 冒充。
-- [ ] A10：本地 bare remote 场景中显式 fetch 更新正确，普通刷新不联网；已有认证环境在双平台分别验证或清晰记未运行。
-- [ ] fetch 失败/取消不承诺回滚元数据；工作区/index 不被本应用改变，不附带 pull/push。
-- [ ] 双平台键盘浏览与大量提交渐进加载可用，进程数/缓存不随条目无界增长。
+- [x] A07：线性、分叉、merge、root、分页边缘拓扑与 refs/OID 一致；搜索/筛选不改变仓库。
+- [x] A08：ahead/behind 用真实可达性核对；无上游/gone 不显示伪 0；选择分支前后 HEAD/index/工作区不变。
+- [x] A09：比较方向、ref 固定、历史及 rename 边界；所有入口复用统一 diff 语义。接入任务 03 的静态图片阅读器，验证 commit/OID 双端、根提交和不同父节点；历史 merge 不用当前 index stages 冒充。
+- [x] A10：本地 bare remote 场景中显式 fetch 更新正确，普通刷新不联网；已有认证环境在双平台分别验证或清晰记未运行。（Windows：AgentHub SSH / HTTPS 通过；macOS 未运行）
+- [x] fetch 失败/取消不承诺回滚元数据；工作区/index 不被本应用改变，不附带 pull/push。
+- [ ] 双平台键盘浏览与大量提交渐进加载可用，进程数/缓存不随条目无界增长。（Windows 计数类断言通过：每页 1 个 log 进程、常驻 Git ≤ 2；macOS 与计时未运行）
 
 ## 交付与排除
 

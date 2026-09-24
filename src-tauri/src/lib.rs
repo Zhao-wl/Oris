@@ -55,6 +55,48 @@ struct OpenRepository {
     /// 每仓库独立的读取代次：新的（非预取）读取使同仓库的旧读取失效，不影响其他仓库。
     generation: Arc<AtomicU64>,
     slots: Arc<ReadSlots>,
+    /// 历史类读取（任务 04）按种类各自的代次：同种类的新请求使旧请求过期，不影响本地变化的读取。
+    history: Arc<[AtomicU64; HISTORY_KINDS]>,
+}
+
+#[cfg(feature = "desktop")]
+const HISTORY_KINDS: usize = 6;
+
+/// 历史类只读请求的种类（各自独立的代次）。
+#[cfg(feature = "desktop")]
+#[derive(Clone, Copy)]
+enum HistoryKind {
+    Log = 0,
+    Commit = 1,
+    Compare = 2,
+    FileHistory = 3,
+    Refs = 4,
+    Content = 5,
+}
+
+/// 在后台线程执行一个历史类读取；`fresh` 为 true 时使同种类的旧请求过期（分页续读传 false，沿用当前代次）。
+#[cfg(feature = "desktop")]
+async fn history_call<T: Send + 'static>(
+    opened: OpenRepository,
+    kind: HistoryKind,
+    fresh: bool,
+    work: impl FnOnce(&GitAdapter, &dyn Fn() -> bool) -> Result<T, GitError> + Send + 'static,
+) -> Result<T, GitError> {
+    let index = kind as usize;
+    let generation = if fresh { opened.history[index].fetch_add(1, Ordering::SeqCst) + 1 } else { opened.history[index].load(Ordering::SeqCst) };
+    tauri::async_runtime::spawn_blocking(move || {
+        let stale = || opened.history[index].load(Ordering::SeqCst) != generation;
+        if stale() {
+            return Err(GitError::StaleRequest);
+        }
+        let result = work(&opened.adapter, &stale)?;
+        if stale() {
+            return Err(GitError::StaleRequest);
+        }
+        Ok(result)
+    })
+    .await
+    .map_err(|error| GitError::Runtime(error.to_string()))?
 }
 
 #[cfg(feature = "desktop")]
@@ -148,7 +190,7 @@ async fn open_repository(
         }
         repositories.insert(
             repo_id.clone(),
-            OpenRepository { adapter: adapter.clone(), generation: Arc::default(), slots: Arc::default() },
+            OpenRepository { adapter: adapter.clone(), generation: Arc::default(), slots: Arc::default(), history: Arc::default() },
         );
     }
     watchers.0.lock().map_err(|_| GitError::Registry)?.remove(&repo_id);
@@ -378,6 +420,71 @@ fn last_operation(repo_id: String, runner: State<'_, ops::Runner>) -> Option<ops
     runner.last(&repo_id)
 }
 
+/// 提交历史的一页（R-HISTORY）：第一页按查询固定起点 OID，续读传回上一页的游标。
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn read_log(repo_id: String, query: git::log::LogQuery, cursor: Option<git::log::LogCursor>, registry: State<'_, RepositoryRegistry>) -> Result<git::log::LogPage, GitError> {
+    let opened = opened(&registry, &repo_id)?;
+    let fresh = cursor.is_none();
+    history_call(opened, HistoryKind::Log, fresh, move |adapter, _| adapter.history_log(&query, cursor.as_ref())).await
+}
+
+/// 某个提交相对所选父节点（默认第一个；根提交相对空树）的变化文件。
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn commit_changes(repo_id: String, commit: String, parent: Option<String>, registry: State<'_, RepositoryRegistry>) -> Result<git::log::CommitChanges, GitError> {
+    let opened = opened(&registry, &repo_id)?;
+    history_call(opened, HistoryKind::Commit, true, move |adapter, _| adapter.history_commit(&commit, parent.as_deref())).await
+}
+
+/// 两个端点直接比较（非共同基线），端点解析为 OID 后固定。
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn compare_revisions(repo_id: String, left: String, right: String, registry: State<'_, RepositoryRegistry>) -> Result<git::log::Comparison, GitError> {
+    let opened = opened(&registry, &repo_id)?;
+    history_call(opened, HistoryKind::Compare, true, move |adapter, _| adapter.history_compare(&left, &right)).await
+}
+
+/// 单文件历史（`--follow`），标注 rename 跟随边界。
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn file_history(repo_id: String, start: String, path_id: String, page_size: usize, cursor: Option<git::log::LogCursor>, registry: State<'_, RepositoryRegistry>) -> Result<git::log::FileHistory, GitError> {
+    let opened = opened(&registry, &repo_id)?;
+    let fresh = cursor.is_none();
+    history_call(opened, HistoryKind::FileHistory, fresh, move |adapter, _| adapter.history_file(&start, &path_id, page_size, cursor.as_ref())).await
+}
+
+/// 本地 / 远端跟踪分支、上游状态、remote 列表与默认获取目标（R-BRANCH）。
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn read_refs(repo_id: String, registry: State<'_, RepositoryRegistry>) -> Result<git::history::RefsView, GitError> {
+    let opened = opened(&registry, &repo_id)?;
+    history_call(opened, HistoryKind::Refs, true, move |adapter, _| adapter.history_refs()).await
+}
+
+/// 历史版本的两端内容：`left` 为 None 表示空树；两端都是已固定的提交 OID（不读取 index 或工作区）。
+#[cfg(feature = "desktop")]
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn read_revision_pair(
+    repo_id: String,
+    left: Option<String>,
+    right: String,
+    path_id: String,
+    old_path_id: Option<String>,
+    request_id: String,
+    registry: State<'_, RepositoryRegistry>,
+) -> Result<tauri::ipc::Response, GitError> {
+    let opened = opened(&registry, &repo_id)?;
+    let slots = opened.slots.clone();
+    history_call(opened, HistoryKind::Content, true, move |adapter, stale| {
+        let _slot = slots.acquire();
+        let pair = adapter.read_revision_pair(request_id, left.as_deref(), &right, &path_id, old_path_id.as_deref(), stale)?;
+        Ok(tauri::ipc::Response::new(pair.encode_frame()))
+    })
+    .await
+}
+
 /// 丢弃确认框的数据（只读）。
 #[cfg(feature = "desktop")]
 #[tauri::command]
@@ -495,7 +602,13 @@ pub fn run() {
             last_operation,
             prepare_discard,
             discard_backups,
-            head_commit_info
+            head_commit_info,
+            read_log,
+            commit_changes,
+            compare_revisions,
+            file_history,
+            read_refs,
+            read_revision_pair
         ])
         .run(application_context())
         .expect("failed to run Oris");
