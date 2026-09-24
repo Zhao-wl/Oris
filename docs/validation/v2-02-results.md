@@ -2,17 +2,17 @@
 
 日期：2026-09-24。任务：[V2-02](../tasks/v2/02-stage-commit.md)。依据：[V2 产品规格](../specs/v2-product.md) R-STAGE、R-DISCARD、R-COMMIT、R-OPSAFE，[V2 技术方案](../architecture/v2-architecture.md) §3、§4、§6，[V2 验收计划](v2-acceptance.md) B05–B08、B16、B17 与 §3，界面参考 [一二期混合发布参考图](../design/04-mixed-release-ui-reference.md)（`oris-mixed-release.html`）。
 
-结论：**功能验收通过（Windows）；性能复测暂缓**。B05–B08、B16、B17 的后端测试与 CDP 界面验收全部通过，每个写操作都有操作前后的仓库状态对比。stage / unstage 与 commit 的时延实测在预算内，但测量期间机器上有其他任务（多个 `testhost` 进程，约占 5 个核心）并行运行，V2-01 预算的 A/B 复测结果受干扰、不能据此下“没有退步”的结论；用户决定性能测试计划暂缓、另行安排（2026-09-24）。因此本任务未合入 main，只推送分支 `feat/v2-02`。未验证：macOS 全部；真实鼠标、键盘与 Windows 前后台焦点（所有界面证据为 CDP 页面事件）。
+结论：**功能验收通过（Windows）；性能复测暂缓**。B05–B08、B16、B17 的后端测试与 CDP 界面验收全部通过，每个写操作都有操作前后的仓库状态对比。stage / unstage 与 commit 的时延实测在预算内，但测量期间机器上有其他任务（多个 `testhost` 进程，约占 5 个核心）并行运行，V2-01 预算的 A/B 复测结果受干扰、不能据此下“没有退步”的结论；用户决定性能测试计划暂缓、另行安排，并决定先合入 main（2026-09-24）。未验证：macOS 全部；真实鼠标、键盘与 Windows 前后台焦点（所有界面证据为 CDP 页面事件）。
 
 ## 版本
 
 | 项目 | 值 |
 | --- | --- |
 | 分支 | `feat/v2-02`（自 main `27c7725`） |
-| 功能验收构建 | `D:\Projects\Research\Oris-builds\v2-02\target\release\oris.exe`，SHA-256 `5BF9EB82ABD356728F4FE7CF3019FFB4393D78CBD3C0426E42C0EDC73EBD6DBA`（`scripts/build-release.ps1`，PowerShell，`verify_release_entry` 通过） |
+| 功能验收构建 | `D:\Projects\Research\Oris-builds\v2-02\target\release\oris.exe`，SHA-256 `F07DA8E1FC94DB2B7B3DC1F6BC772153FCFB120EFE36C0484B06B0C12AF55C32`（`scripts/build-release.ps1`，PowerShell，`verify_release_entry` 通过） |
 | main 对照构建 | `Oris-builds/v2-06-main`（`EF7C2E92B357…`，与当前 main 代码一致，main 其后只改了文档） |
 | 平台 | Windows 11 Pro 10.0.22631、Git 2.44.0.windows.1（系统配置 `core.autocrlf=true`、`core.editor=devenv.exe`） |
-| 测试 | 后端 90 通过、5 忽略（基线 67 / 5）；前端 147（基线 130，含配色生成器 5 项、静态颜色检查 2 项）；`tsc -b` 通过；desktop `cargo check` 无告警 |
+| 测试 | 后端 90 通过、5 忽略（基线 67 / 5）；前端 149（基线 130，含配色生成器 5 项、静态颜色检查 2 项）；`tsc -b` 通过；desktop `cargo check` 无告警 |
 | 新增依赖 | 无（Job Object 用手写的 kernel32 FFI） |
 
 ## 实现摘要
@@ -27,7 +27,7 @@
 
 ## 验收逐项
 
-后端测试：`src-tauri/src/git/ops/tests.rs`（每个用例比较操作前后的 index / HEAD 与 refs / config / 工作区指纹）。界面验收：`scripts/perf/v2-02-acceptance.mjs --only functional`，36/36 通过，21 次写操作逐次记录仓库指纹（`artifacts/gui-probe/v2-02-acceptance/report.json` 的 `operations`，全部只在预期类别内变化）。
+后端测试：`src-tauri/src/git/ops/tests.rs`（每个用例比较操作前后的 index / HEAD 与 refs / config / 工作区指纹）。界面验收：`scripts/perf/v2-02-acceptance.mjs --only functional`，38/38 通过，21 次写操作逐次记录仓库指纹（`artifacts/gui-probe/v2-02-acceptance/report.json` 的 `operations`，全部只在预期类别内变化）。
 
 | 验收 | 结果 | 证据 |
 | --- | --- | --- |
