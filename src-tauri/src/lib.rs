@@ -1,32 +1,60 @@
 mod git;
+mod snapshot_store;
+#[cfg(any(test, feature = "desktop"))]
+mod watch;
+
 #[cfg(feature = "desktop")]
-#[derive(Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RepositoryInvalidation<'a> {
-    repo_id: &'a str,
-    paths: Vec<String>,
-    global: bool,
+use git::{CompareScope, ConflictVersion, GitAdapter, GitError, RepositoryDetails, RepositorySnapshot};
+#[cfg(feature = "desktop")]
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
+};
+#[cfg(feature = "desktop")]
+use tauri::{Emitter, Manager, State};
+
+/// 每仓库的工作区读取并发上限（技术方案 §5.2）。
+#[cfg(any(test, feature = "desktop"))]
+const WORKTREE_READ_CONCURRENCY: usize = 2;
+
+/// 简单计数信号量：限制同一仓库同时进行的内容读取数。
+#[cfg(any(test, feature = "desktop"))]
+#[derive(Default)]
+struct ReadSlots {
+    used: std::sync::Mutex<usize>,
+    freed: std::sync::Condvar,
 }
-
-#[cfg(feature = "desktop")]
-static READ_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-#[cfg(feature = "desktop")]
-static READ_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-#[cfg(feature = "desktop")]
-use git::{CompareScope, ConflictVersion, ContentPair, GitAdapter, GitError, RepositorySnapshot};
-#[cfg(feature = "desktop")]
-use notify::{RecommendedWatcher, RecursiveMode, Watcher};
-#[cfg(feature = "desktop")]
-use std::{collections::HashMap, sync::Mutex};
-#[cfg(feature = "desktop")]
-use tauri::{Emitter, State};
+#[cfg(any(test, feature = "desktop"))]
+impl ReadSlots {
+    fn acquire(&self) -> SlotGuard<'_> {
+        let mut used = self.used.lock().unwrap_or_else(|p| p.into_inner());
+        while *used >= WORKTREE_READ_CONCURRENCY {
+            used = self.freed.wait(used).unwrap_or_else(|p| p.into_inner());
+        }
+        *used += 1;
+        SlotGuard(self)
+    }
+}
+#[cfg(any(test, feature = "desktop"))]
+struct SlotGuard<'a>(&'a ReadSlots);
+#[cfg(any(test, feature = "desktop"))]
+impl Drop for SlotGuard<'_> {
+    fn drop(&mut self) {
+        *self.0.used.lock().unwrap_or_else(|p| p.into_inner()) -= 1;
+        self.0.freed.notify_one();
+    }
+}
 
 #[cfg(feature = "desktop")]
 #[derive(Clone)]
 struct OpenRepository {
     adapter: GitAdapter,
-    revisions: HashMap<CompareScope, String>,
+    /// 每仓库独立的读取代次：新的（非预取）读取使同仓库的旧读取失效，不影响其他仓库。
+    generation: Arc<AtomicU64>,
+    slots: Arc<ReadSlots>,
 }
 
 #[cfg(feature = "desktop")]
@@ -35,7 +63,46 @@ struct RepositoryRegistry(Mutex<HashMap<String, OpenRepository>>);
 
 #[cfg(feature = "desktop")]
 #[derive(Default)]
-struct WatcherRegistry(Mutex<HashMap<String, RecommendedWatcher>>);
+struct WatcherRegistry(Mutex<watch::WatchLru>);
+
+#[cfg(feature = "desktop")]
+struct Snapshots(snapshot_store::SnapshotStore);
+
+#[cfg(feature = "desktop")]
+fn start_watcher(app: &tauri::AppHandle, adapter: &GitAdapter) -> Result<watch::RepoWatcher, GitError> {
+    let (git_dir, common_dir) = adapter.git_dirs();
+    let emitter = app.clone();
+    watch::watch(
+        watch::WatchTarget {
+            repo_id: adapter.repo_id().to_owned(),
+            worktree: adapter.worktree().to_path_buf(),
+            git_dir,
+            common_dir,
+            tracked_ignored: {
+                let adapter = adapter.clone();
+                Box::new(move || adapter.tracked_ignored_paths())
+            },
+        },
+        watch::DEBOUNCE,
+        move |change| {
+            let _ = emitter.emit("repository-invalidated", change);
+        },
+    )
+    .map_err(GitError::Runtime)
+}
+
+/// 确保项目有 watcher（LRU 最多 5 个）；返回调用前 watcher 是否仍在。
+#[cfg(feature = "desktop")]
+fn ensure_watcher(app: &tauri::AppHandle, watchers: &WatcherRegistry, adapter: &GitAdapter) -> Result<bool, GitError> {
+    let mut lru = watchers.0.lock().map_err(|_| GitError::Registry)?;
+    if lru.touch(adapter.repo_id()) {
+        return Ok(true);
+    }
+    drop(lru);
+    let watcher = start_watcher(app, adapter)?;
+    watchers.0.lock().map_err(|_| GitError::Registry)?.insert(adapter.repo_id(), watcher);
+    Ok(false)
+}
 
 #[cfg(feature = "desktop")]
 #[tauri::command]
@@ -50,90 +117,37 @@ async fn open_repository(
 ) -> Result<RepositorySnapshot, GitError> {
     let (adapter, snapshot) = tauri::async_runtime::spawn_blocking(move || {
         let adapter = GitAdapter::open(path, git_executable)?;
-        let snapshot = adapter.snapshot_for_scope(request_id, scope)?;
+        let snapshot = adapter.snapshot_v2(request_id, scope, false)?;
         Ok::<_, GitError>((adapter, snapshot))
     })
     .await
     .map_err(|error| GitError::Runtime(error.to_string()))??;
     let repo_id = snapshot.repo.repo_id.clone();
-    let watch_paths = adapter.watch_paths();
-    let event_repo_id = repo_id.clone();
-    let event_app = app.clone();
-    let filter = adapter.change_filter();
-    let event_root = std::path::PathBuf::from(&snapshot.repo.worktree_path);
-    let event_git_dirs = vec![
-        std::path::PathBuf::from(&snapshot.repo.git_dir),
-        std::path::PathBuf::from(&snapshot.repo.common_dir),
-    ];
-    let (sender, receiver) = std::sync::mpsc::channel::<Vec<std::path::PathBuf>>();
-    // Batch events and drop ignored/noise paths so editors that rewrite ignored
-    // caches (Unity Library/Temp) do not keep invalidating the displayed content.
-    // The thread ends when the watcher (and its sender) is dropped.
-    std::thread::spawn(move || {
-        while let Ok(mut paths) = receiver.recv() {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
-            let mut closed = false;
-            while let Some(wait) = deadline.checked_duration_since(std::time::Instant::now()) {
-                match receiver.recv_timeout(wait) {
-                    Ok(more) => paths.extend(more),
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                        closed = true;
-                        break;
-                    }
-                }
-            }
-            if closed {
-                break;
-            }
-            if filter.relevant(&paths) {
-                let global = paths.iter().any(|p| {
-                    p.as_os_str().is_empty()
-                        || event_git_dirs.iter().any(|d| p.starts_with(d))
-                        || !p.starts_with(&event_root)
-                });
-                let relative = paths
-                    .iter()
-                    .filter_map(|p| p.strip_prefix(&event_root).ok())
-                    .map(|p| p.to_string_lossy().replace('\\', "/"))
-                    .collect::<Vec<_>>();
-                let _ = event_app.emit(
-                    "repository-invalidated",
-                    RepositoryInvalidation {
-                        repo_id: &event_repo_id,
-                        paths: relative,
-                        global,
-                    },
-                );
-            }
+    {
+        let mut repositories = registry.0.lock().map_err(|_| GitError::Registry)?;
+        if let Some(previous) = repositories.remove(&repo_id) {
+            previous.adapter.close();
+            previous.generation.fetch_add(1, Ordering::SeqCst);
         }
-    });
-    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-        if let Some(paths) = invalidating_paths(event) {
-            let _ = sender.send(paths);
-        }
-    })
-    .map_err(|error| GitError::Runtime(format!("无法启动文件监听：{error}")))?;
-    for watch_path in watch_paths {
-        watcher
-            .watch(&watch_path, RecursiveMode::Recursive)
-            .map_err(|error| {
-                GitError::Runtime(format!("无法监听 {}：{error}", watch_path.display()))
-            })?;
+        repositories.insert(
+            repo_id.clone(),
+            OpenRepository { adapter: adapter.clone(), generation: Arc::default(), slots: Arc::default() },
+        );
     }
-    registry.0.lock().map_err(|_| GitError::Registry)?.insert(
-        repo_id.clone(),
-        OpenRepository {
-            adapter,
-            revisions: HashMap::from([(scope, snapshot.revision.clone())]),
-        },
-    );
-    watchers
+    watchers.0.lock().map_err(|_| GitError::Registry)?.remove(&repo_id);
+    ensure_watcher(&app, &watchers, &adapter)?;
+    Ok(snapshot)
+}
+
+#[cfg(feature = "desktop")]
+fn opened(registry: &RepositoryRegistry, repo_id: &str) -> Result<OpenRepository, GitError> {
+    registry
         .0
         .lock()
         .map_err(|_| GitError::Registry)?
-        .insert(repo_id, watcher);
-    Ok(snapshot)
+        .get(repo_id)
+        .cloned()
+        .ok_or(GitError::UnknownRepository)
 }
 
 #[cfg(feature = "desktop")]
@@ -142,28 +156,47 @@ async fn refresh_repository(
     repo_id: String,
     scope: CompareScope,
     request_id: String,
+    manual: Option<bool>,
     registry: State<'_, RepositoryRegistry>,
+    watchers: State<'_, WatcherRegistry>,
 ) -> Result<RepositorySnapshot, GitError> {
-    let adapter = registry
-        .0
-        .lock()
-        .map_err(|_| GitError::Registry)?
-        .get(&repo_id)
-        .map(|opened| opened.adapter.clone())
-        .ok_or(GitError::UnknownRepository)?;
-    let snapshot =
-        tauri::async_runtime::spawn_blocking(move || adapter.snapshot_for_scope(request_id, scope))
-            .await
-            .map_err(|error| GitError::Runtime(error.to_string()))??;
-    if let Some(opened) = registry
-        .0
-        .lock()
-        .map_err(|_| GitError::Registry)?
-        .get_mut(&repo_id)
-    {
-        opened.revisions.insert(scope, snapshot.revision.clone());
+    let opened = opened(&registry, &repo_id)?;
+    let manual = manual.unwrap_or(false);
+    if manual {
+        // 手动刷新允许 status 回写 index stat 缓存（V2-D09）；由此产生的 index 事件在短窗口内跳过。
+        if let Some(watcher) = watchers.0.lock().map_err(|_| GitError::Registry)?.get(&repo_id) {
+            watcher.suppression.index_for(std::time::Duration::from_millis(2500));
+        }
     }
-    Ok(snapshot)
+    tauri::async_runtime::spawn_blocking(move || opened.adapter.snapshot_v2(request_id, scope, manual))
+        .await
+        .map_err(|error| GitError::Runtime(error.to_string()))?
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn repository_details(
+    repo_id: String,
+    revision: String,
+    registry: State<'_, RepositoryRegistry>,
+) -> Result<RepositoryDetails, GitError> {
+    let opened = opened(&registry, &repo_id)?;
+    tauri::async_runtime::spawn_blocking(move || opened.adapter.details(&revision))
+        .await
+        .map_err(|error| GitError::Runtime(error.to_string()))?
+}
+
+/// 切到前台的项目：刷新 watcher 的 LRU 顺序；watcher 已被淘汰时重建并返回 false（前端需完整刷新）。
+#[cfg(feature = "desktop")]
+#[tauri::command]
+fn activate_repository(
+    repo_id: String,
+    registry: State<'_, RepositoryRegistry>,
+    watchers: State<'_, WatcherRegistry>,
+    app: tauri::AppHandle,
+) -> Result<bool, GitError> {
+    let opened = opened(&registry, &repo_id)?;
+    ensure_watcher(&app, &watchers, &opened.adapter)
 }
 
 #[cfg(feature = "desktop")]
@@ -173,21 +206,17 @@ fn close_repository(
     registry: State<'_, RepositoryRegistry>,
     watchers: State<'_, WatcherRegistry>,
 ) -> Result<(), GitError> {
-    registry
-        .0
-        .lock()
-        .map_err(|_| GitError::Registry)?
-        .remove(&repo_id);
-    watchers
-        .0
-        .lock()
-        .map_err(|_| GitError::Registry)?
-        .remove(&repo_id);
+    if let Some(opened) = registry.0.lock().map_err(|_| GitError::Registry)?.remove(&repo_id) {
+        opened.generation.fetch_add(1, Ordering::SeqCst);
+        opened.adapter.close();
+    }
+    watchers.0.lock().map_err(|_| GitError::Registry)?.remove(&repo_id);
     Ok(())
 }
 
 #[cfg(feature = "desktop")]
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn read_content_pair(
     repo_id: String,
     scope: CompareScope,
@@ -196,40 +225,38 @@ async fn read_content_pair(
     git_executable: Option<String>,
     request_id: String,
     versions: Option<[ConflictVersion; 2]>,
+    prefetch: Option<bool>,
     registry: State<'_, RepositoryRegistry>,
-) -> Result<ContentPair, GitError> {
-    let generation = READ_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-    let opened = registry
-        .0
-        .lock()
-        .map_err(|_| GitError::Registry)?
-        .get(&repo_id)
-        .cloned()
-        .ok_or(GitError::UnknownRepository)?;
-    // The adapter validates a bounded retained snapshot and the selected endpoints.
-    // A newer unrelated list refresh must not invalidate an in-flight read.
+) -> Result<tauri::ipc::Response, GitError> {
+    let opened = opened(&registry, &repo_id)?;
     if let Some(requested) = git_executable {
         if requested != opened.adapter.git_executable_display() {
             return Err(GitError::GitChanged);
         }
     }
+    let prefetch = prefetch.unwrap_or(false);
+    // 预取不使正在进行的读取失效；用户选择的新读取会让同仓库的旧读取与预取停止。
+    let generation = if prefetch {
+        opened.generation.load(Ordering::SeqCst)
+    } else {
+        opened.generation.fetch_add(1, Ordering::SeqCst) + 1
+    };
     tauri::async_runtime::spawn_blocking(move || {
-        let _serial = READ_SERIAL.lock().map_err(|_| GitError::Registry)?;
-        if READ_GENERATION.load(std::sync::atomic::Ordering::SeqCst) != generation {
+        let _slot = opened.slots.acquire();
+        let current = || opened.generation.load(Ordering::SeqCst) != generation;
+        if current() {
             return Err(GitError::StaleRequest);
         }
-        let result = opened.adapter.read_content_pair_cancellable(
-            request_id,
-            scope,
-            revision,
-            path_id,
-            versions,
-            || READ_GENERATION.load(std::sync::atomic::Ordering::SeqCst) != generation,
-        );
-        if READ_GENERATION.load(std::sync::atomic::Ordering::SeqCst) != generation {
+        if prefetch && !opened.adapter.prefetch_allowed(scope, &revision, &path_id, git::PREFETCH_LIMIT)? {
+            return Err(GitError::Skipped("超过预取上限或不是文本".into()));
+        }
+        let pair = opened
+            .adapter
+            .read_content_pair_cancellable(request_id, scope, revision, path_id, versions, current)?;
+        if current() {
             return Err(GitError::StaleRequest);
         }
-        result
+        Ok(tauri::ipc::Response::new(pair.encode_frame()))
     })
     .await
     .map_err(|error| GitError::Runtime(error.to_string()))?
@@ -237,8 +264,75 @@ async fn read_content_pair(
 
 #[cfg(feature = "desktop")]
 #[tauri::command]
-fn cancel_content_read() {
-    READ_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+fn cancel_content_read(repo_id: Option<String>, registry: State<'_, RepositoryRegistry>) -> Result<(), GitError> {
+    let repositories = registry.0.lock().map_err(|_| GitError::Registry)?;
+    for (id, opened) in repositories.iter() {
+        if repo_id.as_deref().is_none_or(|wanted| wanted == id) {
+            opened.generation.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn validate_git(executable: Option<String>) -> Result<git::GitValidation, GitError> {
+    tauri::async_runtime::spawn_blocking(move || git::validate_git(executable))
+        .await
+        .map_err(|error| GitError::Runtime(error.to_string()))
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+fn save_snapshot(worktree_path: String, json: String, store: State<'_, Snapshots>) -> Result<bool, GitError> {
+    store
+        .0
+        .save(&worktree_path, json.as_bytes())
+        .map(|outcome| outcome == snapshot_store::SaveOutcome::Saved)
+        .map_err(|error| GitError::Io(error.to_string()))
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+fn load_snapshot(worktree_path: String, store: State<'_, Snapshots>) -> Option<String> {
+    store.0.load(&worktree_path).and_then(|bytes| String::from_utf8(bytes).ok())
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+fn remove_snapshot(worktree_path: String, store: State<'_, Snapshots>) {
+    store.0.remove(&worktree_path);
+}
+
+/// WebView2 内存目标级别（技术方案 §7 / V2-D28）：窗口失焦或最小化时设为 Low，WebView2 主动回收缓存；
+/// 获得焦点时恢复 Normal。`ORIS_WEBVIEW_MEMORY_TARGET=low|normal` 只用于测量时固定级别。
+#[cfg(all(feature = "desktop", windows))]
+mod webview_memory {
+    use tauri::Manager;
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2_19, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
+    };
+    use windows_core::Interface;
+
+    pub fn forced() -> Option<bool> {
+        match std::env::var("ORIS_WEBVIEW_MEMORY_TARGET").ok()?.as_str() {
+            "low" => Some(true),
+            "normal" => Some(false),
+            _ => None,
+        }
+    }
+
+    pub fn apply<R: tauri::Runtime>(app: &tauri::AppHandle<R>, label: &str, low: bool) {
+        let Some(window) = app.get_webview_window(label) else { return };
+        let _ = window.with_webview(move |webview| unsafe {
+            let Ok(core) = webview.controller().CoreWebView2() else { return };
+            // 旧版 WebView2 Runtime 不支持该接口时静默跳过。
+            if let Ok(core) = core.cast::<ICoreWebView2_19>() {
+                let level = if low { COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW } else { COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL };
+                let _ = core.SetMemoryUsageTargetLevel(level);
+            }
+        });
+    }
 }
 
 #[cfg(feature = "desktop")]
@@ -252,101 +346,73 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(RepositoryRegistry::default())
         .manage(WatcherRegistry::default())
+        .setup(|app| {
+            // ORIS_APP_CACHE_DIR 仅供隔离测试实例使用；未设置时用系统应用缓存目录。
+            let base = std::env::var_os("ORIS_APP_CACHE_DIR")
+                .map(std::path::PathBuf::from)
+                .or_else(|| app.path().app_cache_dir().ok())
+                .unwrap_or_else(std::env::temp_dir);
+            app.manage(Snapshots(snapshot_store::SnapshotStore::new(base.join("snapshots"))));
+            #[cfg(windows)]
+            if let Some(low) = webview_memory::forced() {
+                webview_memory::apply(app.handle(), "main", low);
+            }
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            #[cfg(windows)]
+            if webview_memory::forced().is_none() {
+                use tauri::Manager;
+                if let tauri::WindowEvent::Focused(focused) = event {
+                    webview_memory::apply(window.app_handle(), window.label(), !*focused);
+                }
+            }
+            #[cfg(not(windows))]
+            let _ = (window, event);
+        })
         .invoke_handler(tauri::generate_handler![
             open_repository,
             refresh_repository,
+            repository_details,
+            activate_repository,
             close_repository,
             read_content_pair,
-            cancel_content_read
+            cancel_content_read,
+            save_snapshot,
+            load_snapshot,
+            remove_snapshot,
+            validate_git
         ])
         .run(application_context())
         .expect("failed to run Oris");
 }
 
-#[cfg(any(test, feature = "desktop"))]
-fn invalidating_paths(event: notify::Result<notify::Event>) -> Option<Vec<std::path::PathBuf>> {
-    match event {
-        Ok(event)
-            if !event.need_rescan()
-                && matches!(
-                    event.kind,
-                    notify::EventKind::Access(_)
-                        | notify::EventKind::Modify(notify::event::ModifyKind::Metadata(
-                            notify::event::MetadataKind::AccessTime
-                        ))
-                ) =>
-        {
-            None
-        }
-        Ok(event) if !event.need_rescan() && !event.paths.is_empty() => Some(event.paths),
-        _ => Some(vec![std::path::PathBuf::new()]),
-    }
-}
-
 #[cfg(test)]
-mod watcher_tests {
+mod slot_tests {
     use super::*;
-    use notify::{RecursiveMode, Watcher};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
     #[test]
-    fn access_is_noise_but_overflow_remains_dirty() {
-        let access = notify::Event::new(notify::EventKind::Access(notify::event::AccessKind::Read));
-        assert!(invalidating_paths(Ok(access.clone())).is_none());
-        assert!(invalidating_paths(Ok(access.set_flag(notify::event::Flag::Rescan))).is_some());
-        let atime = notify::Event::new(notify::EventKind::Modify(
-            notify::event::ModifyKind::Metadata(notify::event::MetadataKind::AccessTime),
-        ));
-        assert!(invalidating_paths(Ok(atime)).is_none());
-    }
-    #[test]
-    fn native_filesystem_watch_reads_do_not_dirty_but_writes_do() {
-        use std::{
-            fs,
-            time::{Duration, Instant},
-        };
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("selected.json");
-        fs::write(&file, b"{\"a\":1}").unwrap();
-        let (sender, receiver) = std::sync::mpsc::channel();
-        let mut watcher = notify::recommended_watcher(move |event| {
-            let _ = sender.send(event);
-        })
-        .unwrap();
-        watcher.watch(dir.path(), RecursiveMode::Recursive).unwrap();
-        for _ in 0..20 {
-            let _ = fs::metadata(&file).unwrap();
-            let _ = fs::read(&file).unwrap();
-        }
-        let mut read_events = 0;
-        let mut read_invalidations = 0;
-        let until = Instant::now() + Duration::from_millis(500);
-        while let Some(wait) = until.checked_duration_since(Instant::now()) {
-            match receiver.recv_timeout(wait) {
-                Ok(event) => {
-                    read_events += 1;
-                    if invalidating_paths(event).is_some() {
-                        read_invalidations += 1;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-        fs::write(&file, b"{\"a\":222}").unwrap();
-        let until = Instant::now() + Duration::from_secs(3);
-        let mut write_invalidations = 0;
-        while let Some(wait) = until.checked_duration_since(Instant::now()) {
-            match receiver.recv_timeout(wait) {
-                Ok(event) => {
-                    if invalidating_paths(event).is_some() {
-                        write_invalidations += 1;
-                        break;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-        drop(watcher);
-        println!("FILESYSTEM_WATCH read_events={read_events} read_invalidations={read_invalidations} write_invalidations={write_invalidations}");
-        assert_eq!(read_invalidations, 0);
-        assert!(write_invalidations > 0);
+    fn at_most_two_reads_run_concurrently_per_repository() {
+        let slots = Arc::new(ReadSlots::default());
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let (slots, active, peak) = (slots.clone(), active.clone(), peak.clone());
+                std::thread::spawn(move || {
+                    let _slot = slots.acquire();
+                    let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(now, Ordering::SeqCst);
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    active.fetch_sub(1, Ordering::SeqCst);
+                })
+            })
+            .collect();
+        threads.into_iter().for_each(|t| t.join().unwrap());
+        assert_eq!(peak.load(Ordering::SeqCst), WORKTREE_READ_CONCURRENCY);
     }
 }

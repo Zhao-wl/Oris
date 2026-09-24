@@ -11,8 +11,8 @@ function useImageUrl(payload: ImagePayload | null | undefined) {
   const [url, setUrl] = useState<string>();
   useEffect(() => {
     if (!payload) { setUrl(undefined); return; }
-    const bytes = Uint8Array.from(atob(payload.base64), char => char.charCodeAt(0));
-    const next = URL.createObjectURL(new Blob([bytes], { type: payload.mime }));
+    const bytes = payload.bytes ?? Uint8Array.from(atob(payload.base64), char => char.charCodeAt(0));
+    const next = URL.createObjectURL(new Blob([bytes as BlobPart], { type: payload.mime }));
     setUrl(next);
     return () => URL.revokeObjectURL(next);
   }, [payload]);

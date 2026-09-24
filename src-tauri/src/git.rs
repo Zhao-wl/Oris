@@ -1,9 +1,16 @@
+mod content;
 pub mod log;
 mod media;
 mod read_guard;
 pub mod refs;
-#[allow(dead_code)] mod status_v2;
-#[allow(dead_code)] mod object_reader;
+mod scan;
+#[allow(dead_code)]
+mod status_v2;
+#[allow(dead_code)]
+pub mod object_reader;
+pub use content::PREFETCH_LIMIT;
+#[cfg(feature = "desktop")]
+pub use scan::RepositoryDetails;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -52,6 +59,9 @@ pub enum GitError {
     Runtime(String),
     #[error("文件读取失败：{0}")]
     Io(String),
+    #[error("预取已跳过：{0}")]
+    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+    Skipped(String),
 }
 
 // Tauri must receive the Display reason for unit/struct variants too, not only tuple payloads.
@@ -75,6 +85,7 @@ impl Serialize for GitError {
             #[cfg(feature = "desktop")]
             Self::Runtime(_) => "runtime",
             Self::Io(_) => "io",
+            Self::Skipped(_) => "skipped",
         };
         let mut value = serializer.serialize_struct("GitError", 2)?;
         value.serialize_field("kind", kind)?;
@@ -161,6 +172,12 @@ pub struct RepositorySnapshot {
     files: Vec<FileChange>,
     git: GitInfo,
     scanned_at: u64,
+    /// V2：一次 status 得到的三个范围；前端据此切换范围，不再启动 Git 进程。
+    scopes: Option<scan::ScopeLists>,
+    /// 增删统计与“全部”范围修正是否已合并；为 false 时统计显示占位而不是 0。
+    stats_ready: bool,
+    branch_info: Option<scan::BranchSummary>,
+    in_progress: Option<scan::InProgressSummary>,
 }
 
 #[derive(Debug, Serialize)]
@@ -211,83 +228,19 @@ pub struct ContentPair {
     degradation: Option<String>,
 }
 
-/// Decides whether watcher events can affect a snapshot or content read.
-#[derive(Clone)]
+/// 测试用：以 V2 watcher 的忽略规则与分类判断一批事件路径是否需要刷新（替代 V1 的 check-ignore 进程）。
+#[cfg(test)]
 pub struct ChangeFilter {
-    git: PathBuf,
     worktree: PathBuf,
     git_dirs: Vec<PathBuf>,
+    rules: crate::watch::IgnoreRules,
+    suppression: crate::watch::Suppression,
 }
 
+#[cfg(test)]
 impl ChangeFilter {
-    /// Object/LFS/log writes always accompany an index or ref update, and
-    /// git-ignored worktree paths (e.g. Unity Library/Temp) never change a
-    /// snapshot. Any failure to classify counts as relevant.
     pub fn relevant(&self, paths: &[PathBuf]) -> bool {
-        let mut candidates = std::collections::BTreeSet::new();
-        for path in paths {
-            if let Some(dir) = self.git_dirs.iter().find(|dir| path.starts_with(dir)) {
-                let first = path
-                    .strip_prefix(dir)
-                    .ok()
-                    .and_then(|inner| inner.components().next())
-                    .and_then(|component| component.as_os_str().to_str());
-                if !matches!(first, Some("objects" | "lfs" | "logs")) {
-                    return true;
-                }
-                continue;
-            }
-            let Ok(relative) = path.strip_prefix(&self.worktree) else {
-                return true;
-            };
-            let Some(relative) = relative.to_str().filter(|value| !value.is_empty()) else {
-                return true;
-            };
-            candidates.insert(relative.replace('\\', "/"));
-        }
-        if candidates.is_empty() {
-            return false;
-        }
-        let mut input = Vec::new();
-        for candidate in &candidates {
-            input.extend_from_slice(candidate.as_bytes());
-            input.push(0);
-        }
-        let output = (|| {
-            use std::io::Write;
-            use std::process::Stdio;
-            let mut child = readonly_command(
-                &self.git,
-                &self.worktree,
-                &["check-ignore", "-z", "--stdin"],
-            )
-            // check-ignore rejects the literal pathspec magic; it reads plain paths.
-            .env_remove("GIT_LITERAL_PATHSPECS")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .ok()?;
-            // Drain stdout concurrently with stdin: a burst of ignored paths can
-            // otherwise fill both OS pipes and block this watcher forever.
-            let mut stdin = child.stdin.take()?;
-            let writer = std::thread::spawn(move || stdin.write_all(&input));
-            let output = child.wait_with_output().ok();
-            writer.join().ok()?.ok()?;
-            output
-        })();
-        // check-ignore exits 0 when some path is ignored, 1 when none is.
-        match output {
-            Some(output) if output.status.success() => {
-                output
-                    .stdout
-                    .split(|b| *b == 0)
-                    .filter(|v| !v.is_empty())
-                    .count()
-                    < candidates.len()
-            }
-            _ => true,
-        }
+        crate::watch::classify("test", &self.worktree, &self.git_dirs, &self.rules, &self.suppression, paths).is_some()
     }
 }
 
@@ -298,37 +251,19 @@ pub struct GitAdapter {
     git_dir: PathBuf,
     common_dir: PathBuf,
     repo_id: String,
+    #[cfg_attr(not(test), allow(dead_code))]
     branch: String,
     version: String,
+    #[cfg_attr(not(test), allow(dead_code))]
     snapshots: Arc<Mutex<HashMap<CompareScope, Vec<read_guard::ReadSnapshot>>>>,
+    scans: Arc<Mutex<Vec<Arc<scan::ScanState>>>>,
+    reader: object_reader::SharedReader,
 }
 
 impl GitAdapter {
     pub fn open(path: String, git_executable: Option<String>) -> Result<Self, GitError> {
         let git = PathBuf::from(git_executable.unwrap_or_else(|| "git".into()));
-        let version_output = git_command(&git)
-            .arg("--version")
-            .output()
-            .map_err(|error| GitError::GitUnavailable(error.to_string()))?;
-        if !version_output.status.success() {
-            return Err(GitError::GitUnavailable(stderr_summary(&version_output)));
-        }
-        let version_line = String::from_utf8_lossy(&version_output.stdout)
-            .trim()
-            .to_owned();
-        let version = version_line
-            .strip_prefix("git version ")
-            .unwrap_or(&version_line)
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .to_owned();
-        if !version_at_least(&version, MINIMUM_GIT_VERSION) {
-            return Err(GitError::UnsupportedGit {
-                found: version,
-                minimum: MINIMUM_GIT_VERSION.into(),
-            });
-        }
+        let version = detect_git_version(&git)?;
 
         let requested = dunce::canonicalize(&path)
             .map_err(|error| GitError::InvalidRepository(error.to_string()))?;
@@ -366,6 +301,7 @@ impl GitAdapter {
             format!("detached @ {}", String::from_utf8_lossy(&oid.stdout).trim())
         };
         let repo_id = hash_bytes(worktree.to_string_lossy().as_bytes());
+        let reader = object_reader::shared_reader(&git, &worktree, object_reader::DEFAULT_IDLE);
         Ok(Self {
             git,
             worktree,
@@ -375,30 +311,147 @@ impl GitAdapter {
             branch,
             version,
             snapshots: Arc::default(),
+            scans: Arc::default(),
+            reader,
         })
+    }
+
+    /// 关闭项目时立即回收常驻 cat-file 进程（资源上限 §7）。
+    pub fn close(&self) {
+        self.reader.close();
+    }
+
+    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+    pub fn repo_id(&self) -> &str {
+        &self.repo_id
+    }
+
+    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+    pub fn worktree(&self) -> &Path {
+        &self.worktree
+    }
+
+    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+    pub fn git_dirs(&self) -> (PathBuf, PathBuf) {
+        (self.git_dir.clone(), self.common_dir.clone())
+    }
+
+    fn git_info(&self) -> GitInfo {
+        GitInfo {
+            executable: self.git_executable_display(),
+            version: self.version.clone(),
+            supported: true,
+            minimum_version: MINIMUM_GIT_VERSION.into(),
+        }
+    }
+
+    fn repository_info(&self, branch: String) -> RepositoryInfo {
+        let display_name = self
+            .worktree
+            .file_name()
+            .unwrap_or_else(|| OsStr::new("repository"))
+            .to_string_lossy()
+            .into_owned();
+        RepositoryInfo {
+            repo_id: self.repo_id.clone(),
+            display_name,
+            worktree_path: self.worktree.to_string_lossy().into_owned(),
+            git_dir: self.git_dir.to_string_lossy().into_owned(),
+            common_dir: self.common_dir.to_string_lossy().into_owned(),
+            branch,
+        }
+    }
+
+    fn build_snapshot(
+        &self,
+        request_id: String,
+        scope: CompareScope,
+        state: &scan::ScanState,
+        details: Option<&scan::RepositoryDetails>,
+    ) -> RepositorySnapshot {
+        let mut lists = state.lists.clone();
+        if let Some(details) = details {
+            lists.all = details.all.clone();
+            let apply = |list: &mut Vec<FileChange>, stats: &[(String, Option<u64>, Option<u64>)]| {
+                let map: HashMap<&str, (Option<u64>, Option<u64>)> =
+                    stats.iter().map(|(id, a, d)| (id.as_str(), (*a, *d))).collect();
+                for file in list.iter_mut() {
+                    if let Some((a, d)) = map.get(file.path_id.as_str()) {
+                        file.additions = *a;
+                        file.deletions = *d;
+                    }
+                }
+            };
+            apply(&mut lists.unstaged, &details.stats.unstaged);
+            apply(&mut lists.staged, &details.stats.staged);
+            apply(&mut lists.all, &details.stats.all);
+        }
+        let files = lists.get(scope).clone();
+        RepositorySnapshot {
+            request_id,
+            repo: self.repository_info(Self::branch_label(&state.branch)),
+            scope,
+            revision: state.revision.clone(),
+            files,
+            git: self.git_info(),
+            scanned_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+            scopes: Some(lists),
+            stats_ready: details.is_some(),
+            branch_info: Some((&state.branch).into()),
+            in_progress: Some((&state.in_progress).into()),
+        }
+    }
+
+    /// V2 扫描：一次 status 覆盖三个范围，统计由 [`Self::details`] 在后台补齐。
+    /// `refresh_index` 仅用于用户手动刷新（V2-D09）。
+    pub fn snapshot_v2(
+        &self,
+        request_id: String,
+        scope: CompareScope,
+        refresh_index: bool,
+    ) -> Result<RepositorySnapshot, GitError> {
+        let state = self.scan(refresh_index)?;
+        let details = state.details.get().cloned();
+        Ok(self.build_snapshot(request_id, scope, &state, details.as_deref()))
+    }
+
+    /// 按 revision 计算（并缓存）增删统计与“全部”范围修正。
+    pub fn details(&self, revision: &str) -> Result<scan::RepositoryDetails, GitError> {
+        let state = self.scan_state(revision).ok_or(GitError::StaleRequest)?;
+        Ok((*self.details_for(&state)?).clone())
+    }
+
+    /// 已跟踪但匹配忽略规则的文件（watcher 不应丢弃它们的变化）。只读 plumbing，失败时返回空集。
+    pub fn tracked_ignored_paths(&self) -> std::collections::HashSet<String> {
+        readonly_command(&self.git, &self.worktree, &["ls-files", "-z", "-c", "-i", "--exclude-standard"])
+            .env_remove("GIT_LITERAL_PATHSPECS")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| {
+                o.stdout
+                    .split(|b| *b == 0)
+                    .filter(|p| !p.is_empty())
+                    .map(|p| String::from_utf8_lossy(p).into_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     pub fn git_executable_display(&self) -> String {
         self.git.to_string_lossy().into_owned()
     }
 
-    #[cfg(feature = "desktop")]
-    pub fn watch_paths(&self) -> Vec<PathBuf> {
-        let mut paths = vec![self.worktree.clone()];
-        if !self.git_dir.starts_with(&self.worktree) {
-            paths.push(self.git_dir.clone());
-        }
-        if self.common_dir != self.git_dir && !self.common_dir.starts_with(&self.worktree) {
-            paths.push(self.common_dir.clone());
-        }
-        paths
-    }
-
+    #[cfg(test)]
     pub fn change_filter(&self) -> ChangeFilter {
         ChangeFilter {
-            git: self.git.clone(),
             worktree: self.worktree.clone(),
             git_dirs: vec![self.git_dir.clone(), self.common_dir.clone()],
+            rules: crate::watch::IgnoreRules::new(&self.worktree, &self.git_dir, self.tracked_ignored_paths()),
+            suppression: crate::watch::Suppression::default(),
         }
     }
 
@@ -407,7 +460,21 @@ impl GitAdapter {
         self.snapshot_for_scope(request_id, CompareScope::Unstaged)
     }
 
+    /// 同步版本：扫描后立即补齐统计（测试使用）。
+    #[cfg(test)]
     pub fn snapshot_for_scope(
+        &self,
+        request_id: String,
+        scope: CompareScope,
+    ) -> Result<RepositorySnapshot, GitError> {
+        let state = self.scan(false)?;
+        let details = self.details_for(&state)?;
+        Ok(self.build_snapshot(request_id, scope, &state, Some(&details)))
+    }
+
+    /// V1 逐命令实现，仅保留为 B01/B02 的对照预言机。
+    #[cfg(test)]
+    pub fn snapshot_for_scope_v1(
         &self,
         request_id: String,
         scope: CompareScope,
@@ -475,6 +542,10 @@ impl GitAdapter {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64,
+            scopes: None,
+            stats_ready: true,
+            branch_info: None,
+            in_progress: None,
         })
     }
 
@@ -523,18 +594,17 @@ impl GitAdapter {
         )
     }
 
-    pub fn read_content_pair_cancellable(
+    /// V1 读取路径，仅保留为 B02 的逐字节对照。
+    #[cfg(test)]
+    pub fn read_content_pair_v1(
         &self,
         request_id: String,
         scope: CompareScope,
         requested_revision: String,
         path_id: String,
         versions: Option<[ConflictVersion; 2]>,
-        cancelled: impl Fn() -> bool,
     ) -> Result<ContentPair, GitError> {
-        if cancelled() {
-            return Err(GitError::StaleRequest);
-        }
+        let cancelled = || false;
         let path_bytes = URL_SAFE_NO_PAD
             .decode(&path_id)
             .map_err(|_| GitError::UnsafePath)?;
@@ -643,6 +713,7 @@ impl GitAdapter {
         })
     }
 
+    #[cfg(test)]
     fn list_changes(&self, scope: CompareScope) -> Result<(Vec<FileChange>, Vec<u8>), GitError> {
         if scope == CompareScope::All && !self.has_head() {
             return self.list_unborn_all();
@@ -699,6 +770,7 @@ impl GitAdapter {
         Ok((files, raw))
     }
 
+    #[cfg(test)]
     fn list_unborn_all(&self) -> Result<(Vec<FileChange>, Vec<u8>), GitError> {
         let (mut files, mut raw) = self.list_changes(CompareScope::Staged)?;
         let tracked = run_required(&self.git, &self.worktree, &["ls-files", "-z", "--"])?;
@@ -728,6 +800,7 @@ impl GitAdapter {
         Ok((files, raw))
     }
 
+    #[cfg(test)]
     fn populate_stats(
         &self,
         scope: CompareScope,
@@ -859,6 +932,7 @@ impl GitAdapter {
         Ok(bytes)
     }
 
+    #[cfg(test)]
     fn revision(
         &self,
         scope: CompareScope,
@@ -923,6 +997,7 @@ impl GitAdapter {
     }
 }
 
+#[cfg(test)]
 fn parse_name_status(raw: &[u8]) -> Result<Vec<FileChange>, GitError> {
     let fields: Vec<&[u8]> = raw
         .split(|byte| *byte == 0)
@@ -975,6 +1050,7 @@ fn parse_stat(value: &[u8]) -> Option<u64> {
     }
 }
 
+#[cfg(test)]
 fn upsert_change(
     files: &mut Vec<FileChange>,
     path: &[u8],
@@ -1188,6 +1264,49 @@ fn readonly_command(git: &Path, cwd: &Path, args: &[&str]) -> Command {
     command
 }
 
+/// 执行 `git --version` 并检查最低版本；设置窗口校验 Git 路径与打开仓库共用。
+pub fn detect_git_version(git: &Path) -> Result<String, GitError> {
+    let version_output = git_command(git)
+        .arg("--version")
+        .output()
+        .map_err(|error| GitError::GitUnavailable(error.to_string()))?;
+    if !version_output.status.success() {
+        return Err(GitError::GitUnavailable(stderr_summary(&version_output)));
+    }
+    let version_line = String::from_utf8_lossy(&version_output.stdout).trim().to_owned();
+    let version = version_line
+        .strip_prefix("git version ")
+        .unwrap_or(&version_line)
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_owned();
+    if !version_at_least(&version, MINIMUM_GIT_VERSION) {
+        return Err(GitError::UnsupportedGit { found: version, minimum: MINIMUM_GIT_VERSION.into() });
+    }
+    Ok(version)
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitValidation {
+    ok: bool,
+    executable: String,
+    version: Option<String>,
+    minimum_version: String,
+    error: Option<String>,
+}
+
+/// 设置窗口的 Git 路径校验：只执行 `--version`，不访问仓库；失败时由调用方保留原有效值。
+#[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+pub fn validate_git(executable: Option<String>) -> GitValidation {
+    let executable = executable.filter(|value| !value.trim().is_empty()).unwrap_or_else(|| "git".into());
+    match detect_git_version(Path::new(&executable)) {
+        Ok(version) => GitValidation { ok: true, executable, version: Some(version), minimum_version: MINIMUM_GIT_VERSION.into(), error: None },
+        Err(error) => GitValidation { ok: false, executable, version: None, minimum_version: MINIMUM_GIT_VERSION.into(), error: Some(error.to_string()) },
+    }
+}
+
 fn stderr_summary(output: &Output) -> String {
     let message = String::from_utf8_lossy(&output.stderr).trim().to_owned();
     if message.is_empty() {
@@ -1368,6 +1487,14 @@ mod tests {
         assert!(!fsmonitor_marker.exists(), "fsmonitor helper was executed");
         assert!(!textconv_marker.exists(), "textconv helper was executed");
         assert_eq!(before_worktree, worktree_manifest(dir.path()));
+    }
+
+    #[test]
+    fn validates_git_paths_for_settings() {
+        let found = validate_git(None);
+        assert!(found.ok && found.version.is_some());
+        let missing = validate_git(Some("does-not-exist-git-binary".into()));
+        assert!(!missing.ok && missing.error.as_deref().unwrap_or("").contains("找不到或无法启动 Git"));
     }
 
     #[test]
@@ -2544,5 +2671,7 @@ mod task03_cancel_tests {
 
 #[cfg(test)]
 mod json_regression_tests;
+#[cfg(test)]
+mod v2_tests;
 #[cfg(test)]
 mod history_tests;

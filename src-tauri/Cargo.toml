@@ -11,7 +11,7 @@ crate-type = ["rlib"]
 
 [features]
 default = ["desktop"]
-desktop = ["dep:notify", "dep:tauri", "dep:tauri-plugin-dialog"]
+desktop = ["dep:notify", "dep:notify-debouncer-full", "dep:ignore", "dep:tauri", "dep:tauri-plugin-dialog", "dep:webview2-com", "dep:windows-core"]
 
 [build-dependencies]
 tauri-build = { version = "2.5.2", features = [] }
@@ -24,13 +24,23 @@ dunce = "1.0.5"
 hex = "0.4.3"
 image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "webp"] }
 notify = { version = "8.2.0", optional = true }
+notify-debouncer-full = { version = "0.6", optional = true }
+ignore = { version = "0.4", optional = true }
 serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0"
 sha2 = "0.10.9"
 tauri = { version = "2.11.6", features = [], optional = true }
 tauri-plugin-dialog = { version = "2.7.3", optional = true }
 thiserror = "2.0.17"
 
+# WebView2 内存目标级别（MemoryUsageTargetLevel）。版本与 tauri / wry 依赖树中的一致，不引入新 crate 版本。
+[target.'cfg(windows)'.dependencies]
+webview2-com = { version = "0.38.2", optional = true }
+windows-core = { version = "0.61.2", optional = true }
+
 [dev-dependencies]
 notify = "8.2.0"
+notify-debouncer-full = "0.6"
+ignore = "0.4"
 serde_json = "1.0"
 tempfile = "3.23.0"
