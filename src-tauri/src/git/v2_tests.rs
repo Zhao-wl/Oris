@@ -577,3 +577,46 @@ fn resident_cat_file_has_no_console_host() {
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "0");
     reader.close();
 }
+
+/// autocrlf 下检出为 CRLF、编辑器改写回 LF：status 按 stat 缓存报修改，numstat 无输出，列表标注仅行尾。
+#[test]
+fn stat_only_eol_rewrite_is_marked_content_unchanged() {
+    let dir = init();
+    let p = dir.path();
+    git(p, &["config", "core.autocrlf", "true"]);
+    write(p, "eol.txt", b"one\ntwo\n");
+    write(p, "real.txt", b"one\n");
+    git(p, &["add", "-A"]);
+    git(p, &["commit", "-qm", "base"]);
+    fs::remove_file(p.join("eol.txt")).unwrap();
+    git(p, &["-c", "core.autocrlf=true", "checkout", "--", "eol.txt"]);
+    assert_eq!(fs::read(p.join("eol.txt")).unwrap(), b"one\r\ntwo\r\n");
+    write(p, "eol.txt", b"one\ntwo\n");
+    write(p, "real.txt", b"changed\n");
+    let a = adapter(p);
+    let snap = a.snapshot_v2("1".into(), CompareScope::Unstaged, false).unwrap();
+    let eol = URL_SAFE_NO_PAD.encode("eol.txt");
+    let real = URL_SAFE_NO_PAD.encode("real.txt");
+    assert!(snap.files.iter().any(|f| f.path_id == eol), "status 应把 stat 过期的文件列为修改");
+    let details = a.details(&snap.revision).unwrap();
+    assert_eq!(details.content_unchanged.unstaged, vec![(eol.clone(), UnchangedReason::Eol)]);
+    assert_eq!(details.content_unchanged.all, vec![(eol.clone(), UnchangedReason::Eol)]);
+    assert!(details.stats.unstaged.iter().all(|(id, ..)| *id != eol));
+    let snap = a.snapshot_v2("2".into(), CompareScope::Unstaged, false).unwrap();
+    let marks: Vec<_> = snap.files.iter().map(|f| (f.path_id.clone(), f.content_unchanged)).collect();
+    assert!(marks.contains(&(eol, Some(UnchangedReason::Eol))));
+    assert!(marks.contains(&(real, None)));
+}
+
+#[test]
+#[ignore]
+fn debug_real_repo_content_unchanged() {
+    let a = adapter(Path::new(r"E:\Tap4fun\X15\client"));
+    let snap = a.snapshot_v2("1".into(), CompareScope::Unstaged, false).unwrap();
+    let details = a.details(&snap.revision).unwrap();
+    for f in &snap.files { eprintln!("FILE {} {:?}", f.display_path, f.status); }
+    for (id, a, d) in &details.stats.unstaged { eprintln!("STAT {} {:?} {:?}", String::from_utf8_lossy(&URL_SAFE_NO_PAD.decode(id).unwrap()), a, d); }
+    eprintln!("UNCHANGED {:?}", details.content_unchanged);
+    let st = a.scan_state(&snap.revision).unwrap();
+    for f in &snap.files { let e = st.entries.get(&f.path_id).unwrap(); eprintln!("ENTRY {} x={} y={} idx={:?} wt={:?}", f.display_path, e.x as char, e.y as char, e.index, e.worktree_mode); }
+}

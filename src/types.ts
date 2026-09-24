@@ -26,7 +26,11 @@ export interface FileChange {
   status: "added" | "modified" | "deleted" | "renamed" | "untracked" | "conflicted" | "typeChanged";
   additions: number | null;
   deletions: number | null;
+  /** status 报告修改，但 Git 规范化后内容与比较基准一致：eol 为仅行尾不同，normalized 为其他规范化（如 clean filter）。 */
+  contentUnchanged?: ContentUnchanged;
 }
+
+export type ContentUnchanged = "eol" | "normalized";
 
 export interface ScopeLists {
   unstaged: FileChange[];
@@ -70,6 +74,8 @@ export interface RepositorySnapshot {
 export interface RepositoryDetails {
   revision: string;
   stats: Record<CompareScope, [string, number | null, number | null][]>;
+  /** 仅未暂存与“全部”范围可能出现；旧缓存可能缺失。 */
+  contentUnchanged?: Partial<Record<CompareScope, [string, ContentUnchanged][]>>;
   all: FileChange[];
   elapsedMs: number;
 }

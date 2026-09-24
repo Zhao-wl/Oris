@@ -62,6 +62,8 @@ button:disabled { opacity:.45; cursor:default; }
 .old-path { max-width:35%; margin-left:5px; overflow:hidden; color:var(--dim); text-overflow:ellipsis; white-space:nowrap; font-size:10px; }
 .line-stat { margin-left:auto; color:var(--dim); font-size:10px; white-space:nowrap; }
 .line-stat.pending { opacity:.6; letter-spacing:1px; }
+.unchanged-note { color:var(--dim); margin-right:10px; }
+.line-stat.unchanged { border:1px solid var(--border); border-radius:3px; padding:0 4px; }
 .tree-row { display:flex; align-items:center; gap:2px; min-height:27px; padding:4px 8px 4px calc(8px + var(--tree-depth, 0) * 17px); cursor:pointer; user-select:none; box-sizing:border-box; }
 .tree-row.open>.directory-chevron { transform:rotate(90deg); }
 .stale-badge.verifying { opacity:.85; }
