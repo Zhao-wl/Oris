@@ -194,6 +194,16 @@ describe("commit panel (B07)", () => {
     expect(host.querySelector(".commit-reason")?.textContent).toContain("强制推送");
   });
 
+  it("does not offer undo / amend while the HEAD info is older than the snapshot's HEAD", async () => {
+    bridge.open.mockResolvedValue(snap([], [change("a.txt", "added")]));
+    bridge.head.mockResolvedValue({ oid: "o".repeat(40), parents: ["p".repeat(40)], message: "old head", subject: "old head", pushed: null, upstream: null, detached: false });
+    await mount();
+    await click(button("提交 · 1"));
+    expect(button("撤销最近提交…").disabled).toBe(true);
+    expect(button("撤销最近提交…").title).toContain("正在读取 HEAD");
+    expect((host.querySelector("input[aria-label='修订最近一次提交（amend）']") as HTMLInputElement).disabled).toBe(true);
+  });
+
   it("shows failing hook output and keeps the draft", async () => {
     bridge.open.mockResolvedValue(snap([], [change("a.txt", "added")]));
     localStorage.setItem(DRAFTS_KEY, JSON.stringify({ a: "wip" }));
