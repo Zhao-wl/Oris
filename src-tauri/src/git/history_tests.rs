@@ -442,3 +442,24 @@ fn history_entry_points_accept_only_typed_references() {
     assert_eq!(refs.default_remote, None, "无上游时不指定默认 remote");
     assert!(refs.refs.remotes.is_empty());
 }
+
+#[test]
+fn file_history_includes_merges_that_changed_the_file_against_the_first_parent() {
+    let dir = init();
+    let p = dir.path();
+    commit(p, "f.txt", "base\n", "base", 0);
+    git(p, &["switch", "-qc", "topic"]);
+    commit(p, "f.txt", "topic\n", "topic edit", 1);
+    git(p, &["switch", "-q", "main"]);
+    commit(p, "f.txt", "main\n", "main edit", 2);
+    let merged = Command::new("git").arg("-C").arg(p).args(["-c", "commit.gpgsign=false", "merge", "-q", "topic"]).output().unwrap();
+    assert!(!merged.status.success());
+    fs::write(p.join("f.txt"), "resolved\n").unwrap();
+    git(p, &["add", "-A"]);
+    git_env(p, &["commit", "-qm", "merge topic"], Some("1700000300 +0000"));
+    let history = log::file_history(gp(), p, "HEAD", "f.txt", 50, None).unwrap();
+    let subjects: Vec<_> = history.entries.iter().map(|e| e.commit.subject.as_str()).collect();
+    assert_eq!(subjects[0], "merge topic", "合并时解决冲突改动了文件，应出现在文件历史中：{subjects:?}");
+    assert!(subjects.contains(&"topic edit") && subjects.contains(&"main edit") && subjects.contains(&"base"));
+    assert!(history.reached_origin);
+}

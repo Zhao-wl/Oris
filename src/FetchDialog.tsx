@@ -8,13 +8,17 @@ import type { RefsView } from "./history-api";
 export default function FetchDialog({ refs, fetchText, blocked, onConfirm, onCancel }: { refs: RefsView | null; fetchText: string; blocked: string | null; onConfirm(remote: string): void; onCancel(): void }) {
   const [remote, setRemote] = useState<string>("");
   const cancel = useRef<HTMLButtonElement>(null);
-  useEffect(() => { if (refs?.defaultRemote) setRemote((current) => current || refs.defaultRemote!); }, [refs]);
+  // 第一次读到 remote 列表时填入默认目标；之后的重读不覆盖用户的选择。
+  const initialized = useRef(false);
+  useEffect(() => { if (refs && !initialized.current) { initialized.current = true; setRemote(refs.defaultRemote ?? ""); } }, [refs]);
+  const cancelRef = useRef(onCancel);
+  cancelRef.current = onCancel;
   useEffect(() => {
     cancel.current?.focus();
-    const key = (event: KeyboardEvent) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); onCancel(); } };
+    const key = (event: KeyboardEvent) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); cancelRef.current(); } };
     window.addEventListener("keydown", key, true);
     return () => window.removeEventListener("keydown", key, true);
-  }, [onCancel]);
+  }, []);
   const remotes = refs?.remotes ?? [];
   const reason = blocked ?? (!refs ? "正在读取 remote…" : !remotes.length ? "该仓库没有配置 remote；Oris 不会新增 remote" : !remote ? "请选择要获取的 remote" : null);
   return <div className="dialog-overlay" onPointerDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
