@@ -7,8 +7,9 @@ export const contentUnchangedLabels: Record<ContentUnchanged, { short: string; d
   normalized: { short: "内容未变", detail: "Git 规范化（如 clean filter / 行尾规则）后内容与比较基准一致，暂存不会产生内容变化" }
 };
 
+/** 内容未变的文件排在最后：与列表末尾的折叠区顺序一致，键盘切换与默认选中都先经过真实变化。 */
 export const compareFiles = (a: FileChange, b: FileChange) => {
-  const rank = (f: FileChange) => f.status === "deleted" ? 1 : f.status === "added" || f.status === "untracked" ? 2 : 0;
+  const rank = (f: FileChange) => f.contentUnchanged ? 3 : f.status === "deleted" ? 1 : f.status === "added" || f.status === "untracked" ? 2 : 0;
   return rank(a) - rank(b) || (a.displayPath < b.displayPath ? -1 : a.displayPath > b.displayPath ? 1 : 0);
 };
 
@@ -189,7 +190,38 @@ function VirtualRows({ count, render }: { count: number; render(index: number, s
   return <div ref={host} className="virtual-rows" style={{ position: "relative", height: count * view.rowHeight }} data-virtual-count={count}>{rows}</div>;
 }
 
+/** 列表末尾的折叠区：默认收起，只由点击展开 / 收起；收起时若选中项在其中，分割线文字高亮提示。 */
+function UnchangedFold({ files, selectedPathId, mode, onSelect }: Omit<Props, "statsPending">) {
+  const [expanded, setExpanded] = useState(false);
+  const containsSelection = files.some((file) => file.pathId === selectedPathId);
+  const label = `${files.length}个折叠内容`;
+  return (
+    <div className="unchanged-fold">
+      <button
+        type="button"
+        className={!expanded && containsSelection ? "fold-divider has-selection" : "fold-divider"}
+        aria-expanded={expanded}
+        title="Git status 报告修改，但按 Git 规则规范化后内容与比较基准一致"
+        onClick={() => setExpanded(!expanded)}
+      >
+        <span className="fold-label">{expanded ? "▾" : "▸"} {label}</span>
+      </button>
+      {expanded && <FileList files={files} selectedPathId={selectedPathId} mode={mode} onSelect={onSelect} />}
+    </div>
+  );
+}
+
 export default function FileTree({ files, selectedPathId, mode, statsPending = false, onSelect }: Props) {
+  const changed = useMemo(() => files.filter((file) => !file.contentUnchanged), [files]);
+  const unchanged = useMemo(() => files.filter((file) => file.contentUnchanged), [files]);
+  if (!unchanged.length) return <FileList files={files} selectedPathId={selectedPathId} mode={mode} statsPending={statsPending} onSelect={onSelect} />;
+  return <>
+    <FileList files={changed} selectedPathId={selectedPathId} mode={mode} statsPending={statsPending} onSelect={onSelect} />
+    <UnchangedFold files={unchanged} selectedPathId={selectedPathId} mode={mode} onSelect={onSelect} />
+  </>;
+}
+
+function FileList({ files, selectedPathId, mode, statsPending = false, onSelect }: Props) {
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const sorted = useMemo(() => [...files].sort(compareFiles), [files]);
   const virtual = files.length > VIRTUAL_THRESHOLD;
