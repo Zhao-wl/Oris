@@ -80,7 +80,28 @@ function reuseOrCreate(existing: EditorView | undefined, parent: HTMLElement, do
   existing.setState(EditorState.create({ doc, extensions }));
   existing.scrollDOM.scrollTop = 0;
   existing.scrollDOM.scrollLeft = 0;
+  remeasureWhenVisible(existing);
   return existing;
+}
+
+const reattachObservers = new WeakMap<EditorView, IntersectionObserver>();
+
+/**
+ * 摘下 DOM 期间 CodeMirror 内部的 IntersectionObserver 记为不可见；重新挂载后在它异步回报
+ * 可见之前，scroll 事件不会触发测量。恢复阅读位置、左右同步写入的 scrollTop 恰好落在这段
+ * 时间里，视口停留在旧范围，出现大片空白直到下一次滚动。可见后补一次测量。
+ */
+function remeasureWhenVisible(view: EditorView) {
+  reattachObservers.get(view)?.disconnect();
+  if (typeof IntersectionObserver !== "function") return;
+  const observer = new IntersectionObserver((entries) => {
+    if (!entries.some((entry) => entry.intersectionRatio > 0)) return;
+    observer.disconnect();
+    reattachObservers.delete(view);
+    view.requestMeasure();
+  }, { threshold: [0, 0.001] });
+  reattachObservers.set(view, observer);
+  observer.observe(view.dom);
 }
 
 const alignmentLayouts = new WeakMap<SplitView, { a: AlignmentSpacerSpec[]; b: AlignmentSpacerSpec[] }>();
@@ -1825,7 +1846,11 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
   // 在主 effect 之后声明：卸载时先拆除控制器，再销毁复用池中的编辑器。
   useEffect(() => () => {
     const views = pool.current;
-    for (const view of [views.a, views.b, views.single, views.unified]) view?.destroy();
+    for (const view of [views.a, views.b, views.single, views.unified]) {
+      if (!view) continue;
+      reattachObservers.get(view)?.disconnect();
+      view.destroy();
+    }
     pool.current = {};
   }, []);
 
