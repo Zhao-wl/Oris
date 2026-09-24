@@ -28,6 +28,10 @@ export interface FileChange {
   deletions: number | null;
   /** status 报告修改，但 Git 规范化后内容与比较基准一致：eol 为仅行尾不同，normalized 为其他规范化（如 clean filter）。 */
   contentUnchanged?: ContentUnchanged;
+  /** 子模块条目（gitlink）：不提供丢弃。 */
+  gitlink?: boolean;
+  /** 乐观更新中、等待 Git 确认（仅前端）。 */
+  pending?: boolean;
 }
 
 export type ContentUnchanged = "eol" | "normalized";
