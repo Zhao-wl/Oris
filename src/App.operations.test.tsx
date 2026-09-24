@@ -145,6 +145,17 @@ describe("stage / unstage (B05, B16)", () => {
     expect(bridge.operation).toHaveBeenCalledWith("a", "unstaged", expect.any(String), { kind: "stage", pathIds: ["id-a.txt", "id-c.txt"] });
   });
 
+  it("keeps every Ctrl + click even when several arrive before a re-render", async () => {
+    bridge.open.mockResolvedValue(snap([change("a.txt"), change("b.txt"), change("c.txt"), change("d.txt")], []));
+    await mount();
+    await act(async () => {
+      row("a.txt").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      for (const path of ["b.txt", "c.txt", "d.txt"]) row(path).dispatchEvent(new MouseEvent("click", { bubbles: true, ctrlKey: true }));
+    });
+    await flush();
+    expect(selectedRows()).toEqual(["a.txt", "b.txt", "c.txt", "d.txt"]);
+  });
+
   it("right-clicking an unselected file selects only that file", async () => {
     bridge.open.mockResolvedValue(snap([change("a.txt"), change("b.txt"), change("c.txt")], []));
     await mount();
