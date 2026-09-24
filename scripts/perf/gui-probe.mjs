@@ -574,7 +574,9 @@ async function runMemory() {
     for (const p of P) { await h.addProject(p, 65); await sleep(300); }
     for (const p of [...P, P[0]]) { await h.switchProject(p); await sleep(200); }
     let active = 0;
-    for (let i = 0; i < 30; i++) { active = (active + 1) % P.length; await sleep(400); await h.switchProject(P[active]); }
+    const hot = [];
+    for (let i = 0; i < 30; i++) { active = (active + 1) % P.length; await sleep(400); hot.push(await h.switchProject(P[active])); }
+    result.latency = { hotSwitch: summarize(hot) };
     await sleep(3000);
     const steady = [];
     for (let i = 0; i < 5; i++) { steady.push(await sample(`稳态 ${i}`)); await sleep(1000); }
@@ -589,17 +591,21 @@ async function runMemory() {
     let seed = 20260923;
     const rand = (n) => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed % n; };
     const trend = [];
+    const ops = { project: [], file: [], scope: [] };
     let activeProject = 0;
     await h.switchProject(P[0]); await sleep(1000);
     for (let i = 1; i <= mixedOps; i++) {
       const kind = ["project", "file", "scope"][rand(3)];
-      if (kind === "project") { activeProject = (activeProject + 1 + rand(P.length - 1)) % P.length; await h.switchProject(P[activeProject]); }
-      else if (kind === "scope") { const label = ["未暂存", "已暂存", "全部"][rand(3)]; await h.measure(`window.__op.scopeButton(${q(label)}).click()`, `window.__op.footer().includes(${q(label)}) && !window.__op.loading() && (window.__op.rows().length === 0 || (window.__op.selected() && window.__op.readyFor(window.__op.selected(), null) === true))`, 20000); }
-      else { const list = (await h.rows()).slice(0, 30); const p = list[rand(list.length)]; if (p) await h.measure(h.selectFileAction(p), `window.__op.tab() === ${q(p)} && !window.__op.loading() && (document.querySelector('.cm-editor') || document.querySelector('.image-viewer') || document.querySelector('.state'))`); }
+      let r = null;
+      if (kind === "project") { activeProject = (activeProject + 1 + rand(P.length - 1)) % P.length; r = await h.switchProject(P[activeProject]); }
+      else if (kind === "scope") { const label = ["未暂存", "已暂存", "全部"][rand(3)]; r = await h.measure(`window.__op.scopeButton(${q(label)}).click()`, `window.__op.footer().includes(${q(label)}) && !window.__op.loading() && (window.__op.rows().length === 0 || (window.__op.selected() && window.__op.readyFor(window.__op.selected(), null) === true))`, 20000); }
+      else { const list = (await h.rows()).slice(0, 30); const p = list[rand(list.length)]; if (p) r = await h.measure(h.selectFileAction(p), `window.__op.tab() === ${q(p)} && !window.__op.loading() && (document.querySelector('.cm-editor') || document.querySelector('.image-viewer') || document.querySelector('.state'))`); }
+      if (r) ops[kind].push(r);
       if (i % 20 === 0) { await sleep(300); trend.push({ afterOps: i, ...(await sample(`混合 ${i}`)) }); }
       await sleep(120);
     }
     result.samples.mixed = trend;
+    result.latency.mixed = Object.fromEntries(Object.entries(ops).map(([k, v]) => [k, summarize(v)]));
     const growth = (layer, key) => { const a = trend[0]?.layers[layer][key], b = trend.at(-1)?.layers[layer][key]; return a ? round(((b - a) / a) * 100) : null; };
     result.mixedGrowthPct = Object.fromEntries(["framework", "tools", "oris", "total"].map((layer) => [layer, { workingSet: growth(layer, "workingSetMiB"), privateWorkingSet: growth(layer, "privateWorkingSetMiB"), private: growth(layer, "privateMiB") }]));
     await sleep(idleSeconds * 1000);
