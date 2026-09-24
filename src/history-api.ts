@@ -75,3 +75,11 @@ export function trackingText(tracking: Tracking | null): { short: string; title:
 }
 
 export const statusLetter: Record<ChangeStatus, string> = { added: "A", modified: "M", deleted: "D", renamed: "R", copied: "C", typeChanged: "T", unmerged: "U" };
+
+// ---------- V2-03：stash 与分支名校验（只读） ----------
+export interface StashEntry { index: number; oid: string; message: string; branch: string; time: number; base: string; untracked: string | null }
+export interface StashChanges { oid: string; base: string; tracked: ChangedFile[]; untrackedCommit: string | null; untracked: ChangedFile[] }
+export const stashList = (repoId: string) => invoke<StashEntry[]>("stash_list", { repoId });
+export const stashChanges = (repoId: string, oid: string) => invoke<StashChanges>("stash_changes", { repoId, oid });
+/** 分支名校验（`check-ref-format --branch`）；无效时抛出带原因的错误。 */
+export const checkBranchName = (repoId: string, name: string) => invoke<void>("check_branch_name", { repoId, name });

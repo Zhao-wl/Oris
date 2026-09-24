@@ -64,8 +64,13 @@ export function rowActions(scope: CompareScope, file: FileChange): { primary: "s
 
 export const operationLabels: Record<OperationKind, string> = {
   stage: "暂存", unstage: "取消暂存", markResolved: "标记已解决", discard: "丢弃", undoDiscard: "撤销丢弃",
-  commit: "提交", amend: "修订提交", undoCommit: "撤销最近提交", fetch: "获取远端状态"
+  commit: "提交", amend: "修订提交", undoCommit: "撤销最近提交", fetch: "获取远端状态",
+  stashPush: "储藏", stashApply: "应用 stash", stashPop: "弹出 stash", stashDrop: "删除 stash",
+  branchCreate: "新建分支", branchSwitch: "切换分支", branchTrack: "检出远端分支", checkout: "检出提交", branchRename: "重命名分支", branchDelete: "删除分支", setUpstream: "设置上游"
 };
+
+/** 会移动 HEAD 或改写工作区的分支类操作：结束后阅读位置按“文件仍在则保留，否则回到合法入口并提示”处理。 */
+export const switchKinds: ReadonlySet<OperationKind> = new Set(["branchCreate", "branchSwitch", "branchTrack", "checkout", "stashApply", "stashPop", "stashPush"]);
 
 /** 仓库处于 Oris 不支持的进行中状态时的说明（写操作全部禁用，阅读正常）。 */
 export function unsupportedInProgress(snapshot: RepositorySnapshot | null | undefined): string | null {
