@@ -28,6 +28,10 @@ interface Props {
   fetchBlocked: string | null;
   fetchText: string;
   onRefs?(refs: RefsView): void;
+  /** V2-03：提交右键“检出（分离 HEAD）”“从这里新建分支”。 */
+  onCheckout?(oid: string): void;
+  onNewBranch?(start: { ref: string; label: string }): void;
+  writeBlocked?: string | null;
 }
 
 const PAGE_SIZE = 200;
@@ -44,7 +48,7 @@ interface Menu { x: number; y: number; endpoint: PinnedEndpoint }
 
 /** 底部 Git 区“日志”页（R-HISTORY / R-BRANCH / R-COMPARE / R-FILEHISTORY）：分支列表、提交图与列表、提交详情。只读，选择分支只筛选历史。 */
 export default function HistoryPanel(props: Props) {
-  const { repoId, refsVersion, hidden, fileHistoryRequest, activeKey, onOpenFile, onFetch, fetchBlocked, fetchText, onRefs } = props;
+  const { repoId, refsVersion, hidden, fileHistoryRequest, activeKey, onOpenFile, onFetch, fetchBlocked, fetchText, onRefs, onCheckout, onNewBranch, writeBlocked } = props;
   const [refs, setRefs] = useState<RefsView | null>(null);
   const [refsError, setRefsError] = useState<string | null>(null);
   const [filter, setFilter] = useState<string | null>(null);
@@ -284,7 +288,9 @@ export default function HistoryPanel(props: Props) {
         : selected ? <CommitDetail commit={selected} changes={changes} error={changesError} activeKey={activeKey} onParent={setParent} onOpen={(file) => changes && openCommitFile(selected, changes, file)} onHistory={(file) => loadFileHistory({ pathId: file.pathId, path: file.path, start: selected.oid, nonce: Date.now() }, null, null)}/>
         : <div className="log-empty">选择一个提交查看元信息与变化文件</div>}
     </aside>
-    {menu && <EndpointMenu menu={menu} hasStart={!!compareStart} onClose={() => setMenu(null)} onStart={() => { setCompareStart(menu.endpoint); setMenu(null); }} onCompare={() => compareWith(menu.endpoint)}/>}
+    {menu && <EndpointMenu menu={menu} hasStart={!!compareStart} blocked={writeBlocked ?? null} onClose={() => setMenu(null)} onStart={() => { setCompareStart(menu.endpoint); setMenu(null); }} onCompare={() => compareWith(menu.endpoint)}
+      onCheckout={onCheckout && menu.endpoint.ref === menu.endpoint.oid ? () => { setMenu(null); onCheckout(menu.endpoint.oid); } : undefined}
+      onNewBranch={onNewBranch ? () => { setMenu(null); onNewBranch({ ref: menu.endpoint.ref, label: menu.endpoint.label }); } : undefined}/>}
   </div>;
 }
 
@@ -387,7 +393,7 @@ function FileHistoryDetail({ mode }: { mode: Extract<Mode, { kind: "file" }> }) 
   </div>;
 }
 
-function EndpointMenu({ menu, hasStart, onClose, onStart, onCompare }: { menu: Menu; hasStart: boolean; onClose(): void; onStart(): void; onCompare(): void }) {
+function EndpointMenu({ menu, hasStart, blocked, onClose, onStart, onCompare, onCheckout, onNewBranch }: { menu: Menu; hasStart: boolean; blocked: string | null; onClose(): void; onStart(): void; onCompare(): void; onCheckout?(): void; onNewBranch?(): void }) {
   const host = useRef<HTMLDivElement>(null);
   useEffect(() => {
     host.current?.querySelector<HTMLButtonElement>("button")?.focus();
@@ -401,5 +407,7 @@ function EndpointMenu({ menu, hasStart, onClose, onStart, onCompare }: { menu: M
     <span className="file-menu-note">{shortRef(menu.endpoint.label)} @ {shortOid(menu.endpoint.oid)}</span>
     <button type="button" role="menuitem" onClick={onStart}>设为比较起点（A）</button>
     <button type="button" role="menuitem" disabled={!hasStart} title={hasStart ? undefined : "先把另一个提交或分支设为比较起点"} onClick={onCompare}>与比较起点比较（A → 此处）</button>
+    {onCheckout && <button type="button" role="menuitem" disabled={!!blocked} title={blocked ?? "检出该提交查看（分离 HEAD），不移动任何分支"} onClick={onCheckout}>检出（分离 HEAD）</button>}
+    {onNewBranch && <button type="button" role="menuitem" disabled={!!blocked} title={blocked ?? undefined} onClick={onNewBranch}>从这里新建分支…</button>}
   </div>;
 }
