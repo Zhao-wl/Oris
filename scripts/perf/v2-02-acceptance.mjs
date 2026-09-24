@@ -158,7 +158,10 @@ const V2_HELPERS = String.raw`
   window.__v2 = {
     rowButton(path, label) { const r = window.__op.row(path); return r ? [...r.querySelectorAll('button')].find((b) => b.textContent === label) ?? null : null; },
     clickRow(path, label) { const b = window.__v2.rowButton(path, label); if (!b) throw new Error('行上没有按钮 ' + label + '：' + path); b.click(); },
-    check(path) { const c = window.__op.row(path)?.querySelector('.file-check'); if (!c) throw new Error('没有复选框 ' + path); c.click(); },
+    clickWith(path, init) { const r = window.__op.row(path); if (!r) throw new Error('没有行 ' + path); r.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, ...init })); },
+    /** 多选：先普通点击第一个，其余 Ctrl + 点击。 */
+    select(paths) { paths.forEach((p, i) => window.__v2.clickWith(p, i ? { ctrlKey: true } : {})); },
+    selectedRows() { return qa('.file.selected').map((n) => n.getAttribute('aria-label')); },
     dialog() { const d = document.querySelector('.confirm-dialog'); return d ? { title: d.querySelector('h3')?.textContent, text: d.textContent, warning: d.querySelector('.confirm-warning')?.textContent ?? null, items: qa('.confirm-items li').map((n) => n.textContent) } : null; },
     dialogButton(label) { const b = qa('.confirm-dialog button').find((b) => b.textContent === label); if (!b) throw new Error('确认框没有按钮 ' + label); b.click(); },
     opStatus() { const n = document.querySelector('.op-status'); return n ? { cls: n.className, text: n.textContent } : null; },
@@ -258,7 +261,11 @@ async function functional() {
     let e = evidence("stage a.txt", repos.stage, before, fingerprint(repos.stage), ["index"]);
     check("B05 单文件暂存：乐观反馈并由 Git 确认，只改 index", single.ok && e.unexpected.length === 0 && e.categories.join() === "index" && gitOut(repos.stage, ["diff", "--cached", "--name-only"]) === "a.txt", { single, e, shot: await ctx.shot("b05-after-single-stage") });
     before = fingerprint(repos.stage);
-    for (const p of ["del.txt", "old-name.txt", "new-name.txt", "空 格/中文 #[x].txt", "untracked file.txt"]) await ctx.evaluate(`window.__v2.check(${q(p)})`);
+    // Shift 连续选择 + Ctrl 取消一项再加回，验证多选行为。
+    await ctx.evaluate(`window.__v2.select(["del.txt", "old-name.txt", "new-name.txt", "空 格/中文 #[x].txt", "untracked file.txt"])`);
+    await sleep(200);
+    const multi = await ctx.evaluate(`window.__v2.selectedRows()`);
+    check("Ctrl + 点击多选（无复选框）", multi.length === 5 && (await ctx.evaluate(`!document.querySelector('.file-check')`)), multi);
     await sleep(200);
     const batchShot = await ctx.shot("b05-batch-selection");
     await traced("stage 批量 5 个（右键菜单）", () => ctx.measure(`window.__v2.openMenu('del.txt'); setTimeout(() => window.__v2.menuItem('暂存').click(), 30)`, `window.__op.rows().length === 0`, 5000));
@@ -276,8 +283,11 @@ async function functional() {
     e = evidence("unstage rename", repos.stage, before, fingerprint(repos.stage), ["index"]);
     check("B05 取消暂存 rename：两端都回到未暂存", e.unexpected.length === 0 && !/name/.test(gitOut(repos.stage, ["diff", "--cached", "--name-only"])), { e });
     before = fingerprint(repos.stage);
-    for (const p of ["a.txt", "del.txt", "空 格/中文 #[x].txt", "untracked file.txt"]) await ctx.evaluate(`window.__v2.check(${q(p)})`);
-    await ctx.measure(`window.__v2.button('取消暂存所选').click()`, `window.__op.rows().length === 0`, 5000);
+    await ctx.evaluate(`window.__v2.clickWith("a.txt", {}); window.__v2.clickWith("untracked file.txt", { shiftKey: true })`);
+    await sleep(200);
+    const shiftRows = await ctx.evaluate(`window.__v2.selectedRows()`);
+    check("Shift + 点击按显示顺序连续选择", shiftRows.length === 4, shiftRows);
+    await ctx.measure(`window.__v2.openMenu('a.txt'); setTimeout(() => window.__v2.menuItem('取消暂存').click(), 30)`, `window.__op.rows().length === 0`, 5000);
     await ctx.settle();
     e = evidence("unstage 批量", repos.stage, before, fingerprint(repos.stage), ["index"]);
     check("B05 多选批量取消暂存后 index 回到 HEAD，工作区始终未变", e.unexpected.length === 0 && gitOut(repos.stage, ["diff", "--cached", "--name-only"]) === "", { e });
@@ -319,12 +329,12 @@ async function functional() {
     const gitlinkItem = gitlinkMenu?.find((i) => i.text.startsWith("丢弃"));
     check("B06 丢弃只在右键菜单提供（文件行与批量栏没有丢弃按钮）；gitlink 的丢弃菜单项不可用并说明原因", noRowDiscard && gitlinkItem?.disabled && /gitlink/.test(gitlinkItem.title), { gitlinkMenu, gitlinkShot });
     before = fingerprint(repos.discard);
-    for (const p of ["a.txt", "bin.dat", "del.txt", "fresh/dir/new.bin"]) await ctx.evaluate(`window.__v2.check(${q(p)})`);
-    // 右键点在未勾选的 sub 上：有勾选时菜单仍作用于全部勾选项。
-    await ctx.evaluate(`window.__v2.openMenu('sub')`); await sleep(100);
+    await ctx.evaluate(`window.__v2.select(["a.txt", "bin.dat", "del.txt", "fresh/dir/new.bin"])`);
+    await sleep(200);
+    await ctx.evaluate(`window.__v2.openMenu('bin.dat')`); await sleep(100);
     const batchMenu = await ctx.evaluate(`window.__v2.menu()`);
     const batchMenuShot = await ctx.shot("b06-batch-context-menu");
-    check("右键菜单支持多选批量：有勾选时（即使右键点在未勾选文件上）直接对全部勾选项暂存与丢弃", batchMenu?.some((i) => i.text === "暂存（4 个文件）" && !i.disabled) && batchMenu?.some((i) => i.text === "丢弃…（4 个文件）" && !i.disabled), { batchMenu, batchMenuShot });
+    check("右键菜单支持多选批量：右键点在选中项上时对全部选中项暂存与丢弃", batchMenu?.some((i) => i.text === "暂存（4 个文件）" && !i.disabled) && batchMenu?.some((i) => i.text === "丢弃…（4 个文件）" && !i.disabled), { batchMenu, batchMenuShot });
     await ctx.evaluate(`window.__v2.menuItem('丢弃…').click()`);
     await ctx.waitUntil(`window.__v2.dialog()`, 10000);
     const discardDialog = await ctx.evaluate(`window.__v2.dialog()`);
@@ -392,7 +402,8 @@ async function functional() {
     const allRows = await rows(ctx);
     const indexBefore = gitOut(repos.discardAll, ["ls-files", "-s"]);
     before = fingerprint(repos.discardAll);
-    for (const p of allRows) await ctx.evaluate(`window.__v2.check(${q(p)})`);
+    await ctx.evaluate(`window.__v2.select(${q(allRows)})`);
+    await sleep(200);
     await ctx.evaluate(`window.__v2.menuAction(${q(allRows[0])}, '丢弃…')`);
     await ctx.waitUntil(`window.__v2.dialog()`, 10000);
     const allDialog = await ctx.evaluate(`window.__v2.dialog()`);

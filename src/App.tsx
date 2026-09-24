@@ -129,7 +129,7 @@ export default function App() {
   /** 写操作进行中的仓库：期间不发起自动刷新（watcher 事件在后端屏蔽，结束时返回精确刷新的快照）。 */
   const opRunning = useRef(new Set<string>());
   const [gitTab, setGitTab] = useState<GitTab | null>(null);
-  const [checked, setChecked] = useState<ReadonlySet<string>>(() => new Set());
+  const [multiSelection, setMultiSelection] = useState<ReadonlySet<string>>(() => new Set());
   const [confirmState, setConfirmState] = useState<(ConfirmRequest & { resolve(ok: boolean): void }) | null>(null);
   const askConfirm = useCallback((request: ConfirmRequest) => new Promise<boolean>((resolve) => setConfirmState({ ...request, resolve })), []);
   const workspaceRef = useRef(workspaceState);
@@ -623,7 +623,7 @@ export default function App() {
   const inProgressNotice = unsupportedInProgress(snapshot);
   const stagedCount = runtime?.snapshot?.scopes?.staged.filter((file) => file.status !== "conflicted").length ?? 0;
   // 切换项目 / 范围时清空批量选择；已为空时保持同一引用，避免多余的重渲染。
-  useEffect(() => { setChecked((current) => (current.size ? new Set() : current)); }, [activeRepoId, scope]);
+  useEffect(() => { setMultiSelection((current) => (current.size ? new Set() : current)); }, [activeRepoId, scope]);
   // 丢弃记录只在打开“操作输出”页时读取（丢弃 / 撤销后另行刷新），不在每次切换项目时读取。
   useEffect(() => {
     if (!activeRepoId || gitTab !== "output") return;
@@ -693,11 +693,11 @@ export default function App() {
 
   const stageFiles = (kind: "stage" | "unstage", files: FileChange[]) => {
     const current = runtime?.snapshot;
-    setChecked(new Set());
+    setMultiSelection(new Set());
     void runOp({ kind, pathIds: pathIdsFor(files, kind === "unstage") }, current ? optimisticMove(current, kind, files) : undefined);
   };
   const resolveFiles = async (files: FileChange[], confirmed = false): Promise<void> => {
-    setChecked(new Set());
+    setMultiSelection(new Set());
     const outcome = await runOp({ kind: "markResolved", pathIds: pathIdsFor(files, false), confirmed });
     if (outcome?.status === "needsConfirmation" && outcome.confirmation) {
       const ok = await askConfirm({ title: "标记已解决", message: outcome.confirmation.message, items: outcome.confirmation.paths, warning: "文件中仍有冲突标记", confirmLabel: "仍然标记已解决", danger: true });
@@ -731,7 +731,7 @@ export default function App() {
       danger: true
     });
     if (!ok) return;
-    setChecked(new Set());
+    setMultiSelection(new Set());
     const targets = files.filter((file) => !blocked.has(file.displayPath));
     let outcome = await runOp({ kind: "discard", scope: discardScope, pathIds: pathIdsFor(targets, discardScope === "all"), confirmedUnrecoverable: unrecoverable });
     if (outcome?.status === "needsConfirmation" && outcome.confirmation) {
@@ -761,14 +761,13 @@ export default function App() {
   const fileActions = useMemo<FileActions>(() => ({
     scope,
     disabledReason: writeBlocked,
-    checked,
-    onCheck: (file, value) => setChecked((current) => { const next = new Set(current); if (value) next.add(file.pathId); else next.delete(file.pathId); return next; }),
+    selection: multiSelection,
+    onSelection: (pathIds, focus) => { setMultiSelection(pathIds.length > 1 ? new Set(pathIds) : new Set()); if (focus) userSelectRef.current(focus); },
     onAction: (action, files) => onFileActionRef.current(action, files)
-  }), [scope, writeBlocked, checked]);
+  }), [scope, writeBlocked, multiSelection]);
   const onFileActionRef = useRef(onFileAction);
   onFileActionRef.current = onFileAction;
-  const checkedFiles = visibleFiles.filter((file) => checked.has(file.pathId));
-  const batchPrimary = scope === "unstaged" ? "stage" : scope === "staged" ? "unstage" : null;
+  const selectedCount = multiSelection.size > 1 ? visibleFiles.filter((file) => multiSelection.has(file.pathId)).length : 0;
 
   // 写操作输出逐行推送（后端已脱敏）；合并到下一帧再更新界面。
   useEffect(() => {
@@ -790,9 +789,12 @@ export default function App() {
   const userSelect = (file: FileChange) => {
     if (snapshot) void selectFile(snapshot, file, activeProject?.gitExecutable ?? "");
   };
+  const userSelectRef = useRef(userSelect);
+  userSelectRef.current = userSelect;
   /** 键盘连续切换文件（按住方向键）：只立即更新选中高亮，内容请求延迟发出，被下一次切换取代时不再发出。 */
   const navigateFile = (direction: -1 | 1) => {
     if (!snapshot || !visibleFiles.length) return;
+    setMultiSelection((current) => (current.size ? new Set() : current));
     const index = selectedIndex < 0 ? 0 : (selectedIndex + direction + visibleFiles.length) % visibleFiles.length;
     const now = performance.now();
     burstSelect.current = now - lastSelectAt.current < BURST_WINDOW_MS;
@@ -834,8 +836,8 @@ export default function App() {
       onReorder={target => setWorkspaceState(current => moveProject(current, project.repo.repoId, target))}/>)}{!visibleProjects.length && <span className="project-empty">{workspaceState.projects.length ? "没有匹配项目" : "尚未添加项目"}</span>}</div></section>
     <section className="openbar"><input value={path} onChange={(event) => setPath(event.target.value)} placeholder="仓库绝对路径" aria-label="仓库路径"/><button onClick={() => void addRepository(path)} disabled={loading || !path.trim()}>载入/添加</button>{snapshot && <button onClick={() => void refreshActive()} disabled={manualRefreshing}>↻ 本地刷新</button>}{snapshot && <span className="restore-status">{projectMessages[snapshot.repo.repoId] ?? "已同步"} · {new Date(snapshot.scannedAt).toLocaleTimeString()}</span>}</section>
     <section className="workspace" ref={workspace} style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}>
-      <aside className="sidebar"><div className="panel-title"><strong>变更</strong><span>{endpoints[0]} → {endpoints[1]}</span></div><div className="scope-row">{(["unstaged", "staged", "all"] as CompareScope[]).map((value) => <button key={value} className={`scope ${scope === value ? "selected" : ""}`} onClick={() => void setCompareScope(value)}>{scopeLabels[value].short}</button>)}<select className="file-view-select" aria-label="文件显示方式" title={fileView === "flat" ? "平铺显示相对路径" : "树状显示目录"} value={fileView} onChange={(event) => { const value = event.target.value as "flat" | "tree"; setFileView(value); updateAnchor({ fileView: value }); }}><option value="flat">☷</option><option value="tree">⑂</option></select></div><input className="filter" aria-label="按完整相对路径筛选" value={filter} onChange={(event) => { setFilter(event.target.value); updateAnchor({ filter: event.target.value }); }} placeholder="按完整相对路径筛选"/><div className="files" role="listbox" aria-label={`${scopeLabels[scope].short}变更`}>{snapshot && <FileTree files={visibleFiles} selectedPathId={selectedPathId} mode={fileView} statsPending={pendingStats} onSelect={userSelect} actions={fileActions}/>} {snapshot && !visibleFiles.length && <div className="empty">{filter ? "筛选无匹配文件" : "当前比较范围没有变化"}</div>}{!snapshot && <div className="empty">添加或选择一个真实 Git 仓库</div>}</div><footer>{checkedFiles.length > 0 ? <div className="batch-bar"><span>已选 {checkedFiles.length}</span>{batchPrimary && <button type="button" disabled={!!writeBlocked || checkedFiles.every((f) => f.status === "conflicted")} title={writeBlocked ?? undefined} onClick={() => onFileAction(batchPrimary, checkedFiles.filter((f) => f.status !== "conflicted"))}>{batchPrimary === "stage" ? "暂存所选" : "取消暂存所选"}</button>}{checkedFiles.some((f) => f.status === "conflicted") && <button type="button" disabled={!!writeBlocked} onClick={() => onFileAction("markResolved", checkedFiles.filter((f) => f.status === "conflicted"))}>标记已解决</button>}<span className="batch-hint" title="在任一已勾选文件上点右键，可对全部勾选项暂存或丢弃">右键：更多</span><button type="button" className="quiet" onClick={() => setChecked(new Set())}>清除</button></div>
-        : <>{snapshot ? `${visibleFiles.length} / ${snapshot.files.length} 个文件 · ${scopeLabels[scope].short}` : error ? "项目读取失败" : loading ? "正在读取项目状态" : "未知项目状态"}{snapshot && visibleFiles.length > 0 && <button type="button" className="quiet select-all" onClick={() => setChecked(new Set(visibleFiles.map((f) => f.pathId)))}>全选</button>}</>}</footer></aside>
+      <aside className="sidebar"><div className="panel-title"><strong>变更</strong><span>{endpoints[0]} → {endpoints[1]}</span></div><div className="scope-row">{(["unstaged", "staged", "all"] as CompareScope[]).map((value) => <button key={value} className={`scope ${scope === value ? "selected" : ""}`} onClick={() => void setCompareScope(value)}>{scopeLabels[value].short}</button>)}<select className="file-view-select" aria-label="文件显示方式" title={fileView === "flat" ? "平铺显示相对路径" : "树状显示目录"} value={fileView} onChange={(event) => { const value = event.target.value as "flat" | "tree"; setFileView(value); updateAnchor({ fileView: value }); }}><option value="flat">☷</option><option value="tree">⑂</option></select></div><input className="filter" aria-label="按完整相对路径筛选" value={filter} onChange={(event) => { setFilter(event.target.value); updateAnchor({ filter: event.target.value }); }} placeholder="按完整相对路径筛选"/><div className="files" role="listbox" aria-label={`${scopeLabels[scope].short}变更`}>{snapshot && <FileTree files={visibleFiles} selectedPathId={selectedPathId} mode={fileView} statsPending={pendingStats} onSelect={userSelect} actions={fileActions}/>} {snapshot && !visibleFiles.length && <div className="empty">{filter ? "筛选无匹配文件" : "当前比较范围没有变化"}</div>}{!snapshot && <div className="empty">添加或选择一个真实 Git 仓库</div>}</div><footer>{selectedCount > 1 ? <div className="batch-bar"><span>已选 {selectedCount} 个 · 右键批量操作</span><button type="button" className="quiet" onClick={() => setMultiSelection(new Set())}>清除</button></div>
+        : snapshot ? `${visibleFiles.length} / ${snapshot.files.length} 个文件 · ${scopeLabels[scope].short}` : error ? "项目读取失败" : loading ? "正在读取项目状态" : "未知项目状态"}</footer></aside>
       <div className="workspace-resizer" role="separator" aria-label="调整文件侧栏宽度" aria-orientation="vertical" aria-valuemin={SIDEBAR_MIN_WIDTH} aria-valuenow={sidebarWidth} tabIndex={0} onPointerDown={beginSidebarResize} onPointerMove={moveSidebarResize} onPointerUp={endSidebarResize} onPointerCancel={endSidebarResize} onKeyDown={(event) => { if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return; event.preventDefault(); setSidebarWidth((width) => clampSidebarWidth(width + (event.key === "ArrowLeft" ? -16 : 16))); }}/>
       <section className="editor">{inProgressNotice && <div className="op-banner" role="status">{inProgressNotice}</div>}<div className="tabbar"><strong>{selectedFile?.displayPath ?? "Diff"}</strong>{selectedFile?.oldDisplayPath && <span className="rename-path">← {selectedFile.oldDisplayPath}</span>}<span className="spacer"/>{selectedFile?.contentUnchanged && <span className="unchanged-note" title={contentUnchangedLabels[selectedFile.contentUnchanged].detail}>{contentUnchangedLabels[selectedFile.contentUnchanged].short}：Git 规范化后内容一致</span>}{loading && contentPending.current && <button onClick={() => { const cancelled = newRequestId(); contentGate.current.activate(cancelled); contentGate.current.finish(cancelled); contentPending.current = false; setLoading(false); setPair(null); setDiffDocument(null); void cancelContentRead().catch(() => {}); }}>取消读取</button>}{diffDocument && <span>{diffDocument.hunks.length} 处差异 · Worker {diffDocument.elapsedMs.toFixed(1)} ms</span>}</div>{readable && <div className="toolbar"><button onClick={() => viewer.current?.navigate(-1)} disabled={!position.total}>↑</button><button onClick={() => viewer.current?.navigate(1)} disabled={!position.total}>↓</button><span>{position.current} / {position.total}</span><select value={singleFile ? "single" : mode} disabled={singleFile} onChange={(event) => { const value = event.target.value; if (value === "split" || value === "unified") setMode(value); }} aria-label="Diff 布局">{diffModes.includes("single") && <option value="single">单文件视图</option>}{diffModes.includes("split") && <option value="split">并排视图</option>}{diffModes.includes("unified") && <option value="unified">统一视图</option>}</select><select value={highlight} disabled={singleFile} onChange={(event) => setHighlight(event.target.value as "words" | "lines")} aria-label="高亮粒度"><option value="words">按词高亮</option><option value="lines">按行高亮</option></select><ToggleButton label="折叠上下文" pressed={collapsed} disabled={singleFile} onClick={() => setCollapsed((value) => !value)}/><ToggleButton label="自动换行" pressed={wrap} onClick={() => setWrap((value) => !value)}/><ToggleButton label="对齐变化" pressed={alignChanges} disabled={singleFile} onClick={() => setAlignChanges((value) => !value)}/></div>}
         {selectedFile?.status === "conflicted" && <div className="conflict-toolbar"><strong>未合并 index · 只读版本查看（替代普通范围比较）</strong>{versions.map((value, index) => <select key={index} aria-label={index === 0 ? "冲突左版本" : "冲突右版本"} value={value} onChange={event => { const next: [ConflictVersion, ConflictVersion] = [...versions]; next[index] = event.target.value as ConflictVersion; if (snapshot) void selectFile(snapshot, selectedFile, activeProject?.gitExecutable ?? "", 0, false, next); }}>{Object.entries(versionLabels).map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select>)}{pair && <div className="conflict-identities">{[pair.left, pair.right].map((side,index) => <div key={index}>{endpoints[index]} · {side.encoding === "missing" ? "缺失 / 删除" : side.details?.sizeKnown === false ? "字节数未知" : `${side.byteLength} 字节`} · mode {side.details?.mode ?? "—"} · OID {side.details?.oid ?? "—"}{side.details?.reason && <p>{side.details.reason}</p>}</div>)}</div>}</div>}
