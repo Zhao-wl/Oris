@@ -503,7 +503,8 @@ async function functional() {
     const gitAfter = gitChildren(ctx.app.pid).map((p) => p.commandLine ?? "");
     const hookChildren = (names) => names.filter((n) => ["sh.exe", "bash.exe", "sleep.exe"].includes(n));
     await sleep(2500);
-    e = evidence("commit 在 hook 运行中取消", repos.hooks, before, fingerprint(repos.hooks), ["index"]);
+    // hook-started 是测试 hook 自己写入 .git 的标记文件。
+    e = evidence("commit 在 hook 运行中取消", repos.hooks, before, fingerprint(repos.hooks), ["index", "git:hook-started"]);
     const cancelResult = await ctx.evaluate(`window.__v2.commitResult()`);
     check("B16 写操作运行期间同仓库其他写入口不可用", busy.running && busy.stageDisabled && /正在执行/.test(busy.title ?? ""), { busy, runningShot });
     check("B08 运行中取消：进程树（git → sh → sleep）全部结束，没有生成提交", cancel.ok && hookChildren(treeBefore).length > 0 && hookChildren(treeAfter).length === 0 && !gitAfter.some((c) => / commit /.test(c)) && !existsSync(marker) && gitOut(repos.hooks, ["rev-parse", "HEAD"]) === hooksHead && /没有生成提交/.test(cancelResult?.text ?? ""), { cancelMs: cancel.ms, treeBefore: hookChildren(treeBefore), treeAfter: hookChildren(treeAfter), gitAfter, cancelResult, e, shot: await ctx.shot("b08-cancelled") });
