@@ -69,6 +69,10 @@ export const operationLabels: Record<OperationKind, string> = {
   branchCreate: "新建分支", branchSwitch: "切换分支", branchTrack: "检出远端分支", checkout: "检出提交", branchRename: "重命名分支", branchDelete: "删除分支", setUpstream: "设置上游"
 };
 
+/** 影响维度（技术方案 §4）：会改变 HEAD / 分支 / 远端跟踪引用的操作结束后重读分支列表与日志；会改变 refs/stash 的操作重读 stash 列表。 */
+export const refsKinds: ReadonlySet<OperationKind> = new Set(["commit", "amend", "undoCommit", "fetch", "branchCreate", "branchSwitch", "branchTrack", "checkout", "branchRename", "branchDelete", "setUpstream"]);
+export const stashKinds: ReadonlySet<OperationKind> = new Set(["stashPush", "stashApply", "stashPop", "stashDrop", "branchCreate", "branchSwitch", "branchTrack", "checkout"]);
+
 /** 会移动 HEAD 或改写工作区的分支类操作：结束后阅读位置按“文件仍在则保留，否则回到合法入口并提示”处理。 */
 export const switchKinds: ReadonlySet<OperationKind> = new Set(["branchCreate", "branchSwitch", "branchTrack", "checkout", "stashApply", "stashPop", "stashPush"]);
 

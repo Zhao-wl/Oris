@@ -15,7 +15,7 @@ import { createStore, useStore } from "./store";
 import ConfirmDialog, { type ConfirmRequest } from "./ConfirmDialog";
 import GitPanel, { type GitTab, type OperationRecord, type RunningOperation } from "./GitPanel";
 import { cancelOperation, discardBackups, prepareDiscard, runOperation, type BackupSummary, type HeadCommitInfo, type OperationOutcome, type OperationRequest } from "./operations-api";
-import { operationLabels, optimisticMove, pathIdsFor, selectionAfterOperation, switchKinds, undoCommitText, unsupportedInProgress, writeBlockedReason } from "./operations-model";
+import { operationLabels, optimisticMove, pathIdsFor, refsKinds, selectionAfterOperation, stashKinds, switchKinds, undoCommitText, unsupportedInProgress, writeBlockedReason } from "./operations-model";
 import SettingsDialog from "./SettingsDialog";
 import HistoryPanel, { type FileHistoryRequest, type HistoryFileOpen } from "./HistoryPanel";
 import FetchDialog from "./FetchDialog";
@@ -702,14 +702,17 @@ export default function App() {
       if (optimistic && prior) projects.update(repoId, { snapshot: prior });
       opRunning.current.delete(repoId);
       // 前置检查失败（例如 stash 列表在外部被修改）：重读 stash 列表。
-      if (currentRead.current.repo === repoId) setStashVersion((value) => value + 1);
+      if (currentRead.current.repo === repoId && stashKinds.has(kind)) setStashVersion((value) => value + 1);
       updateOps(repoId, (current) => ({ running: null, last: { kind, status: "failed", message: errorText(error), output: "", at: Date.now() }, ...(["commit", "amend", "undoCommit"].includes(kind) ? { lastCommit: { kind, status: "failed", message: errorText(error), output: "", at: Date.now() } } : {}), lines: current.lines }));
       if (repositoryGate.current.accepts(requestId)) repositoryGate.current.finish(requestId);
       return null;
     }
     opRunning.current.delete(repoId);
     // 写操作期间 watcher 屏蔽了 refs 事件：结束后由这里触发分支列表与日志重读。
-    if (currentRead.current.repo === repoId) { setRefsVersion((value) => value + 1); setStashVersion((value) => value + 1); }
+    if (currentRead.current.repo === repoId) {
+      if (refsKinds.has(outcome.kind)) setRefsVersion((value) => value + 1);
+      if (stashKinds.has(outcome.kind)) setStashVersion((value) => value + 1);
+    }
     const commitKind = ["commit", "amend", "undoCommit"].includes(outcome.kind);
     // 状态栏的“撤销丢弃”只针对本次丢弃返回的备份，不依赖异步刷新的备份列表。
     const succeeded = outcome.status === "succeeded";

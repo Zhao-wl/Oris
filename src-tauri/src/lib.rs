@@ -461,7 +461,8 @@ async fn file_history(repo_id: String, start: String, path_id: String, page_size
 #[tauri::command]
 async fn read_refs(repo_id: String, registry: State<'_, RepositoryRegistry>) -> Result<git::history::RefsView, GitError> {
     let opened = opened(&registry, &repo_id)?;
-    history_call(opened, HistoryKind::Refs, true, move |adapter, _| adapter.history_refs()).await
+    // 分支弹层、日志页、获取确认框可能同时读取 refs：读取廉价且结果相同，彼此不取消（fresh = false）。
+    history_call(opened, HistoryKind::Refs, false, move |adapter, _| adapter.history_refs()).await
 }
 
 /// 历史版本的两端内容：`left` 为 None 表示空树；两端都是已固定的提交 OID（不读取 index 或工作区）。
