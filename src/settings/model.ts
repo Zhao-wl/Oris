@@ -4,15 +4,11 @@ import { enumSetting, integerSetting, SettingsRegistry, stringSetting, type Sett
 export const SETTINGS_VERSION = 1;
 
 export type ThemeMode = "light" | "dark" | "system";
-/** diff 颜色语义：oris =“修改蓝、新增绿、删除灰”；vscode =“新增绿、删除红”。取舍见 P-V2-05（待用户决定）。 */
-export type DiffColorMode = "oris" | "vscode";
-
 export interface AppearanceSettings {
   themeMode: ThemeMode;
   lightScheme: string;
   darkScheme: string;
   fontSize: number;
-  diffColorMode: DiffColorMode;
 }
 
 export interface GitSettings {
@@ -30,21 +26,14 @@ export const FONT_SIZE_MIN = 11;
 export const FONT_SIZE_MAX = 18;
 export const FONT_SIZE_DEFAULT = 13;
 
-/**
- * 默认配色的两个候选（P-V2-07 待用户决定）。框架不内置取舍：
- * 调用方在接入时按决定传入其中一组（或其他合法 id）。
- */
-export const DEFAULT_SCHEME_OPTIONS = {
-  /** 保留 V1 已确认的 Oris 配色为默认。 */
-  oris: { lightScheme: "oris-light", darkScheme: "oris-dark" },
-  /** 以 VS Code 的 Light 2026 / Dark 2026 为默认。 */
-  vscode2026: { lightScheme: "light-2026", darkScheme: "dark-2026" }
-} as const;
+/** 默认配色：保留 V1 已确认的 Oris 配色（V2-D32）；VS Code 方案作为可选项。 */
+export const DEFAULT_SCHEMES = { lightScheme: "oris-light", darkScheme: "oris-dark" } as const;
 
 export interface RegistryOptions {
   /** 可选方案：id 与类型（light / dark / hcLight / hcDark），通常来自 src/themes/generated/index.json。 */
   schemes: { id: string; name: string; type: string }[];
-  defaults: { lightScheme: string; darkScheme: string };
+  /** 默认为 DEFAULT_SCHEMES；测试可传入其他合法 id。 */
+  defaults?: { lightScheme: string; darkScheme: string };
   /** V1 的主题默认为深色；接入时可按需要调整。 */
   defaultThemeMode?: ThemeMode;
 }
@@ -53,7 +42,7 @@ const isLightType = (type: string) => type === "light" || type === "hcLight";
 const isDarkType = (type: string) => type === "dark" || type === "hcDark";
 
 /** 创建含“外观”“Git”两个分类的注册表。以后新增分类时调用 `registry.register(...)` 即可。 */
-export function createSettingsRegistry({ schemes, defaults, defaultThemeMode = "dark" }: RegistryOptions): SettingsRegistry {
+export function createSettingsRegistry({ schemes, defaults = DEFAULT_SCHEMES, defaultThemeMode = "dark" }: RegistryOptions): SettingsRegistry {
   const lightIds = schemes.filter((s) => isLightType(s.type)).map((s) => s.id);
   const darkIds = schemes.filter((s) => isDarkType(s.type)).map((s) => s.id);
   const label = (id: string) => schemes.find((s) => s.id === id)?.name ?? id;
@@ -73,13 +62,7 @@ export function createSettingsRegistry({ schemes, defaults, defaultThemeMode = "
         }),
         enumSetting("lightScheme", lightIds, defaults.lightScheme, { label: "浅色方案", control: "scheme-list", options: schemeOptions(lightIds) }),
         enumSetting("darkScheme", darkIds, defaults.darkScheme, { label: "深色方案", control: "scheme-list", options: schemeOptions(darkIds) }),
-        integerSetting("fontSize", FONT_SIZE_MIN, FONT_SIZE_MAX, FONT_SIZE_DEFAULT, { label: "Diff 字号", control: "slider", description: "Ctrl/Cmd + = / - / 0 快捷调整" }),
-        enumSetting<DiffColorMode>("diffColorMode", ["oris", "vscode"], "oris", {
-          label: "Diff 颜色语义",
-          control: "segmented",
-          options: [{ value: "oris", label: "修改蓝 · 新增绿 · 删除灰" }, { value: "vscode", label: "新增绿 · 删除红" }],
-          pendingDecision: "P-V2-05"
-        })
+        integerSetting("fontSize", FONT_SIZE_MIN, FONT_SIZE_MAX, FONT_SIZE_DEFAULT, { label: "Diff 字号", control: "slider", description: "Ctrl/Cmd + = / - / 0 快捷调整" })
       ]
     })
     .register({

@@ -7,7 +7,7 @@ const validateGit = vi.fn();
 vi.mock("./api", () => ({ validateGit: (...args: unknown[]) => validateGit(...args) }));
 
 import SettingsDialog from "./SettingsDialog";
-import { createSettingsRegistry, DEFAULT_SCHEME_OPTIONS, SettingsStore } from "./settings";
+import { createSettingsRegistry, DEFAULT_SCHEMES, SettingsStore } from "./settings";
 import { schemeIndex } from "./themes/runtime";
 
 let root: Root;
@@ -22,35 +22,33 @@ const button = (text: string) => [...host.querySelectorAll("button")].find((b) =
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
-  store = new SettingsStore(memory(), createSettingsRegistry({ schemes: schemeIndex, defaults: DEFAULT_SCHEME_OPTIONS.oris }));
+  store = new SettingsStore(memory(), createSettingsRegistry({ schemes: schemeIndex }));
   onClose = vi.fn<() => void>();
   validateGit.mockReset();
 });
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
 
-it("lists every scheme with batch tags and applies selections immediately", async () => {
+it("lists all 21 schemes (V2-D31), tags defaults and high contrast, and applies selections immediately", async () => {
   await render();
   const options = host.querySelectorAll('[role="option"]');
   expect(options.length).toBe(schemeIndex.length);
-  expect(host.textContent).toContain("首批");
-  expect(host.textContent).toContain("第二批");
+  expect(options.length).toBe(21);
+  expect(host.querySelectorAll('[role="option"] .scheme-tag').length).toBe(4);
+  expect(host.textContent).not.toMatch(/首批|第二批|待决定/);
   const dark2026 = [...options].find((o) => o.textContent?.includes("Dark 2026"))!;
   await click(dark2026);
   expect(store.get().appearance.darkScheme).toBe("dark-2026");
   expect(dark2026.getAttribute("aria-selected")).toBe("true");
 });
 
-it("filters to the first batch and switches the pending-decision options", async () => {
+it("has no diff color switch (V2-D30) and restores the Oris default schemes", async () => {
   await render();
-  const checkbox = host.querySelector<HTMLInputElement>('.inline-check input')!;
-  await click(checkbox);
-  expect(host.textContent).not.toContain("第二批");
-  await click(button("B：新增绿"));
-  expect(store.get().appearance.diffColorMode).toBe("vscode");
-  await click(button("VS Code Light / Dark 2026"));
-  expect(store.get().appearance).toMatchObject(DEFAULT_SCHEME_OPTIONS.vscode2026);
-  await click(button("以 Oris 配色为默认"));
-  expect(store.get().appearance).toMatchObject(DEFAULT_SCHEME_OPTIONS.oris);
+  expect(host.textContent).not.toContain("新增绿 · 删除红");
+  await click([...host.querySelectorAll('[role="option"]')].find((o) => o.textContent?.includes("Light 2026"))!);
+  await click([...host.querySelectorAll('[role="option"]')].find((o) => o.textContent?.includes("Monokai"))!);
+  expect(store.get().appearance).toMatchObject({ lightScheme: "light-2026", darkScheme: "monokai" });
+  await click(button("恢复默认配色"));
+  expect(store.get().appearance).toMatchObject(DEFAULT_SCHEMES);
 });
 
 it("keeps the previous Git path when validation fails and saves it when it succeeds", async () => {

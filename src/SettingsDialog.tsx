@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { validateGit, type GitValidation } from "./api";
-import { schemeBatch } from "./appearance";
-import { DEFAULT_SCHEME_OPTIONS, FONT_SIZE_MAX, FONT_SIZE_MIN, useSettings, type SettingsStore } from "./settings";
+import { DEFAULT_SCHEMES, FONT_SIZE_MAX, FONT_SIZE_MIN, useSettings, type SettingsStore } from "./settings";
 import { schemeIndex, type SchemeIndexEntry } from "./themes/runtime";
 
 interface Props {
@@ -11,8 +10,6 @@ interface Props {
   gitInUse: { executable: string; version: string; minimumVersion: string } | null;
 }
 
-const batchLabel = { oris: "Oris", first: "首批", second: "第二批" } as const;
-
 function SchemeList({ title, entries, value, onChange }: { title: string; entries: SchemeIndexEntry[]; value: string; onChange(id: string): void }) {
   return <section className="scheme-column" aria-label={title}>
     <h4>{title}</h4>
@@ -21,7 +18,7 @@ function SchemeList({ title, entries, value, onChange }: { title: string; entrie
         <span className="scheme-swatches" aria-hidden="true">{entry.preview.slice(0, 6).map((color, index) => <i key={index} style={{ background: color }} />)}</span>
         <span className="scheme-name">{entry.name}</span>
         {(entry.type === "hcDark" || entry.type === "hcLight") && <span className="scheme-tag">高对比</span>}
-        <span className={`scheme-tag batch-${schemeBatch(entry.id)}`}>{batchLabel[schemeBatch(entry.id)]}</span>
+        {(entry.id === DEFAULT_SCHEMES.lightScheme || entry.id === DEFAULT_SCHEMES.darkScheme) && <span className="scheme-tag">默认</span>}
       </button>)}
     </div>
   </section>;
@@ -29,10 +26,8 @@ function SchemeList({ title, entries, value, onChange }: { title: string; entrie
 
 function AppearancePage({ settings }: { settings: SettingsStore }) {
   const appearance = useSettings(settings, (s) => s.appearance);
-  const [firstBatchOnly, setFirstBatchOnly] = useState(false);
-  const visible = (entry: SchemeIndexEntry) => !firstBatchOnly || schemeBatch(entry.id) !== "second";
-  const light = schemeIndex.filter((s) => (s.type === "light" || s.type === "hcLight") && visible(s));
-  const dark = schemeIndex.filter((s) => (s.type === "dark" || s.type === "hcDark") && visible(s));
+  const light = schemeIndex.filter((s) => s.type === "light" || s.type === "hcLight");
+  const dark = schemeIndex.filter((s) => s.type === "dark" || s.type === "hcDark");
   const set = <K extends keyof typeof appearance>(key: K, value: (typeof appearance)[K]) => settings.update("appearance", key, value as never);
   return <div className="settings-page">
     <div className="settings-row">
@@ -44,7 +39,7 @@ function AppearancePage({ settings }: { settings: SettingsStore }) {
     <div className="settings-row column">
       <div className="settings-row-head">
         <label>配色方案</label>
-        <label className="inline-check"><input type="checkbox" checked={firstBatchOnly} onChange={(event) => setFirstBatchOnly(event.target.checked)} />只看首批（体验 P-V2-06）</label>
+        <button onClick={() => { set("lightScheme", DEFAULT_SCHEMES.lightScheme); set("darkScheme", DEFAULT_SCHEMES.darkScheme); }}>恢复默认配色</button>
       </div>
       <div className="scheme-columns">
         <SchemeList title="浅色方案" entries={light} value={appearance.lightScheme} onChange={(id) => set("lightScheme", id)} />
@@ -57,27 +52,7 @@ function AppearancePage({ settings }: { settings: SettingsStore }) {
       <output>{appearance.fontSize}</output>
       <small>Ctrl/Cmd + = / - / 0</small>
     </div>
-    <fieldset className="pending-decision">
-      <legend>待决定项体验（不代表最终产品形态）</legend>
-      <div className="settings-row">
-        <label>Diff 颜色语义（P-V2-05）</label>
-        <div className="segmented" role="radiogroup" aria-label="Diff 颜色语义">
-          <button role="radio" aria-checked={appearance.diffColorMode === "oris"} className={appearance.diffColorMode === "oris" ? "active" : ""} onClick={() => set("diffColorMode", "oris")}>A：修改蓝 · 新增绿 · 删除灰</button>
-          <button role="radio" aria-checked={appearance.diffColorMode === "vscode"} className={appearance.diffColorMode === "vscode" ? "active" : ""} onClick={() => set("diffColorMode", "vscode")}>B：新增绿 · 删除红</button>
-        </div>
-      </div>
-      <p className="settings-note">方案 C 即把这个开关保留给用户。下面的小预览随选择变化：</p>
-      <div className="diff-preview" aria-label="diff 颜色预览">
-        <div className="diff-preview-pane left"><span className="oris-modified-line">const color = <span className="oris-changed-text">"blue"</span>;</span><span className="oris-deleted-line">removed();</span><span>unchanged();</span></div>
-        <div className="diff-preview-pane right"><span className="oris-modified-line">const color = <span className="oris-changed-text">"green"</span>;</span><span className="oris-inserted-line">added();</span><span>unchanged();</span></div>
-      </div>
-      <div className="settings-row">
-        <label>默认配色（P-V2-07）</label>
-        <button onClick={() => { set("lightScheme", DEFAULT_SCHEME_OPTIONS.oris.lightScheme); set("darkScheme", DEFAULT_SCHEME_OPTIONS.oris.darkScheme); }}>以 Oris 配色为默认</button>
-        <button onClick={() => { set("lightScheme", DEFAULT_SCHEME_OPTIONS.vscode2026.lightScheme); set("darkScheme", DEFAULT_SCHEME_OPTIONS.vscode2026.darkScheme); }}>以 VS Code Light / Dark 2026 为默认</button>
-      </div>
-    </fieldset>
-    <p className="settings-note">原标题栏浅 / 深色按钮与 diff 工具栏字号滑块已移到这里。修改即时生效并自动保存。</p>
+    <p className="settings-note">diff 颜色：蓝为修改、绿为新增、灰为删除，色值随配色方案变化。修改即时生效并自动保存。</p>
   </div>;
 }
 

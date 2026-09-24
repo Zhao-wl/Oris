@@ -24,7 +24,7 @@ function fakeMedia(initialDark: boolean) {
   };
 }
 
-const appearance = { themeMode: "dark" as const, lightScheme: "oris-light", darkScheme: "dark-2026", fontSize: 13, diffColorMode: "oris" as const };
+const appearance = { themeMode: "dark" as const, lightScheme: "oris-light", darkScheme: "dark-2026", fontSize: 13 };
 
 beforeEach(() => { resetSchemeCacheForTest(); document.documentElement.removeAttribute("style"); document.documentElement.className = ""; });
 afterEach(() => vi.restoreAllMocks());
@@ -43,57 +43,47 @@ describe("theme runtime", () => {
   it("applies CSS variables, removes missing ones and marks high-contrast schemes", async () => {
     const root = document.createElement("div");
     const dark = await loadScheme("dark-2026");
-    applyScheme(dark, "oris", root);
+    applyScheme(dark, root);
     expect(root.style.getPropertyValue("--bg")).toBe(dark.variables["--bg"]);
     expect(root.classList.contains(HIGH_CONTRAST_CLASS)).toBe(false);
     expect(root.classList.contains("theme-dark")).toBe(true);
     root.style.setProperty("--search-other", "red");
     const hc = await loadScheme("hc-dark");
     expect(hc.variables["--search-other"]).toBeNull();
-    applyScheme(hc, "oris", root);
+    applyScheme(hc, root);
     expect(root.style.getPropertyValue("--search-other")).toBe("");
     expect(root.classList.contains(HIGH_CONTRAST_CLASS)).toBe(true);
     expect(root.dataset.schemeType).toBe("hcDark");
     const light = await loadScheme("hc-light");
-    applyScheme(light, "oris", root);
+    applyScheme(light, root);
     expect(root.classList.contains("theme-light")).toBe(true);
     expect(root.style.colorScheme).toBe("light");
   });
 
-  it("provides both diff color sets (P-V2-05): oris modified blue vs vscode deleted/added pair", async () => {
+  it("uses the Oris diff semantics (V2-D30): modified on both sides, colors taken from the scheme", async () => {
     const scheme = await loadScheme("dark-2026");
-    const oris = diffColors(scheme, "oris");
-    const vscode = diffColors(scheme, "vscode");
-    expect(oris.modifiedLeft).toEqual(scheme.diff.oris.modified);
-    expect(oris.modifiedRight).toEqual(scheme.diff.oris.modified);
-    expect(oris.deleted).toEqual(scheme.diff.oris.deleted);
-    expect(vscode.modifiedLeft).toEqual(scheme.diff.vscode!.deleted);
-    expect(vscode.modifiedRight).toEqual(scheme.diff.vscode!.added);
-    expect(vscode.deleted.marker).not.toBe(oris.deleted.marker);
+    const colors = diffColors(scheme);
+    expect(colors.modifiedLeft).toEqual(scheme.diff.oris.modified);
+    expect(colors.modifiedRight).toEqual(scheme.diff.oris.modified);
+    expect(colors.deleted).toEqual(scheme.diff.oris.deleted);
+    expect(colors.added).toEqual(scheme.diff.oris.added);
     const root = document.createElement("div");
-    applyScheme(scheme, "oris", root);
-    const orisWord = root.style.getPropertyValue("--diff-modified-left-word");
-    applyScheme(scheme, "vscode", root);
-    expect(root.style.getPropertyValue("--diff-modified-left-word")).toBe(scheme.diff.vscode!.deleted.word);
-    expect(root.style.getPropertyValue("--diff-modified-left-word")).not.toBe(orisWord);
-    expect(root.dataset.diffColorMode).toBe("vscode");
+    applyScheme(scheme, root);
+    expect(root.style.getPropertyValue("--diff-modified-left-word")).toBe(scheme.diff.oris.modified.word);
+    expect(root.style.getPropertyValue("--diff-modified-right-line")).toBe(scheme.diff.oris.modified.line);
+    expect(root.style.getPropertyValue("--diff-deleted-marker")).toBe(scheme.diff.oris.deleted.marker);
   });
 
-  it("removes variables left over from the previous scheme and falls back to red deletions for Oris schemes", async () => {
+  it("removes variables left over from the previous scheme", async () => {
     const root = document.createElement("div");
     const vscodeScheme = await loadScheme("dark-2026");
-    applyScheme(vscodeScheme, "oris", root);
+    applyScheme(vscodeScheme, root);
     expect(root.style.getPropertyValue("--search-match")).not.toBe("");
     const oris = await loadScheme("oris-dark");
-    applyScheme(oris, "oris", root);
+    applyScheme(oris, root);
     expect(root.style.getPropertyValue("--search-match")).toBe("");
     expect(root.style.getPropertyValue("--bg")).toBe(oris.variables["--bg"]);
-    expect(oris.diff.vscode).toBeNull();
-    const colors = diffColors(oris, "vscode");
-    expect(colors.deleted.marker).toBe("#f14c4c");
-    expect(colors.modifiedRight).toEqual(colors.added);
-    applyScheme(oris, "vscode", root);
-    expect(root.style.getPropertyValue("--diff-deleted-marker")).toBe("#f14c4c");
+    expect(root.style.getPropertyValue("--diff-deleted-marker")).toBe(oris.diff.oris.deleted.marker);
   });
 
   it("builds a HighlightStyle from scope→tag rules, including modifier tags", async () => {
