@@ -6,7 +6,7 @@
 import { Compartment, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { defaultHighlightStyle, HighlightStyle, syntaxHighlighting } from "@codemirror/language";
-import { oneDarkHighlightStyle } from "@codemirror/theme-one-dark";
+import { oneDarkHighlightStyle, oneDarkTheme } from "@codemirror/theme-one-dark";
 import { Tag, tags } from "@lezer/highlight";
 import schemeIndexData from "./generated/index.json";
 
@@ -42,7 +42,8 @@ export interface Scheme {
   variables: Record<string, string | null>;
   diff: {
     oris: { modified: DiffTone; added: DiffTone; deleted: DiffTone };
-    vscode: { added: DiffTone; deleted: DiffTone };
+    /** Oris 自有方案没有这一组（null），见 VSCODE_FALLBACK。 */
+    vscode: { added: DiffTone; deleted: DiffTone } | null;
   };
   highlight: HighlightRule[];
 }
@@ -109,9 +110,19 @@ export function diffColors(scheme: Scheme, mode: DiffColorMode) {
     const { modified, added, deleted } = scheme.diff.oris;
     return { added, deleted, modifiedLeft: modified, modifiedRight: modified };
   }
-  const { added, deleted } = scheme.diff.vscode;
+  const vscode = scheme.diff.vscode ?? VSCODE_FALLBACK[isDarkType(scheme.type) ? "dark" : "light"];
+  const { added, deleted } = vscode;
   return { added, deleted, modifiedLeft: deleted, modifiedRight: added };
 }
+
+/**
+ * Oris 自有方案在“新增绿、删除红”语义下使用的颜色：新增沿用方案自身的绿色，
+ * 删除取 VS Code Dark+/Light+ 的删除色（`diffEditor.removedLineBackground` 等），属于体验版工程取值。
+ */
+export const VSCODE_FALLBACK: Record<"dark" | "light", { added: DiffTone; deleted: DiffTone }> = {
+  dark: { added: { marker: "#4f9f64", line: "#294436aa", word: "#4f9f6457" }, deleted: { marker: "#f14c4c", line: "#ff000033", word: "#ff00004d" } },
+  light: { added: { marker: "#74ad78", line: "#e3f2df", word: "#74ad7857" }, deleted: { marker: "#e51400", line: "#ff000026", word: "#ff000040" } }
+};
 
 /** 方案应用为根元素上的 CSS 变量（含 diff 颜色变量）；高对比方案额外加类名，界面切换到描边样式分支。 */
 export function schemeVariables(scheme: Scheme, mode: DiffColorMode): Record<string, string | null> {
@@ -128,12 +139,19 @@ export function schemeVariables(scheme: Scheme, mode: DiffColorMode): Record<str
 
 export const HIGH_CONTRAST_CLASS = "theme-high-contrast";
 
+const appliedVariables = new WeakMap<HTMLElement, Set<string>>();
+
 export function applyScheme(scheme: Scheme, mode: DiffColorMode, root: HTMLElement = document.documentElement) {
   const variables = schemeVariables(scheme, mode);
+  // 上一套方案设置、而这一套没有的变量要移除，否则会残留旧颜色（样式表中的回退值随之生效）。
+  const previous = appliedVariables.get(root) ?? new Set<string>();
+  const current = new Set<string>();
   for (const [name, value] of Object.entries(variables)) {
     if (value === null || value === undefined) root.style.removeProperty(name);
-    else root.style.setProperty(name, value);
+    else { root.style.setProperty(name, value); current.add(name); }
   }
+  for (const name of previous) if (!current.has(name)) root.style.removeProperty(name);
+  appliedVariables.set(root, current);
   const dark = isDarkType(scheme.type);
   root.classList.toggle(HIGH_CONTRAST_CLASS, isHighContrast(scheme.type));
   root.classList.toggle("theme-dark", dark);
@@ -186,6 +204,8 @@ export function highlightStyleFor(scheme: Scheme): HighlightStyle {
 
 /** 编辑器主题：颜色引用根元素上的 CSS 变量，因此方案切换只需重新配置 dark 标志与高亮。 */
 export function editorThemeFor(scheme: Scheme): Extension {
+  // Oris 深色方案沿用 V1 的 one-dark 编辑器外观，保持默认观感不变。
+  if (scheme.id === "oris-dark") return oneDarkTheme;
   const highContrast = isHighContrast(scheme.type);
   return EditorView.theme({
     "&": { backgroundColor: "var(--bg)", color: "var(--text)" },

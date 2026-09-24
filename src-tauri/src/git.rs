@@ -263,29 +263,7 @@ pub struct GitAdapter {
 impl GitAdapter {
     pub fn open(path: String, git_executable: Option<String>) -> Result<Self, GitError> {
         let git = PathBuf::from(git_executable.unwrap_or_else(|| "git".into()));
-        let version_output = git_command(&git)
-            .arg("--version")
-            .output()
-            .map_err(|error| GitError::GitUnavailable(error.to_string()))?;
-        if !version_output.status.success() {
-            return Err(GitError::GitUnavailable(stderr_summary(&version_output)));
-        }
-        let version_line = String::from_utf8_lossy(&version_output.stdout)
-            .trim()
-            .to_owned();
-        let version = version_line
-            .strip_prefix("git version ")
-            .unwrap_or(&version_line)
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .to_owned();
-        if !version_at_least(&version, MINIMUM_GIT_VERSION) {
-            return Err(GitError::UnsupportedGit {
-                found: version,
-                minimum: MINIMUM_GIT_VERSION.into(),
-            });
-        }
+        let version = detect_git_version(&git)?;
 
         let requested = dunce::canonicalize(&path)
             .map_err(|error| GitError::InvalidRepository(error.to_string()))?;
@@ -1286,6 +1264,49 @@ fn readonly_command(git: &Path, cwd: &Path, args: &[&str]) -> Command {
     command
 }
 
+/// 执行 `git --version` 并检查最低版本；设置窗口校验 Git 路径与打开仓库共用。
+pub fn detect_git_version(git: &Path) -> Result<String, GitError> {
+    let version_output = git_command(git)
+        .arg("--version")
+        .output()
+        .map_err(|error| GitError::GitUnavailable(error.to_string()))?;
+    if !version_output.status.success() {
+        return Err(GitError::GitUnavailable(stderr_summary(&version_output)));
+    }
+    let version_line = String::from_utf8_lossy(&version_output.stdout).trim().to_owned();
+    let version = version_line
+        .strip_prefix("git version ")
+        .unwrap_or(&version_line)
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_owned();
+    if !version_at_least(&version, MINIMUM_GIT_VERSION) {
+        return Err(GitError::UnsupportedGit { found: version, minimum: MINIMUM_GIT_VERSION.into() });
+    }
+    Ok(version)
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitValidation {
+    ok: bool,
+    executable: String,
+    version: Option<String>,
+    minimum_version: String,
+    error: Option<String>,
+}
+
+/// 设置窗口的 Git 路径校验：只执行 `--version`，不访问仓库；失败时由调用方保留原有效值。
+#[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+pub fn validate_git(executable: Option<String>) -> GitValidation {
+    let executable = executable.filter(|value| !value.trim().is_empty()).unwrap_or_else(|| "git".into());
+    match detect_git_version(Path::new(&executable)) {
+        Ok(version) => GitValidation { ok: true, executable, version: Some(version), minimum_version: MINIMUM_GIT_VERSION.into(), error: None },
+        Err(error) => GitValidation { ok: false, executable, version: None, minimum_version: MINIMUM_GIT_VERSION.into(), error: Some(error.to_string()) },
+    }
+}
+
 fn stderr_summary(output: &Output) -> String {
     let message = String::from_utf8_lossy(&output.stderr).trim().to_owned();
     if message.is_empty() {
@@ -1466,6 +1487,14 @@ mod tests {
         assert!(!fsmonitor_marker.exists(), "fsmonitor helper was executed");
         assert!(!textconv_marker.exists(), "textconv helper was executed");
         assert_eq!(before_worktree, worktree_manifest(dir.path()));
+    }
+
+    #[test]
+    fn validates_git_paths_for_settings() {
+        let found = validate_git(None);
+        assert!(found.ok && found.version.is_some());
+        let missing = validate_git(Some("does-not-exist-git-binary".into()));
+        assert!(!missing.ok && missing.error.as_deref().unwrap_or("").contains("找不到或无法启动 Git"));
     }
 
     #[test]
