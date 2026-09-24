@@ -164,6 +164,8 @@ export function resolveTheme(colors, type) {
   variables['--overview-viewport-border'] = pick('scrollbarSlider.hoverBackground') ?? 'transparent';
   variables['--overview-viewport-active'] = pick('scrollbarSlider.activeBackground') ?? 'transparent';
   variables['--overview-viewport-shadow'] = 'transparent';
+  // 高对比方案在 VS Code 中不定义其他命中底色与浮层阴影（靠描边区分）；给透明值，避免落到样式表中的 Oris 回退色。
+  if (hc) { variables['--search-other'] ??= 'transparent'; variables['--widget-shadow'] ??= 'transparent'; }
   const oris = {
     modified: { marker: modified, line: withAlpha(modified, .23), word: withAlpha(modified, .34) },
     added: { marker: added, line: pick('diffEditor.insertedLineBackground') ?? withAlpha(added,.2), word: pick('diffEditor.insertedTextBackground') ?? withAlpha(added,.3) },
@@ -186,10 +188,16 @@ export function contrast(fg, bg, base = '#ffffff') {
   const a=luminance(front), b=luminance(back);
   return (Math.max(a,b)+.05)/(Math.min(a,b)+.05);
 }
+// B21 要求“无未说明的不达标项”：每条不达标都给出原因。移植忠实于来源（V2-D21），不改色值。
+function explain(theme) {
+  if (theme.startsWith('oris-')) return 'V1 已确认的 Oris 配色，保持不变；次要文字只用于辅助信息';
+  if (theme.startsWith('solarized-')) return '与 VS Code 原主题一致（Solarized 本身为低对比设计），逐色移植不改色';
+  return '与 VS Code 原主题一致，逐色移植不改色';
+}
 function reportLine(theme, label, foreground, background, threshold, base = '#ffffff') {
-  if (!foreground || !background) return `| ${theme} | ${label} | 缺色 | — |`;
+  if (!foreground || !background) return `| ${theme} | ${label} | 缺色 | — | ${explain(theme)} |`;
   const ratio=contrast(foreground,background,base);
-  return ratio < threshold ? `| ${theme} | ${label} | ${ratio.toFixed(2)}:1 | ${threshold}:1 |` : null;
+  return ratio < threshold ? `| ${theme} | ${label} | ${ratio.toFixed(2)}:1 | ${threshold}:1 | ${explain(theme)} |` : null;
 }
 
 async function orisTheme(id, name, type, light) {
@@ -243,7 +251,7 @@ export async function generate() {
     for(const [label,fg,b,base] of [['正文',v['--text'],v['--bg']],['次要文字',v['--dim'],v['--panel']],['选中文字',v['--text-selection-fg'],v['--text-selection'],v['--bg']],...['modified','added','deleted'].map(k=>[`diff ${k} 词级`,v['--text'],data.diff.oris[k].word,v['--bg']])]) { const line=reportLine(id,label,fg,b,4.5,base); if(line) failed.push(line); }
   }
   await writeFile(path.join(output,'index.json'),JSON.stringify(index,null,2)+'\n');
-  const report=['# 配色对比度报告','',`来源：microsoft/vscode ${commit}；Oris 原配色取自 src/styles.css。`,'','标准：普通文字 WCAG AA 4.5:1；半透明颜色按背景合成后计算。diff 词级检查文字对叠加色背景的对比度。','', '## 未达标或缺色','', '| 方案 | 项目 | 实测 | 阈值 |','| --- | --- | ---: | ---: |',...(failed.length?failed:['| — | 无 | — | — |']),'','## 映射后缺色','',...(missing.size?[...missing].sort().map(s=>`- ${s}`):['- 无']),'','说明：报告只记录问题，不自动修正色值。选区前景缺省时使用 editor.foreground；实际选区半透明背景按编辑器背景合成。',''].join('\n');
+  const report=['# 配色对比度报告','',`来源：microsoft/vscode ${commit}；Oris 原配色取自 src/styles.css。`,'','标准：普通文字 WCAG AA 4.5:1；半透明颜色按背景合成后计算。diff 词级检查文字对叠加色背景的对比度。','', '## 未达标或缺色','', '| 方案 | 项目 | 实测 | 阈值 | 说明 |','| --- | --- | ---: | ---: | --- |',...(failed.length?failed:['| — | 无 | — | — | — |']),'','## 映射后缺色','',...(missing.size?[...missing].sort().map(s=>`- ${s}${/^hc-/.test(s)?'（高对比方案在 VS Code 中也不定义该色：搜索命中改用 --search-other-border 描边，浮层不用阴影）':''}`):['- 无']),'','说明：报告只记录问题，不自动修正色值。选区前景缺省时使用 editor.foreground；实际选区半透明背景按编辑器背景合成。',''].join('\n');
   await writeFile(path.join(output,'REPORT.md'),report);
   // B22：发布包内含许可声明。原文逐字收录，随前端打包进 exe，在设置窗口中可查看。
   const vscodeLicense=(await readFile(path.join(source,'LICENSE.txt'),'utf8')).replace(/\r\n/g,'\n').trim();

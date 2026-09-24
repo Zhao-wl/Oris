@@ -40,7 +40,7 @@ describe("theme runtime", () => {
     expect(schemeIndex.length).toBe(21);
   });
 
-  it("applies CSS variables, removes missing ones and marks high-contrast schemes", async () => {
+  it("applies CSS variables and marks high-contrast schemes (no Oris fallback leaks into them)", async () => {
     const root = document.createElement("div");
     const dark = await loadScheme("dark-2026");
     applyScheme(dark, root);
@@ -49,9 +49,9 @@ describe("theme runtime", () => {
     expect(root.classList.contains("theme-dark")).toBe(true);
     root.style.setProperty("--search-other", "red");
     const hc = await loadScheme("hc-dark");
-    expect(hc.variables["--search-other"]).toBeNull();
+    expect(hc.variables["--search-other"]).toBe("transparent");
     applyScheme(hc, root);
-    expect(root.style.getPropertyValue("--search-other")).toBe("");
+    expect(root.style.getPropertyValue("--search-other")).toBe("transparent");
     expect(root.classList.contains(HIGH_CONTRAST_CLASS)).toBe(true);
     expect(root.dataset.schemeType).toBe("hcDark");
     const light = await loadScheme("hc-light");
