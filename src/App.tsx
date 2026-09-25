@@ -14,14 +14,17 @@ import { ProjectStore, parsePersistedSnapshot, persistableSnapshot, scopeView, s
 import { createStore, useStore } from "./store";
 import ConfirmDialog, { type ConfirmRequest } from "./ConfirmDialog";
 import GitPanel, { type GitTab, type OperationRecord, type RunningOperation } from "./GitPanel";
-import { cancelOperation, discardBackups, prepareDiscard, runOperation, type BackupSummary, type HeadCommitInfo, type OperationOutcome, type OperationRequest } from "./operations-api";
+import { cancelOperation, discardBackups, headCommitInfo, prepareDiscard, runOperation, type BackupSummary, type HeadCommitInfo, type OperationOutcome, type OperationRequest } from "./operations-api";
 import { operationLabels, optimisticMove, pathIdsFor, refsKinds, selectionAfterOperation, stashKinds, switchKinds, undoCommitText, unsupportedInProgress, writeBlockedReason } from "./operations-model";
 import SettingsDialog from "./SettingsDialog";
 import AiCommitDialog from "./AiCommitDialog";
-import { cancelAiGeneration, generateAiCommit, type AiPlan } from "./ai-api";
+import { matchesAiShortcut } from "./ai-shortcut";
+import { cancelAiGeneration, generateAiCommit, planAiAction, type AiPlan } from "./ai-api";
+import { aiActionCatalogue, aiScope, parseAiAction, type AiAction } from "./ai-actions";
+import { mentionedPromptTags } from "./ai-prompt-tags";
 import HistoryPanel, { type FileHistoryRequest, type HistoryFileOpen } from "./HistoryPanel";
 import FetchDialog from "./FetchDialog";
-import { readRefs, readRevisionPair, type Branch, type RefsView, type StashEntry } from "./history-api";
+import { readLog, readRefs, readRevisionPair, stashList, type Branch, type RefsView, type StashEntry } from "./history-api";
 import BranchPopover, { type BranchActions } from "./BranchPopover";
 import { NewBranchDialog, RenameBranchDialog, TrackChoiceDialog, UpstreamDialog, type NewBranchRequest } from "./BranchDialogs";
 import { type StashPushOptions } from "./StashPanel";
@@ -31,7 +34,7 @@ import { fetchTimeText, historyStatus, isStale as isStaleError, loadFetchRecord,
 import SelectionNotice from "./SelectionNotice";
 import { activeScheme, settings } from "./appearance";
 import { FONT_SIZE_DEFAULT, FONT_SIZE_MAX, FONT_SIZE_MIN, useSettings } from "./settings";
-import { isDarkType } from "./themes/runtime";
+import { isDarkType, schemeIndex } from "./themes/runtime";
 import type { CompareScope, ConflictVersion, ContentPair, DiffDocument, FileChange, RepositorySnapshot } from "./types";
 import { ContentCache, DiffCache, RequestGate, projectName, moveProject, contentCacheKey, defaultAnchor, loadWorkspace, removeProject, resolveReadingSelection, saveWorkspace, upsertProject, type ProjectRecord, type ReadingAnchor } from "./workspace-model";
 
@@ -93,8 +96,9 @@ export default function App() {
   const scheme = useStore(activeScheme, (value) => value);
   const dark = scheme ? isDarkType(scheme.type) : true;
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [aiCommitRepoId, setAiCommitRepoId] = useState<string | null>(null);
-  useEffect(() => { setAiCommitRepoId(null); }, [workspaceState.activeRepoId]);
+  const [aiOpen, setAiOpen] = useState(false);
+  const aiPlannedRevision = useRef<{ repoId: string | null; revision: string | null } | null>(null);
+  useEffect(() => { setAiOpen(false); }, [workspaceState.activeRepoId]);
   const aiShortcut = useSettings(settings, (value) => value.ai.shortcut);
   const [filter, setFilter] = useState("");
   const [projectFilter, setProjectFilter] = useState("");
@@ -769,10 +773,10 @@ export default function App() {
       if (ok) await resolveFiles(files, true);
     }
   };
-  const discardFiles = async (files: FileChange[]) => {
+  const discardFiles = async (files: FileChange[], scopeOverride?: CompareScope) => {
     const repoId = activeRepoId;
     if (!repoId || writeBlocked) return;
-    const discardScope = scope;
+    const discardScope = scopeOverride ?? scope;
     let plan;
     try { plan = await prepareDiscard(repoId, discardScope, pathIdsFor(files, discardScope === "all")); }
     catch (error) { updateOps(repoId, { last: { kind: "discard", status: "failed", message: errorText(error), output: "", at: Date.now() } }); return; }
@@ -833,11 +837,11 @@ export default function App() {
     return plan.message;
   };
   const aiPlan = async (description: string, requestId: string) => {
-    if (!aiCommitRepoId || activeRepoId !== aiCommitRepoId) throw new Error("项目已切换，请重新打开 AI 提交");
-    return generateAiCommit(aiCommitRepoId, aiProfile(), description, settings.get().ai.prompts.describedCommit, requestId);
+    if (!activeRepoId) throw new Error("请先打开项目");
+    return generateAiCommit(activeRepoId, aiProfile(), description, settings.get().ai.prompts.describedCommit, requestId);
   };
   const aiCommit = async (plan: AiPlan) => {
-    if (!aiCommitRepoId || currentRead.current.repo !== aiCommitRepoId) throw new Error("项目已切换，请重新生成提交计划");
+    if (!activeRepoId || currentRead.current.repo !== activeRepoId) throw new Error("项目已切换，请重新生成提交计划");
     const outcome = await runOp({ kind: "commitSelected", message: plan.message, pathIds: plan.pathIds, expectedRevision: plan.revision });
     return outcome?.status === "succeeded";
   };
@@ -1043,6 +1047,132 @@ export default function App() {
     setFileHistoryRequest({ pathId: renamed ? file.oldPathId! : file.pathId, path: renamed ? file.oldDisplayPath! : file.displayPath, start: "HEAD", nonce: Date.now() });
     setGitTab("log");
   };
+  const planAction = async (description: string, requestId: string): Promise<AiAction> => {
+    const startedAt = performance.now();
+    const repoId = currentRead.current.repo;
+    const current = repoId ? projects.get(repoId)?.snapshot : null;
+    const tags = mentionedPromptTags(description);
+    const settingsOnly = tags.has("设置") && !tags.has("Git") && !tags.has("提交") && !tags.has("拉取") && !tags.has("合并");
+    const [refs, stashes, backups, head, recent] = repoId ? await Promise.all([
+      settingsOnly ? Promise.resolve(null) : readRefs(repoId),
+      /stash|储藏|贮藏/iu.test(description) ? stashList(repoId).catch(() => []) : Promise.resolve([]),
+      /撤销丢弃|恢复丢弃|备份/iu.test(description) ? discardBackups(repoId).catch(() => []) : Promise.resolve([]),
+      /撤销.{0,8}提交|回滚.{0,8}提交/iu.test(description) ? headCommitInfo(repoId).catch(() => null) : Promise.resolve(null),
+      /历史|日志|最近提交|提交记录|解释|审查/iu.test(description) ? readLog(repoId, { refs: [], search: null, pageSize: 20 }, null).catch(() => null) : Promise.resolve(null)
+    ]) : [null, [], [], null, null];
+    const files = current?.scopes ?? null;
+    const context = {
+      capability: aiActionCatalogue(),
+      project: current ? { repoId, name: current.repo.displayName, branch: current.repo.branch, revision: current.revision, inProgress: current.inProgress, branchInfo: current.branchInfo } : null,
+      projects: workspaceRef.current.projects.map((project) => ({ repoId: project.repo.repoId, name: projectName(project) })),
+      files: files ? Object.fromEntries((["unstaged", "staged"] as const).map((key) => [key, files[key].map((file) => ({ pathId: file.pathId, path: file.displayPath, status: file.status }))])) : {},
+      refs: refs ? { local: refs.local.map(({ fullName, name, oid }) => ({ fullName, name, oid })), remote: refs.remote.map(({ fullName, name, oid }) => ({ fullName, name, oid })), remotes: refs.remotes, defaultRemote: refs.defaultRemote } : null,
+      stashes: stashes.map(({ index, oid, message }) => ({ index, oid, message })),
+      backups: backups.map(({ id, files, paths }) => ({ id, files, paths })),
+      headCommit: head ? { oid: head.oid, subject: head.subject, pushed: head.pushed } : null,
+      recentCommits: recent?.commits.map(({ oid, subject, authorName, authorTime }) => ({ oid, subject, authorName, authorTime })) ?? [],
+      currentDiff: pair && pair.repoId === repoId ? { path: pair.displayPath, left: pair.left.text?.slice(0, 12_000) ?? null, right: pair.right.text?.slice(0, 12_000) ?? null } : null,
+      appearance: settings.get().appearance,
+      gitSetting: settings.get().git,
+      aiProfiles: settings.get().ai.profiles.map(({ id, name, kind, provider, model, hasKey }) => ({ id, name, kind, provider, model, ready: !!model.trim() && (kind === "cli" || hasKey) })),
+      activeAiProfile: settings.get().ai.activeId,
+      schemes: schemeIndex.map(({ id, name, type }) => ({ id, name, type })),
+      view: { scope, selectedPathId, gitTab, mode, highlight, wrap, collapsed, alignChanges }
+    };
+    const prompts = settings.get().ai.prompts;
+    const loaded = [prompts.commandCenter];
+    if (tags.has("Git")) loaded.push(prompts.gitActions);
+    if (tags.has("设置")) loaded.push(prompts.settingsActions);
+    if (tags.has("拉取")) loaded.push(prompts.pull);
+    if (tags.has("合并")) loaded.push(prompts.merge);
+    if (tags.has("提交")) loaded.push(prompts.describedCommit);
+    const modelStartedAt = performance.now();
+    let response: unknown;
+    try {
+      response = await planAiAction(aiProfile(), description, context, loaded.join("\n\n"), requestId);
+    } finally {
+      console.info("[Oris AI] 规划耗时", { contextMs: Math.round(modelStartedAt - startedAt), modelMs: Math.round(performance.now() - modelStartedAt), contextChars: JSON.stringify(context).length });
+    }
+    const planned = parseAiAction(response);
+    aiPlannedRevision.current = { repoId, revision: current?.revision ?? null };
+    return planned;
+  };
+  const runAiOperation = async (request: OperationRequest): Promise<boolean> => {
+    const outcome = await runOp(request);
+    if (!outcome) throw new Error("操作未开始，请查看操作输出");
+    if (outcome.status === "needsConfirmation") throw new Error(outcome.confirmation?.message || outcome.message || "当前状态需要补充操作条件");
+    if (outcome.status !== "succeeded") throw new Error(outcome.message || "操作未完成");
+    return true;
+  };
+  const executeAction = async (action: AiAction): Promise<boolean> => {
+    if (action.kind === "answer" || action.kind === "commitSelected") return false;
+    if (action.kind === "settings") {
+      if ((action.setting === "lightScheme" || action.setting === "darkScheme") && !schemeIndex.some((item) => item.id === action.value && (action.setting === "lightScheme" ? ["light", "hcLight"].includes(item.type) : ["dark", "hcDark"].includes(item.type)))) throw new Error("配色方案不可用");
+      if (action.setting === "fontSize") settings.update("appearance", "fontSize", action.value as number);
+      else if (action.setting === "gitExecutable") settings.update("git", "executable", action.value as string);
+      else if (action.setting === "aiActiveId") { if (!settings.get().ai.profiles.some((item) => item.id === action.value && item.model.trim() && (item.kind === "cli" || item.hasKey))) throw new Error("AI 配置不可用"); settings.update("ai", "activeId", action.value as string); }
+      else if (action.setting === "aiShortcut") { if (typeof action.value !== "string" || !/^(CtrlOrMeta|Ctrl|Meta)(\+Shift)?(\+Alt)?\+[A-Z0-9,=+-]$/.test(action.value)) throw new Error("快捷键格式无效"); settings.update("ai", "shortcut", action.value); }
+      else settings.update("appearance", action.setting, action.value as string);
+      return true;
+    }
+    if (action.kind === "view") {
+      const { action: name, value } = action.view;
+      if (name === "openSettings") setSettingsOpen(true);
+      else if (name === "openHistory") setGitTab("log");
+      else if (name === "openOutput") setGitTab("output");
+      else if (name === "openCommit") setGitTab("commit");
+      else if (name === "openFetch") openFetch();
+      else if (name === "openPull") { freshRefsView(); setPullOpen(true); }
+      else if (name === "openPush") { freshRefsView(); setPushOpen(true); }
+      else if (name === "openBranchMenu") setBranchOpen(true);
+      else if (name === "refresh") await refreshActive();
+      else if (name === "setScope" && typeof value === "string" && aiScope(value)) await setCompareScope(aiScope(value)!);
+      else if (name === "selectFile" && typeof value === "string" && snapshot) { const file = snapshot.files.find((item) => item.pathId === value || item.displayPath === value); if (!file) throw new Error("文件不在当前范围中"); userSelect(file); }
+      else if (name === "switchProject" && typeof value === "string") { const project = workspaceRef.current.projects.find((item) => item.repo.repoId === value || projectName(item) === value); if (!project) throw new Error("项目不存在"); await switchProject(project); }
+      else if (name === "addProject" && typeof value === "string") await addRepository(value);
+      else if (name === "removeProject" && typeof value === "string") { const project = workspaceRef.current.projects.find((item) => item.repo.repoId === value || projectName(item) === value); if (!project) throw new Error("项目不存在"); await deleteProject(project.repo.repoId); }
+      else if (name === "setDiffMode" && (value === "split" || value === "unified")) setMode(value);
+      else if (name === "setHighlight" && (value === "words" || value === "lines")) setHighlight(value);
+      else if (name === "setWrap" && typeof value === "boolean") setWrap(value);
+      else if (name === "setCollapsed" && typeof value === "boolean") setCollapsed(value);
+      else if (name === "setAlignChanges" && typeof value === "boolean") setAlignChanges(value);
+      else if (name === "setFileView" && (value === "flat" || value === "tree")) { setFileView(value); updateAnchor({ fileView: value }); }
+      else if (name === "setFileFilter" && typeof value === "string") { setFilter(value); updateAnchor({ filter: value }); }
+      else if (name === "setProjectFilter" && typeof value === "string") setProjectFilter(value);
+      else if (name === "openFileHistory" && typeof value === "string" && snapshot) { const file = snapshot.files.find((item) => item.pathId === value || item.displayPath === value); if (!file) throw new Error("文件不在当前范围中"); openFileHistory(file); }
+      else if (name === "viewConflicts") await viewConflicts();
+      else throw new Error("AI 返回的界面参数无效");
+      return true;
+    }
+    const repoId = currentRead.current.repo;
+    const current = repoId ? projects.get(repoId)?.snapshot : null;
+    if (!repoId || !current) throw new Error("请先打开项目");
+    if (aiPlannedRevision.current?.repoId !== repoId || aiPlannedRevision.current.revision !== current.revision) throw new Error("仓库状态已变化，请重新规划操作");
+    const files = current.scopes;
+    const planned = action.operation;
+    let request: OperationRequest;
+    if ((planned.kind === "stage" || planned.kind === "unstage") && planned.pathIds === "all") {
+      const selected = (planned.kind === "stage" ? files?.unstaged : files?.staged) ?? [];
+      if (selected.some((file) => file.status === "conflicted")) throw new Error("范围内有冲突文件，请先解决冲突");
+      if (!selected.length) throw new Error(planned.kind === "stage" ? "当前仓库没有可暂存的文件" : "当前仓库没有可取消暂存的文件");
+      const pathIds = selected.map((file) => file.pathId);
+      request = planned.kind === "stage" ? { kind: "stage", pathIds } : { kind: "unstage", pathIds };
+    } else request = planned as OperationRequest;
+    if ("pathIds" in request && request.pathIds?.length) {
+      const allowed = new Set((request.kind === "unstage" ? files?.staged : request.kind === "discard" ? files?.[request.scope] : files?.all)?.map((file) => file.pathId) ?? []);
+      if (request.pathIds.some((id) => !allowed.has(id))) throw new Error("文件状态已变化，请重新规划操作");
+    }
+    if (request.kind === "discard") return runAiOperation({ ...request, confirmedUnrecoverable: true });
+    if (request.kind === "stage" || request.kind === "unstage") { const selected = (request.kind === "unstage" ? files?.staged : files?.all)?.filter((file) => request.pathIds.includes(file.pathId)) ?? []; return runAiOperation({ kind: request.kind, pathIds: pathIdsFor(selected, request.kind === "unstage") }); }
+    if (request.kind === "markResolved") return runAiOperation({ ...request, confirmed: true });
+    if (request.kind === "undoDiscard") return runAiOperation({ ...request, overwrite: true });
+    if (request.kind === "undoCommit") { const head = await headCommitInfo(repoId); if (!head) throw new Error("当前没有可撤销的提交"); return runAiOperation({ kind: "undoCommit", expectedHead: head.oid }); }
+    if (request.kind === "branchDelete") { const refs = await readRefs(repoId); const branch = refs.local.find((item) => item.fullName === request.name); if (!branch) throw new Error("分支不存在"); return runAiOperation(request); }
+    if (request.kind === "stashDrop") { const entries = await stashList(repoId); const entry = entries.find((item) => item.index === request.index && item.oid === request.oid); if (!entry) throw new Error("Stash 已变化"); return runAiOperation(request); }
+    if (request.kind === "merge") { const refs = await readRefs(repoId); const target = [...refs.local, ...refs.remote].find((item) => item.fullName === request.target); if (!target) throw new Error("目标分支已变化"); return runAiOperation({ ...request, expected: target.oid }); }
+    if (request.kind === "commitSelected") return runAiOperation({ ...request, expectedRevision: current.revision });
+    return runAiOperation(request);
+  };
   const userSelectRef = useRef(userSelect);
   userSelectRef.current = userSelect;
   /** 键盘连续切换文件（按住方向键）：只立即更新选中高亮，内容请求延迟发出，被下一次切换取代时不再发出。 */
@@ -1066,12 +1196,8 @@ export default function App() {
         settings.update("appearance", "fontSize", next);
         return;
       }
-      if (activeRepoId && !settingsOpen && !aiCommitRepoId && aiShortcut && !["Control", "Meta", "Shift", "Alt"].includes(event.key)) {
-        const parts = aiShortcut.split("+");
-        const modifier = parts.includes("CtrlOrMeta") ? (event.ctrlKey || event.metaKey) : parts.includes("Meta") ? event.metaKey : parts.includes("Ctrl") ? event.ctrlKey : false;
-        if (modifier && event.shiftKey === parts.includes("Shift") && event.altKey === parts.includes("Alt") && event.key.toUpperCase() === parts.at(-1)) {
-          event.preventDefault(); setAiCommitRepoId(activeRepoId); return;
-        }
+      if (!settingsOpen && !aiOpen && matchesAiShortcut(event, aiShortcut)) {
+        event.preventDefault(); setAiOpen(true); return;
       }
       const target = event.target;
       if (target instanceof Element && target.matches("input, textarea, select, [contenteditable=true]")) return;
@@ -1090,7 +1216,7 @@ export default function App() {
   const handleSplitLayoutChange = useCallback((ratio: number, leftWidth: number) => { setSplitLayout((current) => Math.abs(current.ratio - ratio) < .0001 && current.leftWidth === leftWidth ? current : { ratio, leftWidth }); }, []);
 
   return <main className="app">
-    <header className="titlebar"><span className="logo">O</span><strong>{activeProject ? projectName(activeProject) : "Oris"}</strong>{snapshot && <span className="branch-anchor"><button type="button" className="branch branch-button" aria-expanded={branchOpen} title="分支：搜索、切换、新建与管理" onClick={() => setBranchOpen((value) => !value)}>⑂ {snapshot.repo.branch} ▾</button>{branchOpen && activeRepoId && <BranchPopover repoId={activeRepoId} refsVersion={refsVersion} blocked={writeBlocked} actions={branchActions} onClose={() => setBranchOpen(false)}/>}</span>}{snapshot?.branchInfo?.upstream && <span className="branch-counts" title={`相对上游 ${snapshot.branchInfo.upstream}：领先 ${snapshot.branchInfo.ahead ?? "?"}、落后 ${snapshot.branchInfo.behind ?? "?"}`}>↑{snapshot.branchInfo.ahead ?? "?"} ↓{snapshot.branchInfo.behind ?? "?"}</span>}{stale && <span className="stale-badge">旧快照</span>}{runtime?.verifying && <span className="stale-badge verifying" title="显示上次保存的快照，正在后台校验；校验完成前写操作不可用">校验中</span>}{snapshot && !snapshot.branchInfo?.upstream && snapshot.branchInfo?.head && <span className="branch-counts" title="当前分支没有配置上游，领先 / 落后数不可用">无上游</span>}{snapshot && <span className="branch-anchor"><button type="button" className="sync-button" aria-expanded={syncOpen} title={`同步：获取、拉取、推送。${fetchText}`} onClick={() => setSyncOpen((value) => !value)}>{networkRunning && repoOps?.running ? `⇅ 正在${operationLabels[repoOps.running.kind]}…` : "⇅ 同步 ▾"}</button>{syncOpen && activeRepoId && <SyncPopover repoId={activeRepoId} refsVersion={refsVersion} blocked={writeBlocked} fetchText={fetchText} actions={syncActions} onClose={() => setSyncOpen(false)}/>}</span>}<span className="spacer"/>{snapshot && <button className="commit-entry" onClick={() => setAiCommitRepoId(activeRepoId)} title="AI 提交">提交 · {stagedCount}</button>}<button className="settings-button" onClick={() => setSettingsOpen(true)} aria-label="设置" title="设置（Ctrl+,）">⚙ 设置</button></header>
+    <header className="titlebar"><span className="logo">O</span><strong>{activeProject ? projectName(activeProject) : "Oris"}</strong>{snapshot && <span className="branch-anchor"><button type="button" className="branch branch-button" aria-expanded={branchOpen} title="分支：搜索、切换、新建与管理" onClick={() => setBranchOpen((value) => !value)}>⑂ {snapshot.repo.branch} ▾</button>{branchOpen && activeRepoId && <BranchPopover repoId={activeRepoId} refsVersion={refsVersion} blocked={writeBlocked} actions={branchActions} onClose={() => setBranchOpen(false)}/>}</span>}{snapshot?.branchInfo?.upstream && <span className="branch-counts" title={`相对上游 ${snapshot.branchInfo.upstream}：领先 ${snapshot.branchInfo.ahead ?? "?"}、落后 ${snapshot.branchInfo.behind ?? "?"}`}>↑{snapshot.branchInfo.ahead ?? "?"} ↓{snapshot.branchInfo.behind ?? "?"}</span>}{stale && <span className="stale-badge">旧快照</span>}{runtime?.verifying && <span className="stale-badge verifying" title="显示上次保存的快照，正在后台校验；校验完成前写操作不可用">校验中</span>}{snapshot && !snapshot.branchInfo?.upstream && snapshot.branchInfo?.head && <span className="branch-counts" title="当前分支没有配置上游，领先 / 落后数不可用">无上游</span>}{snapshot && <span className="branch-anchor"><button type="button" className="sync-button" aria-expanded={syncOpen} title={`同步：获取、拉取、推送。${fetchText}`} onClick={() => setSyncOpen((value) => !value)}>{networkRunning && repoOps?.running ? `⇅ 正在${operationLabels[repoOps.running.kind]}…` : "⇅ 同步 ▾"}</button>{syncOpen && activeRepoId && <SyncPopover repoId={activeRepoId} refsVersion={refsVersion} blocked={writeBlocked} fetchText={fetchText} actions={syncActions} onClose={() => setSyncOpen(false)}/>}</span>}<span className="spacer"/><button className="commit-entry" onClick={() => setAiOpen(true)} title="AI（Ctrl+P / ⌘P）">✦ AI</button><button className="settings-button" onClick={() => setSettingsOpen(true)} aria-label="设置" title="设置（Ctrl+,）">⚙ 设置</button></header>
     <section className="projectbar" aria-label="项目切换"><button className="primary" onClick={chooseRepository}>添加项目</button><input value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)} placeholder="搜索项目或完整路径" aria-label="搜索项目"/><div className="project-tabs">{visibleProjects.map(project => <ProjectTab key={project.repo.repoId} project={project} active={project.repo.repoId === activeRepoId}
       onSelect={() => void switchProject(project)}
       onRename={customName => setWorkspaceState(current => ({ ...current, projects: current.projects.map(p => p.repo.repoId === project.repo.repoId ? { ...p, customName } : p) }))}
@@ -1126,7 +1252,7 @@ export default function App() {
     {fetchOpen && <FetchDialog refs={refsView} fetchText={fetchText} blocked={writeBlocked} onConfirm={(remote) => void startFetch(remote)} onCancel={() => setFetchOpen(false)}/>}
     {confirmState && <ConfirmDialog request={confirmState} onConfirm={() => { confirmState.resolve(true); setConfirmState(null); }} onCancel={() => { confirmState.resolve(false); setConfirmState(null); }}/>}
     {settingsOpen && <SettingsDialog settings={settings} onClose={() => setSettingsOpen(false)} gitInUse={snapshot ? { executable: snapshot.git.executable, version: snapshot.git.version, minimumVersion: snapshot.git.minimumVersion } : null}/>}
-    {aiCommitRepoId && activeRepoId === aiCommitRepoId && <AiCommitDialog settings={settings} onClose={() => setAiCommitRepoId(null)} onGenerate={aiPlan} onCancelGeneration={cancelAiGeneration} onCommit={aiCommit}/>}
+    {aiOpen && <AiCommitDialog onClose={() => setAiOpen(false)} onGenerate={aiPlan} onPlanAction={planAction} onExecuteAction={executeAction} onCancelGeneration={cancelAiGeneration} onCommit={aiCommit}/>}
     <footer className="statusbar">{snapshot ? <span className="status-location"><PathText path={snapshot.repo.worktreePath}/><span className="status-suffix">{` · ${snapshot.repo.branch} · ${scopeLabels[scope].short}`}</span></span> : <span>多项目 → 本地差异浏览</span>}<span className="spacer"/>{repoOps?.running ? <><span className="op-status running" role="status">⟳ 正在{operationLabels[repoOps.running.kind]}…{fetchProgress ? ` ${fetchProgress.text}` : ""}</span>{networkRunning && <button type="button" className="op-undo" onClick={() => { if (activeRepoId) void cancelOperation(activeRepoId); }}>取消</button>}</> : repoOps?.last && <button type="button" className={`op-status ${repoOps.last.status}`} title="查看最近一次操作的 Git 输出" onClick={() => setGitTab("output")}>{repoOps.last.status === "succeeded" ? "✓" : repoOps.last.status === "cancelled" ? "■" : repoOps.last.status === "needsConfirmation" ? "?" : "✗"} {repoOps.last.message}</button>}{!repoOps?.running && repoOps?.lastBackup && <button type="button" className="op-undo" disabled={!!writeBlocked} title={`撤销刚才丢弃的 ${repoOps.lastBackup.files} 个文件`} onClick={() => void undoDiscard(repoOps.lastBackup!.id)}>撤销丢弃</button>}<span>本机 Git · 缓存 {cache.current.stats().entries}/{cache.current.stats().budget / 1024 / 1024} MiB</span></footer>
   </main>;
 }

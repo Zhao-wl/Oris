@@ -237,6 +237,28 @@ async fn generate_ai_commit(repo_id: String, profile: ai::AiProfile, description
 }
 
 #[cfg(feature = "desktop")]
+#[tauri::command]
+async fn plan_ai_action(profile: ai::AiProfile, description: String, context: serde_json::Value, system_prompt: String, request_id: String, requests: State<'_, AiRequests>) -> Result<serde_json::Value, String> {
+    if description.trim().is_empty() || description.len() > 10_000 { return Err("请输入有效的 AI 指令".into()); }
+    if request_id.is_empty() || request_id.len() > 80 { return Err("AI 请求 ID 无效".into()); }
+    let context_text = serde_json::to_string(&context).map_err(|e| e.to_string())?;
+    if context_text.len() > 150_000 { return Err("AI 上下文过大".into()); }
+    if system_prompt.len() > 60_000 { return Err("AI 系统提示词过长".into()); }
+    let cancelled = Arc::new(AtomicBool::new(false));
+    {
+        let mut state = requests.0.lock().unwrap_or_else(|p| p.into_inner());
+        if state.early_cancelled.remove(&request_id) { cancelled.store(true, Ordering::Relaxed); }
+        state.active.insert(request_id.clone(), cancelled.clone());
+    }
+    let _guard = AiRequestGuard { requests: &requests, id: request_id };
+    let system = format!("你是 Oris 应用操作规划器。@标签只用于加载相关领域提示词，用户发送的明确操作指令才是执行依据。根据用户意图和上下文，只返回一个 JSON 对象：{{\"kind\":\"git|settings|view|commitSelected|answer\",\"summary\":\"简短中文说明\",\"operation\":{{...}},\"setting\":\"设置键\",\"value\":值,\"view\":{{...}},\"message\":\"需要澄清或回答的文本\"}}。只填写相应 kind 的字段；无法确定对象、需要的参数不存在或能力未实现时用 kind=answer 并提出具体问题。描述驱动的提交应选择 commitSelected，交给专用文件选择流程。用户发送 AI 指令后，Oris 会直接执行有效计划，不再二次确认；不要在输出中声称已经执行。用户要求执行 Git 操作时返回 git，不要返回仅打开操作面板的 view；只有用户明确要求打开面板时才使用对应 view。git.operation 必须是 Oris 现有 OperationRequest 格式，绝不提供 shell 命令。一次只规划一个操作。\n\n已加载的操作提示词：\n{system_prompt}");
+    let prompt = format!("用户输入：\n{description}\n\nOris 当前上下文与可用操作（JSON）：\n{context_text}");
+    let output = ai::generate(&profile, std::path::Path::new("."), &system, &prompt, cancelled.clone()).await?;
+    if cancelled.load(Ordering::Relaxed) { return Err("AI 生成已取消".into()); }
+    ai::parse_json_output(&output)
+}
+
+#[cfg(feature = "desktop")]
 #[derive(Default)]
 struct AiRequests(Mutex<AiRequestState>);
 
@@ -790,6 +812,7 @@ pub fn run() {
             set_ai_key,
             list_ai_models,
             generate_ai_commit,
+            plan_ai_action,
             cancel_ai_generation,
             run_operation,
             cancel_operation,

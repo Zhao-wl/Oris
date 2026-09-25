@@ -1,4 +1,5 @@
 import { enumSetting, integerSetting, SettingsRegistry, stringSetting, type SettingsValues } from "./registry";
+import { DEFAULT_AI_SHORTCUT } from "../ai-shortcut";
 
 /** 设置模型版本；读取到其他版本时回退默认值并提示（不覆盖原文件，直到用户修改）。 */
 export const SETTINGS_VERSION = 1;
@@ -31,18 +32,27 @@ export interface AiSettings {
   profiles: AiProfile[];
   activeId: string;
   shortcut: string;
-  directCommit: boolean;
   prompts: AiOperationPrompts;
 }
 
 export interface AiOperationPrompts {
   stagedMessage: string;
   describedCommit: string;
+  commandCenter: string;
+  gitActions: string;
+  settingsActions: string;
+  pull: string;
+  merge: string;
 }
 
 export const DEFAULT_AI_PROMPTS: AiOperationPrompts = {
   stagedMessage: "你是 Git 提交信息助手。根据已暂存的改动撰写简洁、准确的中文提交信息。首行概括主要变化，必要时空一行补充说明；不要臆测未展示的改动。",
-  describedCommit: "你是 Git 提交规划助手。根据用户描述，只选择与意图直接相关的整文件，并撰写简洁、准确的中文提交信息。对于不确定的文件宁可不选。"
+  describedCommit: "你是 Git 提交规划助手。根据用户描述，只选择与意图直接相关的整文件，并撰写简洁、准确的中文提交信息。对于不确定的文件宁可不选。用户发送 AI 指令后，Oris 会直接执行有效的提交计划；不要要求二次确认，也不要把规划说成已执行。",
+  commandCenter: "只规划 Oris 已实现的一个操作。用户目标或对象不明确时先询问；不要把规划说成已执行。用户发送 AI 指令后，Oris 会直接执行有效计划，不再二次确认。",
+  gitActions: "@Git 加载 Git 操作 SOP：先核对当前仓库、分支、文件状态和目标引用；只用上下文中的文件 ID、引用和 remote；不要猜测。",
+  settingsActions: "@设置 加载设置 SOP：使用可用的主题、配色和字号范围；变更前明确目标设置和值。",
+  pull: "@拉取 加载拉取 SOP：核对当前分支与上游；默认仅快进。发生分叉或本地改动时，由 Oris 校验能否直接执行；条件不足则说明原因。",
+  merge: "@合并 加载合并 SOP：核对目标分支引用；Oris 校验后直接执行；冲突时保留用户的解决步骤。"
 };
 
 export interface Settings {
@@ -119,14 +129,15 @@ export function createSettingsRegistry({ schemes, defaults = DEFAULT_SCHEMES, de
           return value as AiProfile[];
         }, ui: { label: "AI 配置", control: "text" } },
         stringSetting("activeId", "", { label: "当前配置", control: "text" }),
-        stringSetting("shortcut", "CtrlOrMeta+Shift+M", { label: "AI 提交快捷键", control: "text" }, (value) => value.length <= 100),
-        { key: "directCommit", type: "boolean", defaultValue: false, validate: (value) => typeof value === "boolean" ? value : undefined, ui: { label: "直接提交", control: "toggle" } },
+        stringSetting("shortcut", DEFAULT_AI_SHORTCUT, { label: "AI 输入快捷键", control: "text" }, (value) => value.length <= 100),
         { key: "prompts", type: "object", defaultValue: DEFAULT_AI_PROMPTS, validate(value) {
           if (!value || typeof value !== "object") return undefined;
           const prompts = value as Partial<AiOperationPrompts>;
           if (typeof prompts.stagedMessage !== "string" || typeof prompts.describedCommit !== "string"
             || prompts.stagedMessage.length > 10_000 || prompts.describedCommit.length > 10_000) return undefined;
-          return { stagedMessage: prompts.stagedMessage, describedCommit: prompts.describedCommit };
+          const merged = { ...DEFAULT_AI_PROMPTS, ...prompts };
+          if ([merged.commandCenter, merged.gitActions, merged.settingsActions, merged.pull, merged.merge].some((item) => typeof item !== "string" || item.length > 10_000)) return undefined;
+          return merged;
         }, ui: { label: "操作提示词", control: "text" } }
       ]
     });

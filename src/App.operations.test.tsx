@@ -9,19 +9,22 @@ import { defaultAnchor, WORKSPACE_KEY } from "./workspace-model";
 
 const bridge = vi.hoisted(() => ({
   open: vi.fn(), refresh: vi.fn(), read: vi.fn(), diff: vi.fn(), details: vi.fn(), activate: vi.fn(), loadSnapshot: vi.fn(),
-  operation: vi.fn(), prepareDiscard: vi.fn(), head: vi.fn(), backups: vi.fn(),
+  operation: vi.fn(), prepareDiscard: vi.fn(), head: vi.fn(), backups: vi.fn(), planAi: vi.fn(), refs: vi.fn(),
 }));
 vi.mock("./api", () => ({ openRepository: bridge.open, refreshRepository: bridge.refresh, readContentPair: bridge.read, closeRepository: vi.fn(async () => {}), cancelContentRead: vi.fn(async () => {}),
   repositoryDetails: bridge.details, activateRepository: bridge.activate, loadSnapshot: bridge.loadSnapshot, saveSnapshot: vi.fn(async () => true), removeSnapshot: vi.fn(async () => {}) }));
 vi.mock("./operations-api", () => ({ runOperation: bridge.operation, cancelOperation: vi.fn(async () => true), lastOperation: vi.fn(async () => null),
   prepareDiscard: bridge.prepareDiscard, discardBackups: bridge.backups, headCommitInfo: bridge.head }));
 vi.mock("./diff", () => ({ calculateDiff: bridge.diff }));
+vi.mock("./ai-api", () => ({ planAiAction: bridge.planAi, generateAiCommit: vi.fn(), cancelAiGeneration: vi.fn(async () => {}) }));
+vi.mock("./history-api", async (importOriginal) => ({ ...(await importOriginal<typeof import("./history-api")>()), readRefs: bridge.refs }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ isFocused: async () => false, onFocusChanged: async () => () => {} }) }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => {} }));
 vi.mock("./DiffViewer", () => ({ default: ({ readingKey }: { readingKey: string }) => <div data-testid="readable">{readingKey}</div> }));
 vi.mock("./ImageViewer", () => ({ default: () => <div/> }));
 import App from "./App";
+import { settings } from "./appearance";
 
 const repo = { repoId: "a", displayName: "a", worktreePath: "C:/a", gitDir: "C:/a/.git", commonDir: "C:/a/.git", branch: "main" };
 const change = (path: string, status: FileChange["status"] = "modified"): FileChange => ({ pathId: `id-${path}`, displayPath: path, oldPathId: null, oldDisplayPath: null, status, additions: 1, deletions: 0 });
@@ -62,11 +65,13 @@ const mount = async () => {
 
 beforeEach(() => {
   vi.resetAllMocks(); localStorage.clear();
+  settings.update("ai", "profiles", []); settings.update("ai", "activeId", "");
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ font: "", measureText: (text: string) => ({ width: text.length * 6 }) } as unknown as CanvasRenderingContext2D);
   bridge.details.mockResolvedValue(null); bridge.activate.mockResolvedValue(true); bridge.loadSnapshot.mockResolvedValue(null);
   bridge.backups.mockResolvedValue([]); bridge.head.mockResolvedValue(null);
+  bridge.refs.mockResolvedValue({ head: { branch: "main", oid: "h".repeat(40), detached: false, unborn: false }, local: [], remote: [], tags: [], shallow: false, remotes: [], defaultRemote: null, fetchHeadAt: null });
   bridge.open.mockResolvedValue(snap([change("a.txt"), change("b.txt")], []));
   bridge.refresh.mockImplementation(async () => snap([change("a.txt"), change("b.txt")], []));
   bridge.read.mockImplementation(async (_repo: string, _scope: string, revision: string, pathId: string) => pair(pathId, revision));
@@ -214,13 +219,41 @@ describe("discard (B06)", () => {
 });
 
 describe("commit panel (B07)", () => {
+  it("uses the model plan and expands a scope-wide selector without a second confirmation", async () => {
+    settings.update("ai", "profiles", [{ id: "test-ai", name: "Test AI", kind: "cli", provider: "codex", executable: "/bin/false", baseUrl: "", model: "test-model", hasKey: false }]);
+    settings.update("ai", "activeId", "test-ai");
+    bridge.planAi.mockResolvedValue({ kind: "git", operation: { kind: "stage", pathIds: "all" } });
+    bridge.operation.mockResolvedValue(outcome("stage", snap([], [change("a.txt"), change("b.txt")], "r2")));
+    await mount();
+    await click(host.querySelector(".titlebar .commit-entry")!);
+    await type(host.querySelector<HTMLTextAreaElement>('textarea[aria-label="输入 AI 指令"]')!, "@Git 暂存仓库");
+    await click(host.querySelector<HTMLButtonElement>('[aria-label="确认 AI 指令"]')!);
+    expect(bridge.planAi).toHaveBeenCalledOnce();
+    expect(bridge.operation).toHaveBeenCalledWith("a", "unstaged", expect.any(String), { kind: "stage", pathIds: ["id-a.txt", "id-b.txt"] });
+    expect(host.querySelector(".ai-commit-dialog")).toBeNull();
+    expect(host.querySelector(".confirm-dialog")).toBeNull();
+  });
+  it("lets the model choose all staged files for a different prompt", async () => {
+    settings.update("ai", "profiles", [{ id: "test-ai", name: "Test AI", kind: "cli", provider: "codex", executable: "/bin/false", baseUrl: "", model: "test-model", hasKey: false }]);
+    settings.update("ai", "activeId", "test-ai");
+    bridge.open.mockResolvedValue(snap([], [change("a.txt"), change("b.txt")]));
+    bridge.planAi.mockResolvedValue({ kind: "git", operation: { kind: "unstage", pathIds: "all" } });
+    bridge.operation.mockResolvedValue(outcome("unstage", snap([change("a.txt"), change("b.txt")], [], "r2")));
+    await mount();
+    await click(host.querySelector(".titlebar .commit-entry")!);
+    await type(host.querySelector<HTMLTextAreaElement>('textarea[aria-label="输入 AI 指令"]')!, "@Git 取消暂存");
+    await click(host.querySelector<HTMLButtonElement>('[aria-label="确认 AI 指令"]')!);
+    expect(bridge.planAi).toHaveBeenCalledOnce();
+    expect(bridge.operation).toHaveBeenCalledWith("a", "unstaged", expect.any(String), { kind: "unstage", pathIds: ["id-a.txt", "id-b.txt"] });
+    expect(host.querySelector(".ai-commit-dialog")).toBeNull();
+  });
   it("opens the AI commit input from the top button and the window shortcut", async () => {
     await mount();
     await click(host.querySelector(".titlebar .commit-entry")!);
     expect(host.querySelector('.ai-commit-dialog textarea[rows="1"]')).not.toBeNull();
     await act(async () => { host.querySelector(".ai-commit-overlay")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); });
     expect(host.querySelector(".ai-commit-dialog")).toBeNull();
-    await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "M", ctrlKey: true, shiftKey: true, bubbles: true })); });
+    await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "p", ctrlKey: true, bubbles: true })); });
     expect(host.querySelector(".ai-commit-dialog")).not.toBeNull();
   });
   it("saves the draft per project across restarts, explains why commit is unavailable, and clears the draft after a successful commit", async () => {

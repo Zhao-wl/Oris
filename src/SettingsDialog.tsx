@@ -5,6 +5,7 @@ import { schemeIndex, type SchemeIndexEntry } from "./themes/runtime";
 import notices from "./themes/generated/NOTICES.txt?raw";
 import { detectAiTools, listAiModels, setAiKey, type ToolCandidate } from "./ai-api";
 import type { AiProfile } from "./settings";
+import { displayAiShortcut } from "./ai-shortcut";
 
 interface Props {
   settings: SettingsStore;
@@ -197,7 +198,12 @@ function AiPage({ settings }: { settings: SettingsStore }) {
       <p className="settings-note">按操作分别设置，切换 AI 组合时沿用这些提示词；输出格式与文件范围仍由 Oris 校验。</p>
       {([
         ["stagedMessage", "根据暂存内容生成提交信息"],
-        ["describedCommit", "根据描述选择文件并生成提交信息"]
+        ["describedCommit", "根据描述选择文件并生成提交信息"],
+        ["commandCenter", "AI 操作入口"],
+        ["gitActions", "@Git 提示词"],
+        ["settingsActions", "@设置 提示词"],
+        ["pull", "@拉取 提示词"],
+        ["merge", "@合并 提示词"]
       ] as const).map(([key, label]) => <div className="ai-prompt-field" key={key}>
         <div className="settings-row-head"><label htmlFor={`ai-prompt-${key}`}>{label}</label><button type="button" disabled={ai.prompts[key] === DEFAULT_AI_PROMPTS[key]} onClick={() => settings.update("ai", "prompts", { ...ai.prompts, [key]: DEFAULT_AI_PROMPTS[key] })}>恢复默认</button></div>
         <textarea id={`ai-prompt-${key}`} aria-label={`${label}系统提示词`} value={ai.prompts[key]} maxLength={10_000} onChange={(event) => settings.update("ai", "prompts", { ...ai.prompts, [key]: event.target.value })}/>
@@ -210,7 +216,7 @@ function AiPage({ settings }: { settings: SettingsStore }) {
 
 function ShortcutsPage({ settings }: { settings: SettingsStore }) {
   const ai = useSettings(settings, (value) => value.ai);
-  return <div className="settings-page"><div className="settings-row"><label htmlFor="ai-shortcut">AI 提交快捷键</label><input id="ai-shortcut" readOnly value={ai.shortcut} onKeyDown={(event) => {
+  return <div className="settings-page"><div className="settings-row"><label htmlFor="ai-shortcut">AI 输入快捷键</label><input id="ai-shortcut" readOnly value={displayAiShortcut(ai.shortcut)} onKeyDown={(event) => {
       event.preventDefault();
       if (event.key === "Backspace") { settings.update("ai", "shortcut", ""); return; }
       if (!["Control", "Meta", "Shift", "Alt"].includes(event.key) && (event.ctrlKey || event.metaKey) && event.key.length === 1) {

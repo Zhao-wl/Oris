@@ -74,6 +74,7 @@ export function loadSettings(storage: Pick<Storage, "getItem">, registry: Settin
     return { settings: defaults(), notice: "incompatible", corrected: [], migratedGitExecutable: null };
   }
   const { values, corrected } = registry.normalize(raw);
+  if (values.ai?.shortcut === "CtrlOrMeta+Shift+M") values.ai.shortcut = "CtrlOrMeta+P";
   return { settings: toSettings(values), notice: corrected.length ? "corrected" : null, corrected, migratedGitExecutable: null };
 }
 
