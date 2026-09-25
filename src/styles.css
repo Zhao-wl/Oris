@@ -56,7 +56,7 @@ button:disabled { opacity:.45; cursor:default; }
 .file-view-select { width:38px; min-width:38px; padding:4px 5px; font-size:16px; border-color:var(--border); background:var(--toggle-off); }
 .filter { margin:0 7px 7px; width:calc(100% - 14px); }
 .files { min-height:0; overflow-y:scroll; overflow-x:hidden; overscroll-behavior:contain; scrollbar-gutter:stable; }
-.file { display:flex; width:100%; align-items:center; border:0; border-radius:0; background:transparent; padding:6px 10px 6px calc(10px + var(--tree-depth, 0) * 17px); text-align:left; cursor:pointer; user-select:none; }
+.file { display:flex; width:100%; height:32px; align-items:center; border:0; border-radius:0; background:transparent; padding:6px 10px 6px calc(10px + var(--tree-depth, 0) * 17px); text-align:left; cursor:pointer; user-select:none; }
 .file:hover { background:color-mix(in srgb, var(--hover) 45%, transparent); }
 .file:focus-visible { outline:2px solid var(--blue); outline-offset:-2px; }
 .file.selected { background:var(--hover); }
@@ -73,10 +73,10 @@ button:disabled { opacity:.45; cursor:default; }
 .fold-divider:hover::before, .fold-divider:hover::after { border-top-color:var(--dim); }
 .fold-label { white-space:nowrap; }
 .line-stat.unchanged { border:1px solid var(--border); border-radius:3px; padding:0 4px; }
-.tree-row { display:flex; align-items:center; gap:2px; min-height:27px; padding:4px 8px 4px calc(8px + var(--tree-depth, 0) * 17px); cursor:pointer; user-select:none; box-sizing:border-box; }
+.tree-row { display:flex; align-items:center; gap:2px; height:32px; padding:4px 8px 4px calc(8px + var(--tree-depth, 0) * 17px); cursor:pointer; user-select:none; box-sizing:border-box; }
 .tree-row.open>.directory-chevron { transform:rotate(90deg); }
 .stale-badge.verifying { opacity:.85; }
-.tree-directory>summary { display:flex; align-items:center; gap:2px; min-height:27px; padding:4px 8px 4px calc(8px + var(--tree-depth, 0) * 17px); cursor:pointer; user-select:none; }
+.tree-directory>summary { display:flex; align-items:center; gap:2px; height:32px; padding:4px 8px 4px calc(8px + var(--tree-depth, 0) * 17px); cursor:pointer; user-select:none; }
 .tree-directory>summary:hover { background:color-mix(in srgb, var(--hover) 55%, transparent); }
 .tree-directory>summary::marker { content:""; }
 .directory-chevron { width:12px; color:var(--dim); transform:rotate(90deg); transition:transform .12s; }
@@ -270,8 +270,8 @@ button:disabled { opacity:.45; cursor:default; }
 .settings-notices pre { max-height:220px; overflow:auto; margin:6px 0 0; padding:8px; white-space:pre-wrap; background:var(--bg); border:1px solid var(--border); border-radius:4px; font-size:11px; }
 
 /* 写操作（V2-02）：文件行入口、批量选择、右键菜单、确认框、底部 Git 区、状态栏结果。 */
-.file-actions { display:none; flex:none; gap:3px; margin-left:6px; }
-.file:hover .file-actions, .file.selected .file-actions, .file:focus-within .file-actions { display:flex; }
+.file-actions { display:flex; flex:none; gap:3px; margin-left:6px; visibility:hidden; pointer-events:none; }
+.file:hover .file-actions, .file.selected .file-actions, .file:focus-within .file-actions { visibility:visible; pointer-events:auto; }
 .file-action { padding:1px 6px; font-size:11px; line-height:16px; background:var(--toggle-off); border-color:var(--border); }
 .file.pending { opacity:.7; }
 .line-stat.pending-mark { color:var(--warning, #d9a24f); }

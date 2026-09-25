@@ -228,13 +228,13 @@ function flattenTree(node: DirectoryNode, depth: number, collapsed: Set<string>,
 /** 固定行高的虚拟列表：只渲染可视区域附近的行，滚动容器为外层 `.files`。 */
 function VirtualRows({ count, render }: { count: number; render(index: number, style: CSSProperties): JSX.Element }) {
   const host = useRef<HTMLDivElement>(null);
-  const [view, setView] = useState({ top: 0, height: 800, rowHeight: 28 });
+  const [view, setView] = useState({ top: 0, height: 800, rowHeight: 32 });
   useLayoutEffect(() => {
     const container = host.current?.closest(".files") as HTMLElement | null;
     if (!container) return;
     const measure = () => {
       const sample = host.current?.querySelector<HTMLElement>(".file, .tree-row");
-      const rowHeight = sample?.getBoundingClientRect().height || 28;
+      const rowHeight = sample?.getBoundingClientRect().height || 32;
       const offset = host.current ? host.current.offsetTop - container.offsetTop : 0;
       setView((current) => {
         const next = { top: Math.max(0, container.scrollTop - offset), height: container.clientHeight || 800, rowHeight };
