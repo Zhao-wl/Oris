@@ -120,7 +120,8 @@ impl GitAdapter {
         Ok(if result.cancelled {
             Step::cancelled("删除 stash 已取消")
         } else if result.success {
-            Step::ok(format!("已删除 stash@{{{index}}}（{}）", &oid[..oid.len().min(8)]))
+            // 不做备份（V2-D42）：给出找回命令，悬空对象被 gc 清理前有效。
+            Step::ok(format!("已删除 stash@{{{index}}}（{}）。需要找回时可在终端执行：git stash store -m \"Oris 找回的 stash\" {oid}（悬空对象被 git gc 清理前有效）", &oid[..oid.len().min(8)]))
         } else {
             Step::failed(Self::failure_message(&result, "删除 stash"))
         })

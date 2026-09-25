@@ -1,5 +1,5 @@
 //! R-SYNC 与 R-MERGE 写操作（技术方案 §6）：
-//! - pull：`pull --no-rebase [--ff-only | --no-ff --no-edit] --progress --no-recurse-submodules --no-autostash`，
+//! - pull：`pull --no-rebase [--ff-only | --no-edit] --progress --no-recurse-submodules --no-autostash`（合并方式遵循 `merge.ff`，能快进时快进，V2-D47），
 //!   始终不走 rebase（用户配置 `pull.rebase=true` 也以合并执行，V2-D04）；
 //! - push：只推送当前分支，显式 refspec `refs/heads/<b>:<上游>`，`--no-follow-tags`（不推送 tag）、
 //!   `--recurse-submodules=no`，首次为 `--set-upstream`；不提供任何强制推送；
@@ -15,7 +15,7 @@ use super::*;
 pub enum PullMode {
     /// 仅快进（默认）。
     FfOnly,
-    /// 合并远端改动（`--no-ff --no-edit`）。
+    /// 合并远端改动（`--no-edit`，遵循 `merge.ff`：能快进时快进，分叉时生成合并提交）。
     Merge,
 }
 
@@ -84,7 +84,7 @@ impl GitAdapter {
         let mut args = vec!["pull", "--progress", "--no-rebase", "--no-autostash", "--no-recurse-submodules"];
         match mode {
             PullMode::FfOnly => args.push("--ff-only"),
-            PullMode::Merge => args.extend(["--no-ff", "--no-edit"]),
+            PullMode::Merge => args.push("--no-edit"),
         }
         let result = self.network_git(&args, ctx)?;
         let head_after = self.head_oid()?;
