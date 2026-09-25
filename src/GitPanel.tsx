@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { headCommitInfo, type BackupSummary, type HeadCommitInfo, type OperationKind, type OperationOutcome, type OperationStatus } from "./operations-api";
 import { loadDraft, operationLabels, saveDraft } from "./operations-model";
 import { errorText } from "./error-message";
@@ -15,7 +15,7 @@ interface Props {
   stagedCount: number;
   /** HEAD / 上游变化的键：变化时重新读取 HEAD 信息。 */
   headKey: string;
-  /** 当前快照中的 HEAD OID；HEAD 信息与之不一致时视为正在读取，修订与撤销暂不可用。 */
+  /** 当前快照中的 HEAD OID；HEAD 信息与之不一致时视为正在读取，撤销暂不可用。 */
   headOid: string | null;
   mergeInProgress: boolean;
   blockedReason: string | null;
@@ -24,7 +24,8 @@ interface Props {
   last: OperationRecord | null;
   lastCommit: OperationRecord | null;
   backups: BackupSummary[];
-  onCommit(message: string, amend: boolean, keepMessage: boolean, expectedHead: string | null): Promise<OperationOutcome | null>;
+  /** push：提交成功后推送当前分支。 */
+  onCommit(message: string, push: boolean): Promise<OperationOutcome | null>;
   onUndoCommit(head: HeadCommitInfo): void;
   onUndoDiscard(backupId: string): void;
   onCancel(): void;
@@ -54,13 +55,12 @@ export default function GitPanel(props: Props) {
 
 function CommitTab({ repoId, stagedCount, headKey, headOid, mergeInProgress, blockedReason, running, lines, lastCommit, onCommit, onUndoCommit, onCancel }: Props & { repoId: string }) {
   const [message, setMessage] = useState(() => loadDraft(localStorage, repoId));
-  const [amend, setAmend] = useState(false);
+  const [push, setPush] = useState(false);
   const [loadedHead, setHead] = useState<HeadCommitInfo | null>(null);
-  // 只使用与当前快照 HEAD 一致的信息，避免对旧 HEAD 执行修订或撤销（后端还会按 expectedHead 再核对一次）。
+  // 只使用与当前快照 HEAD 一致的信息，避免对旧 HEAD 执行撤销（后端还会按 expectedHead 再核对一次）。
   const head = loadedHead && loadedHead.oid === headOid ? loadedHead : null;
   const headLoading = !!headOid && !head;
   const [headError, setHeadError] = useState<string | null>(null);
-  const savedDraft = useRef(message);
   useEffect(() => {
     let live = true;
     void headCommitInfo(repoId).then((info) => { if (live) { setHead(info); setHeadError(null); } }, (error) => { if (live) { setHead(null); setHeadError(errorText(error)); } });
@@ -68,41 +68,31 @@ function CommitTab({ repoId, stagedCount, headKey, headOid, mergeInProgress, blo
   }, [repoId, headKey]);
   const update = (value: string) => {
     setMessage(value);
-    // amend 时显示的是原提交信息，不覆盖草稿。
-    if (!amend) { savedDraft.current = value; try { saveDraft(localStorage, repoId, value); } catch { /* 存储可选 */ } }
+    try { saveDraft(localStorage, repoId, value); } catch { /* 存储可选 */ }
   };
-  const toggleAmend = (value: boolean) => {
-    setAmend(value);
-    if (value) { savedDraft.current = message; setMessage(head?.message ?? ""); }
-    else setMessage(savedDraft.current);
-  };
-  const committing = running && (running.kind === "commit" || running.kind === "amend" || running.kind === "undoCommit");
-  const keepMessage = amend && !!head && message.trim() === head.message.trim();
-  const pushedReason = head?.pushed ? `HEAD 已包含在上游 ${head.upstream ?? ""} 中：修订与撤销需要强制推送，Oris 不支持，请在命令行处理` : null;
+  const committing = running && (running.kind === "commit" || running.kind === "undoCommit");
+  const pushedReason = head?.pushed ? `HEAD 已包含在上游 ${head.upstream ?? ""} 中：撤销需要强制推送，Oris 不支持，请在命令行处理` : null;
+  const pushReason = head?.detached ? "分离 HEAD：不能推送" : null;
   const commitBlocked = blockedReason
-    ?? (amend && headLoading ? "正在读取 HEAD…" : null)
-    ?? (amend && !head ? "还没有提交，无法修订" : null)
-    ?? (amend ? pushedReason : null) ?? (amend && mergeInProgress ? "合并进行中不能修订提交" : null)
-    ?? (!amend && stagedCount === 0 ? "没有已暂存的内容：先在“未暂存”范围暂存文件" : null)
-    ?? (!keepMessage && !message.trim() ? "请填写提交信息（首行为摘要）" : null);
+    ?? (stagedCount === 0 ? "没有已暂存的内容：先在“未暂存”范围暂存文件" : null)
+    ?? (!message.trim() ? "请填写提交信息（首行为摘要）" : null);
   const undoBlocked = blockedReason ?? (headLoading ? "正在读取 HEAD…" : null) ?? (!head ? "还没有提交" : null) ?? pushedReason ?? (mergeInProgress ? "合并进行中不能撤销提交" : null) ?? (head?.detached && head.parents.length === 0 ? "分离 HEAD 上的根提交不能撤销" : null);
   const submit = async () => {
     if (commitBlocked) return;
-    const outcome = await onCommit(message, amend, keepMessage, amend ? head?.oid ?? null : null);
+    const outcome = await onCommit(message, push && !pushReason);
     if (outcome?.status === "succeeded") {
-      savedDraft.current = "";
-      setMessage(""); setAmend(false);
+      setMessage("");
       try { saveDraft(localStorage, repoId, ""); } catch { /* 存储可选 */ }
     }
   };
   return <div className="git-body commit-layout">
     <textarea aria-label="提交信息" placeholder={"提交摘要（必填）\n\n详细说明…"} value={message} onChange={(event) => update(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); void submit(); } }}/>
     <div className="commit-side">
-      <strong>{amend ? "修订最近一次提交" : `提交暂存区 · ${stagedCount} 个文件`}</strong>
-      <small>草稿按项目保存；未暂存内容不会进入提交{amend ? "；信息不改时只并入暂存内容" : ""}</small>
-      <label title={pushedReason ?? undefined}><input type="checkbox" aria-label="修订最近一次提交（amend）" checked={amend} disabled={!head || !!committing} onChange={(event) => toggleAmend(event.target.checked)}/> 修订最近一次提交（amend）</label>
+      <strong>{`提交暂存区 · ${stagedCount} 个文件`}</strong>
+      <small>草稿按项目保存；未暂存内容不会进入提交</small>
+      <label title={pushReason ?? "提交成功后推送当前分支；没有上游时先选择 remote"}><input type="checkbox" aria-label="提交并推送" checked={push && !pushReason} disabled={!!pushReason || !!committing} onChange={(event) => setPush(event.target.checked)}/> 提交并推送</label>
       <div className="commit-buttons">
-        <button type="button" className="primary" disabled={!!commitBlocked || !!committing} title={commitBlocked ?? "Ctrl+Enter"} onClick={() => void submit()}>{amend ? "修订提交" : "提交"}</button>
+        <button type="button" className="primary" disabled={!!commitBlocked || !!committing} title={commitBlocked ?? "Ctrl+Enter"} onClick={() => void submit()}>{push && !pushReason ? "提交并推送" : "提交"}</button>
         <button type="button" className="quiet" disabled={!!undoBlocked || !!committing} title={undoBlocked ?? (head ? `撤销 ${head.oid.slice(0, 8)} ${head.subject}` : undefined)} onClick={() => head && onUndoCommit(head)}>撤销最近提交…</button>
         {committing && <button type="button" onClick={onCancel}>取消</button>}
       </div>

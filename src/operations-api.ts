@@ -8,7 +8,7 @@ export type OperationRequest =
   | { kind: "markResolved"; pathIds: string[]; confirmed?: boolean }
   | { kind: "discard"; scope: CompareScope; pathIds: string[]; confirmedUnrecoverable?: boolean }
   | { kind: "undoDiscard"; backupId: string; overwrite?: boolean }
-  | { kind: "commit"; message: string; amend?: boolean; keepMessage?: boolean; expectedHead?: string | null }
+  | { kind: "commit"; message: string }
   | { kind: "undoCommit"; expectedHead: string }
   | { kind: "fetch"; remote: string }
   | { kind: "stashPush"; message?: string | null; includeUntracked?: boolean; pathIds?: string[] | null }
@@ -30,7 +30,7 @@ export type OperationRequest =
 /** “stash 后切换”：Git 因工作区改动拒绝切换、用户确认后，先储藏（可含未跟踪文件）再切换，切换后不自动恢复。 */
 export interface StashFirst { stashFirst?: boolean; stashUntracked?: boolean }
 
-export type OperationKind = "stage" | "unstage" | "markResolved" | "discard" | "undoDiscard" | "commit" | "amend" | "undoCommit" | "fetch"
+export type OperationKind = "stage" | "unstage" | "markResolved" | "discard" | "undoDiscard" | "commit" | "undoCommit" | "fetch"
   | "stashPush" | "stashApply" | "stashPop" | "stashDrop"
   | "branchCreate" | "branchSwitch" | "branchTrack" | "checkout" | "branchRename" | "branchDelete" | "setUpstream"
   | "pull" | "push" | "merge" | "mergeAbort" | "mergeCommit";

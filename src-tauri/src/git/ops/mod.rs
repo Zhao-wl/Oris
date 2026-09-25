@@ -55,17 +55,7 @@ pub enum OperationRequest {
         #[serde(default)]
         overwrite: bool,
     },
-    Commit {
-        message: String,
-        #[serde(default)]
-        amend: bool,
-        /// amend 且信息未改：`--amend --no-edit`，只并入暂存内容。
-        #[serde(default)]
-        keep_message: bool,
-        /// amend 时确认的 HEAD；HEAD 已变化则拒绝。
-        #[serde(default)]
-        expected_head: Option<String>,
-    },
+    Commit { message: String },
     UndoCommit { expected_head: String },
     /// 显式获取远端状态（R-REMOTE）：只更新远端跟踪引用等 Git 元数据。
     Fetch { remote: String },
@@ -163,8 +153,7 @@ impl OperationRequest {
             Self::MarkResolved { .. } => "markResolved",
             Self::Discard { .. } => "discard",
             Self::UndoDiscard { .. } => "undoDiscard",
-            Self::Commit { amend: false, .. } => "commit",
-            Self::Commit { amend: true, .. } => "amend",
+            Self::Commit { .. } => "commit",
             Self::UndoCommit { .. } => "undoCommit",
             Self::Fetch { .. } => "fetch",
             Self::StashPush { .. } => "stashPush",
@@ -391,7 +380,7 @@ impl GitAdapter {
             OperationRequest::Unstage { path_ids } => self.op_unstage(path_ids, ctx),
             OperationRequest::Discard { scope, path_ids, confirmed_unrecoverable } => self.op_discard(*scope, path_ids, *confirmed_unrecoverable, ctx),
             OperationRequest::UndoDiscard { backup_id, overwrite } => self.op_undo_discard(backup_id, *overwrite, ctx),
-            OperationRequest::Commit { message, amend, keep_message, expected_head } => self.op_commit(message, *amend, *keep_message, expected_head.as_deref(), ctx),
+            OperationRequest::Commit { message } => self.op_commit(message, ctx),
             OperationRequest::UndoCommit { expected_head } => self.op_undo_commit(expected_head, ctx),
             OperationRequest::Fetch { remote } => self.op_fetch(remote, ctx),
             OperationRequest::StashPush { message, include_untracked, path_ids } => self.op_stash_push(message.as_deref(), *include_untracked, path_ids.as_deref(), ctx),
@@ -454,8 +443,8 @@ impl GitAdapter {
         if let Some((_, name)) = blocked.iter().find(|(on, _)| *on) {
             return Err(GitError::WriteBlocked(format!("仓库处于 {name} 进行中，Oris 已禁用写操作；请回到命令行完成或中止后再操作")));
         }
-        if state.merge && matches!(request, OperationRequest::UndoCommit { .. } | OperationRequest::Commit { amend: true, .. }) {
-            return Err(GitError::WriteBlocked("合并进行中不能修订或撤销提交".into()));
+        if state.merge && matches!(request, OperationRequest::UndoCommit { .. }) {
+            return Err(GitError::WriteBlocked("合并进行中不能撤销提交".into()));
         }
         if self.index_lock_exists() {
             return Err(GitError::ExternalLock(format!(

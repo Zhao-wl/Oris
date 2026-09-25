@@ -410,7 +410,7 @@ fn b06_undo_reports_pruned_backup_objects_clearly() {
 // ------------------------------ B07 ------------------------------
 
 #[test]
-fn b07_commit_amend_message_or_staged_and_undo_normal_merge_root() {
+fn b07_commit_and_undo_normal_merge_root() {
     let dir = init();
     let p = dir.path();
     write(p, "root.txt", b"root\n");
@@ -419,7 +419,7 @@ fn b07_commit_amend_message_or_staged_and_undo_normal_merge_root() {
     // 根提交：多行信息、Unicode 与特殊字符原样写入。
     let message = "初始提交: \"quotes\" & $dollar\n\n正文第一行\n- 列表项";
     let before = fingerprint(p);
-    let outcome = h.run(OperationRequest::Commit { message: message.into(), amend: false, keep_message: false, expected_head: None });
+    let outcome = h.run(OperationRequest::Commit { message: message.into() });
     assert_eq!(outcome.status, OpStatus::Succeeded, "{}", outcome.message);
     let kinds = changed(&before, &fingerprint(p));
     assert!(kinds.contains(&"refs") && !kinds.contains(&"worktree") && !kinds.contains(&"config"), "{kinds:?}");
@@ -428,30 +428,22 @@ fn b07_commit_amend_message_or_staged_and_undo_normal_merge_root() {
     let branch = outcome.snapshot.as_ref().unwrap().branch_info.clone().unwrap();
     assert_eq!(branch.oid.as_deref(), Some(root.as_str()), "快照中的分支状态已刷新");
     // 没有暂存内容时 commit 失败且不生成提交。
-    let outcome = h.run(OperationRequest::Commit { message: "empty".into(), amend: false, keep_message: false, expected_head: None });
+    let outcome = h.run(OperationRequest::Commit { message: "empty".into() });
     assert_eq!(outcome.status, OpStatus::Failed);
     assert_eq!(git_text(p, &["rev-parse", "HEAD"]), root);
-    // 第二个提交，再 amend：只改信息。
-    write(p, "two.txt", b"two\n");
+    // 第二个提交；提交信息为空时拒绝且不生成提交。
+    write(p, "two.txt", b"two
+");
+    write(p, "three.txt", b"three
+");
     git(p, &["add", "-A"]);
-    h.run(OperationRequest::Commit { message: "second".into(), amend: false, keep_message: false, expected_head: None });
-    let second = git_text(p, &["rev-parse", "HEAD"]);
+    let outcome = h.run(OperationRequest::Commit { message: "  
+".into() });
+    assert_eq!(outcome.status, OpStatus::Failed);
+    assert_eq!(git_text(p, &["rev-parse", "HEAD"]), root);
+    h.run(OperationRequest::Commit { message: "second".into() });
     let info = h.adapter.head_commit_info().unwrap().unwrap();
     assert_eq!((info.message.as_str(), info.parents.len(), info.pushed), ("second", 1, None));
-    let outcome = h.run(OperationRequest::Commit { message: "second, reworded".into(), amend: true, keep_message: false, expected_head: Some(second.clone()) });
-    assert_eq!(outcome.status, OpStatus::Succeeded, "{}", outcome.message);
-    assert_eq!(git_text(p, &["log", "-1", "--format=%s"]), "second, reworded");
-    assert_eq!(git_text(p, &["rev-parse", "HEAD~1"]), root);
-    // amend 并入暂存内容，信息不变（--no-edit）。
-    write(p, "three.txt", b"three\n");
-    git(p, &["add", "-A"]);
-    let reworded = git_text(p, &["rev-parse", "HEAD"]);
-    let outcome = h.run(OperationRequest::Commit { message: String::new(), amend: true, keep_message: true, expected_head: Some(reworded.clone()) });
-    assert_eq!(outcome.status, OpStatus::Succeeded, "{}", outcome.message);
-    assert_eq!(git_text(p, &["log", "-1", "--format=%s"]), "second, reworded");
-    assert!(git_text(p, &["ls-tree", "--name-only", "HEAD"]).contains("three.txt"));
-    // expected_head 不一致：拒绝（HEAD 已在外部变化）。
-    assert!(matches!(h.try_run(OperationRequest::Commit { message: "x".into(), amend: true, keep_message: false, expected_head: Some(reworded) }), Err(GitError::StaleRequest)));
     // 撤销普通提交：HEAD 回到父提交，改动回到暂存区，工作区不变。
     let head = git_text(p, &["rev-parse", "HEAD"]);
     let before = fingerprint(p);
@@ -487,7 +479,7 @@ fn b07_commit_amend_message_or_staged_and_undo_normal_merge_root() {
 }
 
 #[test]
-fn b07_pushed_head_blocks_amend_and_undo() {
+fn b07_pushed_head_blocks_undo() {
     let dir = base_repo();
     let p = dir.path();
     let remote = tempfile::tempdir().unwrap();
@@ -500,13 +492,12 @@ fn b07_pushed_head_blocks_amend_and_undo() {
     assert_eq!(info.pushed, Some(true));
     assert_eq!(info.upstream.as_deref(), Some("origin/main"));
     let before = fingerprint(p);
-    assert!(matches!(h.try_run(OperationRequest::UndoCommit { expected_head: head.clone() }), Err(GitError::WriteBlocked(m)) if m.contains("origin/main")));
-    assert!(matches!(h.try_run(OperationRequest::Commit { message: "x".into(), amend: true, keep_message: false, expected_head: Some(head) }), Err(GitError::WriteBlocked(_))));
+    assert!(matches!(h.try_run(OperationRequest::UndoCommit { expected_head: head }), Err(GitError::WriteBlocked(m)) if m.contains("origin/main")));
     assert_eq!(before, fingerprint(p), "被拒绝的操作不改动仓库");
     // 本地新提交（领先 1）可以撤销。
     write(p, "local.txt", b"local\n");
     git(p, &["add", "-A"]);
-    let outcome = h.run(OperationRequest::Commit { message: "local".into(), amend: false, keep_message: false, expected_head: None });
+    let outcome = h.run(OperationRequest::Commit { message: "local".into() });
     assert_eq!(outcome.snapshot.unwrap().branch_info.unwrap().ahead, Some(1), "领先计数刷新");
     assert_eq!(h.adapter.head_commit_info().unwrap().unwrap().pushed, Some(false));
     let head = git_text(p, &["rev-parse", "HEAD"]);
@@ -536,7 +527,7 @@ fn b08_failing_pre_commit_hook_output_is_shown_and_no_commit_is_created() {
     let head = git_text(p, &["rev-parse", "HEAD"]);
     let lines = Mutex::new(Vec::new());
     let sink = |line: &str| lines.lock().unwrap().push(line.to_owned());
-    let outcome = h.try_run_with(OperationRequest::Commit { message: "blocked".into(), amend: false, keep_message: false, expected_head: None }, Arc::new(CancelHandle::default()), &sink).unwrap();
+    let outcome = h.try_run_with(OperationRequest::Commit { message: "blocked".into() }, Arc::new(CancelHandle::default()), &sink).unwrap();
     assert_eq!(outcome.status, OpStatus::Failed);
     assert!(outcome.output.contains("HOOK-FAIL-MARKER") && outcome.output.contains("second line"), "{}", outcome.output);
     assert!(outcome.message.contains("没有生成提交"), "{}", outcome.message);
@@ -571,7 +562,7 @@ fn b08_cancel_running_hook_terminates_the_whole_process_tree() {
             at
         })
     };
-    let outcome = h.try_run_with(OperationRequest::Commit { message: "cancel me".into(), amend: false, keep_message: false, expected_head: None }, cancel, &|_| {}).unwrap();
+    let outcome = h.try_run_with(OperationRequest::Commit { message: "cancel me".into() }, cancel, &|_| {}).unwrap();
     let cancelled_at = canceller.join().unwrap();
     let returned_after = cancelled_at.elapsed();
     assert_eq!(outcome.status, OpStatus::Cancelled, "{}", outcome.message);
@@ -593,7 +584,7 @@ fn b08_signing_follows_git_config_or_fails_with_clear_error() {
     let head = git_text(p, &["rev-parse", "HEAD"]);
     git(p, &["config", "commit.gpgsign", "true"]);
     git(p, &["config", "gpg.program", &p.join("no-such-gpg.exe").to_string_lossy()]);
-    let outcome = h.run(OperationRequest::Commit { message: "needs signature".into(), amend: false, keep_message: false, expected_head: None });
+    let outcome = h.run(OperationRequest::Commit { message: "needs signature".into() });
     assert_eq!(outcome.status, OpStatus::Failed);
     assert!(outcome.message.contains("gpg") || outcome.output.contains("gpg"), "{} / {}", outcome.message, outcome.output);
     assert_eq!(git_text(p, &["rev-parse", "HEAD"]), head);
@@ -606,7 +597,7 @@ fn b08_signing_follows_git_config_or_fails_with_clear_error() {
         fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
     }
     git(p, &["config", "gpg.program", &fake.to_string_lossy().replace('\\', "/")]);
-    let outcome = h.run(OperationRequest::Commit { message: "signed".into(), amend: false, keep_message: false, expected_head: None });
+    let outcome = h.run(OperationRequest::Commit { message: "signed".into() });
     assert_eq!(outcome.status, OpStatus::Succeeded, "{} / {}", outcome.message, outcome.output);
     assert!(git_text(p, &["cat-file", "commit", "HEAD"]).contains("gpgsig -----BEGIN PGP SIGNATURE-----"));
 }
@@ -632,7 +623,7 @@ fn b16_one_write_per_repository_external_lock_is_reported_not_removed_and_no_ret
     for request in [
         OperationRequest::Stage { path_ids: vec![id("a.txt")] },
         OperationRequest::Discard { scope: CompareScope::Unstaged, path_ids: vec![id("a.txt")], confirmed_unrecoverable: false },
-        OperationRequest::Commit { message: "x".into(), amend: false, keep_message: false, expected_head: None },
+        OperationRequest::Commit { message: "x".into() },
     ] {
         let error = h.try_run(request).unwrap_err();
         assert!(matches!(&error, GitError::ExternalLock(m) if m.contains("index.lock")), "{error}");
@@ -692,7 +683,7 @@ fn write_channel_does_not_run_fsmonitor_or_external_diff_commands() {
     write(p, "a.txt", b"change\n");
     let h = Harness::new(p);
     assert_eq!(h.run(OperationRequest::Stage { path_ids: vec![id("a.txt")] }).status, OpStatus::Succeeded);
-    assert_eq!(h.run(OperationRequest::Commit { message: "m".into(), amend: false, keep_message: false, expected_head: None }).status, OpStatus::Succeeded);
+    assert_eq!(h.run(OperationRequest::Commit { message: "m".into() }).status, OpStatus::Succeeded);
     assert!(!marker.exists());
 }
 
