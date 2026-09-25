@@ -45,6 +45,19 @@ pub struct Branch {
     pub remote: Option<String>,
 }
 
+/// 指向提交的标签（附注标签已解引用到提交）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Tag {
+    /// 完整引用名，如 `refs/tags/v1.0`。
+    pub full_name: String,
+    pub name: String,
+    /// 标签最终指向的提交 OID。
+    pub oid: String,
+    /// 附注标签（有标签对象）。
+    pub annotated: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HeadState {
@@ -62,6 +75,8 @@ pub struct RefsSnapshot {
     pub head: HeadState,
     pub local: Vec<Branch>,
     pub remote: Vec<Branch>,
+    /// 指向提交的标签；指向树 / blob 或多层嵌套的标签不列出。
+    pub tags: Vec<Tag>,
     pub shallow: bool,
     /// 已配置的 remote 名称（`git remote`）。
     pub remotes: Vec<String>,
@@ -106,17 +121,30 @@ pub fn read_refs(git: &Path, worktree: &Path) -> Result<RefsSnapshot, GitError> 
         worktree,
         &[
             "for-each-ref",
-            "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(upstream)%00%(upstream:track,nobracket)%00%(symref)%00%(upstream:remotename)",
+            "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(upstream)%00%(upstream:track,nobracket)%00%(symref)%00%(upstream:remotename)%00%(*objectname)%00%(*objecttype)",
             "refs/heads",
             "refs/remotes",
+            "refs/tags",
         ],
     )?;
     let text = String::from_utf8_lossy(&output.stdout).into_owned();
-    let rows: Vec<Vec<&str>> = text.lines().map(|line| line.split('\0').collect()).filter(|f: &Vec<&str>| f.len() == 7).collect();
+    let rows: Vec<Vec<&str>> = text.lines().map(|line| line.split('\0').collect()).filter(|f: &Vec<&str>| f.len() == 9).collect();
     let existing: HashSet<&str> = rows.iter().map(|f| f[0]).collect();
-    let (mut local, mut remote) = (Vec::new(), Vec::new());
+    let (mut local, mut remote, mut tags) = (Vec::new(), Vec::new(), Vec::new());
     for fields in &rows {
         let (full_name, oid, object_type, upstream, track, symref, remote_name) = (fields[0], fields[1], fields[2], fields[3], fields[4], fields[5], fields[6]);
+        if let Some(name) = full_name.strip_prefix("refs/tags/") {
+            let (peeled, peeled_type) = (fields[7], fields[8]);
+            let target = match object_type {
+                "commit" => Some((oid, false)),
+                "tag" if peeled_type == "commit" => Some((peeled, true)),
+                _ => None,
+            };
+            if let Some((target, annotated)) = target {
+                tags.push(Tag { full_name: full_name.to_owned(), name: name.to_owned(), oid: target.to_owned(), annotated });
+            }
+            continue;
+        }
         // refs/remotes/<remote>/HEAD 是指向默认分支的符号引用，不作为独立分支。
         if !symref.is_empty() || object_type != "commit" {
             continue;
@@ -165,5 +193,5 @@ pub fn read_refs(git: &Path, worktree: &Path) -> Result<RefsSnapshot, GitError> 
     for branch in &mut remote {
         branch.remote = remotes.iter().filter(|r| branch.name.starts_with(&format!("{r}/"))).max_by_key(|r| r.len()).cloned();
     }
-    Ok(RefsSnapshot { head, local, remote, shallow, remotes })
+    Ok(RefsSnapshot { head, local, remote, tags, shallow, remotes })
 }

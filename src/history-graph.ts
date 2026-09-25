@@ -92,3 +92,11 @@ export function layoutGraph(commits: GraphCommit[]): GraphLayout {
   const continuations = lanes.flatMap((target, lane) => (target ? [{ lane, target }] : []));
   return { rows, continuations, width };
 }
+
+/**
+ * 搜索结果的布局：结果集中的提交彼此多半不相连，按拓扑布局会为每个缺失的父提交保留一条泳道，
+ * 图宽随结果数增长。搜索时只按顺序列出节点，不画连线。
+ */
+export function flatLayout(commits: GraphCommit[]): GraphLayout {
+  return { rows: commits.map((commit) => ({ oid: commit.oid, lane: 0, lanesBefore: [], lanesAfter: [], edges: [], mergedLanes: [], isTip: true })), continuations: [], width: 1 };
+}

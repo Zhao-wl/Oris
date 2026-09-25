@@ -37,9 +37,17 @@ export interface PinnedEndpoint { ref: string; oid: string; label: string }
 export function movedEndpoint(endpoint: PinnedEndpoint, refs: RefsView | null): string | null {
   if (!refs || endpoint.ref === endpoint.oid) return null;
   if (endpoint.ref === "HEAD") return refs.head.oid && refs.head.oid !== endpoint.oid ? `HEAD 已移动到 ${refs.head.oid.slice(0, 8)}` : null;
-  const branch: Branch | undefined = [...refs.local, ...refs.remote].find((b) => b.fullName === endpoint.ref);
-  if (!branch) return `${endpoint.label} 已不存在`;
-  return branch.oid !== endpoint.oid ? `${endpoint.label} 已移动到 ${branch.oid.slice(0, 8)}` : null;
+  const oid = refOid(endpoint.ref, refs);
+  if (!oid) return `${endpoint.label} 已不存在`;
+  return oid !== endpoint.oid ? `${endpoint.label} 已移动到 ${oid.slice(0, 8)}` : null;
+}
+
+/** 引用（HEAD、分支或标签完整名）当前指向的提交；不存在时为 null。 */
+export function refOid(ref: string, refs: RefsView | null): string | null {
+  if (!refs) return null;
+  if (ref === "HEAD") return refs.head.oid;
+  const branch: Branch | undefined = [...refs.local, ...refs.remote].find((b) => b.fullName === ref);
+  return branch?.oid ?? refs.tags?.find((t) => t.fullName === ref)?.oid ?? null;
 }
 
 /** Oris 记录的最近一次成功获取（按工作区路径保存在 localStorage）。 */
