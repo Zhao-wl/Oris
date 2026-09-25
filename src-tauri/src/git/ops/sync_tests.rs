@@ -466,7 +466,7 @@ fn b14_external_rebase_cherry_pick_revert_and_bisect_block_every_new_write() {
             OperationRequest::Fetch { remote: "origin".into() },
             OperationRequest::BranchSwitch { name: "refs/heads/topic".into(), stash_first: false, stash_untracked: false },
             OperationRequest::StashPush { message: None, include_untracked: false, path_ids: None },
-            OperationRequest::Commit { message: "x".into(), amend: false, keep_message: false, expected_head: None },
+            OperationRequest::Commit { message: "x".into() },
         ]
     };
     let states: Vec<(&str, Box<dyn Fn()>, Box<dyn Fn()>)> = vec![

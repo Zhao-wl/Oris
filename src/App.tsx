@@ -690,8 +690,8 @@ export default function App() {
     if (!repoId) return null;
     const runtimeNow = projects.get(repoId);
     const blocked = writeBlockedReason({ snapshot: runtimeNow?.snapshot, verifying: !!runtimeNow?.verifying, running: opStore.get()[repoId]?.running ? operationLabels[opStore.get()[repoId]!.running!.kind] : null });
-    if (blocked) { updateOps(repoId, { last: { kind: request.kind === "commit" && request.amend ? "amend" : request.kind, status: "failed", message: blocked, output: "", at: Date.now() } }); return null; }
-    const kind = request.kind === "commit" && request.amend ? "amend" : request.kind;
+    const kind = request.kind;
+    if (blocked) { updateOps(repoId, { last: { kind, status: "failed", message: blocked, output: "", at: Date.now() } }); return null; }
     const opId = newRequestId();
     const prior = runtimeNow?.snapshot ?? null;
     const viewScope = currentRead.current.scope;
@@ -710,7 +710,7 @@ export default function App() {
       opRunning.current.delete(repoId);
       // 前置检查失败（例如 stash 列表在外部被修改）：重读 stash 列表。
       if (currentRead.current.repo === repoId && stashKinds.has(kind)) setStashVersion((value) => value + 1);
-      updateOps(repoId, (current) => ({ running: null, last: { kind, status: "failed", message: errorText(error), output: "", at: Date.now() }, ...(["commit", "amend", "undoCommit"].includes(kind) ? { lastCommit: { kind, status: "failed", message: errorText(error), output: "", at: Date.now() } } : {}), lines: current.lines }));
+      updateOps(repoId, (current) => ({ running: null, last: { kind, status: "failed", message: errorText(error), output: "", at: Date.now() }, ...(["commit", "undoCommit"].includes(kind) ? { lastCommit: { kind, status: "failed", message: errorText(error), output: "", at: Date.now() } } : {}), lines: current.lines }));
       if (repositoryGate.current.accepts(requestId)) repositoryGate.current.finish(requestId);
       return null;
     }
@@ -720,7 +720,7 @@ export default function App() {
       if (refsKinds.has(outcome.kind)) setRefsVersion((value) => value + 1);
       if (stashKinds.has(outcome.kind)) setStashVersion((value) => value + 1);
     }
-    const commitKind = ["commit", "amend", "undoCommit"].includes(outcome.kind);
+    const commitKind = ["commit", "undoCommit"].includes(outcome.kind);
     // 状态栏的“撤销丢弃”只针对本次丢弃返回的备份，不依赖异步刷新的备份列表。
     const succeeded = outcome.status === "succeeded";
     const backupPatch = outcome.kind === "discard" && succeeded ? { lastBackup: outcome.backup } : request.kind === "undoDiscard" && succeeded && opStore.get()[repoId]?.lastBackup?.id === request.backupId ? { lastBackup: null } : {};
@@ -807,7 +807,15 @@ export default function App() {
       if (ok) await undoDiscard(backupId, true);
     }
   };
-  const commit = (message: string, amend: boolean, keepMessage: boolean, expectedHead: string | null) => runOp({ kind: "commit", message, amend, keepMessage, expectedHead });
+  /** 提交；勾选“提交并推送”时提交成功后推送：已有上游直接推送，否则打开推送预览选择 remote。 */
+  const commit = async (message: string, push: boolean) => {
+    const outcome = await runOp({ kind: "commit", message });
+    if (push && outcome?.status === "succeeded") {
+      if (outcome.snapshot?.branchInfo?.upstream) void runOp({ kind: "push", remote: null });
+      else { freshRefsView(); setPushOpen(true); }
+    }
+    return outcome;
+  };
   /** 显式获取远端状态（R-REMOTE）：确认框选择 remote 后执行；成功时记录完成时间。 */
   const startFetch = async (remote: string) => {
     setFetchOpen(false);

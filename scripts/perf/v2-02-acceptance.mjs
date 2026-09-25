@@ -421,12 +421,12 @@ async function functional() {
     e = evidence("撤销丢弃（全部范围）", repos.discardAll, beforeAllUndo, afterAllUndo, ["worktree", "index"]);
     check("B06 撤销“全部”范围丢弃：暂存内容（ls-files -s）与工作区都恢复", gitOut(repos.discardAll, ["ls-files", "-s"]) === indexBefore && q(worktreeOnly(afterAllUndo)) === q(worktreeOnly(before)), { e });
 
-    // ---------- B07 commit / amend / undo ----------
+    // ---------- B07 commit / undo ----------
     await ctx.addProject(repos.commit);
     await ctx.settle();
     await ctx.openTab("提交");
     await ctx.waitUntil(`(window.__v2.button('撤销最近提交…')?.title ?? '').includes('origin/main')`, 10000).catch(() => {});
-    check("B07 已推送的 HEAD：撤销与 amend 不可用并说明原因", await ctx.evaluate(`(() => { const b = window.__v2.button('撤销最近提交…'); return b.disabled && /origin\\/main/.test(b.title); })()`), { title: await ctx.evaluate(`window.__v2.button('撤销最近提交…')?.title`), debug: await ctx.evaluate(`(async () => { const ws = JSON.parse(localStorage.getItem('oris.workspace.v2')); try { return { active: ws.activeRepoId, head: await window.__TAURI_INTERNALS__.invoke('head_commit_info', { repoId: ws.activeRepoId }), ipc: IPCLOG, side: { loaded: document.querySelector('.commit-side')?.dataset.headOid, snapshot: document.querySelector('.commit-side')?.dataset.snapshotHead }, git: gitHead }; } catch (e) { return { error: String(e?.message ?? JSON.stringify(e)) }; } })()`.replace("gitHead", q(gitOut(repos.commit, ["rev-parse", "HEAD"]))).replace("IPCLOG", q(ctx.recentIpc()))) });
+    check("B07 已推送的 HEAD：撤销不可用并说明原因", await ctx.evaluate(`(() => { const b = window.__v2.button('撤销最近提交…'); return b.disabled && /origin\\/main/.test(b.title); })()`), { title: await ctx.evaluate(`window.__v2.button('撤销最近提交…')?.title`), debug: await ctx.evaluate(`(async () => { const ws = JSON.parse(localStorage.getItem('oris.workspace.v2')); try { return { active: ws.activeRepoId, head: await window.__TAURI_INTERNALS__.invoke('head_commit_info', { repoId: ws.activeRepoId }), ipc: IPCLOG, side: { loaded: document.querySelector('.commit-side')?.dataset.headOid, snapshot: document.querySelector('.commit-side')?.dataset.snapshotHead }, git: gitHead }; } catch (e) { return { error: String(e?.message ?? JSON.stringify(e)) }; } })()`.replace("gitHead", q(gitOut(repos.commit, ["rev-parse", "HEAD"]))).replace("IPCLOG", q(ctx.recentIpc()))) });
     const pushedShot = await ctx.shot("b07-pushed-protection");
     await ctx.evaluate(`window.__v2.clickRow('one.txt', '暂存')`);
     await ctx.settle();
@@ -435,31 +435,6 @@ async function functional() {
     const commitRun = await traced("commit（无 hooks）", () => ctx.measure(`window.__v2.button('提交').click()`, `window.__v2.commitResult()?.cls.includes('succeeded') && window.__v2.staged() === 0 && (window.__v2.counts() ?? '').includes('↑1')`, 15000));
     e = evidence("commit", repos.commit, before, fingerprint(repos.commit), ["index", "refs"]);
     check("B07 commit：信息原样写入，文件列表、分支领先计数刷新，草稿清空", commitRun.ok && gitOut(repos.commit, ["log", "-1", "--format=%B"]) === "feat: 第一个本地提交\n\n正文 & \"引号\"" && (await ctx.evaluate(`window.__v2.commitText()`)) === "" && e.unexpected.length === 0, { commitRun, e, pushedShot, shot: await ctx.shot("b07-after-commit") });
-    // amend 只改信息。
-    await ctx.evaluate(`document.querySelector('input[aria-label="修订最近一次提交（amend）"]').click()`);
-    await sleep(200);
-    const prefill = await ctx.evaluate(`window.__v2.commitText()`);
-    await ctx.evaluate(`window.__v2.setCommit('feat: 改过的信息')`);
-    const parentBefore = gitOut(repos.commit, ["rev-parse", "HEAD~1"]);
-    before = fingerprint(repos.commit);
-    await ctx.measure(`window.__v2.button('修订提交').click()`, `window.__v2.commitResult()?.text.includes('已修订提交')`, 15000);
-    await ctx.settle();
-    e = evidence("amend（只改信息）", repos.commit, before, fingerprint(repos.commit), ["index", "refs"]);
-    check("B07 amend 只改信息：默认填入原信息，父提交不变", prefill === "feat: 第一个本地提交\n\n正文 & \"引号\"" && gitOut(repos.commit, ["log", "-1", "--format=%s"]) === "feat: 改过的信息" && gitOut(repos.commit, ["rev-parse", "HEAD~1"]) === parentBefore && e.unexpected.length === 0, { prefill, e });
-    // amend 并入暂存（信息不改 → --no-edit）。
-    put(repos.commit, "two.txt", "two\n");
-    await ctx.evaluate(`window.__op.button('↻ 本地刷新').click()`);
-    await ctx.waitUntil(`!!window.__op.row('two.txt')`, 20000);
-    await ctx.settle();
-    await ctx.evaluate(`window.__v2.clickRow('two.txt', '暂存')`);
-    await ctx.settle();
-    await ctx.evaluate(`document.querySelector('input[aria-label="修订最近一次提交（amend）"]').click()`);
-    await sleep(200);
-    before = fingerprint(repos.commit);
-    await ctx.measure(`window.__v2.button('修订提交').click()`, `window.__v2.commitResult()?.text.includes('已修订提交') && window.__v2.staged() === 0`, 15000);
-    await ctx.settle();
-    e = evidence("amend（并入暂存，信息不变）", repos.commit, before, fingerprint(repos.commit), ["index", "refs"]);
-    check("B07 amend 并入暂存：信息不变，提交包含新文件", gitOut(repos.commit, ["log", "-1", "--format=%s"]) === "feat: 改过的信息" && gitOut(repos.commit, ["ls-tree", "--name-only", "HEAD"]).includes("two.txt") && e.unexpected.length === 0, { e });
     // 撤销普通提交。
     const headBeforeUndo = gitOut(repos.commit, ["rev-parse", "HEAD"]);
     await ctx.waitUntil(`!window.__v2.button('撤销最近提交…').disabled && window.__v2.button('撤销最近提交…').title.includes(${q(headBeforeUndo.slice(0, 8))})`, 10000);
@@ -471,7 +446,7 @@ async function functional() {
     await traced("撤销最近提交", async () => { await ctx.evaluate(`window.__v2.dialogButton('撤销提交')`); await ctx.waitUntil(`window.__v2.commitResult()?.text.includes('已撤销提交')`, 15000); });
     await ctx.settle();
     e = evidence("撤销最近提交（普通）", repos.commit, before, fingerprint(repos.commit), ["refs", "index"]);
-    check("B07 撤销普通提交：HEAD 回到上游，改动回到暂存区，工作区不变", /回退一个提交/.test(undoDialog?.text ?? "") && gitOut(repos.commit, ["rev-parse", "HEAD"]) === gitOut(repos.commit, ["rev-parse", "origin/main"]) && gitOut(repos.commit, ["diff", "--cached", "--name-only"]).split("\n").sort().join() === "one.txt,two.txt" && !e.categories.includes("worktree") && headBeforeUndo !== gitOut(repos.commit, ["rev-parse", "HEAD"]), { undoDialog, undoShot, e });
+    check("B07 撤销普通提交：HEAD 回到上游，改动回到暂存区，工作区不变", /回退一个提交/.test(undoDialog?.text ?? "") && gitOut(repos.commit, ["rev-parse", "HEAD"]) === gitOut(repos.commit, ["rev-parse", "origin/main"]) && gitOut(repos.commit, ["diff", "--cached", "--name-only"]).split("\n").sort().join() === "one.txt" && !e.categories.includes("worktree") && headBeforeUndo !== gitOut(repos.commit, ["rev-parse", "HEAD"]), { undoDialog, undoShot, e });
     // 草稿按项目保存、重启后恢复。
     await ctx.evaluate(`window.__v2.setCommit('草稿：重启后应恢复')`);
     await sleep(300);

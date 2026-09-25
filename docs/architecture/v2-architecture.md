@@ -132,7 +132,7 @@ flowchart LR
 | 丢弃（全部范围） | 备份后 `restore --source=HEAD --staged --worktree`；index 中新增的文件为 `rm --cached` 后删除 |
 | 撤销丢弃 | 从备份对象写回工作区；暂存部分用 `update-index --cacheinfo` 恢复 |
 | hunk 暂存 / 取消 / 丢弃 | Rust 按原始字节生成 patch，`apply --cached` / `apply --cached --reverse` / `apply --reverse`，执行前先 `--check` |
-| commit / amend | `commit -F -` / `commit --amend -F -`（仅并入暂存内容时用 `--no-edit`） |
+| commit | `commit -F -`（amend 已按 V2-D37 删除；“提交并推送”在前端于提交成功后再发起 push 请求） |
 | 撤销最近提交 | `reset --soft HEAD~1`；根提交时 `update-ref -d HEAD` |
 | stash 保存 | `stash push [-u] [-m] [-- <paths>]` |
 | stash 应用 / 弹出 / 删除 | 先核对 `stash@{n}` 仍指向列表中的 OID，再执行 `stash apply` / `pop` / `drop` |

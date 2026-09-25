@@ -229,33 +229,61 @@ describe("commit panel (B07)", () => {
     expect((host.querySelector("textarea[aria-label='提交信息']") as HTMLTextAreaElement).value).toBe("feat: 草稿\n\n正文");
     bridge.operation.mockResolvedValue(outcome("commit", snap([change("b.txt")], [], "r3"), { message: "已提交：abcdef12" }));
     await click(button("提交"));
-    expect(bridge.operation).toHaveBeenCalledWith("a", "unstaged", expect.any(String), { kind: "commit", message: "feat: 草稿\n\n正文", amend: false, keepMessage: false, expectedHead: null });
+    expect(bridge.operation).toHaveBeenCalledWith("a", "unstaged", expect.any(String), { kind: "commit", message: "feat: 草稿\n\n正文" });
     expect((host.querySelector("textarea[aria-label='提交信息']") as HTMLTextAreaElement).value).toBe("");
     expect(localStorage.getItem(DRAFTS_KEY)).toBe("{}");
     expect(host.querySelector(".commit-result.succeeded")?.textContent).toContain("已提交");
   });
 
-  it("disables amend and undo for a pushed HEAD, and prefills the original message for amend", async () => {
+  it("disables undo for a pushed HEAD and while the HEAD info is older than the snapshot's HEAD", async () => {
     bridge.open.mockResolvedValue(snap([], [change("a.txt", "added")]));
     bridge.head.mockResolvedValue({ oid: "h".repeat(40), parents: ["p".repeat(40)], message: "original message", subject: "original message", pushed: true, upstream: "origin/main", detached: false });
     await mount();
     await click(button("提交 · 1"));
     expect(button("撤销最近提交…").disabled).toBe(true);
     expect(button("撤销最近提交…").title).toContain("origin/main");
-    await click(host.querySelector("input[aria-label='修订最近一次提交（amend）']") as HTMLElement);
-    expect((host.querySelector("textarea[aria-label='提交信息']") as HTMLTextAreaElement).value).toBe("original message");
-    expect(button("修订提交").disabled).toBe(true);
-    expect(host.querySelector(".commit-reason")?.textContent).toContain("强制推送");
-  });
-
-  it("does not offer undo / amend while the HEAD info is older than the snapshot's HEAD", async () => {
-    bridge.open.mockResolvedValue(snap([], [change("a.txt", "added")]));
+    await act(async () => root.unmount()); root = createRoot(host);
     bridge.head.mockResolvedValue({ oid: "o".repeat(40), parents: ["p".repeat(40)], message: "old head", subject: "old head", pushed: null, upstream: null, detached: false });
     await mount();
     await click(button("提交 · 1"));
     expect(button("撤销最近提交…").disabled).toBe(true);
     expect(button("撤销最近提交…").title).toContain("正在读取 HEAD");
-    expect((host.querySelector("input[aria-label='修订最近一次提交（amend）']") as HTMLInputElement).disabled).toBe(true);
+  });
+
+  it("commit and push: pushes to the upstream after a successful commit, or opens the push preview without one", async () => {
+    const withUpstream = (s: RepositorySnapshot): RepositorySnapshot => ({ ...s, branchInfo: { ...s.branchInfo!, upstream: "origin/main", ahead: 1, behind: 0 } });
+    bridge.open.mockResolvedValue(snap([], [change("a.txt", "added")]));
+    bridge.operation.mockImplementation(async (_repo: string, _scope: string, _op: string, request: { kind: string }) => request.kind === "commit"
+      ? outcome("commit", withUpstream(snap([], [], "r2")), { message: "已提交：abcdef12" })
+      : outcome("push", withUpstream(snap([], [], "r3")), { message: "已推送" }));
+    await mount();
+    await click(button("提交 · 1"));
+    await type(host.querySelector("textarea[aria-label='提交信息']") as HTMLTextAreaElement, "feat: x");
+    await click(host.querySelector("input[aria-label='提交并推送']") as HTMLElement);
+    await click(button("提交并推送"));
+    expect(bridge.operation.mock.calls.map((call) => call[3])).toEqual([{ kind: "commit", message: "feat: x" }, { kind: "push", remote: null }]);
+
+    // 没有上游：提交后打开推送预览，由用户选择 remote。
+    await act(async () => root.unmount()); root = createRoot(host);
+    bridge.operation.mockReset();
+    bridge.operation.mockResolvedValue(outcome("commit", snap([], [], "r2"), { message: "已提交：abcdef12" }));
+    await mount();
+    await click(button("提交 · 1"));
+    await type(host.querySelector("textarea[aria-label='提交信息']") as HTMLTextAreaElement, "feat: y");
+    await click(host.querySelector("input[aria-label='提交并推送']") as HTMLElement);
+    await click(button("提交并推送"));
+    expect(bridge.operation).toHaveBeenCalledTimes(1);
+    expect(host.querySelector(".push-dialog")).not.toBeNull();
+  });
+
+  it("disables commit and push on a detached HEAD", async () => {
+    bridge.open.mockResolvedValue(snap([], [change("a.txt", "added")]));
+    bridge.head.mockResolvedValue({ oid: "h".repeat(40), parents: ["p".repeat(40)], message: "m", subject: "m", pushed: null, upstream: null, detached: true });
+    await mount();
+    await click(button("提交 · 1"));
+    const box = host.querySelector("input[aria-label='提交并推送']") as HTMLInputElement;
+    expect(box.disabled).toBe(true);
+    expect(box.closest("label")?.title).toContain("分离 HEAD");
   });
 
   it("shows failing hook output and keeps the draft", async () => {

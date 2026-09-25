@@ -1,6 +1,5 @@
-//! R-COMMIT：commit（`commit -F -`）、amend（`--amend -F -`；只并入暂存时 `--amend --no-edit`）、
-//! 撤销最近提交（`reset --soft <第一个父提交>`；根提交为 `update-ref -d HEAD <oid>`）。
-//! hooks 与签名按用户仓库配置执行，不提供 `--no-verify`（V2-D14）。已推送的 HEAD 禁止 amend 与撤销（V2-D11）。
+//! R-COMMIT：commit（`commit -F -`）、撤销最近提交（`reset --soft <第一个父提交>`；根提交为 `update-ref -d HEAD <oid>`）。
+//! hooks 与签名按用户仓库配置执行，不提供 `--no-verify`（V2-D14）。已推送的 HEAD 禁止撤销（V2-D11）；不提供 amend。
 use super::*;
 
 /// 提交面板需要的 HEAD 信息（只读通道）。
@@ -61,26 +60,14 @@ impl GitAdapter {
         Ok(())
     }
 
-    pub(super) fn op_commit(&self, message: &str, amend: bool, keep_message: bool, expected_head: Option<&str>, ctx: &OpContext) -> Result<Step, GitError> {
+    pub(super) fn op_commit(&self, message: &str, ctx: &OpContext) -> Result<Step, GitError> {
         let head_before = self.head_oid()?;
-        if amend {
-            let Some(head) = &head_before else { return Err(GitError::WriteBlocked("还没有提交，无法修订".into())) };
-            if expected_head.is_some_and(|expected| expected != head) {
-                return Err(GitError::StaleRequest);
-            }
-            self.ensure_not_pushed("修订提交")?;
-        }
-        if !(amend && keep_message) && message.trim().is_empty() {
+        if message.trim().is_empty() {
             return Ok(Step::failed("提交信息不能为空"));
         }
-        let (args, stdin): (&[&str], Option<Vec<u8>>) = match (amend, keep_message) {
-            (true, true) => (&["commit", "--amend", "--no-edit"], None),
-            (true, false) => (&["commit", "--amend", "-F", "-"], Some(message.as_bytes().to_vec())),
-            (false, _) => (&["commit", "-F", "-"], Some(message.as_bytes().to_vec())),
-        };
-        let result = self.write_git(args, stdin, true, ctx)?;
+        let result = self.write_git(&["commit", "-F", "-"], Some(message.as_bytes().to_vec()), true, ctx)?;
         let head_after = self.head_oid()?;
-        let what = if amend { "修订提交" } else { "提交" };
+        let what = "提交";
         Ok(if result.cancelled {
             if head_after != head_before {
                 Step::cancelled(format!("{what}已取消，但提交在取消前已经生成（HEAD 为 {}）", short(head_after.as_deref())))

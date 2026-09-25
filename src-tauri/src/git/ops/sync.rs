@@ -255,7 +255,7 @@ impl GitAdapter {
         if conflicts > 0 {
             return Err(GitError::WriteBlocked(format!("还有 {conflicts} 个冲突文件没有标记已解决")));
         }
-        let mut step = self.op_commit(message, false, false, None, ctx)?;
+        let mut step = self.op_commit(message, ctx)?;
         if step.status == OpStatus::Succeeded {
             step.message = step.message.replacen("已提交", "已完成合并", 1);
         }
