@@ -28,7 +28,6 @@ interface Props {
   fileHistoryRequest: FileHistoryRequest | null;
   activeKey: string | null;
   onOpenFile(open: HistoryFileOpen): void;
-  fetchText: string;
   onRefs?(refs: RefsView): void;
   /** V2-03：提交右键“检出（分离 HEAD）”“从这里新建分支”。 */
   onCheckout?(oid: string): void;
@@ -85,7 +84,7 @@ interface Menu { x: number; y: number; endpoint: PinnedEndpoint }
  * 中间提交图与列表，右侧详情。单击引用只筛选历史，双击分支才切换；三栏宽度可拖动。
  */
 export default function HistoryPanel(props: Props) {
-  const { repoId, refsVersion, hidden, fileHistoryRequest, activeKey, onOpenFile, fetchText, onRefs, onCheckout, onNewBranch, onMerge, writeBlocked, onSwitch, onTrack, stashVersion = 0, selectedFiles = [], onStashPush, onStashApply, onStashDrop } = props;
+  const { repoId, refsVersion, hidden, fileHistoryRequest, activeKey, onOpenFile, onRefs, onCheckout, onNewBranch, onMerge, writeBlocked, onSwitch, onTrack, stashVersion = 0, selectedFiles = [], onStashPush, onStashApply, onStashDrop } = props;
   const [refs, setRefs] = useState<RefsView | null>(null);
   const [refsError, setRefsError] = useState<string | null>(null);
   const [filter, setFilter] = useState<string | null>(null);
@@ -316,7 +315,7 @@ export default function HistoryPanel(props: Props) {
   const stashEntry = mode.kind === "stash" ? stash.entries?.find((e) => e.oid === mode.oid) ?? null : null;
 
   return <div ref={root} className="git-body log-layout" hidden={hidden} style={{ gridTemplateColumns: `${columns.left}px ${SPLITTER}px minmax(0, 1fr) ${SPLITTER}px ${columns.right}px` }} onContextMenu={(event) => { if (!(event.target as Element).closest("[data-endpoint]")) setMenu(null); }}>
-    <HistorySidebar refs={refs} refsError={refsError} headLabel={headLabel} current={current} fetchText={fetchText} filter={filter} onFilter={setFilter}
+    <HistorySidebar refs={refs} refsError={refsError} headLabel={headLabel} current={current} filter={filter} onFilter={setFilter}
       stashes={stash.entries} stashError={stash.error} selectedStash={mode.kind === "stash" ? mode.oid : null} onStash={(entry) => setMode({ kind: "stash", oid: entry.oid })} onNewStash={onStashPush ? () => setMode({ kind: "stashPush" }) : undefined}
       blocked={writeBlocked ?? null} onSwitch={onSwitch} onTrack={onTrack} onMenu={(x, y, endpoint) => setMenu({ x, y, endpoint })}/>
     {splitter("left")}
