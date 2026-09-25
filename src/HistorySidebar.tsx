@@ -20,7 +20,6 @@ interface Props {
   refsError: string | null;
   headLabel: string;
   current: Branch | null;
-  fetchText: string;
   /** 正在浏览（筛选历史）的引用完整名；null 为全部分支。 */
   filter: string | null;
   onFilter(ref: string | null): void;
@@ -39,7 +38,7 @@ interface Props {
 
 /** 历史页左侧（参考 SourceTree 侧栏）：本地分支、标签、远端分支（按 remote 分组）、Stash，可搜索、可折叠。 */
 export default function HistorySidebar(props: Props) {
-  const { refs, refsError, headLabel, current, fetchText, filter, onFilter, stashes, stashError, selectedStash, onStash, onNewStash, blocked, onSwitch, onTrack, onMenu } = props;
+  const { refs, refsError, headLabel, current, filter, onFilter, stashes, stashError, selectedStash, onStash, onNewStash, blocked, onSwitch, onTrack, onMenu } = props;
   const [query, setQuery] = useState("");
   const [collapsed, setCollapsed] = useState(loadCollapsed);
   const toggle = (key: string) => setCollapsed((currentSet) => {
@@ -71,7 +70,6 @@ export default function HistorySidebar(props: Props) {
   return <aside className="log-branches" aria-label="分支">
     <input className="log-ref-search" type="search" aria-label="搜索分支" placeholder="搜索分支、标签、stash" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape" && query) { event.preventDefault(); event.stopPropagation(); setQuery(""); } }}/>
     <div className="log-current" title={current ? trackingText(current.tracking).title : undefined}>当前工作分支：<strong>● {headLabel}</strong>{current && <span className="log-track">{trackingText(current.tracking).short}</span>}</div>
-    {fetchText && <div className="log-fetch-time">{fetchText}</div>}
     {refsError && <div className="log-error">{refsError}</div>}
     {refs?.shallow && <div className="log-note">浅克隆：领先 / 落后数不可靠，显示为未知</div>}
     <div className="log-branch-list" aria-label="按分支筛选历史">
