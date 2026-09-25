@@ -16,10 +16,40 @@ export interface GitSettings {
   executable: string;
 }
 
+export interface AiProfile {
+  id: string;
+  name: string;
+  kind: "cli" | "api";
+  provider: "codex" | "claude" | "openai" | "anthropic" | "deepseek" | "compatible";
+  executable: string;
+  baseUrl: string;
+  model: string;
+  hasKey: boolean;
+}
+
+export interface AiSettings {
+  profiles: AiProfile[];
+  activeId: string;
+  shortcut: string;
+  directCommit: boolean;
+  prompts: AiOperationPrompts;
+}
+
+export interface AiOperationPrompts {
+  stagedMessage: string;
+  describedCommit: string;
+}
+
+export const DEFAULT_AI_PROMPTS: AiOperationPrompts = {
+  stagedMessage: "你是 Git 提交信息助手。根据已暂存的改动撰写简洁、准确的中文提交信息。首行概括主要变化，必要时空一行补充说明；不要臆测未展示的改动。",
+  describedCommit: "你是 Git 提交规划助手。根据用户描述，只选择与意图直接相关的整文件，并撰写简洁、准确的中文提交信息。对于不确定的文件宁可不选。"
+};
+
 export interface Settings {
   version: typeof SETTINGS_VERSION;
   appearance: AppearanceSettings;
   git: GitSettings;
+  ai: AiSettings;
 }
 
 export const FONT_SIZE_MIN = 11;
@@ -73,9 +103,35 @@ export function createSettingsRegistry({ schemes, defaults = DEFAULT_SCHEMES, de
         // 路径的真实校验（执行 git --version）由后端在修改时完成；这里只拒绝控制字符与超长值。
         stringSetting("executable", "", { label: "Git 可执行文件", control: "text", description: "留空时自动发现" }, (value) => value.length <= 4096 && !/[\u0000-\u001f]/.test(value))
       ]
+    })
+    .register({
+      id: "ai",
+      label: "AI",
+      order: 30,
+      settings: [
+        { key: "profiles", type: "object", defaultValue: [] as AiProfile[], validate(value) {
+          if (!Array.isArray(value) || value.length > 30) return undefined;
+          const providers = ["codex", "claude", "openai", "anthropic", "deepseek", "compatible"];
+          if (!value.every((p) => p && typeof p === "object" && typeof p.id === "string" && /^[a-zA-Z0-9_-]{1,80}$/.test(p.id)
+            && typeof p.name === "string" && p.name.length <= 100 && (p.kind === "cli" || p.kind === "api")
+            && providers.includes(p.provider) && [p.executable, p.baseUrl, p.model].every((s) => typeof s === "string" && s.length <= 4096)
+            && typeof p.hasKey === "boolean")) return undefined;
+          return value as AiProfile[];
+        }, ui: { label: "AI 配置", control: "text" } },
+        stringSetting("activeId", "", { label: "当前配置", control: "text" }),
+        stringSetting("shortcut", "CtrlOrMeta+Shift+M", { label: "AI 提交快捷键", control: "text" }, (value) => value.length <= 100),
+        { key: "directCommit", type: "boolean", defaultValue: false, validate: (value) => typeof value === "boolean" ? value : undefined, ui: { label: "直接提交", control: "toggle" } },
+        { key: "prompts", type: "object", defaultValue: DEFAULT_AI_PROMPTS, validate(value) {
+          if (!value || typeof value !== "object") return undefined;
+          const prompts = value as Partial<AiOperationPrompts>;
+          if (typeof prompts.stagedMessage !== "string" || typeof prompts.describedCommit !== "string"
+            || prompts.stagedMessage.length > 10_000 || prompts.describedCommit.length > 10_000) return undefined;
+          return { stagedMessage: prompts.stagedMessage, describedCommit: prompts.describedCommit };
+        }, ui: { label: "操作提示词", control: "text" } }
+      ]
     });
 }
 
 export function toSettings(values: SettingsValues): Settings {
-  return { version: SETTINGS_VERSION, appearance: values.appearance as unknown as AppearanceSettings, git: values.git as unknown as GitSettings };
+  return { version: SETTINGS_VERSION, appearance: values.appearance as unknown as AppearanceSettings, git: values.git as unknown as GitSettings, ai: values.ai as unknown as AiSettings };
 }

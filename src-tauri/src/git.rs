@@ -144,6 +144,24 @@ pub struct FileChange {
     gitlink: bool,
 }
 
+#[cfg(feature = "desktop")]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiCandidate {
+    pub path_id: String,
+    pub display_path: String,
+    pub old_path_id: Option<String>,
+}
+
+#[cfg(feature = "desktop")]
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiRepositoryContext {
+    pub revision: String,
+    pub candidates: Vec<AiCandidate>,
+    pub text: String,
+}
+
 /// 内容未变的原因：`eol` 为仅行尾（CRLF/LF）不同；`normalized` 为其他规范化（如 clean filter）。
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -176,7 +194,7 @@ impl CompareScope {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 enum FileStatus {
     Added,
@@ -355,6 +373,46 @@ impl GitAdapter {
     #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
     pub fn worktree(&self) -> &Path {
         &self.worktree
+    }
+
+    #[cfg(feature = "desktop")]
+    pub fn ai_context(&self, staged_only: bool) -> Result<AiRepositoryContext, GitError> {
+        let state = self.scan(false)?;
+        let all = if staged_only { state.lists.staged.clone() } else { self.details_for(&state)?.all.clone() };
+        let candidates: Vec<AiCandidate> = all.into_iter().filter(|file| file.status != FileStatus::Conflicted).take(200)
+            .map(|file| AiCandidate { path_id: file.path_id, display_path: file.display_path, old_path_id: file.old_path_id }).collect();
+        let mut text = String::new();
+        let sections: &[(&str, &[&str])] = if staged_only {
+            &[("已暂存改动", &["diff", "--cached", "--no-ext-diff", "--no-textconv", "--unified=2", "--"])]
+        } else {
+            &[("已暂存改动", &["diff", "--cached", "--no-ext-diff", "--no-textconv", "--unified=2", "--"]),
+              ("未暂存改动", &["diff-files", "-p", "--no-ext-diff", "--unified=2", "--"])]
+        };
+        for (label, args) in sections {
+            let output = run_required(&self.git, &self.worktree, args)?;
+            text.push_str("\n## "); text.push_str(label); text.push('\n');
+            text.push_str(&String::from_utf8_lossy(&output.stdout[..output.stdout.len().min(90_000)]));
+            if output.stdout.len() > 90_000 { text.push_str("\n[后续差异已截断]\n"); }
+        }
+        if !staged_only {
+            let untracked = state.lists.all.iter().filter(|file| file.status == FileStatus::Untracked).take(40);
+            for file in untracked {
+                let Ok(bytes) = URL_SAFE_NO_PAD.decode(&file.path_id) else { continue };
+                let Ok(path) = std::str::from_utf8(&bytes) else { continue };
+                text.push_str("\n## 未跟踪："); text.push_str(&file.display_path); text.push('\n');
+                match self.read_worktree(path, 2048) {
+                    Ok(bytes) if !bytes.contains(&0) => text.push_str(&String::from_utf8_lossy(&bytes)),
+                    _ => text.push_str("[二进制、符号链接或不可读取文件]"),
+                }
+            }
+        }
+        if text.len() > 180_000 {
+            let mut end = 180_000;
+            while !text.is_char_boundary(end) { end -= 1; }
+            text.truncate(end);
+            text.push_str("\n[后续上下文已截断]");
+        }
+        Ok(AiRepositoryContext { revision: state.revision.clone(), candidates, text })
     }
 
     #[cfg_attr(not(feature = "desktop"), allow(dead_code))]

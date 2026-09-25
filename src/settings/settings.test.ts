@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import schemeIndex from "../themes/generated/index.json";
-import { createSettingsRegistry, DEFAULT_SCHEMES, FONT_SIZE_MAX, FONT_SIZE_MIN, integerSetting, loadSettings, migrateGitExecutable, SETTINGS_KEY, SETTINGS_VERSION, SettingsStore } from "./index";
+import { createSettingsRegistry, DEFAULT_AI_PROMPTS, DEFAULT_SCHEMES, FONT_SIZE_MAX, FONT_SIZE_MIN, integerSetting, loadSettings, migrateGitExecutable, SETTINGS_KEY, SETTINGS_VERSION, SettingsStore } from "./index";
 
 const memory = (initial: Record<string, string> = {}) => {
   const data = new Map(Object.entries(initial));
@@ -15,16 +15,38 @@ describe("settings model, registry and persistence", () => {
     expect(DEFAULT_SCHEMES).toEqual({ lightScheme: "oris-light", darkScheme: "oris-dark" });
     expect(oris).toMatchObject({ version: SETTINGS_VERSION, appearance: { themeMode: "dark", lightScheme: "oris-light", darkScheme: "oris-dark", fontSize: 13 }, git: { executable: "" } });
     expect(oris.appearance).not.toHaveProperty("diffColorMode");
+    expect(oris.ai).toEqual({ profiles: [], activeId: "", shortcut: "CtrlOrMeta+Shift+M", directCommit: false, prompts: DEFAULT_AI_PROMPTS });
     const vscode = loadSettings(memory(), registry({ lightScheme: "light-2026", darkScheme: "dark-2026" })).settings;
     expect(vscode.appearance).toMatchObject({ lightScheme: "light-2026", darkScheme: "dark-2026" });
     expect(() => createSettingsRegistry({ schemes: schemeIndex, defaults: { lightScheme: "dark-2026", darkScheme: "oris-dark" } })).toThrow();
   });
 
+  it("persists AI profile choices without storing API keys in settings", () => {
+    const storage = memory();
+    const store = new SettingsStore(storage, registry());
+    const profile = { id: "provider1", name: "OpenAI", kind: "api" as const, provider: "openai" as const, executable: "", baseUrl: "", model: "gpt-test", hasKey: true };
+    expect(store.update("ai", "profiles", [profile])).toBe(true);
+    expect(store.update("ai", "activeId", profile.id)).toBe(true);
+    expect(store.update("ai", "directCommit", true)).toBe(true);
+    expect(store.update("ai", "prompts", { ...DEFAULT_AI_PROMPTS, stagedMessage: "只写一句话" })).toBe(true);
+    const saved = storage.data.get(SETTINGS_KEY)!;
+    expect(saved).not.toContain("sk-");
+    expect(loadSettings(storage, registry()).settings.ai).toMatchObject({ profiles: [profile], activeId: "provider1", directCommit: true, prompts: { stagedMessage: "只写一句话" } });
+  });
+
+  it("loads operation prompt defaults from older settings without removing AI profiles", () => {
+    const old = { version: 1, ai: { profiles: [{ id: "old", name: "Codex", kind: "cli", provider: "codex", executable: "/usr/local/bin/codex", baseUrl: "", model: "gpt-test", hasKey: false }], activeId: "old", shortcut: "Ctrl+K", directCommit: false } };
+    const loaded = loadSettings(memory({ [SETTINGS_KEY]: JSON.stringify(old) }), registry()).settings;
+    expect(loaded.ai.profiles).toHaveLength(1);
+    expect(loaded.ai.activeId).toBe("old");
+    expect(loaded.ai.prompts).toEqual(DEFAULT_AI_PROMPTS);
+  });
+
   it("registry: categories are ordered, a new category needs no framework change, invalid fields fall back per item", () => {
     const reg = registry();
-    expect(reg.list().map((c) => c.id)).toEqual(["appearance", "git"]);
+    expect(reg.list().map((c) => c.id)).toEqual(["appearance", "git", "ai"]);
     reg.register({ id: "reading", label: "Diff 阅读", order: 15, settings: [integerSetting("tabSize", 1, 8, 4, { label: "Tab 宽度", control: "slider" })] });
-    expect(reg.list().map((c) => c.id)).toEqual(["appearance", "reading", "git"]);
+    expect(reg.list().map((c) => c.id)).toEqual(["appearance", "reading", "git", "ai"]);
     expect(reg.defaults().reading).toEqual({ tabSize: 4 });
     const { values, corrected } = reg.normalize({ appearance: { fontSize: 99, themeMode: "system", lightScheme: "dark-2026" }, git: { executable: "C:/Git/bin/git.exe" }, unknown: { x: 1 } });
     expect(values.appearance.fontSize).toBe(13);

@@ -64,14 +64,14 @@ export function rowActions(scope: CompareScope, file: FileChange): { primary: "s
 
 export const operationLabels: Record<OperationKind, string> = {
   stage: "暂存", unstage: "取消暂存", markResolved: "标记已解决", discard: "丢弃", undoDiscard: "撤销丢弃",
-  commit: "提交", undoCommit: "撤销最近提交", fetch: "获取远端状态",
+  commit: "提交", commitSelected: "AI 提交", undoCommit: "撤销最近提交", fetch: "获取远端状态",
   stashPush: "储藏", stashApply: "应用 stash", stashPop: "弹出 stash", stashDrop: "删除 stash",
   branchCreate: "新建分支", branchSwitch: "切换分支", branchTrack: "检出远端分支", checkout: "检出提交", branchRename: "重命名分支", branchDelete: "删除分支", setUpstream: "设置上游",
   pull: "拉取", push: "推送", merge: "合并", mergeAbort: "中止合并", mergeCommit: "完成合并"
 };
 
 /** 影响维度（技术方案 §4）：会改变 HEAD / 分支 / 远端跟踪引用的操作结束后重读分支列表与日志；会改变 refs/stash 的操作重读 stash 列表。 */
-export const refsKinds: ReadonlySet<OperationKind> = new Set(["commit", "undoCommit", "fetch", "branchCreate", "branchSwitch", "branchTrack", "checkout", "branchRename", "branchDelete", "setUpstream", "pull", "push", "merge", "mergeAbort", "mergeCommit"]);
+export const refsKinds: ReadonlySet<OperationKind> = new Set(["commit", "commitSelected", "undoCommit", "fetch", "branchCreate", "branchSwitch", "branchTrack", "checkout", "branchRename", "branchDelete", "setUpstream", "pull", "push", "merge", "mergeAbort", "mergeCommit"]);
 export const stashKinds: ReadonlySet<OperationKind> = new Set(["stashPush", "stashApply", "stashPop", "stashDrop", "branchCreate", "branchSwitch", "branchTrack", "checkout", "pull"]);
 
 /** 会移动 HEAD 或改写工作区的分支类操作：结束后阅读位置按“文件仍在则保留，否则回到合法入口并提示”处理。 */

@@ -2,7 +2,7 @@
  * 设置分类注册表（技术方案 §9.1）。每个分类声明自己的设置项：键、类型、默认值、校验与界面元数据。
  * 设置窗口按注册表渲染；新增分类只需注册，不改框架代码。
  */
-export type SettingType = "enum" | "number" | "string" | "boolean";
+export type SettingType = "enum" | "number" | "string" | "boolean" | "object";
 
 export interface SettingUi {
   label: string;

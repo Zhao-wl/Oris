@@ -56,6 +56,7 @@ pub enum OperationRequest {
         overwrite: bool,
     },
     Commit { message: String },
+    CommitSelected { message: String, path_ids: Vec<String>, expected_revision: String },
     UndoCommit { expected_head: String },
     /// 显式获取远端状态（R-REMOTE）：只更新远端跟踪引用等 Git 元数据。
     Fetch { remote: String },
@@ -154,6 +155,7 @@ impl OperationRequest {
             Self::Discard { .. } => "discard",
             Self::UndoDiscard { .. } => "undoDiscard",
             Self::Commit { .. } => "commit",
+            Self::CommitSelected { .. } => "commit",
             Self::UndoCommit { .. } => "undoCommit",
             Self::Fetch { .. } => "fetch",
             Self::StashPush { .. } => "stashPush",
@@ -381,6 +383,7 @@ impl GitAdapter {
             OperationRequest::Discard { scope, path_ids, confirmed_unrecoverable } => self.op_discard(*scope, path_ids, *confirmed_unrecoverable, ctx),
             OperationRequest::UndoDiscard { backup_id, overwrite } => self.op_undo_discard(backup_id, *overwrite, ctx),
             OperationRequest::Commit { message } => self.op_commit(message, ctx),
+            OperationRequest::CommitSelected { message, path_ids, expected_revision } => self.op_commit_selected(message, path_ids, expected_revision, ctx),
             OperationRequest::UndoCommit { expected_head } => self.op_undo_commit(expected_head, ctx),
             OperationRequest::Fetch { remote } => self.op_fetch(remote, ctx),
             OperationRequest::StashPush { message, include_untracked, path_ids } => self.op_stash_push(message.as_deref(), *include_untracked, path_ids.as_deref(), ctx),
@@ -464,7 +467,7 @@ impl GitAdapter {
     /// 不带用户路径、需要 Git 内部魔术路径的写命令（`GIT_LITERAL_PATHSPECS` 关闭，见 [`process::RunOptions`]）。
     pub(super) fn write_git_pathless(&self, args: &[&str], ctx: &OpContext) -> Result<process::CallResult, GitError> {
         let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
-        process::run_with(&self.git, &self.worktree, &args, None, true, &ctx.cancel, &ctx.log, &ctx.processes, process::RunOptions { idle: None, literal_pathspecs: false })
+        process::run_with(&self.git, &self.worktree, &args, None, true, &ctx.cancel, &ctx.log, &ctx.processes, process::RunOptions { idle: None, literal_pathspecs: false, index_file: None })
     }
 
     /// 本次操作到目前为止的全部输出（已脱敏，最多 256 KiB）。Git 的提示可能被很长的文件列表挤出错误尾部，识别时用它。
