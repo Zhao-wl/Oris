@@ -334,3 +334,16 @@ fn auth_hints_match_common_git_messages_only() {
         assert!(network::auth_hint(message).is_none(), "{message}");
     }
 }
+
+#[test]
+fn v2_d38_fetch_is_allowed_while_an_external_index_lock_exists() {
+    let r = remote_setup();
+    let new_main = commit(&r.other, "b.txt", "remote\n", "remote work");
+    git_in(&r.other, &["push", "-q", "origin", "main"]);
+    let lock = r.local.join(".git/index.lock");
+    fs::write(&lock, "held by test").unwrap();
+    let outcome = Harness::new(&r.local).run(fetch("origin"));
+    assert_eq!(outcome.status, OpStatus::Succeeded, "{}", outcome.message);
+    assert_eq!(text(&r.local, &["rev-parse", "refs/remotes/origin/main"]), new_main);
+    assert_eq!(fs::read_to_string(&lock).unwrap(), "held by test", "不删除、不改动外部锁");
+}

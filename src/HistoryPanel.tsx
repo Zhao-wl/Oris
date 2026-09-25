@@ -216,13 +216,20 @@ export default function HistoryPanel(props: Props) {
     if (top < container.scrollTop || top + ROW_HEIGHT > container.scrollTop + container.clientHeight) container.scrollTop = Math.max(0, top - container.clientHeight / 2);
     setScrollTarget(null);
   }, [scrollTarget, byOid]);
+  // “跳到 HEAD”改变了浏览分支时给出提示（V2-D39）；用户之后自己改筛选时提示消失。
+  const [headNote, setHeadNote] = useState<string | null>(null);
+  const jumpFilter = useRef<string | null>(null);
+  useEffect(() => { if (filter !== jumpFilter.current) setHeadNote(null); }, [filter]);
   const jumpHead = () => {
     const head = refs?.head.oid;
     if (!head) return;
     if (byOid.has(head)) { select(head, true); return; }
     // HEAD 不在当前结果中（被筛选、搜索或尚未加载）：改为浏览 HEAD 所在的分支，HEAD 位于第一行。
+    const target = refs.head.detached || !refs.head.branch ? "HEAD" : refs.head.branch;
+    jumpFilter.current = target;
     setSearch(null); setSearchText("");
-    setFilter(refs.head.detached || !refs.head.branch ? "HEAD" : refs.head.branch);
+    setFilter(target);
+    setHeadNote(`HEAD 不在当前结果中，已改为浏览 ${target === "HEAD" ? "HEAD" : shortRef(target)}`);
     selectedRef.current = head; setSelectedOid(head); setScrollTarget(head);
   };
   const onListKey = (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -333,6 +340,7 @@ export default function HistoryPanel(props: Props) {
           {search && <button type="button" className="quiet" onClick={() => { setSearch(null); setSearchText(""); }}>清除</button>}
           <button type="button" onClick={jumpHead} disabled={!refs?.head.oid} title="定位到 HEAD（当前检出的提交）">跳到 HEAD</button>
           <span className="spacer"/>
+          {headNote && <span className="log-jump-note" role="status">{headNote}</span>}
           <span className="log-count">{filter ? `浏览 ${shortRef(filter)} · ` : ""}{commits.length} 个提交{cursor ? " · 还有更多" : ""}{logLoading ? " · 读取中…" : ""}</span>
         </div>
         {compareStart && <div className="log-compare-start">比较起点：{shortRef(compareStart.label)} @ {shortOid(compareStart.oid)}<span className="spacer"/>在提交或分支上右键“与比较起点比较”<button type="button" className="quiet" onClick={() => setCompareStart(null)}>取消</button></div>}
