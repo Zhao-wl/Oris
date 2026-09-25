@@ -128,6 +128,43 @@ fn base_repo() -> tempfile::TempDir {
     dir
 }
 
+#[test]
+fn ai_commit_selected_preserves_other_staged_files_and_includes_full_selected_files() {
+    let dir = base_repo();
+    let p = dir.path();
+    write(p, "a.txt", b"staged version\n");
+    git(p, &["add", "a.txt"]);
+    write(p, "a.txt", b"working version\n");
+    write(p, "del.txt", b"unrelated staged\n");
+    git(p, &["add", "del.txt"]);
+    write(p, "new.txt", b"new file\n");
+    let h = Harness::new(p);
+    let context = h.adapter.ai_context(false).unwrap();
+    assert!(context.candidates.iter().any(|file| file.path_id == id("new.txt")));
+    assert!(context.text.contains("working version") && context.text.contains("new file"));
+    let revision = h.adapter.scan(false).unwrap().revision.clone();
+    let result = h.run(OperationRequest::CommitSelected { message: "AI commit".into(), path_ids: vec![id("a.txt"), id("new.txt")], expected_revision: revision });
+    assert_eq!(result.status, OpStatus::Succeeded, "{}", result.message);
+    assert_eq!(git_text(p, &["show", "HEAD:a.txt"]), "working version");
+    assert_eq!(git_text(p, &["show", "HEAD:new.txt"]), "new file");
+    assert_eq!(staged_names(p), "M\tdel.txt");
+    assert_eq!(git_text(p, &["diff", "--name-only"]), "");
+}
+
+#[test]
+fn ai_commit_selected_rejects_stale_plan_without_touching_index() {
+    let dir = base_repo();
+    let p = dir.path();
+    write(p, "a.txt", b"first\n");
+    let h = Harness::new(p);
+    let revision = h.adapter.scan(false).unwrap().revision.clone();
+    write(p, "a.txt", b"changed after planning\n");
+    let before = fingerprint(p);
+    let error = h.try_run(OperationRequest::CommitSelected { message: "AI commit".into(), path_ids: vec![id("a.txt")], expected_revision: revision }).unwrap_err();
+    assert!(matches!(error, GitError::StaleRequest));
+    assert_eq!(fingerprint(p), before);
+}
+
 // ------------------------------ B05 ------------------------------
 
 #[test]

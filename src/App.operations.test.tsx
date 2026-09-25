@@ -45,6 +45,7 @@ const rows = () => [...host.querySelectorAll(".file")].map((n) => n.getAttribute
 const row = (path: string) => host.querySelector(`.file[aria-label="${path}"]`) as HTMLElement;
 const rowButton = (path: string, label: string) => [...row(path).querySelectorAll("button")].find((b) => b.textContent === label) as HTMLButtonElement;
 const button = (label: string) => [...host.querySelectorAll("button")].find((b) => b.textContent === label) as HTMLButtonElement;
+const commitTab = () => [...host.querySelectorAll(".git-tabs button")].find((b) => b.textContent?.startsWith("提交 ·")) as HTMLButtonElement;
 const contextMenu = async (path: string) => { await act(async () => { row(path).dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 40, clientY: 60 })); }); await flush(); };
 const menuItem = (prefix: string) => [...host.querySelectorAll(".file-menu button")].find((b) => b.textContent!.startsWith(prefix)) as HTMLButtonElement | undefined;
 const click = async (element: HTMLElement) => { await act(async () => element.click()); await flush(); };
@@ -213,19 +214,28 @@ describe("discard (B06)", () => {
 });
 
 describe("commit panel (B07)", () => {
+  it("opens the AI commit input from the top button and the window shortcut", async () => {
+    await mount();
+    await click(host.querySelector(".titlebar .commit-entry")!);
+    expect(host.querySelector('.ai-commit-dialog textarea[rows="1"]')).not.toBeNull();
+    await act(async () => { host.querySelector(".ai-commit-overlay")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); });
+    expect(host.querySelector(".ai-commit-dialog")).toBeNull();
+    await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "M", ctrlKey: true, shiftKey: true, bubbles: true })); });
+    expect(host.querySelector(".ai-commit-dialog")).not.toBeNull();
+  });
   it("saves the draft per project across restarts, explains why commit is unavailable, and clears the draft after a successful commit", async () => {
     await mount();
-    await click(button("提交 · 0"));
+    await click(commitTab());
     const textarea = host.querySelector("textarea[aria-label='提交信息']") as HTMLTextAreaElement;
     await type(textarea, "feat: 草稿\n\n正文");
     expect(JSON.parse(localStorage.getItem(DRAFTS_KEY)!)).toEqual({ a: "feat: 草稿\n\n正文" });
     expect(button("提交").disabled).toBe(true);
-    expect(host.querySelector(".commit-reason")?.textContent).toContain("没有已暂存的内容");
+    expect(button("提交").title).toContain("没有已暂存的内容");
     // 重启：草稿恢复。
     await act(async () => root.unmount()); root = createRoot(host);
     bridge.open.mockResolvedValue(snap([change("b.txt")], [change("a.txt", "added")]));
     await mount();
-    await click(button("提交 · 1"));
+    await click(commitTab());
     expect((host.querySelector("textarea[aria-label='提交信息']") as HTMLTextAreaElement).value).toBe("feat: 草稿\n\n正文");
     bridge.operation.mockResolvedValue(outcome("commit", snap([change("b.txt")], [], "r3"), { message: "已提交：abcdef12" }));
     await click(button("提交"));
@@ -239,13 +249,13 @@ describe("commit panel (B07)", () => {
     bridge.open.mockResolvedValue(snap([], [change("a.txt", "added")]));
     bridge.head.mockResolvedValue({ oid: "h".repeat(40), parents: ["p".repeat(40)], message: "original message", subject: "original message", pushed: true, upstream: "origin/main", detached: false });
     await mount();
-    await click(button("提交 · 1"));
+    await click(commitTab());
     expect(button("撤销最近提交…").disabled).toBe(true);
     expect(button("撤销最近提交…").title).toContain("origin/main");
     await act(async () => root.unmount()); root = createRoot(host);
     bridge.head.mockResolvedValue({ oid: "o".repeat(40), parents: ["p".repeat(40)], message: "old head", subject: "old head", pushed: null, upstream: null, detached: false });
     await mount();
-    await click(button("提交 · 1"));
+    await click(commitTab());
     expect(button("撤销最近提交…").disabled).toBe(true);
     expect(button("撤销最近提交…").title).toContain("正在读取 HEAD");
   });
@@ -257,7 +267,7 @@ describe("commit panel (B07)", () => {
       ? outcome("commit", withUpstream(snap([], [], "r2")), { message: "已提交：abcdef12" })
       : outcome("push", withUpstream(snap([], [], "r3")), { message: "已推送" }));
     await mount();
-    await click(button("提交 · 1"));
+    await click(commitTab());
     await type(host.querySelector("textarea[aria-label='提交信息']") as HTMLTextAreaElement, "feat: x");
     await click(host.querySelector("input[aria-label='提交并推送']") as HTMLElement);
     await click(button("提交并推送"));
@@ -268,7 +278,7 @@ describe("commit panel (B07)", () => {
     bridge.operation.mockReset();
     bridge.operation.mockResolvedValue(outcome("commit", snap([], [], "r2"), { message: "已提交：abcdef12" }));
     await mount();
-    await click(button("提交 · 1"));
+    await click(commitTab());
     await type(host.querySelector("textarea[aria-label='提交信息']") as HTMLTextAreaElement, "feat: y");
     await click(host.querySelector("input[aria-label='提交并推送']") as HTMLElement);
     await click(button("提交并推送"));
@@ -280,7 +290,7 @@ describe("commit panel (B07)", () => {
     bridge.open.mockResolvedValue(snap([], [change("a.txt", "added")]));
     bridge.head.mockResolvedValue({ oid: "h".repeat(40), parents: ["p".repeat(40)], message: "m", subject: "m", pushed: null, upstream: null, detached: true });
     await mount();
-    await click(button("提交 · 1"));
+    await click(commitTab());
     const box = host.querySelector("input[aria-label='提交并推送']") as HTMLInputElement;
     expect(box.disabled).toBe(true);
     expect(box.closest("label")?.title).toContain("分离 HEAD");
@@ -291,7 +301,7 @@ describe("commit panel (B07)", () => {
     localStorage.setItem(DRAFTS_KEY, JSON.stringify({ a: "wip" }));
     bridge.operation.mockResolvedValue(outcome("commit", snap([], [change("a.txt", "added")], "r2"), { status: "failed", message: "提交失败：退出码 1；没有生成提交", output: "HOOK-FAIL-MARKER: lint failed" }));
     await mount();
-    await click(button("提交 · 1"));
+    await click(commitTab());
     await click(button("提交"));
     expect(host.querySelector(".commit-result.failed pre")?.textContent).toContain("HOOK-FAIL-MARKER");
     expect((host.querySelector("textarea[aria-label='提交信息']") as HTMLTextAreaElement).value).toBe("wip");

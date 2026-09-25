@@ -1,4 +1,6 @@
 mod git;
+#[cfg(feature = "desktop")]
+mod ai;
 mod snapshot_store;
 #[cfg(any(test, feature = "desktop"))]
 mod watch;
@@ -7,9 +9,9 @@ mod watch;
 use git::{ops, CompareScope, ConflictVersion, GitAdapter, GitError, RepositoryDetails, RepositorySnapshot};
 #[cfg(feature = "desktop")]
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
 };
@@ -115,6 +117,156 @@ struct Snapshots(snapshot_store::SnapshotStore);
 /// discard 备份记录（应用数据目录，技术方案 §6）。
 #[cfg(feature = "desktop")]
 struct Backups(ops::BackupStore);
+
+#[cfg(feature = "desktop")]
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AiPlan {
+    message: String,
+    path_ids: Vec<String>,
+    revision: String,
+    candidates: Vec<git::AiCandidate>,
+    selection_warning: Option<String>,
+}
+
+#[cfg(feature = "desktop")]
+fn ai_selected_paths(value: &serde_json::Value, candidates: &[git::AiCandidate]) -> (Vec<String>, Option<String>) {
+    let field = ["fileIndices", "pathIds", "files", "paths", "selectedFiles"]
+        .into_iter().find_map(|key| value.get(key).and_then(serde_json::Value::as_array).map(|items| (key, items)));
+    let Some((key, items)) = field else {
+        return (Vec::new(), Some("AI 未返回可识别的文件列表，请手动勾选要提交的文件".into()));
+    };
+    if items.is_empty() { return (Vec::new(), Some("AI 未选择文件，请手动勾选要提交的文件".into())); }
+    let mut selected = Vec::new();
+    for item in items {
+        let candidate = if key == "fileIndices" {
+            item.as_u64().or_else(|| item.as_str().and_then(|text| text.trim().parse().ok()))
+                .and_then(|index: u64| index.checked_sub(1))
+                .and_then(|index| usize::try_from(index).ok())
+                .and_then(|index| candidates.get(index))
+        } else {
+            item.as_str().and_then(|text| {
+                let text = text.trim();
+                candidates.iter().find(|candidate| candidate.path_id == text || candidate.display_path == text)
+                    .or_else(|| text.parse::<usize>().ok().and_then(|index| index.checked_sub(1)).and_then(|index| candidates.get(index)))
+            }).or_else(|| item.as_u64().and_then(|index| index.checked_sub(1)).and_then(|index| usize::try_from(index).ok()).and_then(|index| candidates.get(index)))
+        };
+        let Some(candidate) = candidate else {
+            return (Vec::new(), Some("AI 返回的文件无法与当前改动对应，请手动勾选要提交的文件".into()));
+        };
+        if !selected.contains(&candidate.path_id) { selected.push(candidate.path_id.clone()); }
+    }
+    (selected, None)
+}
+
+#[cfg(all(test, feature = "desktop"))]
+mod ai_selection_tests {
+    use super::*;
+
+    fn candidates() -> Vec<git::AiCandidate> {
+        vec![
+            git::AiCandidate { path_id: "c3JjL0E".into(), display_path: "src/A".into(), old_path_id: None },
+            git::AiCandidate { path_id: "c3JjL0I".into(), display_path: "src/B".into(), old_path_id: None },
+        ]
+    }
+
+    #[test]
+    fn maps_indices_paths_and_old_ids_to_current_candidates() {
+        let files = candidates();
+        assert_eq!(ai_selected_paths(&serde_json::json!({"fileIndices":[2,1,2]}), &files).0, vec!["c3JjL0I", "c3JjL0E"]);
+        assert_eq!(ai_selected_paths(&serde_json::json!({"pathIds":["src/A","c3JjL0I"]}), &files).0, vec!["c3JjL0E", "c3JjL0I"]);
+    }
+
+    #[test]
+    fn unknown_selection_requires_manual_review() {
+        let (ids, warning) = ai_selected_paths(&serde_json::json!({"fileIndices":[1,99]}), &candidates());
+        assert!(ids.is_empty());
+        assert!(warning.is_some());
+    }
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn detect_ai_tools() -> Result<Vec<ai::ToolCandidate>, String> {
+    tauri::async_runtime::spawn_blocking(ai::detect_tools).await.map_err(|error| error.to_string())
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+fn set_ai_key(id: String, key: Option<String>) -> Result<(), String> { ai::set_key(&id, key.as_deref()) }
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn list_ai_models(profile: ai::AiProfile) -> Result<Vec<String>, String> { ai::list_models(&profile).await }
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn generate_ai_commit(repo_id: String, profile: ai::AiProfile, description: Option<String>, system_prompt: String, request_id: Option<String>, registry: State<'_, RepositoryRegistry>, requests: State<'_, AiRequests>) -> Result<AiPlan, String> {
+    if system_prompt.len() > 30_000 { return Err("系统提示词过长".into()); }
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let _guard = if let Some(id) = request_id {
+        if id.len() > 80 || id.is_empty() { return Err("AI 请求 ID 无效".into()); }
+        let mut state = requests.0.lock().unwrap_or_else(|p| p.into_inner());
+        if state.early_cancelled.remove(&id) { cancelled.store(true, Ordering::Relaxed); }
+        state.active.insert(id.clone(), cancelled.clone());
+        Some(AiRequestGuard { requests: &requests, id })
+    } else { None };
+    let opened = opened(&registry, &repo_id).map_err(|e| e.to_string())?;
+    let staged_only = description.is_none();
+    let context = tauri::async_runtime::spawn_blocking({ let adapter = opened.adapter.clone(); move || adapter.ai_context(staged_only) })
+        .await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
+    if cancelled.load(Ordering::Relaxed) { return Err("AI 生成已取消".into()); }
+    if context.candidates.is_empty() { return Err(if staged_only { "暂存区没有可用于生成提交信息的文件" } else { "当前项目没有可提交的文件" }.into()); }
+    let numbered_candidates: Vec<_> = context.candidates.iter().enumerate().map(|(index, candidate)| serde_json::json!({"index": index + 1, "path": candidate.display_path})).collect();
+    let (contract, instruction) = if let Some(description) = &description {
+        if description.trim().is_empty() { return Err("请输入提交意图".into()); }
+        ("从候选文件中选择与用户意图相关的整文件。只可返回一个 JSON 对象，格式为 {\"message\":\"摘要\\n\\n可选说明\",\"fileIndices\":[1,2]}。fileIndices 使用候选文件的 index 数字，不得选择列表外的文件，不得附加 Markdown。", format!("用户意图：\n{description}\n候选文件（index 从 1 开始）：\n{}\n文件改动：\n{}", serde_json::to_string(&numbered_candidates).unwrap_or_default(), context.text))
+    } else {
+        ("只根据已暂存改动生成提交信息。只可返回一个 JSON 对象，格式为 {\"message\":\"摘要\\n\\n可选说明\"}，不要附加 Markdown。", format!("已暂存文件：\n{}\n改动：\n{}", serde_json::to_string(&context.candidates).unwrap_or_default(), context.text))
+    };
+    let system_instruction = format!("{system_prompt}\n\nOris 输出约束：{contract}");
+    let output = ai::generate(&profile, opened.adapter.worktree(), &system_instruction, &instruction, cancelled.clone()).await?;
+    if cancelled.load(Ordering::Relaxed) { return Err("AI 生成已取消".into()); }
+    let value = ai::parse_json_output(&output)?;
+    let message = value.get("message").and_then(serde_json::Value::as_str).unwrap_or("").trim().to_owned();
+    if message.is_empty() || message.len() > 10_000 { return Err("AI 返回的提交信息为空或过长".into()); }
+    let (path_ids, selection_warning) = if staged_only {
+        (context.candidates.iter().map(|c| c.path_id.clone()).collect(), None)
+    } else { ai_selected_paths(&value, &context.candidates) };
+    Ok(AiPlan { message, path_ids, revision: context.revision, candidates: context.candidates, selection_warning })
+}
+
+#[cfg(feature = "desktop")]
+#[derive(Default)]
+struct AiRequests(Mutex<AiRequestState>);
+
+#[cfg(feature = "desktop")]
+#[derive(Default)]
+struct AiRequestState {
+    active: HashMap<String, Arc<AtomicBool>>,
+    early_cancelled: HashSet<String>,
+}
+
+#[cfg(feature = "desktop")]
+struct AiRequestGuard<'a> { requests: &'a AiRequests, id: String }
+
+#[cfg(feature = "desktop")]
+impl Drop for AiRequestGuard<'_> {
+    fn drop(&mut self) { self.requests.0.lock().unwrap_or_else(|p| p.into_inner()).active.remove(&self.id); }
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+fn cancel_ai_generation(request_id: String, requests: State<'_, AiRequests>) {
+    if request_id.is_empty() || request_id.len() > 80 { return; }
+    let mut state = requests.0.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(cancelled) = state.active.get(&request_id) {
+        cancelled.store(true, Ordering::Relaxed);
+    } else {
+        if state.early_cancelled.len() >= 256 { state.early_cancelled.clear(); }
+        state.early_cancelled.insert(request_id);
+    }
+}
 
 /// 写操作结束后识别自身回声事件的尾窗口（覆盖 200 ms 合并窗口内迟到的事件）；窗口内只跳过修改时间不晚于操作结束的事件。
 #[cfg(feature = "desktop")]
@@ -590,6 +742,7 @@ pub fn run() {
         .manage(RepositoryRegistry::default())
         .manage(WatcherRegistry::default())
         .manage(ops::Runner::default())
+        .manage(AiRequests::default())
         .setup(|app| {
             // ORIS_APP_CACHE_DIR 仅供隔离测试实例使用；未设置时用系统应用缓存目录。
             let base = std::env::var_os("ORIS_APP_CACHE_DIR")
@@ -633,6 +786,11 @@ pub fn run() {
             load_snapshot,
             remove_snapshot,
             validate_git,
+            detect_ai_tools,
+            set_ai_key,
+            list_ai_models,
+            generate_ai_commit,
+            cancel_ai_generation,
             run_operation,
             cancel_operation,
             last_operation,

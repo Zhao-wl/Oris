@@ -17,6 +17,8 @@ import GitPanel, { type GitTab, type OperationRecord, type RunningOperation } fr
 import { cancelOperation, discardBackups, prepareDiscard, runOperation, type BackupSummary, type HeadCommitInfo, type OperationOutcome, type OperationRequest } from "./operations-api";
 import { operationLabels, optimisticMove, pathIdsFor, refsKinds, selectionAfterOperation, stashKinds, switchKinds, undoCommitText, unsupportedInProgress, writeBlockedReason } from "./operations-model";
 import SettingsDialog from "./SettingsDialog";
+import AiCommitDialog from "./AiCommitDialog";
+import { cancelAiGeneration, generateAiCommit, type AiPlan } from "./ai-api";
 import HistoryPanel, { type FileHistoryRequest, type HistoryFileOpen } from "./HistoryPanel";
 import FetchDialog from "./FetchDialog";
 import { readRefs, readRevisionPair, type Branch, type RefsView, type StashEntry } from "./history-api";
@@ -91,6 +93,9 @@ export default function App() {
   const scheme = useStore(activeScheme, (value) => value);
   const dark = scheme ? isDarkType(scheme.type) : true;
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [aiCommitRepoId, setAiCommitRepoId] = useState<string | null>(null);
+  useEffect(() => { setAiCommitRepoId(null); }, [workspaceState.activeRepoId]);
+  const aiShortcut = useSettings(settings, (value) => value.ai.shortcut);
   const [filter, setFilter] = useState("");
   const [projectFilter, setProjectFilter] = useState("");
   const [fileView, setFileView] = useState<"flat" | "tree">("flat");
@@ -690,7 +695,7 @@ export default function App() {
     if (!repoId) return null;
     const runtimeNow = projects.get(repoId);
     const blocked = writeBlockedReason({ snapshot: runtimeNow?.snapshot, verifying: !!runtimeNow?.verifying, running: opStore.get()[repoId]?.running ? operationLabels[opStore.get()[repoId]!.running!.kind] : null });
-    const kind = request.kind;
+    const kind = request.kind === "commitSelected" ? "commit" : request.kind;
     if (blocked) { updateOps(repoId, { last: { kind, status: "failed", message: blocked, output: "", at: Date.now() } }); return null; }
     const opId = newRequestId();
     const prior = runtimeNow?.snapshot ?? null;
@@ -815,6 +820,26 @@ export default function App() {
       else { freshRefsView(); setPushOpen(true); }
     }
     return outcome;
+  };
+  const aiProfile = () => {
+    const ai = settings.get().ai;
+    const profile = ai.profiles.find((item) => item.id === ai.activeId);
+    if (!profile || !profile.model.trim() || (profile.kind === "api" && !profile.hasKey)) throw new Error("请在设置 → AI 中选择已配置模型的 AI 组合");
+    return profile;
+  };
+  const aiMessage = async () => {
+    if (!activeRepoId) throw new Error("请先打开项目");
+    const plan = await generateAiCommit(activeRepoId, aiProfile(), null, settings.get().ai.prompts.stagedMessage);
+    return plan.message;
+  };
+  const aiPlan = async (description: string, requestId: string) => {
+    if (!aiCommitRepoId || activeRepoId !== aiCommitRepoId) throw new Error("项目已切换，请重新打开 AI 提交");
+    return generateAiCommit(aiCommitRepoId, aiProfile(), description, settings.get().ai.prompts.describedCommit, requestId);
+  };
+  const aiCommit = async (plan: AiPlan) => {
+    if (!aiCommitRepoId || currentRead.current.repo !== aiCommitRepoId) throw new Error("项目已切换，请重新生成提交计划");
+    const outcome = await runOp({ kind: "commitSelected", message: plan.message, pathIds: plan.pathIds, expectedRevision: plan.revision });
+    return outcome?.status === "succeeded";
   };
   /** 显式获取远端状态（R-REMOTE）：确认框选择 remote 后执行；成功时记录完成时间。 */
   const startFetch = async (remote: string) => {
@@ -1041,6 +1066,13 @@ export default function App() {
         settings.update("appearance", "fontSize", next);
         return;
       }
+      if (activeRepoId && !settingsOpen && !aiCommitRepoId && aiShortcut && !["Control", "Meta", "Shift", "Alt"].includes(event.key)) {
+        const parts = aiShortcut.split("+");
+        const modifier = parts.includes("CtrlOrMeta") ? (event.ctrlKey || event.metaKey) : parts.includes("Meta") ? event.metaKey : parts.includes("Ctrl") ? event.ctrlKey : false;
+        if (modifier && event.shiftKey === parts.includes("Shift") && event.altKey === parts.includes("Alt") && event.key.toUpperCase() === parts.at(-1)) {
+          event.preventDefault(); setAiCommitRepoId(activeRepoId); return;
+        }
+      }
       const target = event.target;
       if (target instanceof Element && target.matches("input, textarea, select, [contenteditable=true]")) return;
       if (event.altKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
@@ -1058,7 +1090,7 @@ export default function App() {
   const handleSplitLayoutChange = useCallback((ratio: number, leftWidth: number) => { setSplitLayout((current) => Math.abs(current.ratio - ratio) < .0001 && current.leftWidth === leftWidth ? current : { ratio, leftWidth }); }, []);
 
   return <main className="app">
-    <header className="titlebar"><span className="logo">O</span><strong>{activeProject ? projectName(activeProject) : "Oris"}</strong>{snapshot && <span className="branch-anchor"><button type="button" className="branch branch-button" aria-expanded={branchOpen} title="分支：搜索、切换、新建与管理" onClick={() => setBranchOpen((value) => !value)}>⑂ {snapshot.repo.branch} ▾</button>{branchOpen && activeRepoId && <BranchPopover repoId={activeRepoId} refsVersion={refsVersion} blocked={writeBlocked} actions={branchActions} onClose={() => setBranchOpen(false)}/>}</span>}{snapshot?.branchInfo?.upstream && <span className="branch-counts" title={`相对上游 ${snapshot.branchInfo.upstream}：领先 ${snapshot.branchInfo.ahead ?? "?"}、落后 ${snapshot.branchInfo.behind ?? "?"}`}>↑{snapshot.branchInfo.ahead ?? "?"} ↓{snapshot.branchInfo.behind ?? "?"}</span>}{stale && <span className="stale-badge">旧快照</span>}{runtime?.verifying && <span className="stale-badge verifying" title="显示上次保存的快照，正在后台校验；校验完成前写操作不可用">校验中</span>}{snapshot && !snapshot.branchInfo?.upstream && snapshot.branchInfo?.head && <span className="branch-counts" title="当前分支没有配置上游，领先 / 落后数不可用">无上游</span>}{snapshot && <span className="branch-anchor"><button type="button" className="sync-button" aria-expanded={syncOpen} title={`同步：获取、拉取、推送。${fetchText}`} onClick={() => setSyncOpen((value) => !value)}>{networkRunning && repoOps?.running ? `⇅ 正在${operationLabels[repoOps.running.kind]}…` : "⇅ 同步 ▾"}</button>{syncOpen && activeRepoId && <SyncPopover repoId={activeRepoId} refsVersion={refsVersion} blocked={writeBlocked} fetchText={fetchText} actions={syncActions} onClose={() => setSyncOpen(false)}/>}</span>}<span className="spacer"/>{snapshot && <button className="commit-entry" onClick={() => setGitTab("commit")} title="打开底部“提交”页">提交 · {stagedCount}</button>}<button className="settings-button" onClick={() => setSettingsOpen(true)} aria-label="设置" title="设置（Ctrl+,）">⚙ 设置</button></header>
+    <header className="titlebar"><span className="logo">O</span><strong>{activeProject ? projectName(activeProject) : "Oris"}</strong>{snapshot && <span className="branch-anchor"><button type="button" className="branch branch-button" aria-expanded={branchOpen} title="分支：搜索、切换、新建与管理" onClick={() => setBranchOpen((value) => !value)}>⑂ {snapshot.repo.branch} ▾</button>{branchOpen && activeRepoId && <BranchPopover repoId={activeRepoId} refsVersion={refsVersion} blocked={writeBlocked} actions={branchActions} onClose={() => setBranchOpen(false)}/>}</span>}{snapshot?.branchInfo?.upstream && <span className="branch-counts" title={`相对上游 ${snapshot.branchInfo.upstream}：领先 ${snapshot.branchInfo.ahead ?? "?"}、落后 ${snapshot.branchInfo.behind ?? "?"}`}>↑{snapshot.branchInfo.ahead ?? "?"} ↓{snapshot.branchInfo.behind ?? "?"}</span>}{stale && <span className="stale-badge">旧快照</span>}{runtime?.verifying && <span className="stale-badge verifying" title="显示上次保存的快照，正在后台校验；校验完成前写操作不可用">校验中</span>}{snapshot && !snapshot.branchInfo?.upstream && snapshot.branchInfo?.head && <span className="branch-counts" title="当前分支没有配置上游，领先 / 落后数不可用">无上游</span>}{snapshot && <span className="branch-anchor"><button type="button" className="sync-button" aria-expanded={syncOpen} title={`同步：获取、拉取、推送。${fetchText}`} onClick={() => setSyncOpen((value) => !value)}>{networkRunning && repoOps?.running ? `⇅ 正在${operationLabels[repoOps.running.kind]}…` : "⇅ 同步 ▾"}</button>{syncOpen && activeRepoId && <SyncPopover repoId={activeRepoId} refsVersion={refsVersion} blocked={writeBlocked} fetchText={fetchText} actions={syncActions} onClose={() => setSyncOpen(false)}/>}</span>}<span className="spacer"/>{snapshot && <button className="commit-entry" onClick={() => setAiCommitRepoId(activeRepoId)} title="AI 提交">提交 · {stagedCount}</button>}<button className="settings-button" onClick={() => setSettingsOpen(true)} aria-label="设置" title="设置（Ctrl+,）">⚙ 设置</button></header>
     <section className="projectbar" aria-label="项目切换"><button className="primary" onClick={chooseRepository}>添加项目</button><input value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)} placeholder="搜索项目或完整路径" aria-label="搜索项目"/><div className="project-tabs">{visibleProjects.map(project => <ProjectTab key={project.repo.repoId} project={project} active={project.repo.repoId === activeRepoId}
       onSelect={() => void switchProject(project)}
       onRename={customName => setWorkspaceState(current => ({ ...current, projects: current.projects.map(p => p.repo.repoId === project.repo.repoId ? { ...p, customName } : p) }))}
@@ -1076,7 +1108,7 @@ export default function App() {
     </section>
     <GitPanel repoId={activeRepoId} tab={gitTab} onTab={setGitTab} stagedCount={stagedCount} headOid={runtime?.snapshot?.branchInfo?.oid ?? null} headKey={`${snapshot?.branchInfo?.oid ?? ""}:${snapshot?.branchInfo?.upstream ?? ""}:${snapshot?.branchInfo?.ahead ?? ""}:${snapshot?.branchInfo?.behind ?? ""}`}
       mergeInProgress={!!snapshot?.inProgress?.merge} blockedReason={writeBlocked && !repoOps?.running ? writeBlocked : null} running={repoOps?.running ?? null} lines={repoOps?.lines ?? []} last={repoOps?.last ?? null} lastCommit={repoOps?.lastCommit ?? null} backups={repoOps?.backups ?? []}
-      onCommit={commit} onUndoCommit={(head) => void undoCommit(head)} onUndoDiscard={(id) => void undoDiscard(id)} onCancel={() => { if (activeRepoId) void cancelOperation(activeRepoId); }}
+      onCommit={commit} onGenerateMessage={aiMessage} onUndoCommit={(head) => void undoCommit(head)} onUndoDiscard={(id) => void undoDiscard(id)} onCancel={() => { if (activeRepoId) void cancelOperation(activeRepoId); }}
       logContent={activeRepoId && logMounted === activeRepoId ? <HistoryPanel key={activeRepoId} repoId={activeRepoId} refsVersion={refsVersion} hidden={gitTab !== "log"} fileHistoryRequest={fileHistoryRequest} activeKey={historyReading?.key ?? null} onOpenFile={(open) => void openHistoryFile(open)} onRefs={setRefsView}
         writeBlocked={writeBlocked} onCheckout={(oid) => void runSwitch({ kind: "checkout", commit: oid })} onNewBranch={(start) => { loadRefsView(); setNewBranch({ initial: start }); }} onMerge={detachedOid ? undefined : startMerge}
         onSwitch={branchActions.onSwitch} onTrack={branchActions.onTrack} stashVersion={stashVersion} selectedFiles={stashSelection}
@@ -1094,6 +1126,7 @@ export default function App() {
     {fetchOpen && <FetchDialog refs={refsView} fetchText={fetchText} blocked={writeBlocked} onConfirm={(remote) => void startFetch(remote)} onCancel={() => setFetchOpen(false)}/>}
     {confirmState && <ConfirmDialog request={confirmState} onConfirm={() => { confirmState.resolve(true); setConfirmState(null); }} onCancel={() => { confirmState.resolve(false); setConfirmState(null); }}/>}
     {settingsOpen && <SettingsDialog settings={settings} onClose={() => setSettingsOpen(false)} gitInUse={snapshot ? { executable: snapshot.git.executable, version: snapshot.git.version, minimumVersion: snapshot.git.minimumVersion } : null}/>}
+    {aiCommitRepoId && activeRepoId === aiCommitRepoId && <AiCommitDialog settings={settings} onClose={() => setAiCommitRepoId(null)} onGenerate={aiPlan} onCancelGeneration={cancelAiGeneration} onCommit={aiCommit}/>}
     <footer className="statusbar">{snapshot ? <span className="status-location"><PathText path={snapshot.repo.worktreePath}/><span className="status-suffix">{` · ${snapshot.repo.branch} · ${scopeLabels[scope].short}`}</span></span> : <span>多项目 → 本地差异浏览</span>}<span className="spacer"/>{repoOps?.running ? <><span className="op-status running" role="status">⟳ 正在{operationLabels[repoOps.running.kind]}…{fetchProgress ? ` ${fetchProgress.text}` : ""}</span>{networkRunning && <button type="button" className="op-undo" onClick={() => { if (activeRepoId) void cancelOperation(activeRepoId); }}>取消</button>}</> : repoOps?.last && <button type="button" className={`op-status ${repoOps.last.status}`} title="查看最近一次操作的 Git 输出" onClick={() => setGitTab("output")}>{repoOps.last.status === "succeeded" ? "✓" : repoOps.last.status === "cancelled" ? "■" : repoOps.last.status === "needsConfirmation" ? "?" : "✗"} {repoOps.last.message}</button>}{!repoOps?.running && repoOps?.lastBackup && <button type="button" className="op-undo" disabled={!!writeBlocked} title={`撤销刚才丢弃的 ${repoOps.lastBackup.files} 个文件`} onClick={() => void undoDiscard(repoOps.lastBackup!.id)}>撤销丢弃</button>}<span>本机 Git · 缓存 {cache.current.stats().entries}/{cache.current.stats().budget / 1024 / 1024} MiB</span></footer>
   </main>;
 }

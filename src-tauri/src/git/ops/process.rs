@@ -144,18 +144,20 @@ pub fn run(
 }
 
 /// 单条命令的附加选项。
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct RunOptions {
     /// “无输出超时”：stdout / stderr 连续这么久没有任何输出时终止整个进程树（网络操作）。
     pub idle: Option<Duration>,
     /// 设置 `GIT_LITERAL_PATHSPECS=1`（默认）。命令不带用户路径、依赖 Git 内部的 `:/` 等魔术路径时
     /// （如不带路径的 `stash push --include-untracked`）必须关闭，否则 Git 内部的清理匹配不到任何文件。
     pub literal_pathspecs: bool,
+    /// 为单次提交使用独立的 Git index，避免改动用户现有暂存区。
+    pub index_file: Option<std::path::PathBuf>,
 }
 
 impl Default for RunOptions {
     fn default() -> Self {
-        Self { idle: None, literal_pathspecs: true }
+        Self { idle: None, literal_pathspecs: true, index_file: None }
     }
 }
 
@@ -179,6 +181,9 @@ pub fn run_with(
     let mut command = write_command(git, cwd);
     if !options.literal_pathspecs {
         command.env_remove("GIT_LITERAL_PATHSPECS");
+    }
+    if let Some(index_file) = &options.index_file {
+        command.env("GIT_INDEX_FILE", index_file);
     }
     command.args(args).stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
     ProcessTree::prepare(&mut command);
