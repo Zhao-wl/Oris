@@ -225,7 +225,7 @@ async function start(profile, extraEnv = {}) {
     await sleep(400);
   };
   const openLog = async () => {
-    if (!(await evaluate(`window.__h.gitTab('日志')?.classList.contains('active')`))) await evaluate(`window.__h.gitTab('日志').click()`);
+    if (!(await evaluate(`window.__h.gitTab('历史')?.classList.contains('active')`))) await evaluate(`window.__h.gitTab('历史').click()`);
     await waitUntil(`(window.__h.count() > 0 || document.querySelector('.log-commits .log-empty')) && !document.querySelector('.log-count')?.textContent.includes('读取中') && (document.querySelectorAll('.log-branch').length > 1 || !!document.querySelector('.log-branches .log-error'))`, 20000);
     await sleep(300);
   };

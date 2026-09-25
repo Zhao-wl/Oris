@@ -93,8 +93,10 @@ const H = String.raw`
     opStatus() { const n = document.querySelector('.op-status'); return n ? { cls: n.className, text: n.textContent } : null; },
     running() { return !!document.querySelector('.op-status.running'); },
     branchLabel() { return window.__b.branchButton()?.textContent ?? ''; },
-    stashRows() { return qa('.stash-row').map((r) => ({ text: r.querySelector('.stash-text')?.textContent ?? '', selected: r.classList.contains('selected') })); },
-    stashRow(i) { return qa('.stash-row')[i] ?? null; },
+    stashRows() { return qa('.log-stash').map((r) => ({ text: r.textContent ?? '', selected: r.getAttribute('aria-selected') === 'true' })); },
+    stashRow(i) { return qa('.log-stash')[i] ?? null; },
+    stashDetail() { return document.querySelector('.stash-detail'); },
+    stashForm() { return document.querySelector('.stash-form'); },
     stashFiles() { return qa('.stash-detail .log-file').map((b) => b.textContent); },
     stashFile(name) { return qa('.stash-detail .log-file').find((b) => b.querySelector('.log-file-path')?.textContent === name) ?? null; },
     detail() { return document.querySelector('.stash-detail')?.textContent ?? ''; },
@@ -176,29 +178,31 @@ async function main() {
     await ctx.click(`window.__b.button('＋ 新建分支…')`);
     await ctx.waitUntil(`!!window.__b.dialog()`);
     await ctx.click(`window.__b.button('取消', window.__b.dialog())`);
-    await ctx.openTab("Stash");
-    await ctx.waitUntil(`window.__b.detail().includes('选择一条') || document.querySelector('.stash-list .log-empty')`);
-    let e = evidence("B17 浏览分支弹层、打开新建对话框后取消、打开 Stash 页", work, before, fingerprint(work), []);
+    await ctx.openTab("历史");
+    await ctx.waitUntil(`!!document.querySelector('[data-group="stash"]')`);
+    let e = evidence("B17 浏览分支弹层、打开新建对话框后取消、打开历史页（Stash 分组）", work, before, fingerprint(work), []);
     check("B10 分支弹层：搜索过滤，本地 / 远端分组；B17 浏览与打开对话框不改仓库", filtered.every((n) => n.includes("fea")) && allNames.map((n) => n.replace("● ", "")).includes("main") && allNames.includes("origin/remote-only") && e.changedCount === 0, { filtered, allNames, e, shot: await ctx.shot("b10-popover") });
 
     // ---------- B09 stash ----------
     put(work, "a.txt", "a local change\n"); put(work, "b.txt", "b staged change\n"); git(work, ["add", "b.txt"]); put(work, "u.txt", "untracked note\n");
     await ctx.refresh();
     before = fingerprint(work);
+    await ctx.click(`window.__b.button('储藏…')`); await ctx.waitUntil(`!!window.__b.stashForm()`);
     await ctx.evaluate(`window.__b.setIn(document.querySelector('.stash-form'), 'input[aria-label="stash 说明"]', 'wip one')`);
-    await traced("stash push（不含未跟踪）", async () => { await ctx.click(`window.__b.button('储藏')`); await ctx.settle(); });
+    await traced("stash push（不含未跟踪）", async () => { await ctx.click(`window.__b.button('储藏', window.__b.stashForm())`); await ctx.settle(); });
     await ctx.waitUntil(`window.__b.stashRows().length === 1`);
     e = evidence("stash push 不含未跟踪", work, before, fingerprint(work), ["index", "stash", "worktree"]);
     check("B09 储藏（说明、不含未跟踪）：已跟踪改动与暂存移入 stash，未跟踪保留", e.unexpected.length === 0 && read(work, "a.txt") === "a base\n" && existsSync(path.join(work, "u.txt")) && git(work, ["status", "--porcelain"]) === "?? u.txt" && stashLines(work)[0].includes("wip one"), { e, rows: await ctx.evaluate(`window.__b.stashRows()`) });
     // 只储藏选中的文件（含未跟踪）：在文件列表中选中 u.txt。
     await ctx.waitUntil(`!!window.__op.row('u.txt')`, 20000); await ctx.evaluate(`window.__op.row('u.txt').click()`); await sleep(300);
+    await ctx.click(`window.__b.button('储藏…')`); await ctx.waitUntil(`!!window.__b.stashForm()`);
     await ctx.evaluate(`window.__b.check(document.querySelector('.stash-form'), 'input[aria-label=包含未跟踪文件]', true); window.__b.check(document.querySelector('.stash-form'), 'input[aria-label=只储藏选中的文件]', true)`);
     await ctx.evaluate(`window.__b.setIn(document.querySelector('.stash-form'), 'input[aria-label="stash 说明"]', 'only untracked')`);
     put(work, "a.txt", "a second change\n");
     await ctx.refresh();
     await ctx.waitUntil(`!!window.__op.row('u.txt')`, 20000); await ctx.evaluate(`window.__op.row('u.txt').click()`); await sleep(300);
     before = fingerprint(work);
-    await traced("stash push（只储藏选中、含未跟踪）", async () => { await ctx.click(`window.__b.button('储藏')`); await ctx.settle(); });
+    await traced("stash push（只储藏选中、含未跟踪）", async () => { await ctx.click(`window.__b.button('储藏', window.__b.stashForm())`); await ctx.settle(); });
     await ctx.waitUntil(`window.__b.stashRows().length === 2`);
     e = evidence("stash push 只储藏选中的未跟踪文件", work, before, fingerprint(work), ["stash", "worktree", "index"]);
     check("B09 只储藏选中的文件（含未跟踪）：只移走 u.txt，a.txt 的改动保留", e.unexpected.length === 0 && !existsSync(path.join(work, "u.txt")) && read(work, "a.txt") === "a second change\n", { e });
@@ -221,7 +225,7 @@ async function main() {
     git(work, ["checkout", "--", "a.txt"]);
     await ctx.refresh();
     before = fingerprint(work);
-    await traced("stash apply", async () => { await ctx.click(`window.__b.stashRow(1)`); await ctx.click(`window.__b.button('应用', window.__b.stashRow(1))`); await ctx.settle(); });
+    await traced("stash apply", async () => { await ctx.click(`window.__b.stashRow(1)`); await ctx.click(`window.__b.button('应用', window.__b.stashDetail())`); await ctx.settle(); });
     e = evidence("stash apply stash@{1}", work, before, fingerprint(work), ["worktree", "index"]);
     check("B09 应用：改动恢复，stash 保留在列表中", e.unexpected.length === 0 && read(work, "a.txt") === "a local change\n" && stashLines(work).length === 2 && (await ctx.evaluate(`window.__b.opStatus()?.text`)).includes("已应用"), { e });
     // 列表在外部被修改：命令行再储藏一条，随即在（尚未刷新的）列表上删除原来的 stash@{0}。
@@ -229,7 +233,7 @@ async function main() {
     await ctx.click(`window.__b.stashRow(0)`);
     git(work, ["stash", "push", "-q", "-m", "external stash"]);
     before = fingerprint(work);
-    await ctx.evaluate(`window.__b.button('删除…', window.__b.stashRow(0)).click()`);
+    await ctx.evaluate(`window.__b.button('删除…', window.__b.stashDetail()).click()`);
     await ctx.confirmDialog("删除 stash");
     await ctx.settle();
     const rejected = await ctx.evaluate(`window.__b.opStatus()`);
@@ -244,7 +248,7 @@ async function main() {
     const externalOid = git(work, ["rev-parse", "stash@{0}"]);
     before = fingerprint(work);
     await ctx.click(`window.__b.stashRow(0)`);
-    await traced("stash pop（冲突）", async () => { await ctx.click(`window.__b.button('弹出', window.__b.stashRow(0))`); await ctx.settle(); });
+    await traced("stash pop（冲突）", async () => { await ctx.click(`window.__b.button('弹出', window.__b.stashDetail())`); await ctx.settle(); });
     const conflictStatus = await ctx.evaluate(`window.__b.opStatus()`);
     await ctx.waitUntil(`!!window.__op.row('a.txt')`);
     await ctx.waitUntil(`!!window.__op.row('a.txt')`, 20000); await ctx.evaluate(`window.__op.row('a.txt').click()`); await sleep(800);
@@ -255,7 +259,7 @@ async function main() {
     await ctx.refresh();
     before = fingerprint(work);
     await ctx.click(`window.__b.stashRow(0)`);
-    await ctx.click(`window.__b.button('删除…', window.__b.stashRow(0))`);
+    await ctx.click(`window.__b.button('删除…', window.__b.stashDetail())`);
     const dropDialog = await ctx.evaluate(`document.querySelector('.confirm-dialog')?.textContent ?? ''`);
     await ctx.confirmDialog("删除 stash");
     await ctx.settle();
@@ -266,7 +270,7 @@ async function main() {
     await ctx.refresh();
     before = fingerprint(work);
     await ctx.click(`window.__b.stashRow(0)`);
-    await ctx.click(`window.__b.button('弹出', window.__b.stashRow(0))`);
+    await ctx.click(`window.__b.button('弹出', window.__b.stashDetail())`);
     await ctx.settle();
     e = evidence("stash pop 成功", work, before, fingerprint(work), ["stash", "worktree", "index"]);
     check("B09 弹出：应用成功后从列表删除（含未跟踪部分恢复）", e.unexpected.length === 0 && stashLines(work).length === 1 && existsSync(path.join(work, "u.txt")), { e });
@@ -369,7 +373,7 @@ async function main() {
     if (await ctx.evaluate(`!!window.__b.popover()`)) await ctx.click(`window.__b.branchButton()`);
 
     // ---------- 检出提交（分离 HEAD）与“从这里新建分支” ----------
-    await ctx.openTab("日志");
+    await ctx.openTab("历史");
     await ctx.waitUntil(`!!window.__b.logRow()`);
     const target = await ctx.evaluate(`window.__b.logRow().dataset.oid`);
     before = fingerprint(work);

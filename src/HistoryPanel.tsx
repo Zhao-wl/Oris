@@ -1,8 +1,12 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { layoutGraph, type GraphLayout, type GraphRow } from "./history-graph";
-import { commitChanges, compareRevisions, fileHistory, readLog, readRefs, shortOid, shortRef, statusLetter, trackingText, type Branch, type ChangedFile, type CommitChanges, type CommitInfo, type Comparison, type FileHistory, type LogCursor, type RefsView, type SearchKind } from "./history-api";
-import { ROW_HEIGHT, isStale, movedEndpoint, nodeX, rowSegments, LANE_WIDTH, type PinnedEndpoint } from "./history-model";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { flatLayout, layoutGraph, type GraphLayout, type GraphRow } from "./history-graph";
+import { commitChanges, compareRevisions, fileHistory, readLog, readRefs, shortOid, shortRef, statusLetter, type Branch, type ChangedFile, type CommitChanges, type CommitInfo, type Comparison, type FileHistory, type LogCursor, type RefsView, type SearchKind, type StashEntry } from "./history-api";
+import { ROW_HEIGHT, isStale, movedEndpoint, nodeX, rowSegments, LANE_WIDTH, refOid, type PinnedEndpoint } from "./history-model";
 import { errorText } from "./error-message";
+import HistorySidebar from "./HistorySidebar";
+import PathText from "./PathText";
+import { StashDetail, StashForm, useStashList, type StashPushOptions } from "./StashPanel";
+import type { FileChange } from "./types";
 
 /** 在主 diff 阅读器中打开的历史文件（两端都是固定的提交 OID；left 为 null 表示空树）。 */
 export interface HistoryFileOpen {
@@ -24,8 +28,6 @@ interface Props {
   fileHistoryRequest: FileHistoryRequest | null;
   activeKey: string | null;
   onOpenFile(open: HistoryFileOpen): void;
-  onFetch(): void;
-  fetchBlocked: string | null;
   fetchText: string;
   onRefs?(refs: RefsView): void;
   /** V2-03：提交右键“检出（分离 HEAD）”“从这里新建分支”。 */
@@ -34,23 +36,56 @@ interface Props {
   /** V2-04：把提交或分支合并到当前分支。 */
   onMerge?(target: { ref: string; oid: string; label: string }): void;
   writeBlocked?: string | null;
+  /** 左侧双击：切换到本地分支、检出远端跟踪分支（建立同名本地跟踪分支）。 */
+  onSwitch?(branch: Branch): void;
+  onTrack?(branch: Branch): void;
+  /** Stash（V2-03，原“Stash”页并入左侧）：stash 变化时递增的版本、“只储藏选中的文件”的选择与写操作。 */
+  stashVersion?: number;
+  selectedFiles?: FileChange[];
+  onStashPush?(options: StashPushOptions): Promise<boolean>;
+  onStashApply?(entry: StashEntry, pop: boolean): void;
+  onStashDrop?(entry: StashEntry): void;
 }
 
 const PAGE_SIZE = 200;
 const OVERSCAN = 12;
 const searchLabels: Record<SearchKind, string> = { message: "消息", author: "作者", sha: "SHA" };
 const time = (seconds: number) => new Date(seconds * 1000).toLocaleString();
+/** 提交图最多显示的泳道数：更宽的图截断显示，保证提交信息列总有空间。 */
+const MAX_GRAPH_LANES = 16;
+
+/** 三栏宽度（全局，不区分仓库）：左侧引用栏与右侧详情栏的像素宽度，中间提交列表占剩余空间。 */
+export const COLUMNS_KEY = "oris.historyColumns.v1";
+const LEFT = { min: 150, max: 520, initial: 230 };
+const RIGHT = { min: 220, max: 680, initial: 340 };
+const MIDDLE_MIN = 260;
+const SPLITTER = 5;
+interface Columns { left: number; right: number }
+const clamp = (value: number, min: number, max: number) => Math.round(Math.max(min, Math.min(Math.max(min, max), value)));
+function loadColumns(): Columns {
+  try {
+    const value = JSON.parse(localStorage.getItem(COLUMNS_KEY) ?? "null") as Partial<Columns> | null;
+    if (value && typeof value.left === "number" && typeof value.right === "number") return { left: clamp(value.left, LEFT.min, LEFT.max), right: clamp(value.right, RIGHT.min, RIGHT.max) };
+  } catch { /* 存储可选 */ }
+  return { left: LEFT.initial, right: RIGHT.initial };
+}
+function saveColumns(columns: Columns) { try { localStorage.setItem(COLUMNS_KEY, JSON.stringify(columns)); } catch { /* 存储可选 */ } }
 
 type Mode =
   | { kind: "commit" }
   | { kind: "compare"; a: PinnedEndpoint; b: PinnedEndpoint; result: Comparison | null; error: string | null }
-  | { kind: "file"; request: FileHistoryRequest; history: FileHistory | null; loading: boolean; error: string | null; selected: string | null };
+  | { kind: "file"; request: FileHistoryRequest; history: FileHistory | null; loading: boolean; error: string | null; selected: string | null }
+  | { kind: "stash"; oid: string }
+  | { kind: "stashPush" };
 
 interface Menu { x: number; y: number; endpoint: PinnedEndpoint }
 
-/** 底部 Git 区“日志”页（R-HISTORY / R-BRANCH / R-COMPARE / R-FILEHISTORY）：分支列表、提交图与列表、提交详情。只读，选择分支只筛选历史。 */
+/**
+ * 底部 Git 区“历史”页（R-HISTORY / R-BRANCH / R-COMPARE / R-FILEHISTORY / R-STASH）：左侧引用（本地分支、标签、远端分支、Stash），
+ * 中间提交图与列表，右侧详情。单击引用只筛选历史，双击分支才切换；三栏宽度可拖动。
+ */
 export default function HistoryPanel(props: Props) {
-  const { repoId, refsVersion, hidden, fileHistoryRequest, activeKey, onOpenFile, onFetch, fetchBlocked, fetchText, onRefs, onCheckout, onNewBranch, onMerge, writeBlocked } = props;
+  const { repoId, refsVersion, hidden, fileHistoryRequest, activeKey, onOpenFile, fetchText, onRefs, onCheckout, onNewBranch, onMerge, writeBlocked, onSwitch, onTrack, stashVersion = 0, selectedFiles = [], onStashPush, onStashApply, onStashDrop } = props;
   const [refs, setRefs] = useState<RefsView | null>(null);
   const [refsError, setRefsError] = useState<string | null>(null);
   const [filter, setFilter] = useState<string | null>(null);
@@ -69,6 +104,13 @@ export default function HistoryPanel(props: Props) {
   const [mode, setMode] = useState<Mode>({ kind: "commit" });
   const [menu, setMenu] = useState<Menu | null>(null);
   const [scrollTarget, setScrollTarget] = useState<string | null>(null);
+  const stash = useStashList(repoId, stashVersion);
+  // 正在查看的 stash 已被弹出 / 删除：回到提交详情。
+  useEffect(() => { if (stash.entries) setMode((current) => current.kind === "stash" && !stash.entries!.some((e) => e.oid === current.oid) ? { kind: "commit" } : current); }, [stash.entries]);
+  const [columns, setColumns] = useState(loadColumns);
+  const columnsRef = useRef(columns);
+  columnsRef.current = columns;
+  const root = useRef<HTMLDivElement>(null);
   const logRequest = useRef(0);
   const list = useRef<HTMLDivElement>(null);
   const selectedRef = useRef(selectedOid);
@@ -116,9 +158,11 @@ export default function HistoryPanel(props: Props) {
   useEffect(() => { loadRefs(); }, [loadRefs, refsVersion]);
   useEffect(() => { loadFirst(); }, [loadFirst, refsVersion]);
 
+  // 搜索结果彼此多半不相连：只列出节点，不按拓扑布局（否则每个缺失的父提交都占一条泳道，图宽随结果数增长）。
+  const searching = !!search?.text.trim();
   const layout: GraphLayout = useMemo(() => {
-    try { return layoutGraph(commits); } catch { return { rows: [], continuations: [], width: 0 }; }
-  }, [commits]);
+    try { return searching ? flatLayout(commits) : layoutGraph(commits); } catch { return { rows: [], continuations: [], width: 0 }; }
+  }, [commits, searching]);
   const loaded = useMemo(() => new Set(commits.map((c) => c.oid)), [commits]);
   const byOid = useMemo(() => new Map(commits.map((c, i) => [c.oid, i])), [commits]);
   const selected = selectedOid ? commits[byOid.get(selectedOid) ?? -1] ?? null : null;
@@ -229,29 +273,53 @@ export default function HistoryPanel(props: Props) {
     right: { oid: result.right, label: `B · ${shortRef(b.label)} @ ${shortOid(result.right)}` }
   });
 
+  // ---------- 三栏宽度（拖动分隔条、方向键微调、双击恢复默认） ----------
+  const fit = (side: "left" | "right", value: number, base: Columns): Columns => {
+    const width = root.current?.clientWidth ?? 0;
+    const room = width ? width - MIDDLE_MIN - SPLITTER * 2 : Infinity;
+    return side === "left" ? { ...base, left: clamp(value, LEFT.min, Math.min(LEFT.max, room - base.right)) } : { ...base, right: clamp(value, RIGHT.min, Math.min(RIGHT.max, room - base.left)) };
+  };
+  const startResize = (side: "left" | "right") => (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const handle = event.currentTarget;
+    const startX = event.clientX;
+    const base = columnsRef.current;
+    // 指针捕获让拖出分隔条后仍能收到移动事件；指针已失效时（例如合成事件）捕获会抛错，不影响拖动本身。
+    try { handle.setPointerCapture(event.pointerId); } catch { /* 捕获可选 */ }
+    handle.classList.add("dragging");
+    const move = (next: PointerEvent) => { const dx = next.clientX - startX; setColumns(fit(side, side === "left" ? base.left + dx : base.right - dx, base)); };
+    const end = () => {
+      handle.classList.remove("dragging");
+      handle.removeEventListener("pointermove", move); handle.removeEventListener("pointerup", end); handle.removeEventListener("pointercancel", end);
+      saveColumns(columnsRef.current);
+    };
+    handle.addEventListener("pointermove", move); handle.addEventListener("pointerup", end); handle.addEventListener("pointercancel", end);
+  };
+  const resizeTo = (side: "left" | "right", value: number) => { const next = fit(side, value, columnsRef.current); setColumns(next); saveColumns(next); };
+  const splitter = (side: "left" | "right") => {
+    const value = columns[side];
+    const initial = side === "left" ? LEFT.initial : RIGHT.initial;
+    // 右侧分隔条向左移动是加宽详情栏。
+    const sign = side === "left" ? 1 : -1;
+    return <div role="separator" aria-orientation="vertical" aria-label={side === "left" ? "调整引用栏宽度" : "调整详情栏宽度"} aria-valuenow={value} tabIndex={0} className="log-splitter" data-side={side} title="拖动调整宽度；双击恢复默认"
+      onPointerDown={startResize(side)} onDoubleClick={() => resizeTo(side, initial)}
+      onKeyDown={(event) => { const step = event.shiftKey ? 64 : 16; if (event.key === "ArrowLeft") { event.preventDefault(); resizeTo(side, value - sign * step); } else if (event.key === "ArrowRight") { event.preventDefault(); resizeTo(side, value + sign * step); } }}/>;
+  };
+
   const moved = mode.kind === "compare" ? [movedEndpoint(mode.a, refs), movedEndpoint(mode.b, refs)].filter(Boolean) as string[] : [];
   const current = refs?.local.find((b) => b.current) ?? null;
   const headLabel = refs ? refs.head.detached ? `分离 HEAD @ ${shortOid(refs.head.oid)}` : refs.head.unborn ? `${shortRef(refs.head.branch ?? "")}（尚无提交）` : shortRef(refs.head.branch ?? "") : "…";
   const start = Math.max(0, Math.floor(view.top / ROW_HEIGHT) - OVERSCAN);
   const end = Math.min(layout.rows.length, Math.ceil((view.top + view.height) / ROW_HEIGHT) + OVERSCAN);
-  const graphWidth = Math.max(1, layout.width) * LANE_WIDTH;
+  const graphWidth = Math.min(MAX_GRAPH_LANES, Math.max(1, layout.width)) * LANE_WIDTH;
+  const stashEntry = mode.kind === "stash" ? stash.entries?.find((e) => e.oid === mode.oid) ?? null : null;
 
-  return <div className="git-body log-layout" hidden={hidden} onContextMenu={(event) => { if (!(event.target as Element).closest("[data-endpoint]")) setMenu(null); }}>
-    <aside className="log-branches" aria-label="分支">
-      <div className="log-head"><strong>分支</strong><span className="spacer"/><button type="button" disabled={!!fetchBlocked} title={fetchBlocked ?? "获取远端状态：只更新远端跟踪分支等 Git 元数据，不修改工作区"} onClick={onFetch}>获取…</button></div>
-      <div className="log-current" title={current ? trackingText(current.tracking).title : undefined}>当前工作分支：<strong>● {headLabel}</strong>{current && <span className="log-track">{trackingText(current.tracking).short}</span>}</div>
-      <div className="log-fetch-time">{fetchText}</div>
-      {refsError && <div className="log-error">{refsError}</div>}
-      {refs?.shallow && <div className="log-note">浅克隆：领先 / 落后数不可靠，显示为未知</div>}
-      <div className="log-branch-list" role="listbox" aria-label="按分支筛选历史">
-        <button type="button" role="option" aria-selected={filter === null} className={`log-branch${filter === null ? " browsing" : ""}`} onClick={() => setFilter(null)}>全部分支</button>
-        {refs && refs.local.length > 0 && <div className="log-group">本地分支 · {refs.local.length}</div>}
-        {refs?.local.map((branch) => <BranchRow key={branch.fullName} branch={branch} browsing={filter === branch.fullName} onPick={() => setFilter(branch.fullName)} onMenu={(x, y) => setMenu({ x, y, endpoint: refEndpoint(branch) })}/>)}
-        {refs && refs.remote.length > 0 && <div className="log-group">远端跟踪分支 · {refs.remote.length}</div>}
-        {refs?.remote.map((branch) => <BranchRow key={branch.fullName} branch={branch} browsing={filter === branch.fullName} onPick={() => setFilter(branch.fullName)} onMenu={(x, y) => setMenu({ x, y, endpoint: refEndpoint(branch) })}/>)}
-      </div>
-      <div className="log-note">选择分支只筛选历史，不切换工作分支；右键设为比较端点</div>
-    </aside>
+  return <div ref={root} className="git-body log-layout" hidden={hidden} style={{ gridTemplateColumns: `${columns.left}px ${SPLITTER}px minmax(0, 1fr) ${SPLITTER}px ${columns.right}px` }} onContextMenu={(event) => { if (!(event.target as Element).closest("[data-endpoint]")) setMenu(null); }}>
+    <HistorySidebar refs={refs} refsError={refsError} headLabel={headLabel} current={current} fetchText={fetchText} filter={filter} onFilter={setFilter}
+      stashes={stash.entries} stashError={stash.error} selectedStash={mode.kind === "stash" ? mode.oid : null} onStash={(entry) => setMode({ kind: "stash", oid: entry.oid })} onNewStash={onStashPush ? () => setMode({ kind: "stashPush" }) : undefined}
+      blocked={writeBlocked ?? null} onSwitch={onSwitch} onTrack={onTrack} onMenu={(x, y, endpoint) => setMenu({ x, y, endpoint })}/>
+    {splitter("left")}
     <section className="log-commits-pane" aria-label={mode.kind === "file" ? "文件历史" : "提交历史"}>
       {mode.kind === "file" ? <FileHistoryList mode={mode} activeKey={activeKey} onBack={() => setMode({ kind: "commit" })} onMore={() => mode.history?.next && loadFileHistory(mode.request, mode.history.next, mode.history)} onOpen={(entry) => {
         setMode({ ...mode, selected: entry.commit.oid });
@@ -281,9 +349,12 @@ export default function HistoryPanel(props: Props) {
         </div>
       </>}
     </section>
-    <aside className="log-detail" aria-label="提交详情">
-      {mode.kind === "compare" ? <CompareDetail mode={mode} moved={moved} activeKey={activeKey} onSwap={() => runCompare(mode.b, mode.a)} onRefresh={() => {
-        const renew = (endpoint: PinnedEndpoint) => { const branch = refs && [...refs.local, ...refs.remote].find((b) => b.fullName === endpoint.ref); const oid = endpoint.ref === "HEAD" ? refs?.head.oid : branch?.oid; return oid ? { ...endpoint, oid } : endpoint; };
+    {splitter("right")}
+    <aside className="log-detail" aria-label={mode.kind === "stash" || mode.kind === "stashPush" ? "stash 内容" : "提交详情"}>
+      {mode.kind === "stash" ? <StashDetail repoId={repoId} entry={stashEntry} version={stashVersion} blocked={writeBlocked ?? null} activeKey={activeKey} onApply={(entry, pop) => onStashApply?.(entry, pop)} onDrop={(entry) => onStashDrop?.(entry)} onOpenFile={onOpenFile}/>
+        : mode.kind === "stashPush" ? <StashForm selectedFiles={selectedFiles} blocked={writeBlocked ?? null} onPush={(options) => onStashPush ? onStashPush(options) : Promise.resolve(false)} onClose={() => setMode({ kind: "commit" })}/>
+        : mode.kind === "compare" ? <CompareDetail mode={mode} moved={moved} activeKey={activeKey} onSwap={() => runCompare(mode.b, mode.a)} onRefresh={() => {
+        const renew = (endpoint: PinnedEndpoint) => { const oid = refOid(endpoint.ref, refs); return oid ? { ...endpoint, oid } : endpoint; };
         runCompare(renew(mode.a), renew(mode.b));
       }} onClose={() => { setMode({ kind: "commit" }); setCompareStart(null); }} onOpen={(file) => mode.result && openCompareFile(mode.result, mode.a, mode.b, file)}/>
         : mode.kind === "file" ? <FileHistoryDetail mode={mode}/>
@@ -297,13 +368,6 @@ export default function HistoryPanel(props: Props) {
   </div>;
 }
 
-const BranchRow = memo(function BranchRow({ branch, browsing, onPick, onMenu }: { branch: Branch; browsing: boolean; onPick(): void; onMenu(x: number, y: number): void }) {
-  const tracking = branch.kind === "local" ? trackingText(branch.tracking) : null;
-  return <button type="button" role="option" aria-selected={browsing} data-endpoint className={`log-branch${browsing ? " browsing" : ""}${branch.current ? " current" : ""}`} title={`${branch.fullName} @ ${shortOid(branch.oid)}${tracking ? `\n${tracking.title}` : ""}`} onClick={onPick} onContextMenu={(event) => { event.preventDefault(); onMenu(event.clientX, event.clientY); }}>
-    <span className="log-branch-name">{branch.current ? "● " : ""}{branch.name}</span>{tracking && <span className={`log-track ${branch.tracking?.state ?? ""}`}>{tracking.short}</span>}
-  </button>;
-});
-
 const laneClass = (lane: number) => `lane-${lane % 6}`;
 
 const CommitRow = memo(function CommitRow({ row, commit, top, graphWidth, loaded, selected, head, onPick, onMenu }: { row: GraphRow; commit: CommitInfo; top: number; graphWidth: number; loaded: ReadonlySet<string>; selected: boolean; head: boolean; onPick(): void; onMenu(x: number, y: number): void }) {
@@ -314,7 +378,7 @@ const CommitRow = memo(function CommitRow({ row, commit, top, graphWidth, loaded
   return <div id={`commit-${commit.oid}`} role="option" aria-selected={selected} data-endpoint data-oid={commit.oid} className={`log-row${selected ? " selected" : ""}`} style={{ position: "absolute", top, left: 0, right: 0, height: ROW_HEIGHT }} onClick={onPick} onContextMenu={(event) => { event.preventDefault(); onPick(); onMenu(event.clientX, event.clientY); }}>
     <svg className="log-graph" width={graphWidth} height={ROW_HEIGHT} aria-hidden="true">
       {segments.map((s, i) => <line key={i} className={`${laneClass(s.lane)}${s.dashed ? " dashed" : ""}`} x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2}/>)}
-      <circle className={`${laneClass(row.lane)}${commit.parents.length > 1 ? " merge" : ""}${isHead ? " head" : ""}`} cx={nodeX(row)} cy={ROW_HEIGHT / 2} r={commit.parents.length > 1 ? 4 : 3.5}/>
+      <circle className={`${laneClass(row.lane)}${commit.parents.length > 1 ? " merge" : ""}${isHead ? " head" : ""}`} cx={Math.min(nodeX(row), graphWidth - LANE_WIDTH / 2)} cy={ROW_HEIGHT / 2} r={commit.parents.length > 1 ? 4 : 3.5}/>
     </svg>
     <span className="log-subject">{isHead && <span className="ref-chip head">HEAD</span>}{refs.map((r) => <span key={r.name} className={`ref-chip ${r.kind}${r.current ? " current" : ""}`} title={r.name}>{shortRef(r.name)}</span>)}{commit.subject || "（无提交信息）"}</span>
     <span className="log-author" title={commit.authorEmail}>{commit.authorName}</span>
@@ -333,7 +397,7 @@ function FileList({ files, activeKey, keyFor, onOpen, onHistory }: { files: Chan
   };
   if (!files.length) return <div className="log-empty">没有文件变化</div>;
   return <ul className="log-files" aria-label="变化文件">{files.map((file, index) => <li key={file.pathId + (file.oldPathId ?? "")} className={activeKey === keyFor(file) ? "active" : ""}>
-    <button type="button" className="log-file" title={file.oldPath ? `${file.oldPath} → ${file.path}` : file.path} onClick={() => onOpen(file)} onKeyDown={(event) => move(event, index)}><span className={`status-letter ${file.status}`}>{statusLetter[file.status]}</span><span className="log-file-path">{file.path}</span>{file.oldPath && <span className="log-file-old">← {file.oldPath}</span>}</button>
+    <button type="button" className="log-file" title={file.oldPath ? `${file.oldPath} → ${file.path}` : file.path} onClick={() => onOpen(file)} onKeyDown={(event) => move(event, index)}><span className={`status-letter ${file.status}`}>{statusLetter[file.status]}</span><PathText path={file.path} className="log-file-path" title={file.path}/>{file.oldPath && <PathText path={file.oldPath} prefix="← " className="log-file-old"/>}</button>
     {onHistory && <button type="button" className="quiet log-file-history" title={`查看 ${file.path} 的文件历史`} onClick={() => onHistory(file)}>历史</button>}
   </li>)}</ul>;
 }
@@ -367,11 +431,11 @@ function CompareDetail({ mode, moved, activeKey, onSwap, onRefresh, onClose, onO
 function FileHistoryList({ mode, activeKey, onBack, onMore, onOpen }: { mode: Extract<Mode, { kind: "file" }>; activeKey: string | null; onBack(): void; onMore(): void; onOpen(entry: FileHistory["entries"][number]): void }) {
   const entries = mode.history?.entries ?? [];
   return <>
-    <div className="log-toolbar"><button type="button" onClick={onBack}>← 返回提交历史</button><strong className="log-file-title" title={mode.request.path}>文件历史：{mode.request.path}</strong><span className="spacer"/><span className="log-count">自 {mode.request.start === "HEAD" ? "HEAD" : shortOid(mode.request.start)} · {entries.length} 条{mode.loading ? " · 读取中…" : ""}</span></div>
+    <div className="log-toolbar"><button type="button" onClick={onBack}>← 返回提交历史</button><strong className="log-file-title" title={mode.request.path}><PathText path={mode.request.path} prefix="文件历史："/></strong><span className="spacer"/><span className="log-count">自 {mode.request.start === "HEAD" ? "HEAD" : shortOid(mode.request.start)} · {entries.length} 条{mode.loading ? " · 读取中…" : ""}</span></div>
     {mode.error && <div className="log-error">{mode.error}</div>}
     <ul className="log-history" aria-label="文件历史记录">
       {entries.map((entry) => <li key={entry.commit.oid + entry.pathId} className={`${mode.selected === entry.commit.oid ? "selected" : ""}${activeKey === `file:${entry.commit.oid}:${entry.pathId}` ? " active" : ""}`}>
-        <button type="button" className="log-history-row" onClick={() => onOpen(entry)}><span className={`status-letter ${entry.status}`}>{statusLetter[entry.status]}</span><span className="log-sha">{shortOid(entry.commit.oid)}</span><span className="log-subject">{entry.commit.subject}</span><span className="log-date">{time(entry.commit.authorTime)}</span><span className="log-file-path" title={entry.path}>{entry.path}</span></button>
+        <button type="button" className="log-history-row" onClick={() => onOpen(entry)}><span className={`status-letter ${entry.status}`}>{statusLetter[entry.status]}</span><span className="log-sha">{shortOid(entry.commit.oid)}</span><span className="log-subject">{entry.commit.subject}</span><span className="log-date">{time(entry.commit.authorTime)}</span><PathText path={entry.path} className="log-file-path"/></button>
         {entry.renamedFrom && <div className="log-rename-boundary" role="note">↳ rename 跟随边界：此提交由 {entry.renamedFrom} 改名而来，更早的记录使用原路径（由 Git 的 rename 检测判断）</div>}
       </li>)}
     </ul>
