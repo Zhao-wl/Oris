@@ -38,11 +38,15 @@ export type Tracking =
   | { state: "known"; upstream: string; ahead: number; behind: number }
   | { state: "unknown"; upstream: string; reason: string };
 export interface Branch { fullName: string; name: string; kind: "local" | "remote"; oid: string; current: boolean; tracking: Tracking | null; remote: string | null }
+/** 指向提交的标签（附注标签已解引用到提交）。 */
+export interface Tag { fullName: string; name: string; oid: string; annotated: boolean }
 export interface HeadState { branch: string | null; oid: string | null; detached: boolean; unborn: boolean }
 export interface RefsView {
   head: HeadState;
   local: Branch[];
   remote: Branch[];
+  /** 指向提交的标签（旧版后端没有此字段）。 */
+  tags?: Tag[];
   shallow: boolean;
   remotes: string[];
   /** 显式获取的默认目标（当前分支有效上游所属的 remote）；为 null 时需要用户选择。 */

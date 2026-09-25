@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import PathText from "./PathText";
 
 export interface ConfirmRequest {
   title: string;
@@ -30,7 +31,7 @@ export default function ConfirmDialog({ request, onConfirm, onCancel }: { reques
       <h3>{request.title}</h3>
       {request.warning && <p className="confirm-warning">{request.warning}</p>}
       <p>{request.message}</p>
-      {items.length > 0 && <ul className="confirm-items">{items.slice(0, MAX_ITEMS).map((item) => <li key={item} title={item}>{item}</li>)}{items.length > MAX_ITEMS && <li className="more">…还有 {items.length - MAX_ITEMS} 个</li>}</ul>}
+      {items.length > 0 && <ul className="confirm-items">{items.slice(0, MAX_ITEMS).map((item) => <li key={item}><PathText path={item}/></li>)}{items.length > MAX_ITEMS && <li className="more">…还有 {items.length - MAX_ITEMS} 个</li>}</ul>}
       {request.notes?.map((note) => <p key={note} className="confirm-note">{note}</p>)}
       <div className="confirm-footer">
         <button type="button" ref={cancel} onClick={onCancel}>取消</button>

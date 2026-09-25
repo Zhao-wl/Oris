@@ -297,6 +297,30 @@ fn upstream_states_use_real_reachability_and_never_fake_zero() {
 }
 
 #[test]
+fn read_refs_lists_tags_peeled_to_commits() {
+    let dir = init();
+    let p = dir.path();
+    let first = commit(p, "a.txt", "a
+", "one", 0);
+    let second = commit(p, "a.txt", "b
+", "two", 1);
+    git(p, &["tag", "light", &first]);
+    git_env(p, &["tag", "-a", "-m", "release", "v1.0"], Some("1700000600 +0000"));
+    let tree = git(p, &["rev-parse", "HEAD^{tree}"]);
+    git(p, &["tag", "tree-tag", &tree]);
+    let before = state(p);
+    let snapshot = refs::read_refs(gp(), p).unwrap();
+    assert_eq!(before, state(p));
+    let tag = |name: &str| snapshot.tags.iter().find(|t| t.name == name).cloned();
+    let light = tag("light").unwrap();
+    assert_eq!((light.full_name.as_str(), light.oid.as_str(), light.annotated), ("refs/tags/light", first.as_str(), false));
+    let annotated = tag("v1.0").unwrap();
+    assert_eq!((annotated.oid.as_str(), annotated.annotated), (second.as_str(), true), "附注标签解引用到提交");
+    assert!(tag("tree-tag").is_none(), "不指向提交的标签不列出");
+    assert!(snapshot.local.iter().all(|b| !b.full_name.starts_with("refs/tags/")));
+}
+
+#[test]
 fn history_reads_never_run_signature_programs_or_change_the_repository() {
     let dir = init();
     let p = dir.path();
