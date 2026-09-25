@@ -63,6 +63,9 @@ const requests = () => bridge.operation.mock.calls.map((call) => call[3] as Oper
 const openBranches = async () => { await click(q(".branch-button")); };
 const branchRow = (name: string) => all(".branch-row").find((row) => row.querySelector(".branch-row-name")?.textContent?.replace("● ", "") === name)!;
 const mount = async () => { await act(async () => { root.render(<App />); }); await flush(); };
+const openHistory = async () => { await click(all(".git-tabs button").find((b) => b.textContent === "历史")); };
+const sideRow = (group: string, name: string) => all(`[data-group='${group}'] .log-branch`).find((row) => row.querySelector(".log-branch-name")?.textContent?.replace("● ", "") === name)!;
+const dblclick = async (element: Element | null | undefined) => { expect(element).toBeTruthy(); await act(async () => { element!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true })); }); await flush(); };
 
 beforeEach(() => {
   vi.resetAllMocks(); localStorage.clear();
@@ -105,7 +108,7 @@ describe("branch popover (B10)", () => {
   it("includes untracked files only when Git said untracked files would be overwritten", async () => {
     bridge.operation.mockImplementationOnce(async () => outcome("checkout", { status: "needsConfirmation", snapshot: null, confirmation: { reason: "untrackedOverwritten", message: "未跟踪文件会被覆盖", paths: ["new.txt"] } }));
     await mount();
-    await click(Array.from(host.querySelectorAll<HTMLButtonElement>(".git-tabs button")).find((b) => b.textContent === "日志"));
+    await openHistory();
     await act(async () => { q(".log-row")!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 })); }); await flush();
     await click(button("检出（分离 HEAD）"));
     expect(requests()[0]).toEqual({ kind: "checkout", commit: O("1") });
@@ -205,24 +208,70 @@ describe("branch popover (B10)", () => {
   });
 });
 
-describe("stash tab (B09)", () => {
-  const openStash = async () => { await click(Array.from(host.querySelectorAll<HTMLButtonElement>(".git-tabs button")).find((b) => b.textContent?.startsWith("Stash"))); };
-
-  it("lists stashes, stashes with message / untracked / only the selected files, and applies, pops and drops by identity", async () => {
+describe("history sidebar: branches, tags, remotes and stash (B09 / B10)", () => {
+  it("groups local branches, tags, remotes by remote and stashes; groups collapse and the state is remembered", async () => {
+    bridge.refs.mockResolvedValue({ ...refsView, tags: [{ fullName: "refs/tags/v1.0", name: "v1.0", oid: O("1"), annotated: true }] });
     await mount();
-    await openStash();
-    expect(all(".stash-row").map((r) => r.querySelector(".stash-text")?.textContent)).toEqual([expect.stringContaining("stash@{0} · wip login"), expect.stringContaining("stash@{1} · debug")]);
-    expect(q(".git-tabs")?.textContent).toContain("Stash · 2");
+    expect(all(".git-tabs button").map((b) => b.textContent)).toEqual(["历史", "提交 · 0", "操作输出", "展开 ↑"]);
+    await openHistory();
+    expect(all(".log-group-head").map((b) => `${b.getAttribute("aria-expanded") === "true" ? "▾" : "▸"}${b.querySelector(".log-group-label")?.textContent}`)).toEqual(["▾本地分支 · 2", "▸标签 · 1", "▾远端分支 · 1", "▾origin · 1", "▾Stash · 2"]);
+    expect(all("[data-group='local'] .log-branch-name").map((b) => b.textContent)).toEqual(["● main", "feature"]);
+    expect(all("[data-group='remote:origin'] .log-branch-name").map((b) => b.textContent)).toEqual(["feature"]);
+    expect(all("[data-group='tags'] .log-branch")).toHaveLength(0);
+    await click(q("[data-group='tags'] .log-group-head"));
+    await click(sideRow("tags", "v1.0"));
+    expect(bridge.log).toHaveBeenLastCalledWith("a", expect.objectContaining({ refs: ["refs/tags/v1.0"] }), null);
+    await click(q("[data-group='local'] .log-group-head"));
+    expect(all("[data-group='local'] .log-branch")).toHaveLength(0);
+    expect(JSON.parse(localStorage.getItem("oris.historySidebar.v1")!).collapsed.sort()).toEqual(["local"]);
+    expect(requests()).toEqual([]);
+  });
+
+  it("searches branches, tags and stashes; groups without matches are hidden while searching", async () => {
+    bridge.refs.mockResolvedValue({ ...refsView, tags: [{ fullName: "refs/tags/feature-1", name: "feature-1", oid: O("2"), annotated: false }] });
+    await mount();
+    await openHistory();
+    await type(q<HTMLInputElement>("input[aria-label=搜索分支]")!, "FEAT");
+    expect(all(".log-group-head").map((b) => `${b.getAttribute("aria-expanded") === "true" ? "▾" : "▸"}${b.querySelector(".log-group-label")?.textContent}`)).toEqual(["▾本地分支 · 1", "▾标签 · 1", "▾远端分支 · 1", "▾origin · 1", "▾Stash · 1"]);
+    // stash 也按储藏时所在的分支匹配（stash@{1} 储藏于 feature）。
+    expect(all(".log-branch-name").map((b) => b.textContent)).toEqual(["feature", "feature-1", "feature", "stash@{1} · debug"]);
+    await type(q<HTMLInputElement>("input[aria-label=搜索分支]")!, "debug");
+    expect(all(".log-group-head").map((b) => `${b.getAttribute("aria-expanded") === "true" ? "▾" : "▸"}${b.querySelector(".log-group-label")?.textContent}`)).toEqual(["▾Stash · 1"]);
+    expect(q(".log-stash")?.textContent).toContain("stash@{1} · debug");
+  });
+
+  it("switches on double click (single click only filters); a remote branch is checked out as a tracking branch; no fetch button in the sidebar", async () => {
+    await mount();
+    await openHistory();
+    expect(button("获取…", q(".log-branches")!)).toBeUndefined();
+    await click(sideRow("local", "feature"));
+    expect(requests()).toEqual([]);
+    await dblclick(sideRow("local", "feature"));
+    expect(requests()[0]).toEqual({ kind: "branchSwitch", name: "refs/heads/feature" });
+    await dblclick(sideRow("local", "main"));
+    expect(requests()).toHaveLength(1);
+    await dblclick(sideRow("remote:origin", "feature"));
+    expect(requests()[1]).toEqual({ kind: "branchTrack", remote: "refs/remotes/origin/feature" });
+  });
+
+  it("stashes with message / untracked / only the selected files, and applies, pops and drops by identity", async () => {
+    await mount();
+    await openHistory();
+    expect(all(".log-stash").map((r) => r.textContent)).toEqual([expect.stringContaining("stash@{0} · wip login"), expect.stringContaining("stash@{1} · debug")]);
+    await click(button("储藏…"));
     await type(q<HTMLInputElement>("input[aria-label='stash 说明']")!, "half done");
     await click(q("input[aria-label=包含未跟踪文件]"));
     await click(q("input[aria-label=只储藏选中的文件]"));
-    await click(button("储藏"));
+    await click(button("储藏", q(".stash-form")!));
     expect(requests()[0]).toEqual({ kind: "stashPush", message: "half done", includeUntracked: true, pathIds: ["id-a.txt"] });
-    await click(button("应用"));
+    expect(q(".stash-form")).toBeNull();
+    await click(all(".log-stash")[0]);
+    const detail = () => q(".stash-detail")!;
+    await click(button("应用", detail()));
     expect(requests()[1]).toEqual({ kind: "stashApply", index: 0, oid: O("a"), pop: false });
-    await click(button("弹出"));
+    await click(button("弹出", detail()));
     expect(requests()[2]).toEqual({ kind: "stashApply", index: 0, oid: O("a"), pop: true });
-    await click(button("删除…", q(".stash-list")!));
+    await click(button("删除…", detail()));
     expect(q(".confirm-dialog")?.textContent).toContain("无法撤销");
     await click(button("删除 stash", q(".confirm-dialog")!));
     expect(requests()[3]).toEqual({ kind: "stashDrop", index: 0, oid: O("a") });
@@ -230,7 +279,8 @@ describe("stash tab (B09)", () => {
 
   it("opens tracked and untracked parts of a stash in the same diff reader", async () => {
     await mount();
-    await openStash();
+    await openHistory();
+    await click(all(".log-stash")[0]);
     expect(q(".stash-detail")?.textContent).toContain("未跟踪文件 · 1");
     await click(all(".stash-detail .log-file").find((b) => b.textContent?.includes("a.txt")));
     expect(bridge.revision).toHaveBeenLastCalledWith("a", O("1"), O("a"), "id-a.txt", null, expect.any(String));

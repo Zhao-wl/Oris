@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type JSX, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
 import type { CompareScope, ContentUnchanged, FileChange } from "./types";
 import { rowActions } from "./operations-model";
+import PathText from "./PathText";
 
 export type FileAction = "stage" | "unstage" | "markResolved" | "discard";
 
@@ -44,33 +45,6 @@ export const compareFiles = (a: FileChange, b: FileChange) => {
   const rank = (f: FileChange) => f.contentUnchanged ? 3 : f.status === "deleted" ? 1 : f.status === "added" || f.status === "untracked" ? 2 : 0;
   return rank(a) - rank(b) || (a.displayPath < b.displayPath ? -1 : a.displayPath > b.displayPath ? 1 : 0);
 };
-
-function TailPath({ path, fullPath }: { path: string; fullPath: string }) {
-  const host = useRef<HTMLSpanElement>(null);
-  const [label, setLabel] = useState(path);
-  useLayoutEffect(() => {
-    const element = host.current;
-    if (!element) return;
-    const canvas = document.createElement("canvas");
-    const context = canvas.getContext("2d")!;
-    const fit = () => {
-      context.font = getComputedStyle(element).font;
-      const width = element.clientWidth;
-      const chars = Array.from(path);
-      if (context.measureText(path).width <= width) { setLabel(path); return; }
-      let lo = 0, hi = chars.length;
-      while (lo < hi) {
-        const middle = Math.floor((lo + hi) / 2);
-        if (context.measureText("…" + chars.slice(middle).join("")).width > width) lo = middle + 1;
-        else hi = middle;
-      }
-      setLabel("…" + chars.slice(lo).join(""));
-    };
-    fit(); const observer = new ResizeObserver(fit); observer.observe(element);
-    return () => observer.disconnect();
-  }, [path]);
-  return <span className="file-path" ref={host} title={fullPath}>{label}</span>;
-}
 
 interface DirectoryNode {
   name: string;
@@ -134,8 +108,8 @@ function FileButton({ file, selectedPathId, onSelect, depth = 0, showPath = fals
       onContextMenu={actions ? (event) => { event.preventDefault(); actions.openMenu(file, event.clientX, event.clientY); } : undefined}
     >
       <span className="file-icon">◇</span>
-      <TailPath path={label} fullPath={file.displayPath}/>
-      {file.oldDisplayPath && <span className="old-path" title={file.oldDisplayPath}>← {file.oldDisplayPath}</span>}
+      <PathText path={label} className="file-path" title={file.displayPath}/>
+      {file.oldDisplayPath && <PathText path={file.oldDisplayPath} prefix="← " className="old-path"/>}
       {file.pending ? <span className="line-stat pending-mark" title="等待 Git 确认">确认中</span>
         : file.contentUnchanged ? <span className="line-stat unchanged" title={contentUnchangedLabels[file.contentUnchanged].detail}>{contentUnchangedLabels[file.contentUnchanged].short}</span>
         : file.additions !== null ? <span className="line-stat">+{file.additions} −{file.deletions ?? 0}</span>
@@ -234,7 +208,7 @@ function Directory({ node, depth, selectedPathId, onSelect, statsPending = false
       <summary style={{ "--tree-depth": depth - 1 } as CSSProperties}>
         <span className="directory-chevron">›</span>
         <span className="directory-icon">▱</span>
-        <span title={node.path}>{node.name}</span>
+        <PathText path={node.name} title={node.path}/>
       </summary>
       {content}
     </details>
@@ -389,7 +363,7 @@ function FileList({ files, selectedPathId, mode, statsPending = false, onSelect 
       if (row.kind === "file") return <FileButton key={row.file.pathId} file={row.file} selectedPathId={selectedPathId} onSelect={onSelect} depth={row.depth + 1} statsPending={statsPending} style={style} />;
       const open = !collapsed.has(row.node.path);
       return <div key={`dir:${row.node.path}`} role="treeitem" aria-expanded={open} className={`tree-row tree-directory-row${open ? " open" : ""}`} style={{ ...style, "--tree-depth": row.depth } as CSSProperties} onClick={() => toggle(row.node.path)}>
-        <span className="directory-chevron">›</span><span className="directory-icon">▱</span><span title={row.node.path}>{row.node.name}</span>
+        <span className="directory-chevron">›</span><span className="directory-icon">▱</span><PathText path={row.node.name} title={row.node.path}/>
       </div>;
     }} />;
   }

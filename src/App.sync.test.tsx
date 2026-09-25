@@ -163,7 +163,7 @@ describe("merge (B13 / B14)", () => {
     await click(dialog.querySelector("input[aria-label=总是创建合并提交]"));
     await click(button("合并", dialog));
     expect(requests()[0]).toEqual({ kind: "merge", target: "refs/heads/topic", expected: O("2"), noFf: true });
-    await click(Array.from(host.querySelectorAll<HTMLButtonElement>(".git-tabs button")).find((b) => b.textContent === "日志"));
+    await click(Array.from(host.querySelectorAll<HTMLButtonElement>(".git-tabs button")).find((b) => b.textContent === "历史"));
     await act(async () => { q(".log-row")!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 })); }); await flush();
     await click(button("合并到当前分支…"));
     await click(button("合并", q(".merge-dialog")!));

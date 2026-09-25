@@ -63,7 +63,7 @@ const button = (label: string, scope: ParentNode = host) => [...scope.querySelec
 const click = async (element: Element | null) => { expect(element).toBeTruthy(); await act(async () => (element as HTMLElement).click()); await flush(); };
 const contextMenu = async (element: Element | null) => { expect(element).toBeTruthy(); await act(async () => { element!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 30, clientY: 30 })); }); await flush(); };
 const reading = () => host.querySelector("[data-testid=readable]")?.textContent ?? null;
-const openLog = async () => { await click(all(".git-tabs button").find((b) => b.textContent === "日志")!); };
+const openLog = async () => { await click(all(".git-tabs button").find((b) => b.textContent === "历史")!); };
 
 beforeEach(() => {
   vi.resetAllMocks(); localStorage.clear();
@@ -119,6 +119,39 @@ describe("Git log tab (A07 / A08)", () => {
     expect(q(".log-current")?.textContent).toContain("● main");
     expect(q(".log-branch.browsing")?.textContent).toContain("topic");
     expect(bridge.operation).not.toHaveBeenCalled();
+  });
+
+  it("search results list commit subjects without a topology graph (missing parents do not widen the graph)", async () => {
+    const found = Array.from({ length: 30 }, (_, i) => commit(String(i).padStart(40, "e"), [String(i).padStart(40, "d")], `地龙 ${i}`));
+    bridge.log.mockImplementation(async (_repo: string, query: { search: unknown }, cursor: unknown) => ({ commits: cursor ? [] : query.search ? found : history, next: null, tips: [] }));
+    await mount();
+    await openLog();
+    await act(async () => { const input = q<HTMLInputElement>("input[aria-label=搜索提交]")!; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "地龙"); input.dispatchEvent(new Event("input", { bubbles: true })); }); await flush();
+    await click(button("搜索"));
+    expect(bridge.log).toHaveBeenLastCalledWith("a", expect.objectContaining({ search: { kind: "message", text: "地龙" } }), null);
+    const rows = all(".log-row");
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((row) => row.querySelector(".log-graph")?.getAttribute("width") === "12")).toBe(true);
+    expect(rows.every((row) => row.querySelectorAll(".log-graph line").length === 0)).toBe(true);
+    expect(rows[0].querySelector(".log-subject")?.textContent).toBe("地龙 0");
+    expect(q(".log-continuation")).toBeNull();
+  });
+
+  it("resizes the side columns with the splitters and remembers the widths; paths keep their tail visible", async () => {
+    await mount();
+    await openLog();
+    const [left, right] = all(".log-splitter");
+    const key = async (element: HTMLElement, name: string) => { await act(async () => { element.dispatchEvent(new KeyboardEvent("keydown", { key: name, bubbles: true })); }); await flush(); };
+    expect([left.getAttribute("aria-valuenow"), right.getAttribute("aria-valuenow")]).toEqual(["230", "340"]);
+    await key(left, "ArrowRight");
+    await key(right, "ArrowLeft");
+    expect([left.getAttribute("aria-valuenow"), right.getAttribute("aria-valuenow")]).toEqual(["246", "356"]);
+    expect(q(".log-layout")?.style.gridTemplateColumns).toBe("246px 5px minmax(0, 1fr) 5px 356px");
+    expect(JSON.parse(localStorage.getItem("oris.historyColumns.v1")!)).toEqual({ left: 246, right: 356 });
+    await act(async () => { left.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })); }); await flush();
+    expect(left.getAttribute("aria-valuenow")).toBe("230");
+    const path = all(".log-file-path").find((n) => n.textContent === "src/a.txt")!;
+    expect([path.getAttribute("dir"), path.querySelector("bdi")?.getAttribute("dir"), path.title]).toEqual(["rtl", "ltr", "src/a.txt"]);
   });
 
   it("merge commits pick either parent; root commits compare against the empty tree", async () => {
