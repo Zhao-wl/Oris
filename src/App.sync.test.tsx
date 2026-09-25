@@ -151,6 +151,31 @@ describe("sync entry (B11)", () => {
   });
 });
 
+describe("decision follow-ups (V2-D48 / V2-D49)", () => {
+  it("offers a pull shortcut after a rejected push, without pushing again", async () => {
+    bridge.operation.mockImplementationOnce(async () => outcome("push", { status: "failed", message: "推送 main 到 origin/main被拒绝：远端有本地没有的新提交。请先拉取", snapshot: snap() }));
+    await mount();
+    await openSync();
+    await click(button("预览…", q(".sync-popover")!));
+    await click(button("推送", q(".push-dialog")!));
+    const shortcut = q(".push-rejected-pull")!;
+    expect(shortcut.textContent).toBe("拉取…");
+    await click(shortcut);
+    expect(q(".pull-dialog")).toBeTruthy();
+    expect(requests()).toEqual([{ kind: "push", remote: null }]);
+  });
+
+  it("explains merge.ff=only in the merge dialog", async () => {
+    bridge.refs.mockResolvedValue(refsView({ mergeFf: "only" }));
+    await mount();
+    await click(q(".branch-button"));
+    const row = all(".branch-row").find((r) => r.querySelector(".branch-row-name")?.textContent === "topic")!;
+    await click(button("更多 ▾", row));
+    await click(button("合并到当前分支…"));
+    expect(q(".merge-dialog")?.textContent).toContain("merge.ff=only 只允许快进");
+  });
+});
+
 describe("merge (B13 / B14)", () => {
   it("merges a branch from the branch popover and a commit from the log with the displayed OID", async () => {
     await mount();

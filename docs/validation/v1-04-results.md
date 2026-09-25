@@ -78,7 +78,9 @@
 | 技术方案 §4 网络操作只写 `--progress` | fetch 另带 `--no-auto-maintenance --no-write-commit-graph` | 任务票据“禁额外维护”；用户配置的 `fetch.writeCommitGraph` 也不触发 |
 | 历史内容的前端缓存 | 只进 DiffCache（按 contentId），不进本地范围的 ContentCache | ContentCache 以本地 revision 为键 |
 
-## 待用户决定
+## 待用户决定（已确认）
+
+> 2026-09-25：以下各项已由用户按推荐确认，见 [V2 决策登记](../decisions/v2-decisions.md) V2-D38–V2-D49。其中 fetch 只对外部 `index.lock` 放开（rebase 等进行中仍禁用）；“合并远端改动”已改为不强制 `--no-ff`（V2-D47）。
 
 1. 外部 `index.lock` 存在或仓库处于 rebase / cherry-pick / revert / bisect 进行中时，fetch 与其他写操作一样被禁用（沿用 V2-02 的前置检查）。fetch 不需要 index，放开会更方便，但更保守的做法是保持一致；目前保持禁用。
 2. “跳到 HEAD”在 HEAD 不在当前筛选 / 搜索结果中时，把浏览分支改为 HEAD 所在分支（HEAD 位于第一行），而不是在“全部分支”中逐页查找。

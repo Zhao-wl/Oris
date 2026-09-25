@@ -190,6 +190,20 @@ describe("Git log tab (A07 / A08)", () => {
   });
 });
 
+describe("jump to HEAD (V2-D39)", () => {
+  it("explains when HEAD is outside the current results and the browsed branch changes", async () => {
+    await mount();
+    await openLog();
+    await click(all(".log-branch").find((b) => b.textContent?.includes("topic"))!);
+    expect(q(".log-jump-note")).toBeNull();
+    await click(button("跳到 HEAD"));
+    expect(q(".log-jump-note")?.textContent).toBe("HEAD 不在当前结果中，已改为浏览 main");
+    expect(bridge.log).toHaveBeenLastCalledWith("a", expect.objectContaining({ refs: ["refs/heads/main"] }), null);
+    await click(all(".log-branch").find((b) => b.textContent?.includes("topic"))!);
+    expect(q(".log-jump-note")).toBeNull();
+  });
+});
+
 describe("compare and file history (A09)", () => {
   it("compares two endpoints by their pinned OIDs, swaps direction, and flags a moved ref", async () => {
     await mount();

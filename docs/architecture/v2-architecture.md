@@ -50,7 +50,7 @@ flowchart LR
 - **watcher 屏蔽窗口**：操作开始时记录屏蔽标记，操作期间该仓库的 watcher 事件只做合并，不下发；操作结束后按影响维度做一次精确刷新，再解除屏蔽。
 - **进度与取消**：pull、push、fetch 带 `--progress`，逐行解析 stderr，经 Tauri Channel 推送到前端。取消时终止整个进程树（Windows 使用 Job Object，macOS 使用进程组）。取消或失败之后，重新读取 refs 与 status，并如实报告实际状态。
 - **超时**：网络操作设置“无输出超时”（初始 60 s）；hooks 不设超时，但可以取消。超时后终止进程，提示用户可能需要先在终端完成首次主机认证或凭据配置（V2-D12）。
-- **外部锁**：检测到 `index.lock` 等锁文件导致的失败时，给出明确说明，不重试、不删除锁文件。
+- **外部锁**：检测到 `index.lock` 等锁文件导致的失败时，给出明确说明，不重试、不删除锁文件。显式 fetch 不需要 index，外部持有 `index.lock` 时照常执行（V2-D38）。
 - **乐观更新**：stage、unstage 在前端立即移动条目，同时标记“确认中”；返回失败时回滚并提示。其他写操作不做乐观更新。
 - **进行中状态检测**：读取 `MERGE_HEAD`、`rebase-merge/`、`rebase-apply/`、`CHERRY_PICK_HEAD`、`REVERT_HEAD`、`BISECT_LOG`，结果放进快照的 `inProgress` 字段。merge 以外的进行中状态会禁用全部写操作。
 - **操作记录**：每个仓库只保留最近一次操作的完整输出（有字节上限），供状态栏展开查看，不写日志文件。凭据相关的输出在展示前做脱敏处理。
@@ -140,7 +140,7 @@ flowchart LR
 | 检出提交 | `switch --detach <oid>` |
 | 重命名 / 删除分支 | `branch -m`；`branch -d`，未合并时经确认后 `branch -D` |
 | 设置上游 | `branch --set-upstream-to=<remote>/<branch>` |
-| pull | `pull --no-rebase --ff-only --progress` 或 `pull --no-rebase --no-ff --no-edit --progress`，均带 `--no-recurse-submodules` |
+| pull | `pull --no-rebase --ff-only --progress` 或 `pull --no-rebase --no-edit --progress`（遵循 `merge.ff`，能快进时快进，V2-D47），均带 `--no-recurse-submodules --no-autostash` |
 | push | `push --progress`；首次为 `push --progress -u <remote> <branch>` |
 | merge / 中止 / 完成 | `merge --no-edit [--no-ff] <oid>`、`merge --abort`、`commit -F -` |
 | 已推送判断 | `merge-base --is-ancestor HEAD @{u}`（只读通道） |

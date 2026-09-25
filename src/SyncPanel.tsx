@@ -85,7 +85,7 @@ export function PullDialog({ refs, blocked, onConfirm, onCancel }: { refs: RefsV
   </>}>
     <p>{!refs ? "正在读取当前分支与上游…" : `来源：${upstream ?? "—"}`}{tracking?.state === "known" ? `（本地快照：落后 ${tracking.behind}、领先 ${tracking.ahead}；拉取时会先获取最新状态）` : ""}</p>
     <label className="dialog-check"><input type="radio" name="pull-mode" aria-label="仅快进" checked={mode === "ffOnly"} onChange={() => setMode("ffOnly")}/> 仅快进（默认）：本地没有上游之外的提交时才更新</label>
-    <label className="dialog-check"><input type="radio" name="pull-mode" aria-label="合并远端改动" checked={mode === "merge"} onChange={() => setMode("merge")}/> 合并远端改动：生成一个合并提交</label>
+    <label className="dialog-check"><input type="radio" name="pull-mode" aria-label="合并远端改动" checked={mode === "merge"} onChange={() => setMode("merge")}/> 合并远端改动：能快进时快进，已分叉时生成合并提交</label>
     {rebase && <p className="confirm-warning pull-rebase-note">你的 Git 配置了 pull.rebase={rebase}：Oris 不做 rebase，会以合并方式执行（--no-rebase）。</p>}
     <p className="confirm-note">不递归子模块、不自动储藏。工作区改动阻止拉取时，会询问是否先储藏。</p>
   </Shell>;
@@ -128,6 +128,7 @@ export function MergeDialog({ target, current, mergeFf, blocked, onConfirm, onCa
   </>}>
     <p>把 <strong>{target.label}</strong>（{shortOid(target.oid)}）合并到当前分支 <strong>{current}</strong>。</p>
     <label className="dialog-check"><input type="checkbox" aria-label="总是创建合并提交" checked={noFf} onChange={(event) => setNoFf(event.target.checked)}/> 总是创建合并提交（--no-ff）</label>
+    {mergeFf === "only" && <p className="confirm-warning merge-ff-only-note">你的配置 merge.ff=only 只允许快进：无法快进时合并会失败；勾选“总是创建合并提交”会覆盖该配置。</p>}
     <p className="confirm-note">{mergeFf ? `遵循你的 merge.ff=${mergeFf}；` : "默认能快进时快进；"}出现冲突时进入“合并进行中”：冲突只读查看，在外部解决后标记已解决，再完成合并或中止合并。</p>
   </Shell>;
 }
