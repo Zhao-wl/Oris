@@ -446,7 +446,23 @@ impl GitAdapter {
         if state.merge && matches!(request, OperationRequest::UndoCommit { .. }) {
             return Err(GitError::WriteBlocked("合并进行中不能撤销提交".into()));
         }
-        if self.index_lock_exists() {
+        // 合并进行中：会改动工作区的切换、检出、储藏与拉取提前拦下，给出中文说明（V2-D45）；
+        // 新建（不切换）、重命名、删除其他分支、设置上游、删除 stash 不影响工作区，照常允许。
+        let moves_worktree = matches!(
+            request,
+            OperationRequest::BranchSwitch { .. }
+                | OperationRequest::BranchTrack { .. }
+                | OperationRequest::Checkout { .. }
+                | OperationRequest::StashPush { .. }
+                | OperationRequest::StashApply { .. }
+                | OperationRequest::Pull { .. }
+                | OperationRequest::BranchCreate { switch: true, .. }
+        );
+        if state.merge && moves_worktree {
+            return Err(GitError::WriteBlocked("合并进行中：请先完成或中止当前合并，再切换分支、检出、储藏或拉取".into()));
+        }
+        // fetch 只写远端跟踪引用与 FETCH_HEAD，不碰 index：外部持有 index.lock 时照常允许（V2-D38）。
+        if self.index_lock_exists() && !matches!(request, OperationRequest::Fetch { .. }) {
             return Err(GitError::ExternalLock(format!(
                 "另一个 Git 进程正在使用该仓库（存在 {}）。Oris 不会删除锁文件；请等待外部操作结束，或确认没有 Git 进程后手动处理",
                 self.git_dir.join("index.lock").display()

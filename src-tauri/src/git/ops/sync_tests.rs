@@ -515,3 +515,44 @@ fn b11_long_refusal_lists_are_still_recognised_as_local_changes() {
     assert_eq!(confirmation.reason, "localChanges");
     assert_eq!(confirmation.paths.len(), 30, "{:?}", confirmation.paths);
 }
+
+#[test]
+fn v2_d47_pull_merge_mode_fast_forwards_when_possible() {
+    let r = remote_setup();
+    let remote_head = commit(&r.other, "b.txt", "remote\n", "remote work");
+    git_in(&r.other, &["push", "-q", "origin", "main"]);
+    let outcome = Harness::new(&r.local).run(pull(PullMode::Merge));
+    assert_eq!(outcome.status, OpStatus::Succeeded, "{}", outcome.message);
+    assert_eq!(git_in(&r.local, &["rev-parse", "HEAD"]), remote_head, "能快进时不生成合并提交");
+    assert!(outcome.message.contains("快进"), "{}", outcome.message);
+}
+
+#[test]
+fn v2_d45_merge_in_progress_blocks_worktree_moving_operations_but_not_ref_only_ones() {
+    let r = remote_setup();
+    let p = r.local.as_path();
+    git_in(p, &["switch", "-qc", "topic"]);
+    commit(p, "a.txt", "topic\n", "topic");
+    git_in(p, &["switch", "-q", "main"]);
+    commit(p, "a.txt", "main\n", "main");
+    let _ = run_git(p, &["merge", "topic"]);
+    assert!(p.join(".git/MERGE_HEAD").exists());
+    let h = Harness::new(p);
+    let before = fingerprint(p);
+    let head = git_in(p, &["rev-parse", "HEAD"]);
+    for request in [
+        OperationRequest::BranchSwitch { name: "refs/heads/topic".into(), stash_first: false, stash_untracked: false },
+        OperationRequest::Checkout { commit: head.clone(), stash_first: false, stash_untracked: false },
+        OperationRequest::StashPush { message: None, include_untracked: false, path_ids: None },
+        pull(PullMode::FfOnly),
+        OperationRequest::BranchCreate { name: "x".into(), start: "HEAD".into(), switch: true, stash_first: false, stash_untracked: false },
+    ] {
+        let kind = request.kind();
+        let error = h.try_run(request).unwrap_err();
+        assert!(matches!(&error, GitError::WriteBlocked(m) if m.contains("合并进行中")), "{kind}: {error}");
+    }
+    assert_eq!(fingerprint(p), before);
+    let outcome = h.run(OperationRequest::BranchCreate { name: "kept".into(), start: "HEAD".into(), switch: false, stash_first: false, stash_untracked: false });
+    assert_eq!(outcome.status, OpStatus::Succeeded, "只新建分支不影响工作区：{}", outcome.message);
+    assert!(p.join(".git/MERGE_HEAD").exists());
+}

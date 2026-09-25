@@ -458,3 +458,19 @@ fn b09_stash_with_untracked_and_no_paths_removes_and_restores_untracked_files() 
     assert_eq!(fs::read_to_string(p.join("a.txt")).unwrap(), "tracked change\n");
     assert_eq!(stash_count(p), 0);
 }
+
+#[test]
+fn v2_d42_stash_drop_reports_a_restore_command_that_works() {
+    let dir = repo();
+    let p = dir.path();
+    write(p, "a.txt", "stashed\n");
+    let h = Harness::new(p);
+    assert_eq!(h.run(OperationRequest::StashPush { message: Some("keep me".into()), include_untracked: false, path_ids: None }).status, OpStatus::Succeeded);
+    let entry = h.adapter.stash_list().unwrap()[0].clone();
+    let outcome = h.run(OperationRequest::StashDrop { index: 0, oid: entry.oid.clone() });
+    assert_eq!(outcome.status, OpStatus::Succeeded, "{}", outcome.message);
+    assert!(outcome.message.contains("git stash store") && outcome.message.contains(&entry.oid), "{}", outcome.message);
+    assert_eq!(stash_count(p), 0);
+    git_in(p, &["stash", "store", "-m", "Oris 找回的 stash", &entry.oid]);
+    assert_eq!(h.adapter.stash_list().unwrap()[0].oid, entry.oid, "按提示的命令可以找回");
+}

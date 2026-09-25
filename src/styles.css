@@ -506,3 +506,5 @@ button.op-status { padding:0 6px; border:0; background:transparent; font-size:11
 .merge-banner { display:flex; align-items:center; gap:10px; }
 .merge-banner span:not(.spacer) { color:var(--dim); }
 .merge-banner button { padding:1px 8px; font-size:12px; }
+.log-jump-note { color:var(--warning, #d9a24f); font-size:11px; white-space:nowrap; }
+.merge-ff-only-note { font-weight:400; }
