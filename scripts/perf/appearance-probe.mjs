@@ -76,6 +76,14 @@ try {
   }
   await waitUntil(`window.__op.readyFor('typical.ts', null) === true`, 30000);
   await sleep(1500);
+  // --scope 全部 / 已暂存：换到另一个比较范围再测（“全部”范围没有块操作标题行，用于隔离 V2-05 的影响）。
+  const scopeLabel = option("scope", null);
+  if (scopeLabel) {
+    await evaluate(`window.__op.scopeButton(${q(scopeLabel)}).click()`);
+    await waitUntil(`window.__op.footer().includes(${q(scopeLabel)}) && window.__op.readyFor('typical.ts', null) === true`, 30000);
+    await sleep(1500);
+    result.scope = scopeLabel;
+  }
   // --scrolled：把阅读位置滚到文件中部（长时间阅读后的常见状态）。
   if (args.includes("--scrolled")) {
     await evaluate(`(() => { const sc = document.querySelector('.oris-split-pane.right .cm-scroller'); sc.scrollTop = sc.scrollHeight * 0.6; return sc.scrollTop; })()`);

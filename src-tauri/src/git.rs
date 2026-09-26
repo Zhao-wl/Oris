@@ -224,6 +224,9 @@ pub struct TextSide {
     content_id: String,
     #[serde(skip)]
     source_id: Option<String>,
+    /// 编码不受支持时的逐字节（Latin-1）解码：只在用户明确选择“按单字节显示”时使用（V2-D54 待定），经二进制帧传输。
+    #[serde(skip)]
+    latin1: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -1132,7 +1135,7 @@ enum Decoded {
     Unsupported(String),
 }
 
-fn decode_text(bytes: Vec<u8>) -> Decoded {
+fn decode_text(bytes: &[u8]) -> Decoded {
     if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
         return match std::str::from_utf8(rest) {
             Ok(text) if !text.contains('\0') => Decoded::Text { text: text.to_owned(), encoding: "utf-8", bom: true },
@@ -1165,8 +1168,8 @@ fn decode_text(bytes: Vec<u8>) -> Decoded {
     if bytes.contains(&0) {
         return Decoded::Binary;
     }
-    match String::from_utf8(bytes) {
-        Ok(text) => Decoded::Text { text, encoding: "utf-8", bom: false },
+    match std::str::from_utf8(bytes) {
+        Ok(text) => Decoded::Text { text: text.to_owned(), encoding: "utf-8", bom: false },
         Err(_) => Decoded::Unsupported("不是有效的 UTF-8".into()),
     }
 }
@@ -1184,6 +1187,7 @@ fn text_side(endpoint: &'static str, bytes: Vec<u8>, missing: bool) -> (TextSide
         eol: "none",
         has_final_newline: None,
         source_id: None,
+        latin1: None,
         content_id,
     };
     if missing {
@@ -1199,6 +1203,7 @@ fn text_side(endpoint: &'static str, bytes: Vec<u8>, missing: bool) -> (TextSide
                 eol: "none",
                 has_final_newline: None,
                 source_id: None,
+                latin1: None,
                 content_id,
             },
             None,
@@ -1213,7 +1218,7 @@ fn text_side(endpoint: &'static str, bytes: Vec<u8>, missing: bool) -> (TextSide
         return (unreadable(bytes.len(), "tooLarge", content_id), Some(reason));
     }
     let byte_length = bytes.len();
-    let (text, encoding, bom) = match decode_text(bytes) {
+    let (text, encoding, bom) = match decode_text(&bytes) {
         Decoded::Text { text, encoding, bom } => (text, encoding, bom),
         Decoded::Binary => {
             let reason = "内容包含 NUL 字节，按二进制文件处理；只比较大小与内容标识，未显示为无差异。".to_owned();
@@ -1223,7 +1228,9 @@ fn text_side(endpoint: &'static str, bytes: Vec<u8>, missing: bool) -> (TextSide
             let reason = format!(
                 "编码不受支持：{detail}。Oris 只解码 UTF-8（可带 BOM）与带 BOM 的 UTF-16，不猜测 GBK、Shift-JIS 等编码；未显示为无差异。"
             );
-            return (unreadable(byte_length, "unsupportedEncoding", content_id), Some(reason));
+            let mut side = unreadable(byte_length, "unsupportedEncoding", content_id);
+            side.latin1 = Some(bytes.iter().map(|&b| char::from(b)).collect());
+            return (side, Some(reason));
         }
     };
     let lines = text.lines().count();
@@ -1249,6 +1256,7 @@ fn text_side(endpoint: &'static str, bytes: Vec<u8>, missing: bool) -> (TextSide
                 eol: eol(&text),
                 has_final_newline: Some(text.ends_with('\n')),
                 source_id: None,
+                latin1: None,
                 content_id,
             },
             Some(reason),
@@ -1268,6 +1276,7 @@ fn text_side(endpoint: &'static str, bytes: Vec<u8>, missing: bool) -> (TextSide
             eol: line_ending,
             has_final_newline: Some(final_newline),
             source_id: None,
+            latin1: None,
             content_id,
         },
         None,

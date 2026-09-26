@@ -496,6 +496,49 @@ impl GitAdapter {
         Ok(step)
     }
 
+    /// 块级丢弃（V2-05）的安全网：先把整个工作区文件（原始字节）写入对象库并记录，再执行 `run`；
+    /// 撤销时与文件级丢弃相同，恢复整个文件。超过 50 MiB 备份预算时需要明确确认“不可撤销”。
+    pub(super) fn with_worktree_backup(&self, path: &[u8], path_id: &str, confirmed_unrecoverable: bool, ctx: &OpContext, run: impl FnOnce(&OpContext) -> Result<Step, GitError>) -> Result<Step, GitError> {
+        let size = self.worktree_size(path);
+        let unrecoverable = size.is_some_and(|s| s > BACKUP_FILE_LIMIT);
+        if unrecoverable && !confirmed_unrecoverable {
+            return Ok(Step::confirm("unrecoverable", "文件超过 50 MiB 备份预算，丢弃这一块后不可撤销", vec![display(path)]));
+        }
+        let worktree = if unrecoverable {
+            None
+        } else {
+            let oids = match self.backup_worktree(&[path], ctx)? {
+                Ok(oids) => oids,
+                Err(message) => return Ok(Step::failed(format!("{message}；未丢弃"))),
+            };
+            let mode = std::str::from_utf8(path).ok().and_then(|r| fs::symlink_metadata(self.worktree.join(r)).ok()).filter(|m| m.file_type().is_symlink()).map(|_| "120000".to_owned()).unwrap_or_else(|| executable_mode(&self.worktree, path));
+            Some(BlobRef { oid: oids[0].clone(), mode })
+        };
+        if ctx.cancel.is_cancelled() {
+            return Ok(Step::cancelled("丢弃已取消；未改动文件"));
+        }
+        let mut record = BackupRecord {
+            id: ctx.op_id.clone(),
+            created_at: now_ms(),
+            scope: CompareScope::Unstaged,
+            entries: vec![BackupEntry { path_id: path_id.to_owned(), display_path: display(path), worktree, unrecoverable, index: IndexState::Untouched, after: None }],
+            complete: false,
+        };
+        ctx.backups.upsert(&self.repo_id, &self.worktree, record.clone())?;
+        let mut step = run(ctx)?;
+        if step.status == OpStatus::Succeeded {
+            record.entries[0].after = Some(self.fingerprint(path));
+            record.complete = true;
+            ctx.backups.upsert(&self.repo_id, &self.worktree, record.clone())?;
+            step.message.push_str(if unrecoverable { "（不可撤销）" } else { "，可撤销" });
+            step.backup = Some(BackupSummary::from(&record));
+        } else {
+            // git apply 要么整体成功、要么不改动文件：没有成功时删除这条备份记录，避免出现无意义的“撤销丢弃”。
+            ctx.backups.remove(&self.repo_id, &record.id)?;
+        }
+        Ok(step)
+    }
+
     pub(super) fn op_undo_discard(&self, backup_id: &str, overwrite: bool, ctx: &OpContext) -> Result<Step, GitError> {
         let Some(record) = ctx.backups.get(&self.repo_id, backup_id) else {
             return Ok(Step::failed("找不到该丢弃记录（可能已撤销或超出保留数量）"));
@@ -653,7 +696,7 @@ impl GitAdapter {
         Ok(step)
     }
 
-    fn write_worktree_file(&self, relative: &str, bytes: &[u8], mode: &str) -> Result<(), GitError> {
+    pub(super) fn write_worktree_file(&self, relative: &str, bytes: &[u8], mode: &str) -> Result<(), GitError> {
         validate_relative(relative)?;
         let full = self.checked_worktree_path(relative)?;
         if let Some(parent) = full.parent() {

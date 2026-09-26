@@ -8,6 +8,9 @@ export type OperationRequest =
   | { kind: "markResolved"; pathIds: string[]; confirmed?: boolean }
   | { kind: "discard"; scope: CompareScope; pathIds: string[]; confirmedUnrecoverable?: boolean }
   | { kind: "undoDiscard"; backupId: string; overwrite?: boolean }
+  | { kind: "hunkStage"; pathId: string; contentIds: [string, string]; hunk: HunkRef }
+  | { kind: "hunkUnstage"; pathId: string; contentIds: [string, string]; hunk: HunkRef }
+  | { kind: "hunkDiscard"; pathId: string; contentIds: [string, string]; hunk: HunkRef; confirmedUnrecoverable?: boolean }
   | { kind: "commit"; message: string }
   | { kind: "undoCommit"; expectedHead: string }
   | { kind: "fetch"; remote: string }
@@ -31,6 +34,7 @@ export type OperationRequest =
 export interface StashFirst { stashFirst?: boolean; stashUntracked?: boolean }
 
 export type OperationKind = "stage" | "unstage" | "markResolved" | "discard" | "undoDiscard" | "commit" | "undoCommit" | "fetch"
+  | "hunkStage" | "hunkUnstage" | "hunkDiscard"
   | "stashPush" | "stashApply" | "stashPop" | "stashDrop"
   | "branchCreate" | "branchSwitch" | "branchTrack" | "checkout" | "branchRename" | "branchDelete" | "setUpstream"
   | "pull" | "push" | "merge" | "mergeAbort" | "mergeCommit";
@@ -96,6 +100,14 @@ export interface LastOperation {
   outputTruncated: boolean;
   finishedAt: number;
 }
+
+/** 某一块在两侧的行范围（0 起、左闭右开）与 Git 输出的内容摘要（V2-05）。 */
+export interface HunkRef { oldStart: number; oldEnd: number; newStart: number; newEnd: number; digest: string }
+
+/** 只读块映射：Git 报告的差异块；`blocked` 为整个文件不能做块操作的原因。 */
+export interface HunkMap { scope: CompareScope; pathId: string; contentIds: [string, string]; hunks: HunkRef[]; blocked: string | null; note: string | null }
+
+export const hunkMap = (repoId: string, scope: CompareScope, revision: string, pathId: string) => invoke<HunkMap>("hunk_map", { repoId, scope, revision, pathId });
 
 export const runOperation = (repoId: string, scope: CompareScope, opId: string, request: OperationRequest) =>
   invoke<OperationOutcome>("run_operation", { repoId, scope, opId, request });

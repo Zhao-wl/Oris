@@ -6,6 +6,7 @@
 mod branch;
 mod commit;
 mod discard;
+mod hunk;
 mod network;
 pub mod process;
 mod stage;
@@ -26,6 +27,11 @@ mod tests;
 pub use commit::HeadCommitInfo;
 #[cfg_attr(not(feature = "desktop"), allow(unused_imports))]
 pub use discard::{BackupStore, BackupSummary, DiscardPlan};
+#[cfg_attr(not(feature = "desktop"), allow(unused_imports))]
+pub use hunk::HunkMap;
+use hunk::HunkAction;
+#[cfg(test)]
+mod hunk_tests;
 
 use super::*;
 use process::{CancelHandle, OutputLog};
@@ -54,6 +60,18 @@ pub enum OperationRequest {
         backup_id: String,
         #[serde(default)]
         overwrite: bool,
+    },
+    /// 暂存一个差异块（未暂存范围，V2-05）。`content_ids` 为界面显示时的两侧内容标识，`hunk` 为该块的行范围与摘要。
+    HunkStage { path_id: String, content_ids: [String; 2], hunk: hunk::HunkRef },
+    /// 取消暂存一个差异块（已暂存范围）。
+    HunkUnstage { path_id: String, content_ids: [String; 2], hunk: hunk::HunkRef },
+    /// 丢弃一个差异块（未暂存范围）：先备份整个工作区文件，可撤销。
+    HunkDiscard {
+        path_id: String,
+        content_ids: [String; 2],
+        hunk: hunk::HunkRef,
+        #[serde(default)]
+        confirmed_unrecoverable: bool,
     },
     Commit { message: String },
     UndoCommit { expected_head: String },
@@ -153,6 +171,9 @@ impl OperationRequest {
             Self::MarkResolved { .. } => "markResolved",
             Self::Discard { .. } => "discard",
             Self::UndoDiscard { .. } => "undoDiscard",
+            Self::HunkStage { .. } => "hunkStage",
+            Self::HunkUnstage { .. } => "hunkUnstage",
+            Self::HunkDiscard { .. } => "hunkDiscard",
             Self::Commit { .. } => "commit",
             Self::UndoCommit { .. } => "undoCommit",
             Self::Fetch { .. } => "fetch",
@@ -380,6 +401,9 @@ impl GitAdapter {
             OperationRequest::Unstage { path_ids } => self.op_unstage(path_ids, ctx),
             OperationRequest::Discard { scope, path_ids, confirmed_unrecoverable } => self.op_discard(*scope, path_ids, *confirmed_unrecoverable, ctx),
             OperationRequest::UndoDiscard { backup_id, overwrite } => self.op_undo_discard(backup_id, *overwrite, ctx),
+            OperationRequest::HunkStage { path_id, content_ids, hunk } => self.op_hunk(HunkAction::Stage, path_id, content_ids, hunk, false, ctx),
+            OperationRequest::HunkUnstage { path_id, content_ids, hunk } => self.op_hunk(HunkAction::Unstage, path_id, content_ids, hunk, false, ctx),
+            OperationRequest::HunkDiscard { path_id, content_ids, hunk, confirmed_unrecoverable } => self.op_hunk(HunkAction::Discard, path_id, content_ids, hunk, *confirmed_unrecoverable, ctx),
             OperationRequest::Commit { message } => self.op_commit(message, ctx),
             OperationRequest::UndoCommit { expected_head } => self.op_undo_commit(expected_head, ctx),
             OperationRequest::Fetch { remote } => self.op_fetch(remote, ctx),
