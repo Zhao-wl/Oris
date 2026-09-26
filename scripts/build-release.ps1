@@ -5,6 +5,9 @@
 .PARAMETER Bundle
   同时生成安装包（src-tauri\target\release\bundle）。默认只构建 oris.exe（--no-bundle）。
 
+.PARAMETER Bundles
+  与 -Bundle 一起使用：只生成指定格式（例如 nsis；逗号分隔）。默认按 tauri.conf.json 的 targets。
+
 .PARAMETER Test
   构建前先运行 npm test。
 
@@ -15,10 +18,12 @@
   npm run package
   npm run package -- -Bundle -Test
   npm run package -- -OutputRoot D:\Projects\Research\Oris-builds\release-check
+  npm run package -- -Bundle -Bundles nsis -OutputRoot D:\Projects\Research\Oris-builds\v1-06
 #>
 [CmdletBinding()]
 param(
   [switch]$Bundle,
+  [string]$Bundles,
   [switch]$Test,
   [string]$OutputRoot
 )
@@ -39,11 +44,20 @@ if ($OutputRoot) {
   if ($relativeDist -match '^[a-zA-Z][a-zA-Z0-9+.-]*:') { throw 'frontendDist 不能是 URL 或带盘符的路径。' }
   New-Item -ItemType Directory -Force -Path $output | Out-Null
   $configPath = Join-Path $output 'build-config.json'
-  $config = @{ build = @{
+  $configObject = @{ build = @{
     # Build through structured arguments below, not a nested shell command.
     beforeBuildCommand = $null
     frontendDist = $relativeDist
-  } } | ConvertTo-Json -Depth 4
+  } }
+  if ($Bundle) {
+    # 安装包附带第三方许可证全文（本机 cargo metadata / package-lock.json 汇总，不联网）。
+    $noticesPath = Join-Path $output 'THIRD-PARTY-NOTICES.txt'
+    Push-Location $root
+    try { node scripts/release/third-party-licenses.mjs --md (Join-Path $output 'third-party-licenses.md') --notices $noticesPath } finally { Pop-Location }
+    if ($LASTEXITCODE -ne 0) { throw "生成第三方许可证清单失败（exit $LASTEXITCODE）" }
+    $configObject.bundle = @{ resources = @{ $noticesPath = 'THIRD-PARTY-NOTICES.txt' } }
+  }
+  $config = $configObject | ConvertTo-Json -Depth 6
   [IO.File]::WriteAllText($configPath, $config, (New-Object Text.UTF8Encoding($false)))
   $env:CARGO_TARGET_DIR = Join-Path $output 'target'
   $releaseDir = Join-Path $env:CARGO_TARGET_DIR 'release'
@@ -94,6 +108,7 @@ try {
   $buildArgs = @('run', 'tauri', '--', 'build', '--features', 'tauri/custom-protocol')
   if ($configPath) { $buildArgs += @('--config', $configPath) }
   if (-not $Bundle) { $buildArgs += '--no-bundle' }
+  elseif ($Bundles) { $buildArgs += @('--bundles', $Bundles) }
   $started = Get-Date
   Invoke-Step "构建 release (npm $($buildArgs -join ' '))" { npm @buildArgs }
   # Execute the same compiled context used by oris.exe; this creates no window.
@@ -119,8 +134,8 @@ try {
     $bundleDir = Join-Path $releaseDir 'bundle'
     if (Test-Path $bundleDir) {
       Write-Host '  安装包  :'
-      Get-ChildItem $bundleDir -Recurse -File -Include *.msi, *.exe |
-        ForEach-Object { Write-Host "    $($_.FullName)" }
+      Get-ChildItem $bundleDir -Recurse -File -Include *.msi, *.exe, *.dmg |
+        ForEach-Object { Write-Host "    $($_.FullName)"; Write-Host "      SHA-256 : $((Get-FileHash $_.FullName -Algorithm SHA256).Hash)" }
     }
   }
 }
