@@ -214,19 +214,49 @@ export function createAppearanceCompartments(): AppearanceCompartments {
   return { theme: new Compartment(), highlight: new Compartment(), fontSize: new Compartment() };
 }
 
-export function appearanceExtensions(compartments: AppearanceCompartments, scheme: Scheme, fontSize: number): Extension[] {
+// 同一方案 / 字号复用同一个扩展实例：EditorView.theme 每次调用都会生成新的类名，
+// 重复生成会让编辑器整体换类名并重新计算全部样式与语法高亮（外观切换时延的主要来源之一）。
+const themeCache = new Map<string, { theme: Extension; highlight: Extension }>();
+const fontSizeCache = new Map<number, Extension>();
+
+function schemeExtensions(scheme: Scheme) {
+  const key = `${scheme.id}:${scheme.type}`;
+  let entry = themeCache.get(key);
+  if (!entry) {
+    entry = { theme: editorThemeFor(scheme), highlight: syntaxHighlighting(highlightStyleFor(scheme)) };
+    themeCache.set(key, entry);
+  }
+  return entry;
+}
+
+function cachedFontSize(fontSize: number) {
+  let extension = fontSizeCache.get(fontSize);
+  if (!extension) {
+    extension = fontSizeTheme(fontSize);
+    fontSizeCache.set(fontSize, extension);
+  }
+  return extension;
+}
+
+/** `fontSize` 为 null 时字号由外部 CSS 决定（diff 阅读器用 `--diff-font-size`，切换字号不派发 reconfigure）。 */
+export function appearanceExtensions(compartments: AppearanceCompartments, scheme: Scheme, fontSize: number | null): Extension[] {
+  const { theme, highlight } = schemeExtensions(scheme);
   return [
-    compartments.theme.of(editorThemeFor(scheme)),
-    compartments.highlight.of(syntaxHighlighting(highlightStyleFor(scheme))),
-    compartments.fontSize.of(fontSizeTheme(fontSize))
+    compartments.theme.of(theme),
+    compartments.highlight.of(highlight),
+    compartments.fontSize.of(fontSize === null ? [] : cachedFontSize(fontSize))
   ];
 }
 
-/** 同一 EditorView 上切换配色与字号：只派发 reconfigure effect，文档、选区、滚动、搜索状态保留。 */
+/**
+ * 同一 EditorView 上切换配色与字号：只派发 reconfigure effect，文档、选区、滚动、搜索状态保留。
+ * 传 null 表示该项未变化、不重新配置（字号变化时不重新生成主题与语法高亮）。
+ */
 export function reconfigureAppearance(views: EditorView[], compartments: AppearanceCompartments, scheme: Scheme | null, fontSize: number | null) {
+  const extensions = scheme ? schemeExtensions(scheme) : null;
   const effects = [
-    ...(scheme ? [compartments.theme.reconfigure(editorThemeFor(scheme)), compartments.highlight.reconfigure(syntaxHighlighting(highlightStyleFor(scheme)))] : []),
-    ...(fontSize !== null ? [compartments.fontSize.reconfigure(fontSizeTheme(fontSize))] : [])
+    ...(extensions ? [compartments.theme.reconfigure(extensions.theme), compartments.highlight.reconfigure(extensions.highlight)] : []),
+    ...(fontSize !== null ? [compartments.fontSize.reconfigure(cachedFontSize(fontSize))] : [])
   ];
   if (!effects.length) return;
   for (const view of views) view.dispatch({ effects });

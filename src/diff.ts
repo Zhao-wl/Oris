@@ -1,4 +1,4 @@
-import type { DiffDocument } from "./types";
+import type { DiffDocument, WhitespaceMode } from "./types";
 
 let worker: Worker | null = null;
 
@@ -11,7 +11,8 @@ export function calculateDiff(
   requestId: string,
   contentIds: [string, string],
   left: string,
-  right: string
+  right: string,
+  whitespace: WhitespaceMode = "keep"
 ): Promise<DiffDocument> {
   const activeWorker = getWorker();
   return new Promise((resolve, reject) => {
@@ -30,6 +31,6 @@ export function calculateDiff(
     };
     activeWorker.addEventListener("message", onMessage);
     activeWorker.addEventListener("error", onError);
-    activeWorker.postMessage({ requestId, contentIds, left, right });
+    activeWorker.postMessage({ requestId, contentIds, left, right, whitespace });
   });
 }

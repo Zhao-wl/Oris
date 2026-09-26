@@ -269,7 +269,12 @@ async function main() {
     git(work, ["reset", "-q", "--hard"]); git(work, ["clean", "-fdq"]);
     await ctx.refresh();
     before = fingerprint(work);
+    // 刷新后分支 / stash 列表会重新读取：等列表稳定为 2 条、选中第 0 条且详情可用后再弹出（记录选中到详情可用的时间）。
+    await ctx.waitUntil(`window.__b.stashRows().length === 2`, 15000);
+    const popSelectAt = Date.now();
     await ctx.click(`window.__b.stashRow(0)`);
+    await ctx.waitUntil(`window.__b.stashRows()[0]?.selected && window.__b.stashDetail() && window.__b.button('弹出', window.__b.stashDetail()) && !window.__b.button('弹出', window.__b.stashDetail()).disabled`, 15000);
+    report.popDetailReadyMs = Date.now() - popSelectAt;
     await ctx.click(`window.__b.button('弹出', window.__b.stashDetail())`);
     await ctx.settle();
     e = evidence("stash pop 成功", work, before, fingerprint(work), ["stash", "worktree", "index"]);
