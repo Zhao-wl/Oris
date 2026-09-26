@@ -96,13 +96,32 @@ export interface SideDetails {
   reason: string | null; oid: string | null; mode: string | null; image: ImagePayload | null;
   /** SHA-256 of the LFS entity when the side is stored as an LFS pointer. */
   lfsOid?: string | null;
+  /** LFS 指针声明的大小与本地缓存中是否有该对象（任务 05）。 */
+  lfsSize?: number;
+  lfsLocal?: boolean;
+  submodule?: SubmoduleInfo;
+  /** 符号链接目标（不跟随）。 */
+  linkTarget?: string;
 }
+export interface SubmoduleInfo {
+  commit: string | null;
+  /** 工作区一侧：子模块目录中是否有 .git；对象一侧为 null。 */
+  initialized: boolean | null;
+  commitChanged: boolean;
+  trackedChanges: boolean;
+  untrackedChanges: boolean;
+}
+/** 内容类别（任务 05）：界面据此给出明确说明，不把不可显示的内容当成无变化。 */
+export type SideKind = "text" | "binary" | "unsupportedEncoding" | "tooLarge" | "missing" | "image" | "lfsPointer" | "gitlink" | "symlink" | "unavailable";
 export interface TextSide {
   details?: SideDetails | null;
   endpoint: Endpoint;
   text: string | null;
   byteLength: number;
-  encoding: "utf-8" | "binary-or-unsupported" | "missing";
+  encoding: "utf-8" | "utf-16le" | "utf-16be" | "binary-or-unsupported" | "missing";
+  /** 原始字节以 BOM 开头（显示文本已去掉 BOM）。旧快照 / 测试数据可能缺失。 */
+  bom?: boolean;
+  kind?: SideKind;
   eol: "lf" | "crlf" | "mixed" | "none";
   hasFinalNewline: boolean | null;
   contentId: string;
@@ -127,9 +146,15 @@ export interface DiffHunk {
   toB: number;
 }
 
+export type WhitespaceMode = "keep" | "ignore";
+
 export interface DiffDocument {
   requestId: string;
   contentIds: [string, string];
+  /** 计算时使用的空白规则；缺省为 keep。 */
+  whitespace?: WhitespaceMode;
+  /** 忽略空白时被略去的纯空白差异处数。 */
+  ignoredWhitespace?: number;
   changes: DiffHunk[];
   hunks: DiffHunk[];
   elapsedMs: number;
