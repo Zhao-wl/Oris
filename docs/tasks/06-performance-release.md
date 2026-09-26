@@ -2,7 +2,7 @@
 
 状态：Awaiting acceptance（待性能测试、签名、macOS 最终版本复测）。依赖：03、04、05 验收通过。
 
-2026-09-26 Windows 与发布准备（长链阶段 3）：A01–A15 与 B01–B22 在最终构建上重跑，追溯矩阵见 [发布验收结果](../validation/v1-06-release-results.md)；Windows NSIS 内部测试包（未签名）已构建，未安装测试（用户选择只构建，见 [Windows 安装交接清单](../release/windows-install-checklist.md)）；[发行说明草稿](../release/release-notes.md)、[macOS 交接清单](../release/macos-checklist.md)、[第三方许可证清单](../release/third-party-licenses.md)。仍未完成：发布性能报告、Windows 签名与 macOS 签名 / 公证（阻塞：缺证书）、macOS 最终版本复测、安装 / 卸载实测。
+2026-09-26 Windows 与发布准备（长链阶段 3）：A01–A15 与 B01–B22 在最终构建上重跑，追溯矩阵见 [发布验收结果](../validation/v1-06-release-results.md)；Windows NSIS 内部测试包（未签名）已构建，未安装测试（用户选择只构建，见 [Windows 安装交接清单](../release/windows-install-checklist.md)）；[发行说明草稿](../release/release-notes.md)、[macOS 交接清单](../release/macos-checklist.md)、[第三方许可证清单](../release/third-party-licenses.md)。2026-09-27 发布性能测试（Windows）见 [v1-06-performance](../validation/v1-06-performance.md)：S 数据集 24 项预算中 21 项达标，切换字号（长文件滚动场景）未达标、失焦后内存稳态口径未达标，待用户决定；L 数据集满足有界 / 可取消 / 不崩溃。仍未完成：性能未达标项的处理、Windows 签名与 macOS 签名 / 公证（阻塞：缺证书）、macOS 最终版本复测、安装 / 卸载实测。
 
 编号迁移：2026-09-23 原 05 顺延为 06；发布范围与授权边界不变。
 
