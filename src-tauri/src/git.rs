@@ -34,9 +34,9 @@ const MAX_LINE_CHARS: usize = 100_000;
 
 #[derive(Debug, Error)]
 pub enum GitError {
-    #[error("找不到或无法启动 Git：{0}")]
+    #[error("找不到或无法启动 Git（{0}）。请安装 Git 2.31.0 或更高版本，或在“设置 → Git”中指定 git 可执行文件")]
     GitUnavailable(String),
-    #[error("Git {found} 低于最低支持版本 {minimum}")]
+    #[error("Git {found} 低于最低支持版本 {minimum}。请升级 Git，或在“设置 → Git”中指定其他 git 可执行文件")]
     UnsupportedGit { found: String, minimum: String },
     #[error("路径不是可读取的 Git 工作树：{0}")]
     InvalidRepository(String),
@@ -1362,12 +1362,21 @@ fn readonly_command(git: &Path, cwd: &Path, args: &[&str]) -> Command {
     command
 }
 
+/// 启动 Git 失败的原因：找不到程序时说明是 PATH 还是指定路径，其余保留系统错误。
+fn spawn_failure(git: &Path, error: &std::io::Error) -> String {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        if git.components().count() == 1 { format!("PATH 中没有 {}", git.display()) } else { format!("{} 不存在", git.display()) }
+    } else {
+        error.to_string()
+    }
+}
+
 /// 执行 `git --version` 并检查最低版本；设置窗口校验 Git 路径与打开仓库共用。
 pub fn detect_git_version(git: &Path) -> Result<String, GitError> {
     let version_output = git_command(git)
         .arg("--version")
         .output()
-        .map_err(|error| GitError::GitUnavailable(error.to_string()))?;
+        .map_err(|error| GitError::GitUnavailable(spawn_failure(git, &error)))?;
     if !version_output.status.success() {
         return Err(GitError::GitUnavailable(stderr_summary(&version_output)));
     }
@@ -1592,7 +1601,10 @@ mod tests {
         let found = validate_git(None);
         assert!(found.ok && found.version.is_some());
         let missing = validate_git(Some("does-not-exist-git-binary".into()));
-        assert!(!missing.ok && missing.error.as_deref().unwrap_or("").contains("找不到或无法启动 Git"));
+        let reason = missing.error.as_deref().unwrap_or("");
+        assert!(!missing.ok && reason.contains("找不到或无法启动 Git") && reason.contains("PATH 中没有 does-not-exist-git-binary") && reason.contains("设置 → Git"), "{reason}");
+        let absent = validate_git(Some(std::env::temp_dir().join("oris-no-such-dir").join("git.exe").display().to_string()));
+        assert!(absent.error.as_deref().unwrap_or("").contains("不存在"), "{:?}", absent.error);
     }
 
     #[test]
