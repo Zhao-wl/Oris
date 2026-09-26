@@ -1,5 +1,5 @@
-import { useEffect, useImperativeHandle, useRef, forwardRef } from "react";
-import { EditorState, StateEffect, StateField, Text, type Extension, type Range, type StateEffectType } from "@codemirror/state";
+import { useEffect, useImperativeHandle, useLayoutEffect, useRef, forwardRef, type CSSProperties } from "react";
+import { EditorState, StateEffect, StateField, Text, type Extension, type Range } from "@codemirror/state";
 import {
   Decoration,
   type DecorationSet,
@@ -13,11 +13,14 @@ import {
 } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { javascript } from "@codemirror/lang-javascript";
-import { Change, getChunks, unifiedMergeView } from "@codemirror/merge";
+import { Change, getChunks, uncollapseUnchanged, unifiedMergeView } from "@codemirror/merge";
 import { oneDark } from "@codemirror/theme-one-dark";
-import { appearanceExtensions, createAppearanceCompartments, fontSizeTheme, reconfigureAppearance, type AppearanceCompartments, type Scheme } from "./themes/runtime";
+import { appearanceExtensions, createAppearanceCompartments, reconfigureAppearance, type AppearanceCompartments, type Scheme } from "./themes/runtime";
 import { chainedWheelDelta, diffMarkerGeometry, mapDiffPosition, railViewportStartLine, type DiffBoundaryPair, type DiffSide } from "./diff-scroll";
 import type { DiffPresentation } from "./diff-presentation";
+import { activeScheme, settings } from "./appearance";
+import { useSettings } from "./settings";
+import { useStore } from "./store";
 import { collectQueryMatches, createReadingQuery, type ReadingSearchOptions, type TextMatch } from "./search-model";
 import type { DiffDocument } from "./types";
 
@@ -54,6 +57,8 @@ interface SplitController {
   settleViewport(onComplete: () => void): void;
   /** 外观（字号、配色）reconfigure 后重新测量对齐、连接带与轨道。 */
   refreshLayout(): void;
+  /** 展开全部折叠的未变化内容；返回本次展开的区段数。 */
+  expandAll(): number;
   /** keepViews 为 true 时只拆除控制器与外层 DOM，EditorView 留给下一个文件复用。 */
   destroy(keepViews?: boolean): void;
 }
@@ -541,8 +546,15 @@ function installReadingSearch(
   const VISIBLE_MATCH_LIMIT = 500;
   const SELECTION_MATCH_LIMIT = 200;
 
-  const dispatchDecorations = (view: EditorView, effect: StateEffectType<DecorationSet>, ranges: Range<Decoration>[]) => {
-    view.dispatch({ effects: effect.of(Decoration.set(ranges, true)) });
+  // 每个视图上次派发的是否为空：两类高亮都从空到空时不派发。每次 dispatch 都会让 CodeMirror 读取 DOM 选区，
+  // 在没有选区时这会强制整页样式与布局（WebView2 实测每次约 4 ms）；滚动与外观切换期间逐帧触发，累积明显。
+  const lastEmpty = new WeakMap<EditorView, { search: boolean; selection: boolean }>();
+  const dispatchDecorations = (view: EditorView, search: Range<Decoration>[], selection: Range<Decoration>[]) => {
+    const previous = lastEmpty.get(view);
+    const next = { search: search.length === 0, selection: selection.length === 0 };
+    if (previous && previous.search && previous.selection && next.search && next.selection) return;
+    lastEmpty.set(view, next);
+    view.dispatch({ effects: [setSearchHighlights.of(Decoration.set(search, true)), setSelectionHighlights.of(Decoration.set(selection, true))] });
   };
   const visibleDecorations = (
     entry: ReadingSearchView,
@@ -579,8 +591,7 @@ function installReadingSearch(
       const selectionRanges = selected
         ? visibleDecorations(entry, selected, "oris-selection-match", SELECTION_MATCH_LIMIT, viewIndex, false)
         : [];
-      dispatchDecorations(entry.view, setSearchHighlights, searchRanges);
-      dispatchDecorations(entry.view, setSelectionHighlights, selectionRanges);
+      dispatchDecorations(entry.view, searchRanges, selectionRanges);
     });
   };
   const scheduleVisible = () => {
@@ -767,6 +778,7 @@ function pairedCollapseRegions(a: Text, b: Text, chunks: Change[]) {
 function installPairedCollapse(split: SplitView) {
   const regions = pairedCollapseRegions(split.a.state.doc, split.b.state.doc, split.chunks);
   const expanded = new Set<number>();
+  split.dom.dataset.collapsedRegions = String(regions.length);
   const update = () => {
     const sideDecorations = (side: DiffSide) => Decoration.set(regions
       .filter((region) => !expanded.has(region.id))
@@ -782,12 +794,42 @@ function installPairedCollapse(split: SplitView) {
       }), true);
     split.a.dispatch({ effects: setCollapsedRanges.of(sideDecorations("a")) });
     split.b.dispatch({ effects: setCollapsedRanges.of(sideDecorations("b")) });
+    split.dom.dataset.expandedRegions = String(expanded.size);
   };
   update();
-  return () => {
-    split.a.dispatch({ effects: setCollapsedRanges.of(Decoration.none) });
-    split.b.dispatch({ effects: setCollapsedRanges.of(Decoration.none) });
+  return {
+    expandAll() {
+      const hidden = regions.filter((region) => !expanded.has(region.id)).length;
+      regions.forEach((region) => expanded.add(region.id));
+      if (hidden) update();
+      return hidden;
+    },
+    destroy() {
+      split.a.dispatch({ effects: setCollapsedRanges.of(Decoration.none) });
+      split.b.dispatch({ effects: setCollapsedRanges.of(Decoration.none) });
+    }
   };
+}
+
+/**
+ * 统一视图的“全部展开”：按 @codemirror/merge `buildCollapsedRanges` 的同一规则（margin 3、至少 5 行）
+ * 找出折叠区段的起点，逐个派发公开的 `uncollapseUnchanged` 效果。
+ */
+function expandAllUnified(view: EditorView, margin = 3, minLines = 5) {
+  const chunks = getChunks(view.state)?.chunks ?? [];
+  const doc = view.state.doc;
+  const starts: number[] = [];
+  let previousLine = 1;
+  for (let index = 0; ; index++) {
+    const chunk = index < chunks.length ? chunks[index] : null;
+    const from = index ? previousLine + margin : 1;
+    const to = chunk ? doc.lineAt(chunk.fromB).number - 1 - margin : doc.lines;
+    if (to - from + 1 >= minLines) starts.push(doc.line(from).from);
+    if (!chunk) break;
+    previousLine = doc.lineAt(Math.min(doc.length, chunk.toB)).number;
+  }
+  if (starts.length) view.dispatch({ effects: starts.map((pos) => uncollapseUnchanged.of(pos)) });
+  return starts.length;
 }
 
 function createRail(side: DiffSide, controls: string) {
@@ -1519,7 +1561,7 @@ function createSplitView(
   visualController = installSplitVisuals(split, navigate);
   scrollController = installScrollAndRails(split, visualController, () => alignmentController?.schedule());
   const removeResize = installSplitResize(split, separator, initialRatio, onLayoutChange, visualController.scheduleMeasure);
-  const removeCollapse = collapsed ? installPairedCollapse(split) : undefined;
+  const collapse = collapsed ? installPairedCollapse(split) : undefined;
   alignmentController = alignChanges ? installChangeAlignment(split, visualController.scheduleMeasure) : undefined;
   onPositionChange(chunks.length ? 1 : 0, chunks.length);
   return {
@@ -1529,6 +1571,15 @@ function createSplitView(
       if (alignmentController) alignmentController.schedule(onComplete);
       else onComplete();
     },
+    expandAll() {
+      const expanded = collapse?.expandAll() ?? 0;
+      if (expanded) {
+        alignmentController?.schedule();
+        visualController?.scheduleMeasure();
+        scrollController?.updateRails();
+      }
+      return expanded;
+    },
     refreshLayout() {
       alignmentController?.schedule();
       visualController?.scheduleMeasure();
@@ -1536,7 +1587,7 @@ function createSplitView(
     },
     destroy(keepViews = false) {
       alignmentController?.destroy();
-      removeCollapse?.();
+      collapse?.destroy();
       removeResize();
       scrollController?.destroy();
       visualController?.destroy();
@@ -1633,6 +1684,8 @@ function createSingleView(
 export interface DiffViewerHandle {
   navigate(direction: -1 | 1): void;
   navigateTo(index: number): void;
+  /** “全部展开”：展开所有折叠的未变化内容，返回展开的区段数。 */
+  expandAll(): number;
 }
 
 interface Props {
@@ -1645,19 +1698,20 @@ interface Props {
   highlight: "words" | "lines";
   collapsed: boolean;
   wrap: boolean;
-  fontSize: number;
-  /** 当前配色方案；为 null（尚未加载）时沿用 V1 的 one-dark。 */
-  scheme: Scheme | null;
   alignChanges: boolean;
   onPositionChange(position: number, total: number): void;
   onSplitLayoutChange(ratio: number, leftWidth: number): void;
 }
 
 const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
-  { readingKey, presentation, left, right, document, mode, highlight, collapsed, wrap, fontSize, scheme, alignChanges, onPositionChange, onSplitLayoutChange },
+  { readingKey, presentation, left, right, document, mode, highlight, collapsed, wrap, alignChanges, onPositionChange, onSplitLayoutChange },
   ref
 ) {
   const host = useRef<HTMLDivElement>(null);
+  // 字号与配色直接订阅设置与当前方案（V2-06）：外观切换只重新渲染阅读器，不重新渲染整个 App。
+  // 当前配色方案为 null（尚未加载）时沿用 V1 的 one-dark。
+  const fontSize = useSettings(settings, (value) => value.appearance.fontSize);
+  const scheme = useStore(activeScheme, (value) => value);
   const runtime = useRef<{ split?: SplitController; single?: SingleController; unified?: EditorView; position: number }>({ position: 0 });
   const splitRatio = useRef(0.5);
   /** 按阅读键保存的阅读位置（最近 32 个），切回同一文件时恢复。 */
@@ -1670,6 +1724,12 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
   const layoutKey = `${readingKey}:${presentation.kind === "single" ? `single-${presentation.side}` : "compare"}`;
 
   useImperativeHandle(ref, () => ({
+    expandAll() {
+      const current = runtime.current;
+      if (current.split) return current.split.expandAll();
+      if (current.unified) return expandAllUnified(current.unified);
+      return 0;
+    },
     navigateTo(index) {
       const current = runtime.current;
       const chunks = current.split?.view.chunks ?? current.single?.chunks ?? (current.unified ? getChunks(current.unified.state)?.chunks ?? [] : []);
@@ -1723,6 +1783,8 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
       keymap.of([...defaultKeymap, ...historyKeymap]),
       javascript({ typescript: true }),
       EditorState.readOnly.of(true),
+      // 统一视图折叠占位（@codemirror/merge 的 CollapseWidget）的中文文字，与并排视图一致。
+      EditorState.phrases.of({ "$ unchanged lines": "展开 $ 行未变化内容" }),
       alignmentSpacers,
       collapsedRanges,
       searchHighlights,
@@ -1744,9 +1806,10 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
         ".cm-content": { caretColor: "transparent" }
       }),
       ...(wrap ? [EditorView.lineWrapping] : []),
+      // 字号由宿主元素上的 --diff-font-size 决定（见下方 useLayoutEffect），不放进编辑器主题。
       ...(appearance.current.scheme
-        ? appearanceExtensions(compartments.current, appearance.current.scheme, appearance.current.fontSize)
-        : [compartments.current.theme.of(oneDark), compartments.current.highlight.of([]), compartments.current.fontSize.of(fontSizeTheme(appearance.current.fontSize))])
+        ? appearanceExtensions(compartments.current, appearance.current.scheme, null)
+        : [compartments.current.theme.of(oneDark), compartments.current.highlight.of([]), compartments.current.fontSize.of([])])
     ];
     const collapseUnchanged = collapsed ? { margin: 3, minSize: 5 } : undefined;
     const diffConfig = { override: () => document.changes.map((change) => new Change(change.fromA, change.toA, change.fromB, change.toB)) };
@@ -1835,13 +1898,30 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
     };
   }, [layoutKey, left, right, document, mode, highlight, collapsed, wrap, alignChanges, onPositionChange, onSplitLayoutChange, presentation]);
 
-  useEffect(() => {
+  const liveViews = () => {
     const views = pool.current;
-    const live = [views.a, views.b, views.single, views.unified].filter((view): view is EditorView => !!view);
-    reconfigureAppearance(live, compartments.current, scheme, fontSize);
+    // 只处理挂在页面上的编辑器；复用池中暂时脱离页面的编辑器在下次复用时由 setState 带上当前外观。
+    return [views.a, views.b, views.single, views.unified].filter((view): view is EditorView => !!view && view.dom.isConnected);
+  };
+  // 配色：只在方案真正变化时 reconfigure 主题与语法高亮（扩展实例按方案缓存）。
+  const appliedScheme = useRef<Scheme | null>(null);
+  useEffect(() => {
+    if (appliedScheme.current === scheme) return;
+    appliedScheme.current = scheme;
+    reconfigureAppearance(liveViews(), compartments.current, scheme, null);
     const frame = requestAnimationFrame(() => runtime.current.split?.refreshLayout());
     return () => cancelAnimationFrame(frame);
-  }, [scheme, fontSize]);
+  }, [scheme]);
+  // 字号：宿主元素上的 CSS 变量在本次提交中生效，编辑器不派发任何事务，只重新测量（与网页字体加载后的处理相同）。
+  // 每次 dispatch 都会让 CodeMirror 读取 DOM 选区并强制整页布局，字号切换时逐个编辑器 reconfigure 是主要开销。
+  const appliedFontSize = useRef(fontSize);
+  useLayoutEffect(() => {
+    if (appliedFontSize.current === fontSize) return;
+    appliedFontSize.current = fontSize;
+    for (const view of liveViews()) view.requestMeasure();
+    const frame = requestAnimationFrame(() => runtime.current.split?.refreshLayout());
+    return () => cancelAnimationFrame(frame);
+  }, [fontSize]);
 
   // 在主 effect 之后声明：卸载时先拆除控制器，再销毁复用池中的编辑器。
   useEffect(() => () => {
@@ -1854,7 +1934,7 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
     pool.current = {};
   }, []);
 
-  return <div className="diff-host" ref={host} aria-label="只读文件差异" />;
+  return <div className="diff-host" ref={host} aria-label="只读文件差异" style={{ "--diff-font-size": `${fontSize}px` } as CSSProperties} />;
 });
 
 export default DiffViewer;

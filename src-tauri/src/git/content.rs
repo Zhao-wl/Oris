@@ -10,7 +10,8 @@ enum Source<'a> {
     Missing,
     NotFound,
     Object(&'a Stage),
-    Worktree,
+    /// 工作区；附带 status 记录的工作区 mode 与子模块标志（用于识别 gitlink 目录与 mode 变化）。
+    Worktree { mode: Option<&'a str>, sub: Option<&'a str> },
 }
 
 pub(super) fn decode_path(id: &str) -> Result<String, GitError> {
@@ -119,8 +120,17 @@ impl GitAdapter {
             Source::Object(stage) => self.read_side_with(endpoint, relative, false, budget, |side| {
                 self.object_bytes(side, &stage.oid, &stage.mode)
             }),
-            Source::Worktree => self.read_side_with(endpoint, relative, false, budget, |side| {
-                self.worktree_bytes(relative, side)
+            Source::Worktree { mode, sub } => self.read_side_with(endpoint, relative, false, budget, |side| {
+                if self.worktree_special(relative, side, mode, sub)? {
+                    return Ok(None);
+                }
+                let bytes = self.worktree_bytes(relative, side)?;
+                if bytes.is_some() {
+                    if let Some(info) = side.details.as_mut() {
+                        info.mode = mode.filter(|m| *m != "000000").map(str::to_owned);
+                    }
+                }
+                Ok(bytes)
             }),
         }
     }
@@ -142,13 +152,17 @@ impl GitAdapter {
         let change = state.change(scope, &path_id).ok_or(GitError::StaleRequest)?;
         self.guard(&state, scope, &change)?;
         let entry = state.entries.get(&path_id);
+        let worktree = Source::Worktree {
+            mode: entry.and_then(|e| e.worktree_mode.as_deref()),
+            sub: entry.and_then(|e| e.sub.as_deref()),
+        };
         let mut budget = ImageBudget::default();
         let (left, right) = if matches!(change.status, FileStatus::Conflicted) {
             let versions = versions.unwrap_or([ConflictVersion::Stage2, ConflictVersion::Stage3]);
             let stages = entry.and_then(|e| e.conflict.as_ref()).ok_or(GitError::StaleRequest)?;
             let read = |version: ConflictVersion, budget: &mut ImageBudget| {
                 let source = match version {
-                    ConflictVersion::WorkingTree => Source::Worktree,
+                    ConflictVersion::WorkingTree => Source::Worktree { mode: None, sub: None },
                     ConflictVersion::Stage1 => stages[0].as_ref().map_or(Source::NotFound, Source::Object),
                     ConflictVersion::Stage2 => stages[1].as_ref().map_or(Source::NotFound, Source::Object),
                     ConflictVersion::Stage3 => stages[2].as_ref().map_or(Source::NotFound, Source::Object),
@@ -185,7 +199,7 @@ impl GitAdapter {
             let right_source = if scope == CompareScope::Staged {
                 entry.and_then(|e| e.index.as_ref()).map_or(Source::NotFound, Source::Object)
             } else {
-                Source::Worktree
+                worktree
             };
             (left, self.side_from(scope.right_endpoint(), &relative, right_source, &mut budget))
         };

@@ -40,6 +40,8 @@ pub struct Entry {
     pub index: Option<Stage>,
     pub worktree_mode: Option<String>,
     pub conflict: Option<[Option<Stage>; 3]>,
+    /// porcelain v2 的 `<sub>` 字段：`N...` 或 `S<c><m><u>`（子模块提交已变 / 有已跟踪修改 / 有未跟踪文件）。
+    pub sub: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -83,6 +85,7 @@ fn entry(
     index: Option<Stage>,
     worktree_mode: Option<String>,
     conflict: Option<[Option<Stage>; 3]>,
+    sub: Option<&[u8]>,
 ) -> Result<Entry, GitError> {
     if xy.len() != 2 {
         return Err(bad());
@@ -98,6 +101,7 @@ fn entry(
         index,
         worktree_mode,
         conflict,
+        sub: sub.map(|s| String::from_utf8_lossy(s).into_owned()),
     })
 }
 
@@ -160,6 +164,7 @@ pub fn parse(raw: &[u8]) -> Result<(BranchInfo, ScopeFiles), GitError> {
                 stage(token(&words, 4)?, token(&words, 7)?)?,
                 Some(utf8(token(&words, 5)?)?),
                 None,
+                Some(token(&words, 2)?),
             )?,
             b'2' => {
                 let old = fields.next().ok_or_else(bad)?;
@@ -172,6 +177,7 @@ pub fn parse(raw: &[u8]) -> Result<(BranchInfo, ScopeFiles), GitError> {
                     stage(token(&words, 4)?, token(&words, 7)?)?,
                     Some(utf8(token(&words, 5)?)?),
                     None,
+                    Some(token(&words, 2)?),
                 )?
             }
             b'u' => {
@@ -188,9 +194,10 @@ pub fn parse(raw: &[u8]) -> Result<(BranchInfo, ScopeFiles), GitError> {
                     None,
                     Some(utf8(token(&words, 6)?)?),
                     Some(stages),
+                    Some(token(&words, 2)?),
                 )?
             }
-            b'?' => entry(token(&words, 1)?, None, b"??", None, None, None, None)?,
+            b'?' => entry(token(&words, 1)?, None, b"??", None, None, None, None, None)?,
             _ => return Err(bad()),
         };
         if value.conflict.is_some() || value.y != b'.' || kind == b'?' {
