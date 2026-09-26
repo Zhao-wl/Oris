@@ -214,6 +214,11 @@ pub struct TextSide {
     text: Option<String>,
     byte_length: usize,
     encoding: &'static str,
+    /// 原始字节以 BOM 开头（显示文本已去掉 BOM；contentId 仍按原始字节计算）。
+    bom: bool,
+    /// 内容类别（任务 05）：text / binary（含 NUL）/ unsupportedEncoding / tooLarge / missing /
+    /// lfsPointer / gitlink / symlink / unavailable。界面据此给出明确说明，不把不可显示的内容当成无变化。
+    kind: &'static str,
     eol: &'static str,
     has_final_newline: Option<bool>,
     content_id: String,
@@ -1117,8 +1122,70 @@ fn update_modified(digest: &mut Sha256, metadata: &fs::Metadata) {
     }
 }
 
+/// 文本解码结果（任务 05）：只接受严格 UTF-8（可带 BOM）与带 BOM 的 UTF-16 LE/BE；
+/// 不猜测 GBK、Shift-JIS 等旧式编码，也不用替换字符悄悄继续（研究 06 §5）。
+enum Decoded {
+    Text { text: String, encoding: &'static str, bom: bool },
+    /// 含 NUL（或解码后含 U+0000）：按二进制处理。
+    Binary,
+    /// 不是受支持的编码。
+    Unsupported(String),
+}
+
+fn decode_text(bytes: Vec<u8>) -> Decoded {
+    if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
+        return match std::str::from_utf8(rest) {
+            Ok(text) if !text.contains('\0') => Decoded::Text { text: text.to_owned(), encoding: "utf-8", bom: true },
+            Ok(_) => Decoded::Binary,
+            Err(_) => Decoded::Unsupported("以 UTF-8 BOM 开头，但其后不是有效的 UTF-8".into()),
+        };
+    }
+    let utf16 = if bytes.starts_with(&[0xFF, 0xFE]) && !bytes.starts_with(&[0xFF, 0xFE, 0, 0]) {
+        Some(("utf-16le", true))
+    } else if bytes.starts_with(&[0xFE, 0xFF]) {
+        Some(("utf-16be", false))
+    } else {
+        None
+    };
+    if let Some((encoding, little)) = utf16 {
+        let body = &bytes[2..];
+        if body.len() % 2 != 0 {
+            return Decoded::Unsupported(format!("以 {} BOM 开头，但字节数为奇数", encoding.to_uppercase()));
+        }
+        let units: Vec<u16> = body
+            .chunks_exact(2)
+            .map(|pair| if little { u16::from_le_bytes([pair[0], pair[1]]) } else { u16::from_be_bytes([pair[0], pair[1]]) })
+            .collect();
+        return match String::from_utf16(&units) {
+            Ok(text) if !text.contains('\0') => Decoded::Text { text, encoding, bom: true },
+            Ok(_) => Decoded::Binary,
+            Err(_) => Decoded::Unsupported(format!("以 {} BOM 开头，但包含无效的代理项", encoding.to_uppercase())),
+        };
+    }
+    if bytes.contains(&0) {
+        return Decoded::Binary;
+    }
+    match String::from_utf8(bytes) {
+        Ok(text) => Decoded::Text { text, encoding: "utf-8", bom: false },
+        Err(_) => Decoded::Unsupported("不是有效的 UTF-8".into()),
+    }
+}
+
 fn text_side(endpoint: &'static str, bytes: Vec<u8>, missing: bool) -> (TextSide, Option<String>) {
     let content_id = hash_bytes(&bytes);
+    let unreadable = |byte_length: usize, kind: &'static str, content_id: String| TextSide {
+        details: None,
+        endpoint,
+        text: None,
+        byte_length,
+        encoding: "binary-or-unsupported",
+        bom: false,
+        kind,
+        eol: "none",
+        has_final_newline: None,
+        source_id: None,
+        content_id,
+    };
     if missing {
         return (
             TextSide {
@@ -1127,6 +1194,8 @@ fn text_side(endpoint: &'static str, bytes: Vec<u8>, missing: bool) -> (TextSide
                 text: Some(String::new()),
                 byte_length: 0,
                 encoding: "missing",
+                bom: false,
+                kind: "missing",
                 eol: "none",
                 has_final_newline: None,
                 source_id: None,
@@ -1137,44 +1206,24 @@ fn text_side(endpoint: &'static str, bytes: Vec<u8>, missing: bool) -> (TextSide
     }
     if bytes.len() > MAX_TEXT_BYTES {
         let reason = format!(
-            "内容为 {} 字节，超过 {} 字节全文预算；未静默截断。",
+            "内容为 {} 字节，超过 {} 字节全文预算；未加载全文，未静默截断。",
             bytes.len(),
             MAX_TEXT_BYTES
         );
-        return (
-            TextSide {
-                details: None,
-                endpoint,
-                text: None,
-                byte_length: bytes.len(),
-                encoding: "binary-or-unsupported",
-                eol: "none",
-                has_final_newline: None,
-                source_id: None,
-                content_id,
-            },
-            Some(reason),
-        );
+        return (unreadable(bytes.len(), "tooLarge", content_id), Some(reason));
     }
     let byte_length = bytes.len();
-    let text = match String::from_utf8(bytes) {
-        Ok(text) if !text.contains('\0') => text,
-        _ => {
-            let reason = "内容不是受支持的 UTF-8 文本或包含 NUL；未显示为无差异。".to_owned();
-            return (
-                TextSide {
-                    details: None,
-                    endpoint,
-                    text: None,
-                    byte_length,
-                    encoding: "binary-or-unsupported",
-                    eol: "none",
-                    has_final_newline: None,
-                    source_id: None,
-                    content_id,
-                },
-                Some(reason),
+    let (text, encoding, bom) = match decode_text(bytes) {
+        Decoded::Text { text, encoding, bom } => (text, encoding, bom),
+        Decoded::Binary => {
+            let reason = "内容包含 NUL 字节，按二进制文件处理；只比较大小与内容标识，未显示为无差异。".to_owned();
+            return (unreadable(byte_length, "binary", content_id), Some(reason));
+        }
+        Decoded::Unsupported(detail) => {
+            let reason = format!(
+                "编码不受支持：{detail}。Oris 只解码 UTF-8（可带 BOM）与带 BOM 的 UTF-16，不猜测 GBK、Shift-JIS 等编码；未显示为无差异。"
             );
+            return (unreadable(byte_length, "unsupportedEncoding", content_id), Some(reason));
         }
     };
     let lines = text.lines().count();
@@ -1185,15 +1234,18 @@ fn text_side(endpoint: &'static str, bytes: Vec<u8>, missing: bool) -> (TextSide
         .max()
         .unwrap_or(0);
     if lines > MAX_TEXT_LINES || longest > MAX_LINE_CHARS {
-        let reason =
-            format!("内容为 {lines} 行，最长行 {longest} 字符，超过显示预算；未静默截断。");
+        let reason = format!(
+            "内容为 {lines} 行，最长行 {longest} 字符，超过显示预算（{MAX_TEXT_LINES} 行 / 单行 {MAX_LINE_CHARS} 字符）；未加载全文，未静默截断。"
+        );
         return (
             TextSide {
                 details: None,
                 endpoint,
                 text: None,
                 byte_length,
-                encoding: "utf-8",
+                encoding,
+                bom,
+                kind: "tooLarge",
                 eol: eol(&text),
                 has_final_newline: Some(text.ends_with('\n')),
                 source_id: None,
@@ -1210,7 +1262,9 @@ fn text_side(endpoint: &'static str, bytes: Vec<u8>, missing: bool) -> (TextSide
             endpoint,
             text: Some(text),
             byte_length,
-            encoding: "utf-8",
+            encoding,
+            bom,
+            kind: "text",
             eol: line_ending,
             has_final_newline: Some(final_newline),
             source_id: None,
@@ -2710,3 +2764,5 @@ mod json_regression_tests;
 mod v2_tests;
 #[cfg(test)]
 mod history_tests;
+#[cfg(test)]
+mod content_tests;

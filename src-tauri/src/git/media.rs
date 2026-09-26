@@ -29,7 +29,32 @@ pub struct SideDetails {
     pub mode: Option<String>,
     /// SHA-256 of the LFS entity when this side was stored as an LFS pointer.
     pub lfs_oid: Option<String>,
+    /// LFS 指针声明的对象大小。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lfs_size: Option<u64>,
+    /// 本地 LFS 缓存中是否已有该对象（只检查文件存在与大小，不下载、不运行 filter）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lfs_local: Option<bool>,
+    /// 子模块（gitlink）信息。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub submodule: Option<SubmoduleInfo>,
+    /// 符号链接的目标（不跟随）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link_target: Option<String>,
     pub image: Option<ImagePayload>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubmoduleInfo {
+    /// 该侧记录（HEAD / index）或子模块工作区 HEAD 指向的提交；未初始化或无法读取时为 None。
+    pub commit: Option<String>,
+    /// 工作区一侧：子模块目录中是否存在 `.git`。
+    pub initialized: Option<bool>,
+    /// status v2 的子模块标志：提交已改变 / 有已跟踪修改 / 有未跟踪文件。
+    pub commit_changed: bool,
+    pub tracked_changes: bool,
+    pub untracked_changes: bool,
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,16 +81,86 @@ fn details(state: &'static str) -> SideDetails {
         oid: None,
         mode: None,
         lfs_oid: None,
+        lfs_size: None,
+        lfs_local: None,
+        submodule: None,
+        link_target: None,
         image: None,
     }
 }
 fn reject(side: &mut TextSide, state: &'static str, reason: impl ToString) {
     side.text = None;
     side.encoding = "binary-or-unsupported";
+    // text_side 已给出更具体的类别（binary / unsupportedEncoding / tooLarge）时保留。
+    if side.kind == "text" {
+        side.kind = if state == "overBudget" { "tooLarge" } else { "unavailable" };
+    }
     let info = side.details.get_or_insert_with(|| details(state));
     info.state = state;
     info.reason = Some(reason.to_string());
     info.image = None;
+}
+
+/// 特殊条目（gitlink、符号链接）：不作为文本读取，给出说明但不算读取失败。
+fn special(side: &mut TextSide, kind: &'static str, reason: impl ToString) {
+    side.text = None;
+    side.encoding = "binary-or-unsupported";
+    side.kind = kind;
+    let info = side.details.get_or_insert_with(|| details("ready"));
+    info.state = "ready";
+    info.reason = Some(reason.to_string());
+    info.image = None;
+}
+
+/// 子模块工作区 HEAD：只读取 `.git`（文件或目录）、`HEAD` 与引用文件，不启动 Git、不初始化。
+/// `.git` 文件指向的目录必须位于子模块目录或父仓库的 commonDir 内，否则不读取。
+fn submodule_head(dir: &Path, common_dir: &Path) -> (bool, Option<String>) {
+    let read_limited = |path: &Path, limit: u64| -> Option<String> {
+        let mut text = String::new();
+        fs::File::open(path).ok()?.take(limit).read_to_string(&mut text).ok()?;
+        Some(text)
+    };
+    let read_small = |path: &Path| read_limited(path, 4096);
+    let dot_git = dir.join(".git");
+    let Ok(meta) = fs::symlink_metadata(&dot_git) else { return (false, None) };
+    let git_dir = if meta.is_dir() {
+        dot_git
+    } else if meta.is_file() {
+        let Some(pointer) = read_small(&dot_git) else { return (true, None) };
+        let Some(target) = pointer.trim().strip_prefix("gitdir:") else { return (true, None) };
+        let resolved = dir.join(target.trim());
+        let Ok(canonical) = resolved.canonicalize() else { return (true, None) };
+        let inside = [dir, common_dir]
+            .iter()
+            .filter_map(|root| root.canonicalize().ok())
+            .any(|root| canonical.starts_with(root));
+        if !inside {
+            return (true, None);
+        }
+        canonical
+    } else {
+        return (false, None);
+    };
+    let is_oid = |value: &str| (value.len() == 40 || value.len() == 64) && value.bytes().all(|b| b.is_ascii_hexdigit());
+    let Some(head) = read_small(&git_dir.join("HEAD")) else { return (true, None) };
+    let head = head.trim();
+    if is_oid(head) {
+        return (true, Some(head.to_owned()));
+    }
+    let Some(reference) = head.strip_prefix("ref: ") else { return (true, None) };
+    if !reference.starts_with("refs/") || reference.split('/').any(|part| part.is_empty() || part == "." || part == "..") {
+        return (true, None);
+    }
+    if let Some(value) = read_small(&git_dir.join(reference)) {
+        let value = value.trim();
+        return (true, is_oid(value).then(|| value.to_owned()));
+    }
+    let packed = read_limited(&git_dir.join("packed-refs"), 1024 * 1024).unwrap_or_default();
+    let commit = packed.lines().find_map(|line| {
+        let (oid, name) = line.split_once(' ')?;
+        (name == reference && is_oid(oid)).then(|| oid.to_owned())
+    });
+    (true, commit)
 }
 
 pub fn image_path(path: &str) -> bool {
@@ -298,6 +393,7 @@ impl GitAdapter {
                 {
                     side.text = None;
                     side.encoding = "binary-or-unsupported";
+                    side.kind = "image";
                     match inspect_image(&bytes, remaining.pixels, remaining.allocation) {
                         Ok(payload) => {
                             let pixels = u64::from(payload.width) * u64::from(payload.height);
@@ -309,12 +405,21 @@ impl GitAdapter {
                         Err(reason) => reject(&mut side, "unavailable", reason),
                     }
                 } else {
-                    let info = side.details.take();
+                    let mut info = side.details.take();
+                    // 非图片的 LFS 指针：照常显示指针文本，另外标出对象信息；不下载、不运行 smudge。
+                    let pointer = lfs_pointer(&bytes);
+                    if let (Some((oid, size)), Some(info)) = (&pointer, info.as_mut()) {
+                        info.lfs_oid = Some(oid.clone());
+                        info.lfs_size = Some(*size);
+                        info.lfs_local = Some(self.lfs_object_present(oid, *size));
+                    }
                     let (mut text, reason) = text_side(endpoint, bytes, false);
                     text.details = info;
                     text.source_id = side.source_id.take();
                     if let Some(reason) = reason {
                         reject(&mut text, "unavailable", reason);
+                    } else if pointer.is_some() {
+                        text.kind = "lfsPointer";
                     }
                     side = text;
                 }
@@ -361,11 +466,75 @@ impl GitAdapter {
         Ok(bytes)
     }
 
+    /// 本地 LFS 缓存中是否有该对象：只比较文件大小，不读取内容、不联网。
+    fn lfs_object_present(&self, oid: &str, size: u64) -> bool {
+        let path = self.common_dir.join("lfs").join("objects").join(&oid[..2]).join(&oid[2..4]).join(oid);
+        fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.len() == size)
+    }
+
     /// 端点在 index / HEAD / stage 中不存在：与 V1 的“记录未找到”输出一致。
     pub(super) fn not_found(side: &mut TextSide) {
         side.text = Some(String::new());
         side.encoding = "missing";
+        side.kind = "missing";
         side.details = Some(details("missing"));
+    }
+
+    /// 工作区一侧的特殊条目：子模块目录（gitlink）与符号链接不作为普通文件读取。
+    /// 返回 true 表示已按特殊条目填写 `side`；其余情况交给 `worktree_bytes`。
+    pub(super) fn worktree_special(
+        &self,
+        relative: &str,
+        side: &mut TextSide,
+        mode: Option<&str>,
+        submodule_flags: Option<&str>,
+    ) -> Result<bool, GitError> {
+        validate_relative(relative)?;
+        let mut path = self.worktree.clone();
+        let components: Vec<_> = Path::new(relative).components().collect();
+        for (index, component) in components.iter().enumerate() {
+            path.push(component);
+            let last = index + 1 == components.len();
+            match fs::symlink_metadata(&path) {
+                Ok(meta) if meta.file_type().is_symlink() && !last => return Err(GitError::UnsafePath),
+                Ok(meta) if last && meta.file_type().is_symlink() => {
+                    let target = fs::read_link(&path).map(|t| t.to_string_lossy().into_owned()).unwrap_or_default();
+                    let info = side.details.get_or_insert_with(|| details("ready"));
+                    info.mode = Some("120000".into());
+                    info.link_target = Some(target.clone());
+                    side.content_id = hash_bytes(target.as_bytes());
+                    side.byte_length = target.len();
+                    special(side, "symlink", format!("符号链接 → {target}（Oris 不跟随链接读取目标内容）"));
+                    return Ok(true);
+                }
+                Ok(meta) if last && meta.is_dir() && (mode == Some("160000") || submodule_flags.is_some_and(|f| f.starts_with('S'))) => {
+                    let (initialized, commit) = submodule_head(&path, &self.common_dir);
+                    let flags = submodule_flags.unwrap_or("N...").as_bytes();
+                    let info = side.details.get_or_insert_with(|| details("ready"));
+                    info.mode = Some("160000".into());
+                    info.oid = commit.clone();
+                    info.submodule = Some(SubmoduleInfo {
+                        commit: commit.clone(),
+                        initialized: Some(initialized),
+                        commit_changed: flags.get(1) == Some(&b'C'),
+                        tracked_changes: flags.get(2) == Some(&b'M'),
+                        untracked_changes: flags.get(3) == Some(&b'U'),
+                    });
+                    side.content_id = hash_bytes(commit.as_deref().unwrap_or("uninitialized").as_bytes());
+                    side.byte_length = 0;
+                    let reason = match (&commit, initialized) {
+                        (Some(commit), _) => format!("子模块工作区 HEAD：{commit}"),
+                        (None, true) => "子模块工作区 HEAD 无法读取".to_owned(),
+                        (None, false) => "子模块未初始化（Oris 不会初始化或更新子模块）".to_owned(),
+                    };
+                    special(side, "gitlink", reason);
+                    return Ok(true);
+                }
+                Ok(_) => {}
+                Err(_) => return Ok(false),
+            }
+        }
+        Ok(false)
     }
 
     /// 按不可变 OID 读取对象字节：先核对 mode，再以 20 MiB 上限读取（常驻 cat-file，命中缓存时不启动进程）。
@@ -378,6 +547,27 @@ impl GitAdapter {
         let info = side.details.as_mut().unwrap();
         info.oid = Some(oid.to_owned());
         info.mode = Some(mode.to_owned());
+        if mode == "160000" {
+            // 子模块提交指针：对象库里没有对应 blob，只显示提交 OID，不初始化、不读取子模块内容。
+            info.submodule = Some(SubmoduleInfo { commit: Some(oid.to_owned()), initialized: None, commit_changed: false, tracked_changes: false, untracked_changes: false });
+            side.content_id = hash_bytes(oid.as_bytes());
+            side.byte_length = 0;
+            special(side, "gitlink", format!("子模块提交指针：{oid}"));
+            return Ok(None);
+        }
+        if mode == "120000" {
+            // 符号链接：blob 内容是目标路径，只作为说明显示，不跟随。
+            if let super::object_reader::BlobRead::Bytes(bytes) = self.reader.with(|reader| reader.read_blob_limited(oid, 4096))? {
+                let target = String::from_utf8_lossy(&bytes).into_owned();
+                side.details.as_mut().unwrap().link_target = Some(target.clone());
+                side.content_id = hash_bytes(&bytes);
+                side.byte_length = bytes.len();
+                special(side, "symlink", format!("符号链接 → {target}（Oris 不跟随链接读取目标内容）"));
+            } else {
+                special(side, "symlink", "符号链接（目标过长或不可读）");
+            }
+            return Ok(None);
+        }
         if mode != "100644" && mode != "100755" {
             reject(
                 side,

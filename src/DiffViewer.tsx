@@ -13,7 +13,7 @@ import {
 } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { javascript } from "@codemirror/lang-javascript";
-import { Change, getChunks, unifiedMergeView } from "@codemirror/merge";
+import { Change, getChunks, uncollapseUnchanged, unifiedMergeView } from "@codemirror/merge";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { appearanceExtensions, createAppearanceCompartments, fontSizeTheme, reconfigureAppearance, type AppearanceCompartments, type Scheme } from "./themes/runtime";
 import { chainedWheelDelta, diffMarkerGeometry, mapDiffPosition, railViewportStartLine, type DiffBoundaryPair, type DiffSide } from "./diff-scroll";
@@ -54,6 +54,8 @@ interface SplitController {
   settleViewport(onComplete: () => void): void;
   /** 外观（字号、配色）reconfigure 后重新测量对齐、连接带与轨道。 */
   refreshLayout(): void;
+  /** 展开全部折叠的未变化内容；返回本次展开的区段数。 */
+  expandAll(): number;
   /** keepViews 为 true 时只拆除控制器与外层 DOM，EditorView 留给下一个文件复用。 */
   destroy(keepViews?: boolean): void;
 }
@@ -767,6 +769,7 @@ function pairedCollapseRegions(a: Text, b: Text, chunks: Change[]) {
 function installPairedCollapse(split: SplitView) {
   const regions = pairedCollapseRegions(split.a.state.doc, split.b.state.doc, split.chunks);
   const expanded = new Set<number>();
+  split.dom.dataset.collapsedRegions = String(regions.length);
   const update = () => {
     const sideDecorations = (side: DiffSide) => Decoration.set(regions
       .filter((region) => !expanded.has(region.id))
@@ -782,12 +785,42 @@ function installPairedCollapse(split: SplitView) {
       }), true);
     split.a.dispatch({ effects: setCollapsedRanges.of(sideDecorations("a")) });
     split.b.dispatch({ effects: setCollapsedRanges.of(sideDecorations("b")) });
+    split.dom.dataset.expandedRegions = String(expanded.size);
   };
   update();
-  return () => {
-    split.a.dispatch({ effects: setCollapsedRanges.of(Decoration.none) });
-    split.b.dispatch({ effects: setCollapsedRanges.of(Decoration.none) });
+  return {
+    expandAll() {
+      const hidden = regions.filter((region) => !expanded.has(region.id)).length;
+      regions.forEach((region) => expanded.add(region.id));
+      if (hidden) update();
+      return hidden;
+    },
+    destroy() {
+      split.a.dispatch({ effects: setCollapsedRanges.of(Decoration.none) });
+      split.b.dispatch({ effects: setCollapsedRanges.of(Decoration.none) });
+    }
   };
+}
+
+/**
+ * 统一视图的“全部展开”：按 @codemirror/merge `buildCollapsedRanges` 的同一规则（margin 3、至少 5 行）
+ * 找出折叠区段的起点，逐个派发公开的 `uncollapseUnchanged` 效果。
+ */
+function expandAllUnified(view: EditorView, margin = 3, minLines = 5) {
+  const chunks = getChunks(view.state)?.chunks ?? [];
+  const doc = view.state.doc;
+  const starts: number[] = [];
+  let previousLine = 1;
+  for (let index = 0; ; index++) {
+    const chunk = index < chunks.length ? chunks[index] : null;
+    const from = index ? previousLine + margin : 1;
+    const to = chunk ? doc.lineAt(chunk.fromB).number - 1 - margin : doc.lines;
+    if (to - from + 1 >= minLines) starts.push(doc.line(from).from);
+    if (!chunk) break;
+    previousLine = doc.lineAt(Math.min(doc.length, chunk.toB)).number;
+  }
+  if (starts.length) view.dispatch({ effects: starts.map((pos) => uncollapseUnchanged.of(pos)) });
+  return starts.length;
 }
 
 function createRail(side: DiffSide, controls: string) {
@@ -1519,7 +1552,7 @@ function createSplitView(
   visualController = installSplitVisuals(split, navigate);
   scrollController = installScrollAndRails(split, visualController, () => alignmentController?.schedule());
   const removeResize = installSplitResize(split, separator, initialRatio, onLayoutChange, visualController.scheduleMeasure);
-  const removeCollapse = collapsed ? installPairedCollapse(split) : undefined;
+  const collapse = collapsed ? installPairedCollapse(split) : undefined;
   alignmentController = alignChanges ? installChangeAlignment(split, visualController.scheduleMeasure) : undefined;
   onPositionChange(chunks.length ? 1 : 0, chunks.length);
   return {
@@ -1529,6 +1562,15 @@ function createSplitView(
       if (alignmentController) alignmentController.schedule(onComplete);
       else onComplete();
     },
+    expandAll() {
+      const expanded = collapse?.expandAll() ?? 0;
+      if (expanded) {
+        alignmentController?.schedule();
+        visualController?.scheduleMeasure();
+        scrollController?.updateRails();
+      }
+      return expanded;
+    },
     refreshLayout() {
       alignmentController?.schedule();
       visualController?.scheduleMeasure();
@@ -1536,7 +1578,7 @@ function createSplitView(
     },
     destroy(keepViews = false) {
       alignmentController?.destroy();
-      removeCollapse?.();
+      collapse?.destroy();
       removeResize();
       scrollController?.destroy();
       visualController?.destroy();
@@ -1633,6 +1675,8 @@ function createSingleView(
 export interface DiffViewerHandle {
   navigate(direction: -1 | 1): void;
   navigateTo(index: number): void;
+  /** “全部展开”：展开所有折叠的未变化内容，返回展开的区段数。 */
+  expandAll(): number;
 }
 
 interface Props {
@@ -1670,6 +1714,12 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
   const layoutKey = `${readingKey}:${presentation.kind === "single" ? `single-${presentation.side}` : "compare"}`;
 
   useImperativeHandle(ref, () => ({
+    expandAll() {
+      const current = runtime.current;
+      if (current.split) return current.split.expandAll();
+      if (current.unified) return expandAllUnified(current.unified);
+      return 0;
+    },
     navigateTo(index) {
       const current = runtime.current;
       const chunks = current.split?.view.chunks ?? current.single?.chunks ?? (current.unified ? getChunks(current.unified.state)?.chunks ?? [] : []);
@@ -1723,6 +1773,8 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
       keymap.of([...defaultKeymap, ...historyKeymap]),
       javascript({ typescript: true }),
       EditorState.readOnly.of(true),
+      // 统一视图折叠占位（@codemirror/merge 的 CollapseWidget）的中文文字，与并排视图一致。
+      EditorState.phrases.of({ "$ unchanged lines": "展开 $ 行未变化内容" }),
       alignmentSpacers,
       collapsedRanges,
       searchHighlights,
