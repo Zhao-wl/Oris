@@ -696,7 +696,7 @@ impl GitAdapter {
         Ok(step)
     }
 
-    fn write_worktree_file(&self, relative: &str, bytes: &[u8], mode: &str) -> Result<(), GitError> {
+    pub(super) fn write_worktree_file(&self, relative: &str, bytes: &[u8], mode: &str) -> Result<(), GitError> {
         validate_relative(relative)?;
         let full = self.checked_worktree_path(relative)?;
         if let Some(parent) = full.parent() {
