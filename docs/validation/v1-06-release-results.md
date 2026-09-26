@@ -2,7 +2,7 @@
 
 日期：2026-09-26（长链运行编号 20260926-1014，阶段 3）。任务：[06 双平台性能与可安装发布包](../tasks/06-performance-release.md)。依据：[V1 验收计划](v1-acceptance.md) A01–A15、§5；[V2 验收计划](v2-acceptance.md) B01–B22、§5；[V2-01 结果 · 已知限制与未验证](v2-01-results.md#已知限制与未验证)留给 06 的门禁。
 
-结论：**Windows 功能验收通过；06 整体为 Awaiting acceptance（待性能测试、签名、macOS 最终版本复测）**。A01–A15 与 B01–B22 都在同一个最终构建上重跑（旧版本结果没有用来替代）；本阶段发现并修复 3 个实际缺陷（缺 Git 提示不清楚、安装包缺少 `WebView2Loader.dll`、重启时快照校验失败后旧列表一直标“校验中”）。未完成：发布性能报告（A14 与两套性能 / 内存预算）、Windows 与 macOS 签名 / 公证（阻塞：缺证书）、安装 / 卸载实测（用户选择只构建）、AgentHub 真实远端回归（本轮被会话权限拦截，未运行）、macOS 全部、需要真实前台焦点的“外部变化 → 界面更新”。
+结论：**Windows 功能验收通过；06 整体为 Awaiting acceptance（待性能测试、签名、macOS 最终版本复测）**。A01–A15 与 B01–B22 都在同一个最终构建上重跑（旧版本结果没有用来替代）；本阶段发现并修复 3 个实际缺陷（缺 Git 提示不清楚、安装包缺少 `WebView2Loader.dll`、重启时快照校验失败后旧列表一直标“校验中”）。未完成：发布性能测试中的切换字号未达标与失焦内存口径（待用户决定，见 [发布性能测试](v1-06-performance.md)）、Windows 与 macOS 签名 / 公证（阻塞：缺证书）、安装 / 卸载实测（用户选择只构建）、AgentHub 真实远端回归（本轮被会话权限拦截，未运行）、macOS 全部、需要真实前台焦点的“外部变化 → 界面更新”。
 
 ## 构建与产物
 
@@ -52,7 +52,7 @@
 | A11 | 通过 | v1-05 A11 7/7；task03 图片 10 项；后端 content_tests（LFS、SVG、符号链接、子模块、mode）、media tests |
 | A12 | 通过 | v1-05 A12 8/8；后端 `a12_unicode_crlf_final_newline_and_encoding_failures_have_explicit_states`、`raw_non_utf8_path_and_revision` |
 | A13 | 通过 | 后端 `ignores_external_diff_and_fsmonitor`、`b18_malicious_config_is_not_executed_on_v2_paths`、`write_channel_does_not_run_fsmonitor_or_external_diff_commands`、`history_reads_never_run_signature_programs…`、task03_safety_tests；界面 v1-04 B18 检查。静态核对：前端无 fetch / XHR / WebSocket / sendBeacon，Rust 无 HTTP 客户端依赖，capability 只有 `core:default` 与 `dialog:allow-open`，CSP 只允许应用自身资源（无 telemetry、无远程代码） |
-| A14 | 待性能测试 | 功能部分通过：超预算文本 / 长行 / 图片明确降级（后端 `degrades_oversized_files_and_lines_without_truncating`、media 40 MP 边界）；取消与缓存上限（`task03_cancel_tests`、`resource_limits_cat_file_pool_idle_reaping_and_blob_cache_budget`）。预算判定交给发布性能测试（见下“阶段 1、2 性能复测”） |
+| A14 | 部分通过（见发布性能测试） | [发布性能测试](v1-06-performance.md)（被测 origin/main `ae08225`，构建 `9F1366EF…`）：S 数据集 24 项预算中 21 项达标；**切换字号（长文件滚动场景）P95 160.4 ms 未达标**，待用户决定；失焦后内存稳态口径未达标、静置口径达标（强制级别）；外部变化时延未验证（需真实焦点）。L 数据集有界加载、可取消、不崩溃、内存有界；超预算文本 / 长行 / 图片明确降级 |
 | A15 | 部分通过；安装 / 卸载未运行；签名待签名；macOS 待 macOS | Git 发现 `v1-06-git-discovery.mjs` 10/10（在安装布局副本上）：注册表 Machine + User PATH（资源管理器启动时的 PATH）自动发现、缺 Git 提示与处理方法、手动路径校验与重启保留、PATH 中 Git 2.30.2 与手动指定 2.30.2 均提示版本不支持（低版本为 rustc 编译的模拟程序，只回答 `--version`）；只改测试实例自己的 PATH，未改系统 PATH、未安装 / 卸载 Git。Windows 安装包已构建（内部测试包，未签名）；**安装 / 卸载未运行**（用户选择只构建，清单见 [Windows 安装交接清单](../release/windows-install-checklist.md)）；**签名：阻塞：缺证书** |
 | B01 | 通过 | 后端 v2_tests `b01_*` 4 项（与 V1 逐命令结果逐项一致） |
 | B02 | 通过 | 后端 v2_tests `b02_*` 3 项 |
@@ -76,7 +76,7 @@
 | B20 | 通过 | v2-06 B20 2/2；`v1-06-git-discovery.mjs` 的手动路径检查 |
 | B21 | 通过（跟随系统为 CDP 模拟） | v2-06 B21 2/2 与 19 套配色逐套截图 |
 | B22 | 通过 | v2-06 B22 3/3（含“发布包内含 VS Code 与 Colorsublime 许可声明”）；许可声明在前端包 `index-*.js` 中，同时收入安装包的 `THIRD-PARTY-NOTICES.txt` |
-| V1 §4 / V2 §3–§4 性能与内存预算 | 待性能测试 | 本阶段只做阶段 1、2 复测的退步检查（下节） |
+| V1 §4 / V2 §3–§4 性能与内存预算 | 部分通过 | 见 [发布性能测试](v1-06-performance.md) 的预算表与待用户决定；原始样本 [data/v1-06-performance-20260926-2300.json](data/v1-06-performance-20260926-2300.json) |
 
 各套件在本构建上的结果（`artifacts/long-chain/v1-06-regress/summary.txt`）：
 
@@ -123,6 +123,6 @@
 - **AgentHub 真实远端（B12）**：本轮未运行，用户决定跳过（见追溯矩阵 B12 行）；之后补测需要用户在会话权限中放行“从 Bash 工具启动测试实例并推送 `oris-test/20260926-1014/` 测试分支”，或自行运行 `node scripts/perf/v2-04-acceptance.mjs --exe <oris.exe> --only real --run-id <运行编号>`。
 - **安装 / 卸载实测**：未运行（用户选择只构建）；安装脚本内容已核对，安装布局副本可启动。
 - **真实焦点**：所有界面证据为 CDP 页面事件；“外部变化 → 界面自动更新”、失焦后切到低内存级别的真实焦点切换（V2-01 门禁）未验证。
-- **16 GiB 参考机**：测量机为 47.7 GiB；发布性能测试另行处理。
+- **16 GiB 参考机**：测量机为 47.7 GiB，发布性能测试未换算。
 - **签名 / 公证**：缺证书。
 - Windows SmartScreen 对未签名安装包的提示、WebView2 缺失时的引导程序下载都没有实际触发（本机已安装 WebView2）。
