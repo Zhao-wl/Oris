@@ -20,6 +20,7 @@ interface FrameHeader {
   pair: ContentPair;
   textRanges: [[number, number] | null, [number, number] | null];
   imageRanges: [[number, number] | null, [number, number] | null];
+  fallbackRanges?: [[number, number] | null, [number, number] | null];
 }
 
 const utf8 = new TextDecoder("utf-8");
@@ -36,6 +37,8 @@ export function decodeContentFrame(frame: ArrayBuffer | Uint8Array | ContentPair
   sides.forEach((side, index) => {
     const text = header.textRanges[index];
     if (text) side.text = utf8.decode(payload.subarray(text[0], text[0] + text[1]));
+    const fallback = header.fallbackRanges?.[index];
+    if (fallback) side.latin1 = utf8.decode(payload.subarray(fallback[0], fallback[0] + fallback[1]));
     const image = header.imageRanges[index];
     if (image && side.details?.image) side.details.image.bytes = payload.slice(image[0], image[0] + image[1]);
   });

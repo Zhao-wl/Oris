@@ -529,3 +529,13 @@ button.op-status { padding:0 6px; border:0; background:transparent; font-size:11
 .toolbar .filter-badge { padding:1px 8px; border:1px solid var(--warning, #d9a24f); border-radius:10px; color:var(--warning, #d9a24f); font-size:11px; }/* 键盘聚焦到 diff 编辑器时的可见焦点（R-UX）；鼠标点击不显示。 */
 .diff-host .cm-editor:has(.cm-content:focus-visible) { outline:2px solid var(--blue); outline-offset:-2px; }/* diff 字号来自宿主元素的 --diff-font-size（设置与 Ctrl/Cmd + = / - / 0），切换时不重建、不重新配置编辑器。 */
 .diff-host .cm-editor { font-size:var(--diff-font-size, 13px); }
+
+/* V2-05：块标题行（参考图：块操作在块标题行、使用完整动作文字；中央连接带保持纯阅读语义） */
+.diff-host .hunk-title { display:flex; align-items:center; gap:8px; height:24px; box-sizing:border-box; padding:0 8px; border-top:1px solid var(--border); background:var(--chrome); color:var(--dim); font-family:"Segoe UI", "Microsoft YaHei", system-ui, sans-serif; font-size:12px; white-space:nowrap; overflow:hidden; }
+.diff-host .hunk-title .hunk-label { flex:none; }
+.diff-host .hunk-title .hunk-actions { display:inline-flex; gap:4px; margin-left:auto; }
+.diff-host .hunk-title button { padding:0 8px; height:19px; line-height:17px; font-size:12px; }
+.diff-host .hunk-title button.danger { color:var(--error, #ff7b72); }
+.diff-host .hunk-title button:disabled { opacity:.55; cursor:default; }
+.diff-host .hunk-title .hunk-note { overflow:hidden; text-overflow:ellipsis; font-style:italic; }
+.special-file .special-file-action { margin-top:8px; }

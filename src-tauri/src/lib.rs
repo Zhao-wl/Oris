@@ -537,6 +537,17 @@ fn discard_backups(repo_id: String, registry: State<'_, RepositoryRegistry>, bac
     Ok(opened(&registry, &repo_id)?.adapter.discard_backups(&backups.0))
 }
 
+/// 块操作映射（只读，V2-05）：某文件在当前范围内 Git 报告的差异块，界面据此决定显示的块能否操作。
+/// 只在用户把指针移入 diff 或键盘聚焦时请求，浏览、切换文件与范围时不调用。
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn hunk_map(repo_id: String, scope: CompareScope, revision: String, path_id: String, registry: State<'_, RepositoryRegistry>) -> Result<ops::HunkMap, GitError> {
+    let opened = opened(&registry, &repo_id)?;
+    tauri::async_runtime::spawn_blocking(move || opened.adapter.hunk_map(scope, &revision, &path_id))
+        .await
+        .map_err(|error| GitError::Runtime(error.to_string()))?
+}
+
 /// 提交面板的 HEAD 信息与已推送判断（只读）。
 #[cfg(feature = "desktop")]
 #[tauri::command]
@@ -629,6 +640,7 @@ pub fn run() {
             close_repository,
             read_content_pair,
             cancel_content_read,
+            hunk_map,
             save_snapshot,
             load_snapshot,
             remove_snapshot,
