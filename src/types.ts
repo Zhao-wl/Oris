@@ -122,6 +122,8 @@ export interface TextSide {
   /** 原始字节以 BOM 开头（显示文本已去掉 BOM）。旧快照 / 测试数据可能缺失。 */
   bom?: boolean;
   kind?: SideKind;
+  /** 编码不受支持时的逐字节（Latin-1）文本，只用于用户明确选择的单字节显示（V2-05，V2-D54 待定）。 */
+  latin1?: string;
   eol: "lf" | "crlf" | "mixed" | "none";
   hasFinalNewline: boolean | null;
   contentId: string;
