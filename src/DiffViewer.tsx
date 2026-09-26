@@ -23,6 +23,7 @@ import { useSettings } from "./settings";
 import { useStore } from "./store";
 import { collectQueryMatches, createReadingQuery, type ReadingSearchOptions, type TextMatch } from "./search-model";
 import type { DiffDocument } from "./types";
+import type { HunkItem } from "./hunk-model";
 
 const DIFF_SEPARATOR_WIDTH = 56;
 const DIFF_RAIL_WIDTH = 24;
@@ -170,6 +171,95 @@ class CollapsedLinesWidget extends WidgetType {
     return false;
   }
 }
+
+/** 块操作（V2-05）：显示在差异块上方的块标题行，操作用完整文字；中央连接带保持纯阅读语义。 */
+export interface HunkHeaderAction {
+  action: "stage" | "unstage" | "discard";
+  label: string;
+  danger?: boolean;
+}
+export interface HunkHeaders {
+  items: HunkItem[];
+  actions: HunkHeaderAction[];
+  /** 写操作进行中、校验中等：按钮不可用并以 title 说明。 */
+  disabledReason: string | null;
+  onAction(index: number, action: HunkHeaderAction["action"]): void;
+  /** 指针移入或键盘聚焦 diff：按需读取块映射（浏览时不启动 Git 进程）。 */
+  onIntent(): void;
+}
+
+class HunkHeaderWidget extends WidgetType {
+  constructor(
+    readonly index: number,
+    readonly total: number,
+    readonly item: HunkItem,
+    readonly actions: HunkHeaderAction[],
+    readonly disabledReason: string | null,
+    readonly run: (index: number, action: HunkHeaderAction["action"]) => void
+  ) {
+    super();
+  }
+
+  eq(other: HunkHeaderWidget) {
+    return other.index === this.index && other.total === this.total && other.item.state === this.item.state && other.item.reason === this.item.reason &&
+      other.item.ref?.digest === this.item.ref?.digest && other.disabledReason === this.disabledReason && other.actions.map((a) => a.action).join() === this.actions.map((a) => a.action).join();
+  }
+
+  toDOM() {
+    const row = document.createElement("div");
+    row.className = `hunk-title ${this.item.state}`;
+    row.setAttribute("role", "group");
+    row.setAttribute("aria-label", `第 ${this.index + 1} / ${this.total} 个差异块`);
+    row.dataset.hunkIndex = String(this.index);
+    const label = document.createElement("span");
+    label.className = "hunk-label";
+    label.textContent = `第 ${this.index + 1} / ${this.total} 块`;
+    row.append(label);
+    if (this.item.state !== "unmatched") {
+      const actions = document.createElement("span");
+      actions.className = "hunk-actions";
+      for (const entry of this.actions) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = entry.danger ? "danger" : "";
+        button.textContent = entry.label;
+        button.dataset.action = entry.action;
+        button.disabled = !!this.disabledReason;
+        if (this.disabledReason) button.title = this.disabledReason;
+        button.addEventListener("mousedown", (event) => event.preventDefault());
+        button.addEventListener("click", () => this.run(this.index, entry.action));
+        actions.append(button);
+      }
+      row.append(actions);
+    } else {
+      const note = document.createElement("span");
+      note.className = "hunk-note";
+      note.textContent = this.item.reason ?? "";
+      row.append(note);
+    }
+    return row;
+  }
+
+  get estimatedHeight() {
+    return 24;
+  }
+
+  ignoreEvent() {
+    return true;
+  }
+}
+
+const setHunkHeaders = StateEffect.define<DecorationSet>();
+const hunkHeaderField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(headers, transaction) {
+    for (const effect of transaction.effects) {
+      if (effect.is(setHunkHeaders)) return effect.value;
+    }
+    return headers.map(transaction.changes);
+  },
+  provide: (field) => EditorView.decorations.from(field)
+});
 
 const setAlignmentSpacers = StateEffect.define<DecorationSet>();
 const alignmentSpacers = StateField.define<DecorationSet>({
@@ -1701,13 +1791,37 @@ interface Props {
   alignChanges: boolean;
   onPositionChange(position: number, total: number): void;
   onSplitLayoutChange(ratio: number, leftWidth: number): void;
+  /** 块操作标题行（V2-05）；为 null 时不显示（“全部”范围、历史阅读、不可操作的文件）。 */
+  hunkHeaders?: HunkHeaders | null;
 }
 
 const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
-  { readingKey, presentation, left, right, document, mode, highlight, collapsed, wrap, alignChanges, onPositionChange, onSplitLayoutChange },
+  { readingKey, presentation, left, right, document, mode, highlight, collapsed, wrap, alignChanges, onPositionChange, onSplitLayoutChange, hunkHeaders = null },
   ref
 ) {
   const host = useRef<HTMLDivElement>(null);
+  const hunkRef = useRef(hunkHeaders);
+  hunkRef.current = hunkHeaders;
+  /** 把块标题行放到右侧（并排）或统一视图编辑器中每个差异块的起点之前。 */
+  const applyHunkHeaders = useRef(() => {});
+  applyHunkHeaders.current = () => {
+    const current = runtime.current;
+    const view = current.split?.view.b ?? current.unified;
+    if (!view) return;
+    const headers = hunkRef.current;
+    const chunks = current.split?.view.chunks ?? (current.unified ? getChunks(current.unified.state)?.chunks ?? [] : []);
+    const run = (index: number, action: HunkHeaderAction["action"]) => hunkRef.current?.onAction(index, action);
+    const ranges = headers ? chunks.flatMap((chunk, index) => {
+      const item = headers.items[index];
+      if (!item) return [];
+      const pos = Math.min(chunk.fromB, view.state.doc.length);
+      return [Decoration.widget({ widget: new HunkHeaderWidget(index, chunks.length, item, headers.actions, headers.disabledReason, run), block: true, side: -1 }).range(view.state.doc.lineAt(pos).from)];
+    }) : [];
+    // 没有标题行、编辑器里也没有时不派发（每次派发都会让 CodeMirror 读取 DOM 选区）。
+    if (!ranges.length && view.state.field(hunkHeaderField, false)?.size === 0) return;
+    view.dispatch({ effects: setHunkHeaders.of(Decoration.set(ranges, true)) });
+    current.split?.refreshLayout();
+  };
   // 字号与配色直接订阅设置与当前方案（V2-06）：外观切换只重新渲染阅读器，不重新渲染整个 App。
   // 当前配色方案为 null（尚未加载）时沿用 V1 的 one-dark。
   const fontSize = useSettings(settings, (value) => value.appearance.fontSize);
@@ -1786,6 +1900,7 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
       // 统一视图折叠占位（@codemirror/merge 的 CollapseWidget）的中文文字，与并排视图一致。
       EditorState.phrases.of({ "$ unchanged lines": "展开 $ 行未变化内容" }),
       alignmentSpacers,
+      hunkHeaderField,
       collapsedRanges,
       searchHighlights,
       selectionHighlights,
@@ -1861,6 +1976,8 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
       ? [{ view: split.view.a, side: "left" }, { view: split.view.b, side: "right" }]
       : single ? [{ view: single.view, side: presentation.kind === "single" && presentation.side === "a" ? "left" : "right" }]
       : unified ? [{ view: unified, side: "unified" }] : [];
+    // 先放块标题行再恢复阅读位置：标题行会改变上方内容的高度，顺序反过来会让阅读位置下移（V2-05）。
+    applyHunkHeaders.current();
     const saved = savedViewports.current.get(layoutKey);
     if (saved) {
       const restore = () => searchViews.forEach(({ view }, index) => {
@@ -1898,6 +2015,16 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
     };
   }, [layoutKey, left, right, document, mode, highlight, collapsed, wrap, alignChanges, onPositionChange, onSplitLayoutChange, presentation]);
 
+  useEffect(() => { applyHunkHeaders.current(); }, [hunkHeaders]);
+  // 指针移入或键盘聚焦阅读器时按需读取块映射。
+  useEffect(() => {
+    const element = host.current;
+    if (!element) return;
+    const intent = () => hunkRef.current?.onIntent();
+    element.addEventListener("pointerenter", intent);
+    element.addEventListener("focusin", intent);
+    return () => { element.removeEventListener("pointerenter", intent); element.removeEventListener("focusin", intent); };
+  }, []);
   const liveViews = () => {
     const views = pool.current;
     // 只处理挂在页面上的编辑器；复用池中暂时脱离页面的编辑器在下次复用时由 setState 带上当前外观。

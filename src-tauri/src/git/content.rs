@@ -306,6 +306,8 @@ struct FrameHeader<'a> {
     pair: &'a ContentPair,
     text_ranges: [Option<(usize, usize)>; 2],
     image_ranges: [Option<(usize, usize)>; 2],
+    /// 编码不受支持一侧的逐字节（Latin-1）文本（V2-05 的“按单字节显示”）。
+    fallback_ranges: [Option<(usize, usize)>; 2],
 }
 
 impl ContentPair {
@@ -315,9 +317,14 @@ impl ContentPair {
         let mut payload = Vec::new();
         let mut text_ranges = [None, None];
         let mut image_ranges = [None, None];
+        let mut fallback_ranges = [None, None];
         for (index, side) in [&mut self.left, &mut self.right].into_iter().enumerate() {
             if let Some(text) = side.text.take() {
                 text_ranges[index] = Some((payload.len(), text.len()));
+                payload.extend_from_slice(text.as_bytes());
+            }
+            if let Some(text) = side.latin1.take() {
+                fallback_ranges[index] = Some((payload.len(), text.len()));
                 payload.extend_from_slice(text.as_bytes());
             }
             if let Some(image) = side.details.as_mut().and_then(|d| d.image.as_mut()) {
@@ -326,7 +333,7 @@ impl ContentPair {
                 payload.extend_from_slice(&raw);
             }
         }
-        let header = serde_json::to_vec(&FrameHeader { pair: &self, text_ranges, image_ranges })
+        let header = serde_json::to_vec(&FrameHeader { pair: &self, text_ranges, image_ranges, fallback_ranges })
             .unwrap_or_else(|_| b"{}".to_vec());
         let mut frame = Vec::with_capacity(8 + header.len() + payload.len());
         frame.extend_from_slice(b"ORC1");
