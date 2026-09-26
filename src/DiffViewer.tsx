@@ -1976,6 +1976,8 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
       ? [{ view: split.view.a, side: "left" }, { view: split.view.b, side: "right" }]
       : single ? [{ view: single.view, side: presentation.kind === "single" && presentation.side === "a" ? "left" : "right" }]
       : unified ? [{ view: unified, side: "unified" }] : [];
+    // 先放块标题行再恢复阅读位置：标题行会改变上方内容的高度，顺序反过来会让阅读位置下移（V2-05）。
+    applyHunkHeaders.current();
     const saved = savedViewports.current.get(layoutKey);
     if (saved) {
       const restore = () => searchViews.forEach(({ view }, index) => {
@@ -1995,7 +1997,6 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
       if (split) split.settleViewport(restore); else requestAnimationFrame(restore);
     }
     readingSearch = installReadingSearch(host.current, searchViews, split ? (onComplete) => split?.settleViewport(onComplete) : undefined);
-    applyHunkHeaders.current();
     return () => {
       const viewports = savedViewports.current;
       viewports.delete(layoutKey);

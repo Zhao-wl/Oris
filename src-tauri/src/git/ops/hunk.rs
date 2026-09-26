@@ -4,7 +4,8 @@
 //!   前端只用行范围与摘要指明“哪一块”，Rust 重新计算并核对后才构造 patch。
 //! - 每次只应用一块：patch 的上下文取自被应用的一侧（暂存取 index，取消暂存与丢弃取新一侧），
 //!   因此相邻块互不影响；执行前先 `git apply --check`，与显示时的内容不一致时拒绝执行（不自动重试）。
-//! - 丢弃先把整个工作区文件写入对象库并记录（R-DISCARD 备份，可撤销）。
+//! - 丢弃先把整个工作区文件写入对象库并记录（R-DISCARD 备份，可撤销）；写回时在工作区原始字节上只替换目标块的行，
+//!   避免 git apply 按 core.autocrlf 重写整个文件的换行（无法逐行对应时才交给 git apply）。
 use super::*;
 
 /// 某一块在两侧的行范围（0 起、左闭右开）与内容摘要。
@@ -257,6 +258,54 @@ fn single_hunk_patch(path: &[u8], hunk: &RawHunk, target: &[Vec<u8>], reverse: b
     patch
 }
 
+/// 工作区原始字节与 Git 视角（clean 转换后）内容的逐行关系。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RawStyle {
+    /// 逐字节相同：没有换行转换或 filter。
+    Same,
+    /// 只差行尾：工作区为 CRLF、Git 视角为 LF（`core.autocrlf` / `eol` 转换）。
+    Crlf,
+}
+
+fn raw_style(raw: &[&[u8]], clean: &[Vec<u8>]) -> Option<RawStyle> {
+    if raw.len() != clean.len() {
+        return None;
+    }
+    let mut crlf = false;
+    for (r, c) in raw.iter().zip(clean) {
+        if *r == c.as_slice() {
+            continue;
+        }
+        let converted = c.ends_with(b"\n") && !c.ends_with(b"\r\n") && r.len() == c.len() + 1 && r.ends_with(b"\r\n") && r[..r.len() - 2] == c[..c.len() - 1];
+        if !converted {
+            return None;
+        }
+        crlf = true;
+    }
+    Some(if crlf { RawStyle::Crlf } else { RawStyle::Same })
+}
+
+/// 在工作区原始字节上还原一块：只替换目标块的行，其余字节不动；CRLF 文件中还原的行也用 CRLF。
+fn discard_on_raw(raw: &[&[u8]], hunk: &RawHunk, style: RawStyle) -> Vec<u8> {
+    let (_, _, new_start, new_end) = hunk.range;
+    let mut out = Vec::new();
+    for line in &raw[..new_start] {
+        out.extend_from_slice(line);
+    }
+    for line in &hunk.removed {
+        if style == RawStyle::Crlf && line.ends_with(b"\n") && !line.ends_with(b"\r\n") {
+            out.extend_from_slice(&line[..line.len() - 1]);
+            out.extend_from_slice(b"\r\n");
+        } else {
+            out.extend_from_slice(line);
+        }
+    }
+    for line in &raw[new_end..] {
+        out.extend_from_slice(line);
+    }
+    out
+}
+
 /// 计算块映射所需的内容：两侧原始字节与 `git diff -U0` 的解析结果。
 struct HunkSource {
     path: Vec<u8>,
@@ -369,7 +418,7 @@ impl GitAdapter {
         if &source.content_ids != content_ids {
             return Ok(Step::failed(format!("{}：文件在显示之后已被修改，已拒绝执行；请查看刷新后的差异再操作", action.label())));
         }
-        let Some(raw) = source.hunks.iter().find(|h| h.reference() == *hunk) else {
+        let Some(raw_hunk) = source.hunks.iter().find(|h| h.reference() == *hunk) else {
             return Ok(Step::failed(format!("{}：没有找到与显示一致的差异块，已拒绝执行；请刷新后重试", action.label())));
         };
         let old = split_lines(&source.old);
@@ -380,7 +429,7 @@ impl GitAdapter {
             HunkAction::Unstage => (true, &new, true),
             HunkAction::Discard => (true, &new, false),
         };
-        let patch = single_hunk_patch(&source.path, raw, target, reverse);
+        let patch = single_hunk_patch(&source.path, raw_hunk, target, reverse);
         let mut args = vec!["apply", "--whitespace=nowarn"];
         if cached {
             args.push("--cached");
@@ -412,8 +461,26 @@ impl GitAdapter {
                 Step::failed(Self::failure_message(&result, action.label()))
             })
         };
+        // 丢弃：`git apply` 写工作区时会按 core.autocrlf / eol 重写整个文件的换行（Git for Windows 默认
+        // autocrlf=true，LF 文件会被整体改成 CRLF）。能逐行对应时改为在原始字节上只替换目标块的行，其余字节不动；
+        // 对应不上（例如其他 clean / smudge filter）时才交给 git apply。
+        let discard = |ctx: &OpContext| -> Result<Step, GitError> {
+            let relative = std::str::from_utf8(&source.path).map_err(|_| GitError::UnsupportedPathEncoding)?;
+            let raw = self.read_worktree(relative, MAX_TEXT_BYTES + 1)?;
+            if hash_bytes(&raw) != content_ids[1] {
+                return Ok(Step::failed(format!("{}：文件在检查之后又被修改，已停止；文件未改动", action.label())));
+            }
+            let raw_lines = split_lines(&raw);
+            match raw_style(&raw_lines, &new) {
+                Some(style) => {
+                    self.write_worktree_file(relative, &discard_on_raw(&raw_lines, raw_hunk, style), "100644")?;
+                    Ok(Step::ok(format!("已丢弃 {display_path} 的 1 个差异块")))
+                }
+                None => apply(ctx),
+            }
+        };
         let mut step = if action == HunkAction::Discard {
-            self.with_worktree_backup(&source.path, path_id, confirmed_unrecoverable, ctx, apply)?
+            self.with_worktree_backup(&source.path, path_id, confirmed_unrecoverable, ctx, discard)?
         } else {
             apply(ctx)?
         };

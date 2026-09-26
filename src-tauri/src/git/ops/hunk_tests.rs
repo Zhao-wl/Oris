@@ -414,3 +414,31 @@ fn b16_external_index_lock_blocks_hunk_ops_without_retry_or_removal() {
     assert_eq!(fingerprint(p), fp, "没有任何改动（也没有重试）");
     fs::remove_file(p.join(".git/index.lock")).unwrap();
 }
+
+#[test]
+fn b15_discard_keeps_other_bytes_under_autocrlf() {
+    // Git for Windows 默认 core.autocrlf=true：git apply 写工作区会整体改写换行，块丢弃必须只改目标块。
+    let dir = init();
+    let p = dir.path();
+    git_raw(p, &["config", "core.autocrlf", "true"]);
+    write(p, "lf.txt", numbered(12, |_| None).as_bytes());
+    write(p, "crlf.txt", numbered(12, |_| None).as_bytes());
+    Command::new("git").arg("-C").arg(p).args(["add", "-A"]).output().unwrap();
+    Command::new("git").arg("-C").arg(p).args(["commit", "-qm", "base"]).output().unwrap();
+    // LF 工作区（例如编辑器保存为 LF）与 CRLF 工作区（检出时转换）各改两处
+    let lf = numbered(12, |i| match i { 2 => Some("two".into()), 9 => Some("nine".into()), _ => None });
+    write(p, "lf.txt", lf.as_bytes());
+    let crlf = numbered(12, |i| match i { 2 => Some("two".into()), 9 => Some("nine".into()), _ => None }).replace('\n', "\r\n");
+    write(p, "crlf.txt", crlf.as_bytes());
+    let h = Harness::new(p);
+    for (path, expected) in [
+        ("lf.txt", numbered(12, |i| (i == 2).then(|| "two".into()))),
+        ("crlf.txt", numbered(12, |i| (i == 2).then(|| "two".into())).replace('\n', "\r\n")),
+    ] {
+        let map = h.map(CompareScope::Unstaged, path);
+        assert_eq!(map.hunks.len(), 2, "{path}");
+        let outcome = h.run(OperationRequest::HunkDiscard { path_id: id(path), content_ids: map.content_ids.clone(), hunk: hunk_ref(&map, 1), confirmed_unrecoverable: false }, CompareScope::Unstaged).unwrap();
+        assert_eq!(outcome.status, OpStatus::Succeeded, "{path}: {}", outcome.message);
+        assert_eq!(fs::read_to_string(p.join(path)).unwrap(), expected, "{path}：只还原目标块，其余字节（含换行）不变");
+    }
+}
