@@ -565,16 +565,22 @@ fn b02_binary_frame_carries_text_and_image_bytes_verbatim() {
 #[test]
 fn resident_cat_file_has_no_console_host() {
     let dir = init();
-    write(dir.path(), "f.txt", b"x\n");
+    // 内容唯一：BlobCache 按 OID 全局共享，别的测试读过相同内容时这里会直接命中缓存、不启动 cat-file。
+    let unique = format!("resident cat-file {:?} {}\n", std::time::SystemTime::now(), std::process::id());
+    write(dir.path(), "f.txt", unique.as_bytes());
     git(dir.path(), &["add", "-A"]);
     git(dir.path(), &["commit", "-qm", "c"]);
     let oid = String::from_utf8(git(dir.path(), &["rev-parse", "HEAD:f.txt"])).unwrap().trim().to_owned();
     let reader = object_reader::shared_reader(Path::new("git"), dir.path(), Duration::from_secs(30));
-    reader.with(|r| r.read_blob(&oid)).unwrap();
-    let pid = reader.with(|r| r.child_pid_for_test()).unwrap();
-    let query = format!("@(Get-CimInstance Win32_Process -Filter \"ParentProcessId={pid} AND Name='conhost.exe'\").Count");
-    let output = Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &query]).output().unwrap();
-    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "0");
+    // 读取、取 PID 与查询在同一次 with 中完成：全局最多 5 个常驻读取器，并行的其他测试可能在两次 with 之间把它回收。
+    let count = reader.with(|r| {
+        r.read_blob(&oid).unwrap();
+        let pid = r.child_pid_for_test().expect("读取后常驻 cat-file 应在运行");
+        let query = format!("@(Get-CimInstance Win32_Process -Filter \"ParentProcessId={pid} AND Name='conhost.exe'\").Count");
+        let output = Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &query]).output().unwrap();
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    });
+    assert_eq!(count, "0");
     reader.close();
 }
 

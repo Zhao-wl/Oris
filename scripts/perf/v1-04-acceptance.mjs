@@ -490,7 +490,8 @@ async function remoteSuite() {
     const fetchArgs = fetchCommands.find((c) => c.startsWith("fetch")) ?? "";
     check("A10 显式 fetch：更新远端跟踪分支（不 prune、不递归子模块、不自动维护），工作区 / index / 当前分支 / config 不变", status.cls.includes("succeeded") && git(r.local, ["rev-parse", "refs/remotes/origin/main"]) === remoteHead && git(r.local, ["for-each-ref", "refs/remotes/origin/stale"]).includes("stale") && e.unexpected.length === 0 && /--no-prune/.test(fetchArgs) && /--no-recurse-submodules/.test(fetchArgs) && /--no-auto-maintenance/.test(fetchArgs) && !fetchCommands.some((c) => /^(pull|push|checkout|switch|merge|gc|maintenance)/.test(c)), { status, e, fetchArgs, fetchCommands });
     await ctx.waitUntil(`window.__h.branches().find((b) => b.name.replace('● ', '') === 'main')?.track === '↑0 ↓1'`, 15000);
-    const fetchTime = await ctx.evaluate(`document.querySelector('.log-fetch-time')?.textContent ?? ''`);
+    // 历史页改造（866a799）后，获取时间显示在标题栏“同步”按钮的提示与同步弹层中（原 .log-fetch-time 已移除）。
+    const fetchTime = await ctx.evaluate(`document.querySelector('.sync-button')?.title ?? ''`);
     check("A10 获取后分支列表与日志刷新；记录 Oris 获取时间", fetchTime.includes("上次由 Oris 获取 origin") && (await ctx.evaluate(`window.__h.rows().length`)) > 0, { fetchTime, shot: await ctx.shot("a10-after-fetch") });
     // 外部 fetch 之后：时间显示为未知。
     await sleep(6000);
