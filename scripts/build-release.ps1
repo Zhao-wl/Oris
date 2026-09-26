@@ -44,20 +44,11 @@ if ($OutputRoot) {
   if ($relativeDist -match '^[a-zA-Z][a-zA-Z0-9+.-]*:') { throw 'frontendDist 不能是 URL 或带盘符的路径。' }
   New-Item -ItemType Directory -Force -Path $output | Out-Null
   $configPath = Join-Path $output 'build-config.json'
-  $configObject = @{ build = @{
+  $config = @{ build = @{
     # Build through structured arguments below, not a nested shell command.
     beforeBuildCommand = $null
     frontendDist = $relativeDist
-  } }
-  if ($Bundle) {
-    # 安装包附带第三方许可证全文（本机 cargo metadata / package-lock.json 汇总，不联网）。
-    $noticesPath = Join-Path $output 'THIRD-PARTY-NOTICES.txt'
-    Push-Location $root
-    try { node scripts/release/third-party-licenses.mjs --md (Join-Path $output 'third-party-licenses.md') --notices $noticesPath } finally { Pop-Location }
-    if ($LASTEXITCODE -ne 0) { throw "生成第三方许可证清单失败（exit $LASTEXITCODE）" }
-    $configObject.bundle = @{ resources = @{ $noticesPath = 'THIRD-PARTY-NOTICES.txt' } }
-  }
-  $config = $configObject | ConvertTo-Json -Depth 6
+  } } | ConvertTo-Json -Depth 4
   [IO.File]::WriteAllText($configPath, $config, (New-Object Text.UTF8Encoding($false)))
   $env:CARGO_TARGET_DIR = Join-Path $output 'target'
   $releaseDir = Join-Path $env:CARGO_TARGET_DIR 'release'
@@ -105,10 +96,9 @@ try {
     Invoke-Step '构建独立前端目录' { node node_modules/vite/bin/vite.js build --outDir $frontendDir }
   }
 
-  $buildArgs = @('run', 'tauri', '--', 'build', '--features', 'tauri/custom-protocol')
+  # 先只编译；安装包在验证入口之后单独生成（需要编译产物中的 WebView2Loader.dll）。
+  $buildArgs = @('run', 'tauri', '--', 'build', '--features', 'tauri/custom-protocol', '--no-bundle')
   if ($configPath) { $buildArgs += @('--config', $configPath) }
-  if (-not $Bundle) { $buildArgs += '--no-bundle' }
-  elseif ($Bundles) { $buildArgs += @('--bundles', $Bundles) }
   $started = Get-Date
   Invoke-Step "构建 release (npm $($buildArgs -join ' '))" { npm @buildArgs }
   # Execute the same compiled context used by oris.exe; this creates no window.
@@ -117,6 +107,29 @@ try {
   $env:PATH = "$releaseDir;$env:PATH"
   Invoke-Step '验证嵌入入口、index.html 和 JS/CSS/Worker 资源（无 GUI）' {
     cargo run --manifest-path src-tauri/Cargo.toml --release --example verify_release_entry --features tauri/custom-protocol
+  }
+
+  if ($Bundle) {
+    # GNU 工具链的 oris.exe 静态导入 WebView2Loader.dll（MSVC 为静态链接），Tauri bundler 不会自动打包它：
+    # 与第三方许可证全文（本机 cargo metadata / package-lock.json 汇总，不联网）一起作为资源放到安装目录根。
+    $resourceDir = Join-Path $releaseDir 'bundle-resources'
+    New-Item -ItemType Directory -Force -Path $resourceDir | Out-Null
+    $noticesPath = Join-Path $resourceDir 'THIRD-PARTY-NOTICES.txt'
+    Invoke-Step '生成第三方许可证清单与 NOTICES' { node scripts/release/third-party-licenses.mjs --md (Join-Path $resourceDir 'third-party-licenses.md') --notices $noticesPath }
+    $resources = @{ $noticesPath = 'THIRD-PARTY-NOTICES.txt' }
+    $loader = Join-Path $releaseDir 'WebView2Loader.dll'
+    if (Test-Path $loader) {
+      $stagedLoader = Join-Path $resourceDir 'WebView2Loader.dll'
+      Copy-Item -LiteralPath $loader -Destination $stagedLoader -Force
+      $resources[$stagedLoader] = 'WebView2Loader.dll'
+    }
+    $bundleConfigPath = Join-Path $resourceDir 'bundle-config.json'
+    [IO.File]::WriteAllText($bundleConfigPath, (@{ bundle = @{ resources = $resources } } | ConvertTo-Json -Depth 4), (New-Object Text.UTF8Encoding($false)))
+    $bundleArgs = @('run', 'tauri', '--', 'bundle', '--features', 'tauri/custom-protocol')
+    if ($configPath) { $bundleArgs += @('--config', $configPath) }
+    $bundleArgs += @('--config', $bundleConfigPath)
+    if ($Bundles) { $bundleArgs += @('--bundles', $Bundles) }
+    Invoke-Step "生成安装包 (npm $($bundleArgs -join ' '))" { npm @bundleArgs }
   }
 
   $elapsed = (Get-Date) - $started
