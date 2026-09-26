@@ -5,6 +5,9 @@
 .PARAMETER Bundle
   同时生成安装包（src-tauri\target\release\bundle）。默认只构建 oris.exe（--no-bundle）。
 
+.PARAMETER Bundles
+  与 -Bundle 一起使用：只生成指定格式（例如 nsis；逗号分隔）。默认按 tauri.conf.json 的 targets。
+
 .PARAMETER Test
   构建前先运行 npm test。
 
@@ -15,10 +18,12 @@
   npm run package
   npm run package -- -Bundle -Test
   npm run package -- -OutputRoot D:\Projects\Research\Oris-builds\release-check
+  npm run package -- -Bundle -Bundles nsis -OutputRoot D:\Projects\Research\Oris-builds\v1-06
 #>
 [CmdletBinding()]
 param(
   [switch]$Bundle,
+  [string]$Bundles,
   [switch]$Test,
   [string]$OutputRoot
 )
@@ -91,9 +96,9 @@ try {
     Invoke-Step '构建独立前端目录' { node node_modules/vite/bin/vite.js build --outDir $frontendDir }
   }
 
-  $buildArgs = @('run', 'tauri', '--', 'build', '--features', 'tauri/custom-protocol')
+  # 先只编译；安装包在验证入口之后单独生成（需要编译产物中的 WebView2Loader.dll）。
+  $buildArgs = @('run', 'tauri', '--', 'build', '--features', 'tauri/custom-protocol', '--no-bundle')
   if ($configPath) { $buildArgs += @('--config', $configPath) }
-  if (-not $Bundle) { $buildArgs += '--no-bundle' }
   $started = Get-Date
   Invoke-Step "构建 release (npm $($buildArgs -join ' '))" { npm @buildArgs }
   # Execute the same compiled context used by oris.exe; this creates no window.
@@ -102,6 +107,29 @@ try {
   $env:PATH = "$releaseDir;$env:PATH"
   Invoke-Step '验证嵌入入口、index.html 和 JS/CSS/Worker 资源（无 GUI）' {
     cargo run --manifest-path src-tauri/Cargo.toml --release --example verify_release_entry --features tauri/custom-protocol
+  }
+
+  if ($Bundle) {
+    # GNU 工具链的 oris.exe 静态导入 WebView2Loader.dll（MSVC 为静态链接），Tauri bundler 不会自动打包它：
+    # 与第三方许可证全文（本机 cargo metadata / package-lock.json 汇总，不联网）一起作为资源放到安装目录根。
+    $resourceDir = Join-Path $releaseDir 'bundle-resources'
+    New-Item -ItemType Directory -Force -Path $resourceDir | Out-Null
+    $noticesPath = Join-Path $resourceDir 'THIRD-PARTY-NOTICES.txt'
+    Invoke-Step '生成第三方许可证清单与 NOTICES' { node scripts/release/third-party-licenses.mjs --md (Join-Path $resourceDir 'third-party-licenses.md') --notices $noticesPath }
+    $resources = @{ $noticesPath = 'THIRD-PARTY-NOTICES.txt' }
+    $loader = Join-Path $releaseDir 'WebView2Loader.dll'
+    if (Test-Path $loader) {
+      $stagedLoader = Join-Path $resourceDir 'WebView2Loader.dll'
+      Copy-Item -LiteralPath $loader -Destination $stagedLoader -Force
+      $resources[$stagedLoader] = 'WebView2Loader.dll'
+    }
+    $bundleConfigPath = Join-Path $resourceDir 'bundle-config.json'
+    [IO.File]::WriteAllText($bundleConfigPath, (@{ bundle = @{ resources = $resources } } | ConvertTo-Json -Depth 4), (New-Object Text.UTF8Encoding($false)))
+    $bundleArgs = @('run', 'tauri', '--', 'bundle', '--features', 'tauri/custom-protocol')
+    if ($configPath) { $bundleArgs += @('--config', $configPath) }
+    $bundleArgs += @('--config', $bundleConfigPath)
+    if ($Bundles) { $bundleArgs += @('--bundles', $Bundles) }
+    Invoke-Step "生成安装包 (npm $($bundleArgs -join ' '))" { npm @bundleArgs }
   }
 
   $elapsed = (Get-Date) - $started
@@ -119,8 +147,8 @@ try {
     $bundleDir = Join-Path $releaseDir 'bundle'
     if (Test-Path $bundleDir) {
       Write-Host '  安装包  :'
-      Get-ChildItem $bundleDir -Recurse -File -Include *.msi, *.exe |
-        ForEach-Object { Write-Host "    $($_.FullName)" }
+      Get-ChildItem $bundleDir -Recurse -File -Include *.msi, *.exe, *.dmg |
+        ForEach-Object { Write-Host "    $($_.FullName)"; Write-Host "      SHA-256 : $((Get-FileHash $_.FullName -Algorithm SHA256).Hash)" }
     }
   }
 }

@@ -217,6 +217,19 @@ async function localSuite() {
     status = await ctx.evaluate(`window.__s.opStatus()`);
     e = evidence("push 到上游", r.local, before, ["remote-refs"]);
     check("B11 推送当前分支到上游", status.cls.includes("succeeded") && bareRef(r.bare, "refs/heads/main") === git(r.local, ["rev-parse", "HEAD"]) && e.unexpected.length === 0, { status, e });
+    // ---------- B07 / V2-D37 提交并推送（已有上游：提交成功后直接推送） ----------
+    put(r.local, "cp.txt", "commit and push\n"); git(r.local, ["add", "cp.txt"]);
+    await ctx.refresh();
+    if (!(await ctx.evaluate(`window.__s.gitTab('提交')?.classList.contains('active')`))) await ctx.click(`window.__s.gitTab('提交')`);
+    await ctx.waitUntil(`!!document.querySelector('textarea[aria-label="提交信息"]') && /提交 · 1/.test(window.__s.gitTab('提交')?.textContent ?? '')`);
+    await ctx.evaluate(`(() => { const t = document.querySelector('textarea[aria-label="提交信息"]'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(t, '提交并推送检查'); t.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+    await ctx.click(`document.querySelector('input[aria-label="提交并推送"]')`);
+    before = fingerprint(r.local);
+    await traced("提交并推送", async () => { await ctx.click(`window.__s.button('提交并推送', document.querySelector('.commit-side'))`); await ctx.settle(); await ctx.waitUntil(`window.__s.counts() === '↑0 ↓0'`, 30000); });
+    status = await ctx.evaluate(`window.__s.opStatus()`);
+    e = evidence("提交并推送", r.local, before, ["head", "index", "remote-refs", "git:COMMIT_EDITMSG"]);
+    check("B07 提交并推送（V2-D37，已有上游）：提交成功后推送当前分支，远端与本地一致", git(r.local, ["log", "-1", "--format=%s"]) === "提交并推送检查" && bareRef(r.bare, "refs/heads/main") === git(r.local, ["rev-parse", "HEAD"]) && e.unexpected.length === 0, { status, e, shot: await ctx.shot("b07-commit-and-push") });
+    if (await ctx.evaluate(`!!document.querySelector('input[aria-label="提交并推送"]')?.checked`)) await ctx.click(`document.querySelector('input[aria-label="提交并推送"]')`);
     put(r.other, "e.txt", "remote 3\n"); git(r.other, ["pull", "-q", "--no-rebase"]); const remote3 = commitAll(r.other, "remote 3"); git(r.other, ["push", "-q", "origin", "main"]);
     put(r.local, "f.txt", "local 2\n"); commitAll(r.local, "local 2");
     git(r.local, ["tag", "v-local"]); git(r.local, ["config", "push.followTags", "true"]);
