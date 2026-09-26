@@ -1,5 +1,5 @@
-import { useEffect, useImperativeHandle, useRef, forwardRef } from "react";
-import { EditorState, StateEffect, StateField, Text, type Extension, type Range, type StateEffectType } from "@codemirror/state";
+import { useEffect, useImperativeHandle, useLayoutEffect, useRef, forwardRef, type CSSProperties } from "react";
+import { EditorState, StateEffect, StateField, Text, type Extension, type Range } from "@codemirror/state";
 import {
   Decoration,
   type DecorationSet,
@@ -15,9 +15,12 @@ import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { javascript } from "@codemirror/lang-javascript";
 import { Change, getChunks, uncollapseUnchanged, unifiedMergeView } from "@codemirror/merge";
 import { oneDark } from "@codemirror/theme-one-dark";
-import { appearanceExtensions, createAppearanceCompartments, fontSizeTheme, reconfigureAppearance, type AppearanceCompartments, type Scheme } from "./themes/runtime";
+import { appearanceExtensions, createAppearanceCompartments, reconfigureAppearance, type AppearanceCompartments, type Scheme } from "./themes/runtime";
 import { chainedWheelDelta, diffMarkerGeometry, mapDiffPosition, railViewportStartLine, type DiffBoundaryPair, type DiffSide } from "./diff-scroll";
 import type { DiffPresentation } from "./diff-presentation";
+import { activeScheme, settings } from "./appearance";
+import { useSettings } from "./settings";
+import { useStore } from "./store";
 import { collectQueryMatches, createReadingQuery, type ReadingSearchOptions, type TextMatch } from "./search-model";
 import type { DiffDocument } from "./types";
 
@@ -543,8 +546,15 @@ function installReadingSearch(
   const VISIBLE_MATCH_LIMIT = 500;
   const SELECTION_MATCH_LIMIT = 200;
 
-  const dispatchDecorations = (view: EditorView, effect: StateEffectType<DecorationSet>, ranges: Range<Decoration>[]) => {
-    view.dispatch({ effects: effect.of(Decoration.set(ranges, true)) });
+  // 每个视图上次派发的是否为空：两类高亮都从空到空时不派发。每次 dispatch 都会让 CodeMirror 读取 DOM 选区，
+  // 在没有选区时这会强制整页样式与布局（WebView2 实测每次约 4 ms）；滚动与外观切换期间逐帧触发，累积明显。
+  const lastEmpty = new WeakMap<EditorView, { search: boolean; selection: boolean }>();
+  const dispatchDecorations = (view: EditorView, search: Range<Decoration>[], selection: Range<Decoration>[]) => {
+    const previous = lastEmpty.get(view);
+    const next = { search: search.length === 0, selection: selection.length === 0 };
+    if (previous && previous.search && previous.selection && next.search && next.selection) return;
+    lastEmpty.set(view, next);
+    view.dispatch({ effects: [setSearchHighlights.of(Decoration.set(search, true)), setSelectionHighlights.of(Decoration.set(selection, true))] });
   };
   const visibleDecorations = (
     entry: ReadingSearchView,
@@ -581,8 +591,7 @@ function installReadingSearch(
       const selectionRanges = selected
         ? visibleDecorations(entry, selected, "oris-selection-match", SELECTION_MATCH_LIMIT, viewIndex, false)
         : [];
-      dispatchDecorations(entry.view, setSearchHighlights, searchRanges);
-      dispatchDecorations(entry.view, setSelectionHighlights, selectionRanges);
+      dispatchDecorations(entry.view, searchRanges, selectionRanges);
     });
   };
   const scheduleVisible = () => {
@@ -1689,19 +1698,20 @@ interface Props {
   highlight: "words" | "lines";
   collapsed: boolean;
   wrap: boolean;
-  fontSize: number;
-  /** 当前配色方案；为 null（尚未加载）时沿用 V1 的 one-dark。 */
-  scheme: Scheme | null;
   alignChanges: boolean;
   onPositionChange(position: number, total: number): void;
   onSplitLayoutChange(ratio: number, leftWidth: number): void;
 }
 
 const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
-  { readingKey, presentation, left, right, document, mode, highlight, collapsed, wrap, fontSize, scheme, alignChanges, onPositionChange, onSplitLayoutChange },
+  { readingKey, presentation, left, right, document, mode, highlight, collapsed, wrap, alignChanges, onPositionChange, onSplitLayoutChange },
   ref
 ) {
   const host = useRef<HTMLDivElement>(null);
+  // 字号与配色直接订阅设置与当前方案（V2-06）：外观切换只重新渲染阅读器，不重新渲染整个 App。
+  // 当前配色方案为 null（尚未加载）时沿用 V1 的 one-dark。
+  const fontSize = useSettings(settings, (value) => value.appearance.fontSize);
+  const scheme = useStore(activeScheme, (value) => value);
   const runtime = useRef<{ split?: SplitController; single?: SingleController; unified?: EditorView; position: number }>({ position: 0 });
   const splitRatio = useRef(0.5);
   /** 按阅读键保存的阅读位置（最近 32 个），切回同一文件时恢复。 */
@@ -1796,9 +1806,10 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
         ".cm-content": { caretColor: "transparent" }
       }),
       ...(wrap ? [EditorView.lineWrapping] : []),
+      // 字号由宿主元素上的 --diff-font-size 决定（见下方 useLayoutEffect），不放进编辑器主题。
       ...(appearance.current.scheme
-        ? appearanceExtensions(compartments.current, appearance.current.scheme, appearance.current.fontSize)
-        : [compartments.current.theme.of(oneDark), compartments.current.highlight.of([]), compartments.current.fontSize.of(fontSizeTheme(appearance.current.fontSize))])
+        ? appearanceExtensions(compartments.current, appearance.current.scheme, null)
+        : [compartments.current.theme.of(oneDark), compartments.current.highlight.of([]), compartments.current.fontSize.of([])])
     ];
     const collapseUnchanged = collapsed ? { margin: 3, minSize: 5 } : undefined;
     const diffConfig = { override: () => document.changes.map((change) => new Change(change.fromA, change.toA, change.fromB, change.toB)) };
@@ -1887,13 +1898,30 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
     };
   }, [layoutKey, left, right, document, mode, highlight, collapsed, wrap, alignChanges, onPositionChange, onSplitLayoutChange, presentation]);
 
-  useEffect(() => {
+  const liveViews = () => {
     const views = pool.current;
-    const live = [views.a, views.b, views.single, views.unified].filter((view): view is EditorView => !!view);
-    reconfigureAppearance(live, compartments.current, scheme, fontSize);
+    // 只处理挂在页面上的编辑器；复用池中暂时脱离页面的编辑器在下次复用时由 setState 带上当前外观。
+    return [views.a, views.b, views.single, views.unified].filter((view): view is EditorView => !!view && view.dom.isConnected);
+  };
+  // 配色：只在方案真正变化时 reconfigure 主题与语法高亮（扩展实例按方案缓存）。
+  const appliedScheme = useRef<Scheme | null>(null);
+  useEffect(() => {
+    if (appliedScheme.current === scheme) return;
+    appliedScheme.current = scheme;
+    reconfigureAppearance(liveViews(), compartments.current, scheme, null);
     const frame = requestAnimationFrame(() => runtime.current.split?.refreshLayout());
     return () => cancelAnimationFrame(frame);
-  }, [scheme, fontSize]);
+  }, [scheme]);
+  // 字号：宿主元素上的 CSS 变量在本次提交中生效，编辑器不派发任何事务，只重新测量（与网页字体加载后的处理相同）。
+  // 每次 dispatch 都会让 CodeMirror 读取 DOM 选区并强制整页布局，字号切换时逐个编辑器 reconfigure 是主要开销。
+  const appliedFontSize = useRef(fontSize);
+  useLayoutEffect(() => {
+    if (appliedFontSize.current === fontSize) return;
+    appliedFontSize.current = fontSize;
+    for (const view of liveViews()) view.requestMeasure();
+    const frame = requestAnimationFrame(() => runtime.current.split?.refreshLayout());
+    return () => cancelAnimationFrame(frame);
+  }, [fontSize]);
 
   // 在主 effect 之后声明：卸载时先拆除控制器，再销毁复用池中的编辑器。
   useEffect(() => () => {
@@ -1906,7 +1934,7 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
     pool.current = {};
   }, []);
 
-  return <div className="diff-host" ref={host} aria-label="只读文件差异" />;
+  return <div className="diff-host" ref={host} aria-label="只读文件差异" style={{ "--diff-font-size": `${fontSize}px` } as CSSProperties} />;
 });
 
 export default DiffViewer;
