@@ -1,6 +1,6 @@
 # V1 实施任务
 
-状态：开发已启动；任务 01 与任务 02 均为 Blocked。两项 Windows 实现与基础需求覆盖已经通过，但仍等待 macOS 14+ Apple Silicon/WKWebView、GUI 与文件监听真机验证；这不等于双平台最终验收通过。任务 03 源码与非 GUI 自动验证基础覆盖已通过，整体为 Blocked／待平台验收（平台/GUI 门禁保留），任务 04 已完成（Windows，2026-09-24），任务 05 已完成（Windows，2026-09-26），任务 06 为合并发布验收；没有发布产品。
+状态：开发已启动；任务 01 与任务 02 均为 Blocked。两项 Windows 实现与基础需求覆盖已经通过，但仍等待 macOS 14+ Apple Silicon/WKWebView、GUI 与文件监听真机验证；这不等于双平台最终验收通过。任务 03 源码与非 GUI 自动验证基础覆盖已通过，整体为 Blocked／待平台验收（平台/GUI 门禁保留），任务 04 已完成（Windows，2026-09-24），任务 05 已完成（Windows，2026-09-26），任务 06 为合并发布验收（Awaiting acceptance：待性能测试、签名、macOS 最终版本复测）；没有发布产品。
 
 共同输入：[产品规格](../specs/v1-product.md)、[技术方案](../architecture/v1-architecture.md)、[UI/UX](../design/02-approved-ui.md)、[验收计划](../validation/v1-acceptance.md)、[决策登记](../decisions/v1-decisions.md)。
 
@@ -13,7 +13,7 @@
 | [03 图片差异与冲突只读查看](03-image-conflict-diff.md) | 静态 PNG/JPEG/WebP 图片比较 → stages/WT 冲突版本阅读；仅两闭环 | 02 通过，原平台及 GUI 门禁保留 | Windows 基础通过，macOS 待验证：代码已交付（`2211753`）；Windows WebView2 界面证据在 V1 基线上 16/17（混合切换受 F1 影响），V2-01 修复后 17/17（[证据](../validation/task-03-windows-gui.md)）；真实焦点与 macOS 未验证 |
 | [04 提交、分支、版本比较与文件历史](04-history-branches.md) | 分支/提交 → 文件 diff → 两版本/文件历史；显式 fetch | 02、03 Windows 基础通过 + 代码已提交（V2-D33） | Done（Windows）：A07–A10、B17 通过，AgentHub SSH / HTTPS fetch 通过；macOS 与性能未测（[结果](../validation/v1-04-results.md)） |
 | [05 完整阅读体验与特殊文件](05-diff-experience.md) | 完善文本交互/编码 → 其他特殊内容 → 键盘与主题；复用 03 图片 | 02、03 通过；默认 04 后 | Done（Windows）：A06、A11、A12 通过；macOS、Mac Retina、真实高 DPI 未验证；字号切换滚动场景超预算交发布性能测试（[结果](../validation/v1-05-results.md)） |
-| [06 双平台性能与可安装发布包](06-performance-release.md) | 全范围真实验收 → 性能预算 → 双平台安装/签名；一二期合并发布（V2-D19） | 03、04、05 与二期 V2-01–V2-06 通过 | Pending |
+| [06 双平台性能与可安装发布包](06-performance-release.md) | 全范围真实验收 → 性能预算 → 双平台安装/签名；一二期合并发布（V2-D19） | 03、04、05 与二期 V2-01–V2-06 通过 | Awaiting acceptance（待性能测试、签名、macOS 最终版本复测）：Windows 功能追溯矩阵与发布准备完成（[结果](../validation/v1-06-release-results.md)） |
 
 默认顺序：01 → 02 → 03（图片→冲突）→ 04 → 05 → 06。04/05 共享 diff 契约，只有确认文件/接口/资源隔离后才能并行；当前不启动后续产品任务。此前只授权正式文档同步；2026-09-23 用户另行明确授权任务 03 开发，证据见[任务 03 实现报告](../validation/task-03-image-conflict-evidence.md)。
 
