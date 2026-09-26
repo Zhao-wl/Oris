@@ -387,6 +387,19 @@ describe("V2 data layer integration (mocked backend)", () => {
     await tick(10);
     expect(host.querySelector('.verifying')).toBeNull();
   });
+  it("drops the unverified snapshot when verification fails on restart (path gone) and keeps only the reason", async () => {
+    const opening = deferred<RepositorySnapshot>();
+    bridge.open.mockReturnValueOnce(opening.promise);
+    bridge.loadSnapshot.mockResolvedValue(JSON.stringify({ version: 1, savedAt: 1, snapshot: v2("a", "old") }));
+    await mount(["a"]);
+    expect([...host.querySelectorAll('.files button')].map(node => node.textContent)).toEqual(["file.txt"]);
+    opening.reject(new Error("repository missing"));
+    await tick(10);
+    expect(host.querySelector('.verifying')).toBeNull();
+    expect(host.querySelectorAll('.files button').length).toBe(0);
+    expect(host.textContent).toContain("项目恢复失败：repository missing");
+    expect(host.querySelector('.project-tab')).not.toBeNull();
+  });
   it("background changes only mark a project dirty; switching back refreshes it, clean projects are not rescanned", async () => {
     bridge.open.mockImplementation(async (path: string) => v2(path.slice(3)));
     bridge.refresh.mockImplementation(async (id: string) => v2(id, "r2"));

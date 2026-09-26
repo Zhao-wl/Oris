@@ -363,6 +363,8 @@ export default function App() {
     } catch (nextError) {
       if (!repositoryGate.current.accepts(requestId)) return;
       const message = errorText(nextError);
+      // 重启时显示的上次快照没有通过校验（例如路径已失效）：不再作为“校验中”的列表保留，只显示原因（项目记录保留）。
+      if (restoring && projects.get(project.repo.repoId)?.verifying) projects.update(project.repo.repoId, { snapshot: null, details: null, verifying: false });
       setError(restoring ? `项目恢复失败：${message}。记录已保留，请修复路径后手动载入。` : message);
       setProjectMessages((current) => ({ ...current, [project.repo.repoId]: "读取失败" }));
     } finally { if (repositoryGate.current.accepts(requestId)) { setLoading(false); repositoryGate.current.finish(requestId); contentGate.current.finish(requestId); } }

@@ -1,6 +1,8 @@
 # 06 — 双平台性能与可安装发布包
 
-状态：Pending（未开始）。依赖：03、04、05 验收通过。
+状态：Awaiting acceptance（待性能测试、签名、macOS 最终版本复测）。依赖：03、04、05 验收通过。
+
+2026-09-26 Windows 与发布准备（长链阶段 3）：A01–A15 与 B01–B22 在最终构建上重跑，追溯矩阵见 [发布验收结果](../validation/v1-06-release-results.md)；Windows NSIS 内部测试包（未签名）已构建，未安装测试（用户选择只构建，见 [Windows 安装交接清单](../release/windows-install-checklist.md)）；[发行说明草稿](../release/release-notes.md)、[macOS 交接清单](../release/macos-checklist.md)、[第三方许可证清单](../release/third-party-licenses.md)。仍未完成：发布性能报告、Windows 签名与 macOS 签名 / 公证（阻塞：缺证书）、macOS 最终版本复测、安装 / 卸载实测。
 
 编号迁移：2026-09-23 原 05 顺延为 06；发布范围与授权边界不变。
 
