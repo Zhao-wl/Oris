@@ -293,7 +293,7 @@ describe("commit panel (B07)", () => {
     expect(button("撤销最近提交…").title).toContain("正在读取 HEAD");
   });
 
-  it("commit and push: pushes to the upstream after a successful commit, or opens the push preview without one", async () => {
+  it("commit and push: pushes after a successful commit, publishing the branch when it has no upstream", async () => {
     const withUpstream = (s: RepositorySnapshot): RepositorySnapshot => ({ ...s, branchInfo: { ...s.branchInfo!, upstream: "origin/main", ahead: 1, behind: 0 } });
     bridge.open.mockResolvedValue(snap([], [change("a.txt", "added")]));
     bridge.operation.mockImplementation(async (_repo: string, _scope: string, _op: string, request: { kind: string }) => request.kind === "commit"
@@ -306,17 +306,18 @@ describe("commit panel (B07)", () => {
     await click(button("提交并推送"));
     expect(bridge.operation.mock.calls.map((call) => call[3])).toEqual([{ kind: "commit", message: "feat: x" }, { kind: "push", remote: null }]);
 
-    // 没有上游：提交后打开推送预览，由用户选择 remote。
+    // 没有上游：同样一键发布，由后端推送到仅有的 remote 并设为上游（多个 remote 时再请用户选择）。
     await act(async () => root.unmount()); root = createRoot(host);
     bridge.operation.mockReset();
-    bridge.operation.mockResolvedValue(outcome("commit", snap([], [], "r2"), { message: "已提交：abcdef12" }));
+    bridge.operation.mockImplementation(async (_repo: string, _scope: string, _op: string, request: { kind: string }) => request.kind === "commit"
+      ? outcome("commit", snap([], [], "r2"), { message: "已提交：abcdef12" })
+      : outcome("push", withUpstream(snap([], [], "r3")), { message: "已推送并设为上游" }));
     await mount();
     await click(commitTab());
     await type(host.querySelector("textarea[aria-label='提交信息']") as HTMLTextAreaElement, "feat: y");
     await click(host.querySelector("input[aria-label='提交并推送']") as HTMLElement);
     await click(button("提交并推送"));
-    expect(bridge.operation).toHaveBeenCalledTimes(1);
-    expect(host.querySelector(".push-dialog")).not.toBeNull();
+    expect(bridge.operation.mock.calls.map((call) => call[3])).toEqual([{ kind: "commit", message: "feat: y" }, { kind: "push", remote: null }]);
   });
 
   it("disables commit and push on a detached HEAD", async () => {

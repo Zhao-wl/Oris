@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { layoutGraph } from "./history-graph";
-import { deferVersions, fetchTimeText, historyStatus, initialDeferred, movedEndpoint, parseProgress, rowSegments, ROW_HEIGHT } from "./history-model";
+import { deferVersions, fetchAgeText, fetchTimeText, historyStatus, initialDeferred, loadPullMode, movedEndpoint, parseProgress, PULL_MODE_KEY, rowSegments, ROW_HEIGHT, savePullMode } from "./history-model";
 import type { RefsView } from "./history-api";
 
 describe("commit graph segments", () => {
@@ -48,6 +48,31 @@ describe("fetch time", () => {
     expect(fetchTimeText({ remote: "origin", at }, at + 60_000)).toContain("时间未知");
     expect(fetchTimeText(null, at)).toContain("时间未知");
     expect(fetchTimeText(null, null)).toContain("尚未获取");
+  });
+
+  it("shows a short age on the fetch button from the newer of Oris' record and FETCH_HEAD", () => {
+    const at = Date.UTC(2026, 8, 28, 10, 0, 0);
+    expect(fetchAgeText(null, null, at)).toBeNull();
+    expect(fetchAgeText({ remote: "origin", at }, null, at + 30_000)).toBe("刚刚");
+    expect(fetchAgeText({ remote: "origin", at }, at + 120_000, at + 5 * 60_000)).toBe("3 分钟前");
+    expect(fetchAgeText(null, at, at + 3 * 3_600_000)).toBe("3 小时前");
+    expect(fetchAgeText(null, at, at + 50 * 3_600_000)).toBe("2 天前");
+  });
+});
+
+describe("pull mode", () => {
+  it("remembers the pull mode per worktree and falls back to fast-forward only", () => {
+    const store = new Map<string, string>();
+    const storage = { getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => { store.set(key, value); } };
+    expect(loadPullMode(storage, "C:/a")).toBe("ffOnly");
+    savePullMode(storage, "C:/a", "merge");
+    expect([loadPullMode(storage, "C:/a"), loadPullMode(storage, "C:/b")]).toEqual(["merge", "ffOnly"]);
+    savePullMode(storage, "C:/a", "ffOnly");
+    expect(JSON.parse(store.get(PULL_MODE_KEY)!)).toEqual({});
+    store.set(PULL_MODE_KEY, "{broken");
+    expect(loadPullMode(storage, "C:/a")).toBe("ffOnly");
+    savePullMode(storage, "C:/a", "merge");
+    expect(loadPullMode(storage, "C:/a")).toBe("merge");
   });
 });
 

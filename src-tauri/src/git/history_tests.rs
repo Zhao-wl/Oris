@@ -297,6 +297,32 @@ fn upstream_states_use_real_reachability_and_never_fake_zero() {
 }
 
 #[test]
+fn light_remote_read_matches_the_full_refs_default_remote() {
+    let remote_dir = tempfile::tempdir().unwrap();
+    let remote = remote_dir.path().join("remote.git");
+    git(remote_dir.path(), &["init", "-q", "--bare", "-b", "main", &remote.to_string_lossy()]);
+    let dir = init();
+    let p = dir.path();
+    commit(p, "a.txt", "a\n", "base", 0);
+    git(p, &["remote", "add", "origin", &remote.to_string_lossy()]);
+    git(p, &["remote", "add", "alpha", &remote.to_string_lossy()]);
+    let adapter = open_adapter(p);
+    // 没有上游：列出 remote，不指定默认目标。
+    let view = adapter.history_remotes().unwrap();
+    assert_eq!((view.remotes, view.default_remote, view.fetch_head_at), (vec!["alpha".to_owned(), "origin".to_owned()], None, None));
+    // 有上游：默认目标为上游所属的 remote，与 read_refs 一致；获取后有 FETCH_HEAD 时间。
+    git(p, &["push", "-q", "-u", "origin", "main"]);
+    git(p, &["fetch", "-q", "origin"]);
+    let view = adapter.history_remotes().unwrap();
+    assert_eq!(view.default_remote.as_deref(), Some("origin"));
+    assert_eq!(view.default_remote, adapter.history_refs().unwrap().default_remote);
+    assert!(view.fetch_head_at.is_some());
+    // 分离 HEAD：没有当前分支，也就没有默认目标。
+    git(p, &["switch", "-q", "--detach"]);
+    assert_eq!(adapter.history_remotes().unwrap().default_remote, None);
+}
+
+#[test]
 fn read_refs_lists_tags_peeled_to_commits() {
     let dir = init();
     let p = dir.path();
