@@ -32,7 +32,7 @@ export class SettingsStore {
    * 修改一个设置项。校验失败时保留原值并返回 false；成功时立即广播并保存。
    * 保存失败（例如存储不可用）不回滚内存中的值，界面仍即时生效。
    */
-  update<C extends "appearance" | "git", K extends keyof Settings[C] & string>(category: C, key: K, value: Settings[C][K]): boolean {
+  update<C extends "appearance" | "git" | "ai", K extends keyof Settings[C] & string>(category: C, key: K, value: Settings[C][K]): boolean {
     const definition = this.registry.definition(category, key);
     const valid = definition?.validate(value);
     if (valid === undefined) return false;
