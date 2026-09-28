@@ -103,3 +103,36 @@ export function historyStatus(status: ChangeStatus): FileChange["status"] {
 }
 
 export const isStale = (error: unknown) => !!error && typeof error === "object" && (error as { kind?: unknown }).kind === "staleRequest";
+
+/**
+ * V2-D60：历史页实际使用的 refs / stash 版本。可见时跟随最新版本（每次版本变化重读一次）；不可见时保持已显示的版本，
+ * 只记下“已失效”，不触发读取；切回时一次追上最新版本，并记下必须读到哪个版本才能再显示引用 / stash（`refsUntil` / `stashUntil`），
+ * 在此之前不显示不可见期间已过期的内容。函数是幂等的：同样的输入重复应用得到同一个对象。
+ */
+export interface DeferredVersions {
+  refs: number;
+  stash: number;
+  refsPending: boolean;
+  stashPending: boolean;
+  refsUntil: number | null;
+  stashUntil: number | null;
+}
+
+export const initialDeferred = (refs: number, stash: number): DeferredVersions => ({ refs, stash, refsPending: false, stashPending: false, refsUntil: null, stashUntil: null });
+
+export function deferVersions(state: DeferredVersions, hidden: boolean, refs: number, stash: number): DeferredVersions {
+  if (hidden) {
+    const refsPending = state.refsPending || refs !== state.refs;
+    const stashPending = state.stashPending || stash !== state.stash;
+    return refsPending === state.refsPending && stashPending === state.stashPending ? state : { ...state, refsPending, stashPending };
+  }
+  if (refs === state.refs && stash === state.stash && !state.refsPending && !state.stashPending) return state;
+  return {
+    refs,
+    stash,
+    refsPending: false,
+    stashPending: false,
+    refsUntil: state.refsPending ? refs : state.refsUntil,
+    stashUntil: state.stashPending ? stash : state.stashUntil
+  };
+}
