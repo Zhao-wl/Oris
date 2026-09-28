@@ -130,7 +130,7 @@ impl GitAdapter {
                 return Ok(Step::confirm(reason, format!("工作区改动会被拉取覆盖，Git 拒绝拉取 {upstream_label}。可以先储藏{}再拉取，拉取后不会自动恢复", if untracked { "（含未跟踪文件）" } else { "" }), paths));
             }
         }
-        if let Some(mut step) = Self::network_failure(&result, &what, ctx) {
+        if let Some(mut step) = self.network_failure(&result, &what, ctx) {
             let moved = if head_after != head_before { format!("HEAD 已从 {} 变为 {}", short(head_before.as_deref()), short(head_after.as_deref())) } else { "HEAD 未变化".into() };
             step.message = note(format!("{}。已重新读取实际状态：{moved}，{refs_changed} 个远端跟踪引用有更新；Oris 不会回滚", step.message));
             return Ok(step);
@@ -188,7 +188,7 @@ impl GitAdapter {
                 return Ok(Step::failed(format!("{what}被拒绝：远端有本地没有的新提交。请先拉取（获取后仅快进或合并），再推送；Oris 不提供强制推送\n{summary}")));
             }
         }
-        if let Some(mut step) = Self::network_failure(&result, &what, ctx) {
+        if let Some(mut step) = self.network_failure(&result, &what, ctx) {
             let changed = self.tracking_refs().iter().filter(|(k, v)| refs_before.get(*k) != Some(v)).count();
             step.message.push_str(&format!("。已重新读取实际引用：{changed} 个远端跟踪引用有更新；远端是否已收到部分内容以远端为准，Oris 不会回滚"));
             return Ok(step);

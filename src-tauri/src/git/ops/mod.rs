@@ -7,6 +7,7 @@ mod branch;
 mod commit;
 mod discard;
 mod hunk;
+mod locks;
 mod network;
 pub mod process;
 mod stage;
@@ -399,9 +400,48 @@ impl GitAdapter {
     /// 前置检查失败（进行中状态、外部锁、已推送保护）以错误返回，仓库未被改动。
     pub fn run_operation(&self, request: OperationRequest, view_scope: CompareScope, ctx: &OpContext) -> Result<OperationOutcome, GitError> {
         let started = std::time::Instant::now();
-        self.preflight(&request)?;
+        let early = self.preflight(&request)?;
         let lock_before = self.index_lock_exists();
-        let step = match &request {
+        let step = match early {
+            Some(step) => step,
+            None => self.dispatch(&request, ctx)?,
+        };
+        let git_processes = ctx.processes.load(std::sync::atomic::Ordering::SeqCst);
+        // 需要确认时没有任何改动，不必刷新；其余结局（含失败与取消）都重新读取实际状态并如实报告。
+        let snapshot = if step.status == OpStatus::NeedsConfirmation {
+            None
+        } else {
+            self.snapshot_v2(ctx.op_id.clone(), view_scope, true)
+                .or_else(|_| self.snapshot_v2(ctx.op_id.clone(), view_scope, false))
+                .ok()
+        };
+        let lock_left = !lock_before && self.index_lock_exists();
+        let mut message = step.message;
+        if lock_left {
+            message.push_str("。检测到遗留的 .git/index.lock（通常是被终止的 Git 进程留下）；Oris 不会自动删除它，请确认没有其他 Git 进程后手动处理");
+        }
+        let (output, output_truncated) = ctx.log.snapshot();
+        Ok(OperationOutcome {
+            op_id: ctx.op_id.clone(),
+            repo_id: self.repo_id.clone(),
+            kind: request.kind(),
+            status: step.status,
+            message,
+            output,
+            output_truncated,
+            snapshot,
+            confirmation: step.confirmation,
+            backup: step.backup,
+            lock_left,
+            git_processes,
+            elapsed_ms: started.elapsed().as_millis() as u64,
+            touched: step.touched,
+        })
+    }
+
+    /// 按请求类型执行对应操作。
+    fn dispatch(&self, request: &OperationRequest, ctx: &OpContext) -> Result<Step, GitError> {
+        match request {
             OperationRequest::Stage { path_ids } => self.op_stage(path_ids, false, true, ctx),
             OperationRequest::MarkResolved { path_ids, confirmed } => self.op_stage(path_ids, true, *confirmed, ctx),
             OperationRequest::Unstage { path_ids } => self.op_unstage(path_ids, ctx),
@@ -429,46 +469,16 @@ impl GitAdapter {
             OperationRequest::Merge { target, expected, no_ff } => self.op_merge(target, expected, *no_ff, ctx),
             OperationRequest::MergeAbort => self.op_merge_abort(ctx),
             OperationRequest::MergeCommit { message } => self.op_merge_commit(message, ctx),
-        }?;
-        let git_processes = ctx.processes.load(std::sync::atomic::Ordering::SeqCst);
-        // 需要确认时没有任何改动，不必刷新；其余结局（含失败与取消）都重新读取实际状态并如实报告。
-        let snapshot = if step.status == OpStatus::NeedsConfirmation {
-            None
-        } else {
-            self.snapshot_v2(ctx.op_id.clone(), view_scope, true)
-                .or_else(|_| self.snapshot_v2(ctx.op_id.clone(), view_scope, false))
-                .ok()
-        };
-        let lock_left = !lock_before && self.index_lock_exists();
-        let mut message = step.message;
-        if lock_left {
-            message.push_str("。检测到遗留的 .git/index.lock（通常是被终止的 Git 进程留下）；Oris 不会删除它，请确认没有其他 Git 进程后手动处理");
         }
-        let (output, output_truncated) = ctx.log.snapshot();
-        Ok(OperationOutcome {
-            op_id: ctx.op_id.clone(),
-            repo_id: self.repo_id.clone(),
-            kind: request.kind(),
-            status: step.status,
-            message,
-            output,
-            output_truncated,
-            snapshot,
-            confirmation: step.confirmation,
-            backup: step.backup,
-            lock_left,
-            git_processes,
-            elapsed_ms: started.elapsed().as_millis() as u64,
-            touched: step.touched,
-        })
     }
 
     fn index_lock_exists(&self) -> bool {
-        self.git_dir.join("index.lock").exists()
+        self.index_lock_path().exists()
     }
 
     /// 进行中状态与外部锁（技术方案 §4）。只读取文件，不启动进程。
-    fn preflight(&self, request: &OperationRequest) -> Result<(), GitError> {
+    /// 拉取遇到外部 `index.lock` 时返回“删除锁文件并重试”的确认步骤（V2-D65），仓库未被改动。
+    fn preflight(&self, request: &OperationRequest) -> Result<Option<Step>, GitError> {
         let state = status_v2::detect_in_progress(&self.git_dir);
         let blocked = [(state.rebase, "rebase"), (state.cherry_pick, "cherry-pick"), (state.revert, "revert"), (state.bisect, "bisect")];
         if let Some((_, name)) = blocked.iter().find(|(on, _)| *on) {
@@ -492,14 +502,20 @@ impl GitAdapter {
         if state.merge && moves_worktree {
             return Err(GitError::WriteBlocked("合并进行中：请先完成或中止当前合并，再切换分支、检出、储藏或拉取".into()));
         }
-        // fetch 只写远端跟踪引用与 FETCH_HEAD，不碰 index：外部持有 index.lock 时照常允许（V2-D38）。
-        if self.index_lock_exists() && !matches!(request, OperationRequest::Fetch { .. }) {
+        // fetch 只写远端跟踪引用与 FETCH_HEAD、push 只读本地引用并更新远端跟踪引用，都不碰 index：
+        // 外部持有 index.lock 时照常允许（V2-D38、V2-D65）。
+        if self.index_lock_exists() && !matches!(request, OperationRequest::Fetch { .. } | OperationRequest::Push { .. }) {
+            let lock = self.index_lock_path();
+            if matches!(request, OperationRequest::Pull { .. }) {
+                let confirmation = self.stale_lock_confirmation(vec![lock.display().to_string()], "拉取");
+                return Ok(Some(Step::confirm(confirmation.reason, confirmation.message, confirmation.paths)));
+            }
             return Err(GitError::ExternalLock(format!(
-                "另一个 Git 进程正在使用该仓库（存在 {}）。Oris 不会删除锁文件；请等待外部操作结束，或确认没有 Git 进程后手动处理",
-                self.git_dir.join("index.lock").display()
+                "另一个 Git 进程正在使用该仓库（存在 {}）。Oris 不会自动删除锁文件；请等待外部操作结束，或确认没有 Git 进程后手动处理",
+                lock.display()
             )));
         }
-        Ok(())
+        Ok(None)
     }
 
     /// 在写通道上运行命令；失败输出中的锁冲突转换为明确说明。
@@ -537,7 +553,7 @@ impl GitAdapter {
     pub(super) fn failure_message(result: &process::CallResult, what: &str) -> String {
         let summary = result.summary();
         if summary.contains(".lock") && (summary.contains("File exists") || summary.contains("Unable to create")) {
-            format!("{what}失败：另一个 Git 进程正在使用该仓库（锁文件已存在）。Oris 不会删除锁文件，也不会自动重试。\n{summary}")
+            format!("{what}失败：另一个 Git 进程正在使用该仓库（锁文件已存在）。Oris 不会自动删除锁文件，也不会自动重试。\n{summary}")
         } else {
             format!("{what}失败：{summary}")
         }

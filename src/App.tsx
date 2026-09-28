@@ -14,7 +14,7 @@ import { ProjectStore, parsePersistedSnapshot, persistableSnapshot, scopeView, s
 import { createStore, useStore } from "./store";
 import ConfirmDialog, { type ConfirmRequest } from "./ConfirmDialog";
 import GitPanel, { type GitTab, type OperationRecord, type RunningOperation } from "./GitPanel";
-import { cancelOperation, discardBackups, headCommitInfo, hunkMap as readHunkMap, prepareDiscard, runOperation, type BackupSummary, type HeadCommitInfo, type HunkMap, type OperationOutcome, type OperationRequest } from "./operations-api";
+import { cancelOperation, discardBackups, headCommitInfo, hunkMap as readHunkMap, prepareDiscard, removeStaleLocks, runOperation, type BackupSummary, type HeadCommitInfo, type HunkMap, type OperationOutcome, type OperationRequest } from "./operations-api";
 import { fileLevelBlock, hunkMapKey, latin1View, matchHunks } from "./hunk-model";
 import type { HunkHeaderAction, HunkHeaders } from "./DiffViewer";
 import { operationLabels, optimisticMove, pathIdsFor, refsKinds, selectionAfterOperation, stashKinds, switchKinds, undoCommitText, unsupportedInProgress, writeBlockedReason } from "./operations-model";
@@ -891,6 +891,23 @@ export default function App() {
     const actions = last.status !== "failed" ? [] : kind === "push" && title.includes("被拒绝") ? [{ label: "拉取", run: () => void runPull() }] : [{ label: "重试", run: retry }, { label: "查看输出", run: () => setGitTab("output") }];
     setSyncToast({ id: ++syncToastSeq, kind, status: last.status, title, detail: detail ? (detail.length > 240 ? `${detail.slice(0, 240)}…` : detail) : null, actions });
   };
+  /** 同步遇到 Git 锁文件（V2-D65）：二次确认后删除锁文件，返回 true 表示调用方应重试一次。取消或删除失败时返回 false。 */
+  const clearStaleLock = async (repoId: string, kind: SyncKind, outcome: OperationOutcome | null): Promise<boolean> => {
+    const confirmation = outcome?.confirmation;
+    if (confirmation?.reason !== "staleLock" || currentRead.current.repo !== repoId) return false;
+    const ok = await askConfirm({
+      title: "仓库被 Git 锁文件占用",
+      message: confirmation.message,
+      items: confirmation.paths,
+      warning: "删除前请确认没有其他 Git 进程（终端、IDE、其他 Git 客户端）正在操作该仓库",
+      notes: ["正在运行的 Git 进程持有的锁被删除后，可能导致该进程的写入与 Oris 的写入互相覆盖"],
+      confirmLabel: `删除锁文件并${operationLabels[kind]}`,
+      danger: true
+    });
+    if (!ok) return false;
+    try { await removeStaleLocks(repoId, confirmation.paths); return true; }
+    catch (error) { updateOps(repoId, { last: { kind, status: "failed", message: `删除锁文件失败：${errorText(error)}`, output: "", at: Date.now() } }); return false; }
+  };
   /** 一键获取 / 推送无法确定 remote：只在结果所属的仓库仍是当前项目时弹出选择框（切换项目后丢弃）。 */
   const askRemote = (repoId: string, kind: "fetch" | "push", confirmation: { paths: string[]; message: string }) => {
     if (currentRead.current.repo === repoId) setRemoteChoice({ repoId, kind, remotes: confirmation.paths, message: confirmation.message });
@@ -901,7 +918,8 @@ export default function App() {
     const worktree = snapshot?.repo.worktreePath;
     if (!repoId) return;
     setSyncToast(null);
-    const outcome = await runOp({ kind: "fetch", remote });
+    let outcome = await runOp({ kind: "fetch", remote });
+    if (await clearStaleLock(repoId, "fetch", outcome)) outcome = await runOp({ kind: "fetch", remote });
     if (outcome?.status === "needsConfirmation" && outcome.confirmation?.reason === "chooseRemote") { askRemote(repoId, "fetch", outcome.confirmation); return; }
     if (outcome?.status === "succeeded" && worktree) {
       const used = remote ?? /^已获取 (.+?)：/.exec(outcome.message)?.[1] ?? "默认 remote";
@@ -929,8 +947,15 @@ export default function App() {
     if (!repoId) return;
     setSyncToast(null);
     let request: Extract<OperationRequest, { kind: "pull" }> = { kind: "pull", mode: initial };
-    for (let attempt = 0; attempt < 3; attempt++) {
+    let lockCleared = false;
+    for (let attempt = 0; attempt < 4; attempt++) {
       const outcome = await runOp(request);
+      // 锁文件只处理一次：删除后仍被锁住就如实报告，不反复询问。
+      if (outcome?.confirmation?.reason === "staleLock" && !lockCleared) {
+        if (!(await clearStaleLock(repoId, "pull", outcome))) break;
+        lockCleared = true;
+        continue;
+      }
       const confirmation = outcome?.status === "needsConfirmation" ? outcome.confirmation : null;
       if (!confirmation) break;
       if (confirmation.reason === "diverged" && request.mode === "ffOnly") {
@@ -951,7 +976,8 @@ export default function App() {
     const repoId = activeRepoId;
     if (!repoId) return;
     setSyncToast(null);
-    const outcome = await runOp({ kind: "push", remote });
+    let outcome = await runOp({ kind: "push", remote });
+    if (await clearStaleLock(repoId, "push", outcome)) outcome = await runOp({ kind: "push", remote });
     if (outcome?.status === "needsConfirmation" && outcome.confirmation?.reason === "chooseRemote") { askRemote(repoId, "push", outcome.confirmation); return; }
     showSyncResult(repoId, "push", () => void runPush(remote));
   };

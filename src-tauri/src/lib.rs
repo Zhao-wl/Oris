@@ -586,6 +586,21 @@ async fn run_operation(
     .map_err(|error| GitError::Runtime(error.to_string()))?
 }
 
+/// 删除用户在确认框中确认过的残留锁文件（V2-D65）：持有仓库写锁，Oris 自己的写操作运行中时拒绝；返回实际删除的路径。
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn remove_stale_locks(repo_id: String, paths: Vec<String>, registry: State<'_, RepositoryRegistry>, runner: State<'_, ops::Runner>) -> Result<Vec<String>, GitError> {
+    let opened = opened(&registry, &repo_id)?;
+    let guard = runner.begin(&repo_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let removed = opened.adapter.remove_stale_locks(&paths);
+        drop(guard);
+        removed
+    })
+    .await
+    .map_err(|error| GitError::Runtime(error.to_string()))?
+}
+
 /// 取消该仓库正在运行的写操作（终止整个进程树）；返回是否有操作被取消。
 #[cfg(feature = "desktop")]
 #[tauri::command]
@@ -841,6 +856,7 @@ pub fn run() {
             cancel_ai_generation,
             run_operation,
             cancel_operation,
+            remove_stale_locks,
             last_operation,
             prepare_discard,
             discard_backups,
