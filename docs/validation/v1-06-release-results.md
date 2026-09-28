@@ -2,7 +2,9 @@
 
 日期：2026-09-26（长链运行编号 20260926-1014，阶段 3）。任务：[06 双平台性能与可安装发布包](../tasks/06-performance-release.md)。依据：[V1 验收计划](v1-acceptance.md) A01–A15、§5；[V2 验收计划](v2-acceptance.md) B01–B22、§5；[V2-01 结果 · 已知限制与未验证](v2-01-results.md#已知限制与未验证)留给 06 的门禁。
 
-结论：**Windows 功能验收通过；06 整体为 Awaiting acceptance（待性能测试、签名、macOS 最终版本复测）**。A01–A15 与 B01–B22 都在同一个最终构建上重跑（旧版本结果没有用来替代）；本阶段发现并修复 3 个实际缺陷（缺 Git 提示不清楚、安装包缺少 `WebView2Loader.dll`、重启时快照校验失败后旧列表一直标“校验中”）。未完成：发布性能测试中的切换字号未达标与失焦内存口径（待用户决定，见 [发布性能测试](v1-06-performance.md)）、Windows 与 macOS 签名 / 公证（阻塞：缺证书）、安装 / 卸载实测（用户选择只构建）、AgentHub 真实远端回归（本轮被会话权限拦截，未运行）、macOS 全部、需要真实前台焦点的“外部变化 → 界面更新”。
+> 2026-09-28 用户验收确认 Windows 结果；06 保持 Awaiting acceptance（待签名、macOS 最终版本复测、安装 / 卸载实测）。
+
+结论：**Windows 功能验收通过；06 整体为 Awaiting acceptance（待性能测试、签名、macOS 最终版本复测）**。A01–A15 与 B01–B22 都在同一个最终构建上重跑（旧版本结果没有用来替代）；本阶段发现并修复 3 个实际缺陷（缺 Git 提示不清楚、安装包缺少 `WebView2Loader.dll`、重启时快照校验失败后旧列表一直标“校验中”）。未完成：发布性能测试中的切换字号未达标与失焦内存口径（用户 2026-09-28 按现状登记为已知问题，V2-D58、V2-D59，见 [发布性能测试](v1-06-performance.md)）、Windows 与 macOS 签名 / 公证（阻塞：缺证书）、安装 / 卸载实测（用户选择只构建）、AgentHub 真实远端回归（本轮被会话权限拦截，未运行）、macOS 全部、需要真实前台焦点的“外部变化 → 界面更新”。
 
 ## 构建与产物
 
@@ -19,7 +21,7 @@
 | 测试 | 后端 `cargo test --no-default-features --lib`：140 通过 / 5 忽略；前端 `vitest`：218 通过（30 个文件，本阶段新增 1 项）；`npx tsc -b` 通过 |
 | 测量机 | Windows 11 专业版 10.0.22631，i7-11700（16 逻辑处理器），47.7 GiB，NVMe SSD，WebView2 153.0.4234.48，Git 2.44.0.windows.1，Node 22.18.0 |
 
-安装包内容（Tauri 生成的 `target\release\nsis\x64\installer.nsi` 中核对，未安装）：按当前用户安装到 `$LOCALAPPDATA\Oris`；文件为 `oris.exe`、`THIRD-PARTY-NOTICES.txt`、`WebView2Loader.dll` 与卸载程序；缺少 WebView2 时下载引导程序并 `/silent` 安装；卸载删除这些文件与开始菜单项，勾选“删除应用数据”时才删除 `$APPDATA\com.oris.viewer` 与 `$LOCALAPPDATA\com.oris.viewer`（[V2-D57](../decisions/v2-decisions.md)，待用户决定）。与安装目录相同的三个文件复制到 `%TEMP%\oris-gui\installed-layout-v106` 后，从该目录启动的实例通过了 Git 发现验收（10/10）。
+安装包内容（Tauri 生成的 `target\release\nsis\x64\installer.nsi` 中核对，未安装）：按当前用户安装到 `$LOCALAPPDATA\Oris`；文件为 `oris.exe`、`THIRD-PARTY-NOTICES.txt`、`WebView2Loader.dll` 与卸载程序；缺少 WebView2 时下载引导程序并 `/silent` 安装；卸载删除这些文件与开始菜单项，勾选“删除应用数据”时才删除 `$APPDATA\com.oris.viewer` 与 `$LOCALAPPDATA\com.oris.viewer`（[V2-D57](../decisions/v2-decisions.md)，用户已确认）。与安装目录相同的三个文件复制到 `%TEMP%\oris-gui\installed-layout-v106` 后，从该目录启动的实例通过了 Git 发现验收（10/10）。
 
 ## 本阶段修复的缺陷
 
@@ -52,7 +54,7 @@
 | A11 | 通过 | v1-05 A11 7/7；task03 图片 10 项；后端 content_tests（LFS、SVG、符号链接、子模块、mode）、media tests |
 | A12 | 通过 | v1-05 A12 8/8；后端 `a12_unicode_crlf_final_newline_and_encoding_failures_have_explicit_states`、`raw_non_utf8_path_and_revision` |
 | A13 | 通过 | 后端 `ignores_external_diff_and_fsmonitor`、`b18_malicious_config_is_not_executed_on_v2_paths`、`write_channel_does_not_run_fsmonitor_or_external_diff_commands`、`history_reads_never_run_signature_programs…`、task03_safety_tests；界面 v1-04 B18 检查。静态核对：前端无 fetch / XHR / WebSocket / sendBeacon，Rust 无 HTTP 客户端依赖，capability 只有 `core:default` 与 `dialog:allow-open`，CSP 只允许应用自身资源（无 telemetry、无远程代码） |
-| A14 | 部分通过（见发布性能测试） | [发布性能测试](v1-06-performance.md)（被测 origin/main `ae08225`，构建 `9F1366EF…`）：S 数据集 24 项预算中 21 项达标；**切换字号（长文件滚动场景）P95 160.4 ms 未达标**，待用户决定；失焦后内存稳态口径未达标、静置口径达标（强制级别）；外部变化时延未验证（需真实焦点）。L 数据集有界加载、可取消、不崩溃、内存有界；超预算文本 / 长行 / 图片明确降级 |
+| A14 | 部分通过（见发布性能测试） | [发布性能测试](v1-06-performance.md)（被测 origin/main `ae08225`，构建 `9F1366EF…`）：S 数据集 24 项预算中 21 项达标；**切换字号（长文件滚动场景）P95 160.4 ms 未达标**，按已知问题登记（V2-D58）；失焦后内存稳态口径未达标、静置口径达标（强制级别）；外部变化时延未验证（需真实焦点）。L 数据集有界加载、可取消、不崩溃、内存有界；超预算文本 / 长行 / 图片明确降级 |
 | A15 | 部分通过；安装 / 卸载未运行；签名待签名；macOS 待 macOS | Git 发现 `v1-06-git-discovery.mjs` 10/10（在安装布局副本上）：注册表 Machine + User PATH（资源管理器启动时的 PATH）自动发现、缺 Git 提示与处理方法、手动路径校验与重启保留、PATH 中 Git 2.30.2 与手动指定 2.30.2 均提示版本不支持（低版本为 rustc 编译的模拟程序，只回答 `--version`）；只改测试实例自己的 PATH，未改系统 PATH、未安装 / 卸载 Git。Windows 安装包已构建（内部测试包，未签名）；**安装 / 卸载未运行**（用户选择只构建，清单见 [Windows 安装交接清单](../release/windows-install-checklist.md)）；**签名：阻塞：缺证书** |
 | B01 | 通过 | 后端 v2_tests `b01_*` 4 项（与 V1 逐命令结果逐项一致） |
 | B02 | 通过 | 后端 v2_tests `b02_*` 3 项 |
