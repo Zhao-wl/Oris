@@ -1,8 +1,8 @@
 # macOS 交接清单（一期 06，最终版本复测）
 
-状态：**待用户执行**。Oris 自动化没有 macOS 环境；此前的 macOS 结论为“用户在 macOS 真机上验证（2026-09-25），Oris 自动化未复核；机型 / 芯片、内存、macOS 版本、被测构建、覆盖范围、原始记录位置：用户口头确认，范围未记录”。一期 05、V2-05 与本阶段的改动都晚于该次验证，需要在**最终合并版本**上重新执行本清单。
+状态：**待用户执行**。Oris 自动化没有 macOS 环境；此前的 macOS 结论为“用户在 macOS 真机上验证（2026-09-25），Oris 自动化未复核；机型 / 芯片、内存、macOS 版本、被测构建、覆盖范围、原始记录位置：用户口头确认，范围未记录”。一期 05、V2-05、V2-06（AI、自动更新）与之后的修复都晚于该次验证，需要在**最终合并版本**上重新执行本清单。
 
-执行结果请按下文“记录格式”写入 `docs/validation/v1-06-release-results.md` 的 macOS 一节（或交给 Oris 整理）。凭据、证书、Apple ID、公证密码 / API 密钥**不要**写进仓库、日志或报告。
+执行结果请按下文“记录格式”写入 `docs/validation/v1-06-rc-results.md` 的 macOS 一节（或交给 Oris 整理）。凭据、证书、Apple ID、公证密码 / API 密钥**不要**写进仓库、日志或报告。
 
 ## 0. 准备
 
@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | 下限机器 | macOS **14.x**、Apple **M1**（或等效真机），记录内存 | 机型 / 芯片 / 内存 / 系统版本（`sw_vers`） |
 | 较新版本 smoke | 发布时选定的较新受支持 macOS（例如 15.x 或更新），记录具体版本 | 同上 |
-| 源码版本 | 最终 main 的提交（`git rev-parse HEAD`，应与发布验收结果中的 Windows 构建同一提交） | 提交 SHA |
+| 源码版本 | 最终 main 的提交（`git rev-parse HEAD`，应与 RC 验收结果中的 Windows 构建同一提交） | 提交 SHA |
 | 工具 | Xcode Command Line Tools、Rust（aarch64-apple-darwin）、Node（与 `package-lock.json` 兼容）、系统或 Homebrew 的 Git ≥ 2.31.0 | `rustc -V`、`node -v`、`git --version` |
 
 ## 1. 构建 DMG
@@ -19,7 +19,7 @@
 2. `npx tsc -b && npx vitest run`（前端测试应全部通过；记录数量）
 3. 后端测试：`cd src-tauri && cargo test --no-default-features --lib`（记录通过 / 忽略数量；macOS 上的符号链接、进程组取消等分支在此首次执行）
 4. 构建：`npm run tauri -- build --bundles app,dmg --target aarch64-apple-darwin`
-5. 记录产物路径与 SHA-256：`shasum -a 256 <Oris_0.1.0_aarch64.dmg>`，以及 `Oris.app/Contents/MacOS/oris`
+5. 记录产物路径与 SHA-256：`shasum -a 256 <Oris_0.3.0_aarch64.dmg>`，以及 `Oris.app/Contents/MacOS/oris`
 6. 许可证：DMG 中的 `Oris.app/Contents/Resources/` 应包含 `THIRD-PARTY-NOTICES.txt`（用 `scripts/release/third-party-licenses.mjs --notices` 生成后，按 Windows 构建相同的方式通过 `bundle.resources` 加入；如未加入，记为缺陷）；“设置 → 外观”底部的第三方许可应显示 VS Code 与 Colorsublime 声明
 
 ## 2. 签名与公证
@@ -31,7 +31,7 @@
 3. 核对：
    - `codesign --verify --deep --strict --verbose=2 Oris.app`
    - `spctl --assess --type execute --verbose Oris.app`（应为 `accepted`，`source=Notarized Developer ID`）
-   - `xcrun stapler validate Oris_0.1.0_aarch64.dmg`
+   - `xcrun stapler validate Oris_0.3.0_aarch64.dmg`
 4. 没有证书 / 账号时：输出未签名 DMG 作为内部测试包，签名 / 公证项记为“阻塞：缺证书”，**不要**用 `xattr -d com.apple.quarantine`、关闭 Gatekeeper 等方式绕过系统保护来宣称通过（未签名包的本机测试可在“隐私与安全性”中对单个应用选择“仍要打开”，并在记录中注明）。
 
 ## 3. 安装、启动、退出、重新打开、卸载
@@ -65,7 +65,20 @@
 | R5 | 认证失败（例如临时使用无权限的 URL） | 可操作提示，不弹出凭据输入 |
 | R6 | 结束后用 `git ls-remote` 核对只剩开工时的引用 | 测试分支已删除 |
 
-## 5. 需要在 macOS 上复测的验收 ID
+## 5. AI（V2 验收 B23–B29 的 macOS 部分）
+
+Windows 已用本机假 HTTP 服务与假 `codex` / `claude` 脚本验证全部 AI 路径（见 [RC 验收结果](../validation/v1-06-rc-results.md)），**没有调用任何真实模型服务**。macOS 上需要确认的是系统相关的部分；真实模型冒烟由用户自选服务与账号执行，费用与数据发送由用户决定。
+
+| # | 步骤 | 预期 |
+| --- | --- | --- |
+| M1* | 全新安装后不配置 AI，完成一次阅读 / 暂存 / 提交流程（可先在“设置 → 更新”关闭“自动检查更新”，避免把更新检查计入） | “活动监视器 → 网络”或 `nettop -p <oris PID>` 中 Oris 没有对外连接；没有 `codex` / `claude` 进程 |
+| M2 | 设置 → AI：“添加 API”后填写并保存 API Key | 钥匙串访问中出现服务名 `Oris AI` 的条目；`~/Library/Application Support/com.oris.viewer` 与 WKWebView 的 localStorage 中**没有**密钥明文（只记录“有 / 无”，不要把密钥写进记录） |
+| M3 | 删除该配置 | 钥匙串中对应条目被删除 |
+| M4 | 从 Finder 启动的实例中点击“设置 → AI → 自动检测本机工具”（Homebrew 或 npm 全局安装的路径可能不在 GUI 的 PATH 中） | 找到时出现“添加 Codex / 添加 Claude Code”；找不到时用“手动添加工具”填写可执行文件完整路径后能生成；记录实际找到的路径 |
+| M5 | CLI 生成中点击取消 | CLI 及其子进程全部结束（用 `pgrep -fl codex` 与 `pgrep -fl claude` 核对），仓库不变 |
+| M6（可选，真实模型冒烟） | 用自己的账号配置一个真实服务，生成一次提交说明、执行一次“暂存 src 下的改动”指令 | 预览中列出将执行的操作，确认后才执行；丢弃 / 撤销丢弃 / 标记已解决遇到二次确认时停止并提示使用按钮（V2-D68）；不修改 Git 路径（V2-D67） |
+
+## 6. 需要在 macOS 上复测的验收 ID
 
 | 验收 ID | 内容 | 本轮 Windows 状态 |
 | --- | --- | --- |
@@ -76,7 +89,8 @@
 | B09、B10、B13、B14 | stash、分支操作、合并、进行中状态 | Windows 通过 |
 | B11、B12 | 同步与远端（§4） | Windows 本地 bare remote 与 AgentHub 通过 |
 | B19–B22 | 设置、Git 路径、配色（跟随系统时用**真实系统外观切换**验证）、字号快捷键 ⌘= / ⌘- / ⌘0 | Windows 通过（跟随系统为 CDP 模拟） |
-| 性能 / 内存 | 按 [发布性能测试](../validation/v1-06-performance.md) 同一脚本与数据集：S 数据集 core / restart / trace、阅读与外观（含长文件滚动后的字号切换）、memory（5 / 10 项目，分层私有工作集按 macOS 对应口径记录） | Windows：24 项中 21 项达标，字号切换未达标 |
+| B23–B29 | AI：未配置不联网、钥匙串保存密钥、CLI 发现与取消、预览后执行、不代替确认（本清单 §5） | Windows 假服务 / 假 CLI 通过；真实模型未调用 |
+| 性能 / 内存 | 按 [发布性能测试](../validation/v1-06-performance.md) 同一脚本与数据集：S 数据集 core / restart / trace、阅读与外观（含长文件滚动后的字号切换）、memory（5 / 10 项目，分层私有工作集按 macOS 对应口径记录） | Windows：见 [RC 验收结果](../validation/v1-06-rc-results.md)（字号切换已由 V2-D58 优化） |
 
 快捷键在 macOS 上应为 ⌘：⌘F 搜索、⌘, 设置、⌘⇧Enter 专注模式、⌘1…9 切换项目。
 

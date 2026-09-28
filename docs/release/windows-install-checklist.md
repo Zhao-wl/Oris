@@ -1,11 +1,11 @@
 # Windows 安装 / 卸载交接清单（一期 06）
 
-状态：**待用户执行**。长链开工时用户选择“安装 / 卸载测试：不允许，只构建”，Oris 自动化只构建了安装包、核对了安装脚本内容，没有在本机安装或卸载。
+状态：**待用户执行**。一期 06 与 RC 复验两次长链开工时都没有授权安装 / 卸载测试，Oris 自动化只构建了安装包、核对了安装脚本内容，没有在本机安装或卸载。
 
-被测安装包：`Oris_0.1.0_x64-setup.exe`（内部测试包，**未签名**），路径与 SHA-256 见[发布验收结果 · 构建与产物](../validation/v1-06-release-results.md#构建与产物)。执行前先核对 SHA-256：
+被测安装包：`Oris_0.3.0_x64-setup.exe`（内部测试包，**未签名**），路径与 SHA-256 见[RC 验收结果 · 构建与产物](../validation/v1-06-rc-results.md#构建与产物)。执行前先核对 SHA-256：
 
 ```powershell
-Get-FileHash .\Oris_0.1.0_x64-setup.exe -Algorithm SHA256
+Get-FileHash .\Oris_0.3.0_x64-setup.exe -Algorithm SHA256
 ```
 
 ## 已由自动化核对的内容（不需要重复）
@@ -37,6 +37,15 @@ Get-FileHash .\Oris_0.1.0_x64-setup.exe -Algorithm SHA256
 git -C "D:\oris-install-test\repo 中文" status --porcelain=v2 --branch
 ```
 
+## AI（可选，V2 验收 B23–B29）
+
+自动化已用本机假服务与假 `codex` / `claude` 验证 AI 全部路径，**没有调用真实模型服务**，也没有读取你已有的 AI 配置。安装后如愿意，可补做：
+
+| # | 步骤 | 预期 | 结果 |
+| --- | --- | --- | --- |
+| W12（可选） | 从开始菜单启动的实例中点击“设置 → AI → 自动检测本机工具” | 已安装的 `codex` / `claude` 出现“添加 …”按钮；未找到时可用“手动添加工具”填写完整路径 | |
+| W13（可选，真实模型冒烟） | 用自己的账号配置一个服务，生成一次提交说明 | 生成成功；API Key 只出现在“凭据管理器 → Windows 凭据”的 `Oris AI` 条目中；删除配置后该条目被删除 | |
+
 ## 记录
 
-请记录：Windows 版本（`winver`）、安装包 SHA-256、每步结果（通过 / 失败 + 现象）、失败时的截图。结果交给 Oris 写入[发布验收结果](../validation/v1-06-release-results.md)的 A15 行；在此之前该行的安装 / 卸载部分为“未运行（用户未授权安装测试）”。
+请记录：Windows 版本（`winver`）、安装包 SHA-256、每步结果（通过 / 失败 + 现象）、失败时的截图。结果交给 Oris 写入[RC 验收结果](../validation/v1-06-rc-results.md)的 A15 行；在此之前该行的安装 / 卸载部分为“未运行（用户未授权安装测试）”。
