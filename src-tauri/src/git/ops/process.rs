@@ -316,7 +316,8 @@ pub struct ProcessTree {
 }
 
 impl ProcessTree {
-    fn prepare(command: &mut Command) {
+    /// 启动前调用（Unix 上放入独立进程组）。
+    pub(crate) fn prepare(command: &mut Command) {
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
@@ -326,7 +327,7 @@ impl ProcessTree {
         let _ = command;
     }
 
-    fn attach(child: &std::process::Child) -> Self {
+    pub(crate) fn attach(child: &std::process::Child) -> Self {
         #[cfg(windows)]
         {
             use std::os::windows::io::AsRawHandle;
@@ -345,7 +346,7 @@ impl ProcessTree {
         }
     }
 
-    fn terminate(&self) {
+    pub(crate) fn terminate(&self) {
         #[cfg(windows)]
         if let Some(job) = &self.job {
             job.terminate();

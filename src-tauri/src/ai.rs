@@ -1,4 +1,5 @@
 //! AI 只负责生成文本与文件建议；Git 写入始终走 ops 写通道。
+use crate::git::ops::process::ProcessTree;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
@@ -139,6 +140,13 @@ fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
     })
 }
 
+/// 结束 AI 工具的整棵进程树，再回收直接子进程。
+fn end_tree(tree: &ProcessTree, child: &mut std::process::Child) {
+    tree.terminate();
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 /// AI CLI 的进程工厂：Windows 下不弹出控制台窗口（npm 装的 `.cmd` 包装同样适用）。
 fn cli_command(executable: &Path) -> Command {
     let mut command = Command::new(executable);
@@ -154,21 +162,22 @@ fn cli_command(executable: &Path) -> Command {
 /// 运行 `<tool> --version`，5 秒内成功退出时返回其 stdout。
 fn tool_version(executable: &Path) -> Option<String> {
     let mut output = tempfile::tempfile().ok()?;
-    let mut process = cli_command(executable)
+    let mut command = cli_command(executable);
+    command
         .arg("--version")
         .stdin(Stdio::null())
         .stdout(output.try_clone().ok()?)
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+        .stderr(Stdio::null());
+    ProcessTree::prepare(&mut command);
+    let mut process = command.spawn().ok()?;
+    let tree = ProcessTree::attach(&process);
     let started = Instant::now();
     let okay = loop {
         if let Ok(Some(status)) = process.try_wait() {
             break status.success();
         }
         if started.elapsed() > Duration::from_secs(5) {
-            let _ = process.kill();
-            let _ = process.wait();
+            end_tree(&tree, &mut process);
             break false;
         }
         std::thread::sleep(Duration::from_millis(30));
@@ -249,6 +258,59 @@ mod failure_tests {
             .unwrap();
         assert!(output.status.success());
         assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "0");
+    }
+
+    /// 带唯一标记的测试孙进程（`ping -w <标记>`）的 PID；只查询本测试创建的进程。
+    #[cfg(windows)]
+    fn marked_pings(marker: u32) -> Vec<u32> {
+        let script = format!("Get-CimInstance Win32_Process -Filter \"Name='PING.EXE'\" | Where-Object {{ $_.CommandLine -match ' -w {marker} ' }} | ForEach-Object {{ $_.ProcessId }}");
+        let output = Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", &script]).output().unwrap();
+        String::from_utf8_lossy(&output.stdout).lines().filter_map(|line| line.trim().parse().ok()).collect()
+    }
+
+    /// 假的 codex 命令行工具（临时目录中的 .cmd）：记录工作目录与参数，再启动一个孙进程并等待。
+    /// 取消时整个进程树都要结束（npm 安装的 codex.cmd 同样是 cmd.exe → node 两层）；工作目录是临时目录，参数带只读沙箱。
+    #[cfg(windows)]
+    #[test]
+    fn cancelled_cli_ends_the_process_tree_and_runs_sandboxed_in_a_temp_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = 3000 + std::process::id() % 5000;
+        let record = dir.path().join("record");
+        fs::create_dir_all(&record).unwrap();
+        let fake = dir.path().join("fake-codex.cmd");
+        let record_text = record.to_string_lossy();
+        fs::write(&fake, format!("@echo off\r\ncd > \"{record_text}\\cwd.txt\"\r\necho %* > \"{record_text}\\args.txt\"\r\nping -n 30 -w {marker} 127.0.0.1 > nul\r\n")).unwrap();
+        let profile = AiProfile { id: "test".into(), kind: "cli".into(), provider: "codex".into(), executable: fake.to_string_lossy().into_owned(), base_url: String::new(), model: "fake-model".into() };
+        let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+        let flag = cancelled.clone();
+        let canceller = std::thread::spawn(move || {
+            // 等孙进程启动后再取消。
+            let started = Instant::now();
+            while marked_pings(marker).is_empty() && started.elapsed() < Duration::from_secs(20) {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            flag.store(true, Ordering::Relaxed);
+        });
+        let result = run_cli(&profile, Path::new("."), "system", "prompt", &cancelled);
+        canceller.join().unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        let left = marked_pings(marker);
+        // 清理：只结束本测试标记的进程。
+        for pid in &left {
+            let _ = Command::new("taskkill").args(["/F", "/PID", &pid.to_string()]).output();
+        }
+        assert_eq!(result.unwrap_err(), "AI 生成已取消");
+        assert!(left.is_empty(), "取消后孙进程仍在运行：{left:?}");
+        let cwd = fs::read_to_string(record.join("cwd.txt")).unwrap();
+        let cwd = cwd.trim().to_owned();
+        assert_ne!(Path::new(&cwd), std::env::current_dir().unwrap(), "不应在当前目录运行");
+        let temp = std::env::temp_dir();
+        let temp_long = dunce::canonicalize(&temp).unwrap_or(temp.clone());
+        assert!(Path::new(&cwd).starts_with(&temp) || Path::new(&cwd).starts_with(&temp_long), "应在临时目录运行：{cwd}");
+        let args = fs::read_to_string(record.join("args.txt")).unwrap();
+        for expected in ["exec", "--sandbox read-only", "--ephemeral", "--skip-git-repo-check", "-m fake-model", "--output-last-message"] {
+            assert!(args.contains(expected), "参数缺少 {expected}：{args}");
+        }
     }
 
     #[test]
@@ -534,7 +596,10 @@ fn run_cli(profile: &AiProfile, _cwd: &Path, system_prompt: &str, prompt: &str, 
     cmd.current_dir(temp.path())
         .stdin(Stdio::piped())
         .stderr(stderr_file);
+    ProcessTree::prepare(&mut cmd);
     let mut child = cmd.spawn().map_err(|e| format!("启动 AI 工具失败：{e}"))?;
+    // 取消 / 超时时结束整棵进程树：npm 安装的 codex.cmd、claude.cmd 由 cmd.exe 再启动 node，只结束直接子进程会留下孙进程。
+    let tree = ProcessTree::attach(&child);
     if let Some(mut stdin) = child.stdin.take() {
         stdin
             .write_all(prompt.as_bytes())
@@ -543,8 +608,7 @@ fn run_cli(profile: &AiProfile, _cwd: &Path, system_prompt: &str, prompt: &str, 
     let start = Instant::now();
     loop {
         if cancelled.load(Ordering::Relaxed) {
-            let _ = child.kill();
-            let _ = child.wait();
+            end_tree(&tree, &mut child);
             return Err("AI 生成已取消".into());
         }
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
@@ -556,8 +620,7 @@ fn run_cli(profile: &AiProfile, _cwd: &Path, system_prompt: &str, prompt: &str, 
             return Ok(output.chars().take(100_000).collect());
         }
         if start.elapsed() > CLI_TIMEOUT {
-            let _ = child.kill();
-            let _ = child.wait();
+            end_tree(&tree, &mut child);
             return Err(cli_failure(&failure_output(&stderr_path, &output_path), true, None, version_warning()));
         }
         std::thread::sleep(Duration::from_millis(100));

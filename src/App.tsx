@@ -1221,7 +1221,6 @@ export default function App() {
       recentCommits: recent?.commits.map(({ oid, subject, authorName, authorTime }) => ({ oid, subject, authorName, authorTime })) ?? [],
       currentDiff: pair && pair.repoId === repoId ? { path: pair.displayPath, left: pair.left.text?.slice(0, 12_000) ?? null, right: pair.right.text?.slice(0, 12_000) ?? null } : null,
       appearance: settings.get().appearance,
-      gitSetting: settings.get().git,
       aiProfiles: settings.get().ai.profiles.map(({ id, name, kind, provider, model, hasKey }) => ({ id, name, kind, provider, model, ready: !!model.trim() && (kind === "cli" || hasKey) })),
       activeAiProfile: settings.get().ai.activeId,
       schemes: schemeIndex.map(({ id, name, type }) => ({ id, name, type })),
@@ -1248,7 +1247,8 @@ export default function App() {
   const runAiOperation = async (request: OperationRequest): Promise<boolean> => {
     const outcome = await runOp(request);
     if (!outcome) throw new Error("操作未开始，请查看操作输出");
-    if (outcome.status === "needsConfirmation") throw new Error(outcome.confirmation?.message || outcome.message || "当前状态需要补充操作条件");
+    // V2-D68：需要用户确认的情况（不可撤销的丢弃、覆盖之后的修改、仍有冲突标记、删除未合并分支等）不由 AI 代为确认。
+    if (outcome.status === "needsConfirmation") throw new Error(`${outcome.confirmation?.message || outcome.message || "当前状态需要确认"}。AI 不代替你确认，请用对应的按钮操作`);
     if (outcome.status !== "succeeded") throw new Error(outcome.message || "操作未完成");
     return true;
   };
@@ -1257,7 +1257,6 @@ export default function App() {
     if (action.kind === "settings") {
       if ((action.setting === "lightScheme" || action.setting === "darkScheme") && !schemeIndex.some((item) => item.id === action.value && (action.setting === "lightScheme" ? ["light", "hcLight"].includes(item.type) : ["dark", "hcDark"].includes(item.type)))) throw new Error("配色方案不可用");
       if (action.setting === "fontSize") settings.update("appearance", "fontSize", action.value as number);
-      else if (action.setting === "gitExecutable") settings.update("git", "executable", action.value as string);
       else if (action.setting === "aiActiveId") { if (!settings.get().ai.profiles.some((item) => item.id === action.value && item.model.trim() && (item.kind === "cli" || item.hasKey))) throw new Error("AI 配置不可用"); settings.update("ai", "activeId", action.value as string); }
       else if (action.setting === "aiShortcut") { if (typeof action.value !== "string" || !/^(CtrlOrMeta|Ctrl|Meta)(\+Shift)?(\+Alt)?\+[A-Z0-9,=+-]$/.test(action.value)) throw new Error("快捷键格式无效"); settings.update("ai", "shortcut", action.value); }
       else settings.update("appearance", action.setting, action.value as string);
@@ -1310,10 +1309,10 @@ export default function App() {
       const allowed = new Set((request.kind === "unstage" ? files?.staged : request.kind === "discard" ? files?.[request.scope] : files?.all)?.map((file) => file.pathId) ?? []);
       if (request.pathIds.some((id) => !allowed.has(id))) throw new Error("文件状态已变化，请重新规划操作");
     }
-    if (request.kind === "discard") return runAiOperation({ ...request, confirmedUnrecoverable: true });
+    if (request.kind === "discard") return runAiOperation({ ...request, confirmedUnrecoverable: false });
     if (request.kind === "stage" || request.kind === "unstage") { const selected = (request.kind === "unstage" ? files?.staged : files?.all)?.filter((file) => request.pathIds.includes(file.pathId)) ?? []; return runAiOperation({ kind: request.kind, pathIds: pathIdsFor(selected, request.kind === "unstage") }); }
-    if (request.kind === "markResolved") return runAiOperation({ ...request, confirmed: true });
-    if (request.kind === "undoDiscard") return runAiOperation({ ...request, overwrite: true });
+    if (request.kind === "markResolved") return runAiOperation({ ...request, confirmed: false });
+    if (request.kind === "undoDiscard") return runAiOperation({ ...request, overwrite: false });
     if (request.kind === "undoCommit") { const head = await headCommitInfo(repoId); if (!head) throw new Error("当前没有可撤销的提交"); return runAiOperation({ kind: "undoCommit", expectedHead: head.oid }); }
     if (request.kind === "branchDelete") { const refs = await readRefs(repoId); const branch = refs.local.find((item) => item.fullName === request.name); if (!branch) throw new Error("分支不存在"); return runAiOperation(request); }
     if (request.kind === "stashDrop") { const entries = await stashList(repoId); const entry = entries.find((item) => item.index === request.index && item.oid === request.oid); if (!entry) throw new Error("Stash 已变化"); return runAiOperation(request); }
