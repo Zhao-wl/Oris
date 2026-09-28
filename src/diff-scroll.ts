@@ -119,3 +119,15 @@ export function diffMarkerGeometry(
     height: Math.min(track, Math.max(minimumMarker, naturalHeight))
   };
 }
+
+/**
+ * V2-D58：字号变化时编辑器如何保持阅读位置。
+ * - "snapshot"：先按 CodeMirror 自己的锚点规则（视口顶部那一行保持相同的像素偏移）给出滚动快照，第一轮测量就按该行选视口；
+ * - "measure"：只请求重新测量，由 CodeMirror 的测量循环自行锚定。在顶部（锚点为 0）、滚到底部（CodeMirror 锚定底部）、
+ *   自动换行（折行数随字号变化，两种锚定会差一行左右）时使用，与优化前的行为逐项一致。
+ */
+export function fontChangeScroll(scroll: { scrollTop: number; scrollHeight: number; clientHeight: number; lineWrapping: boolean }): "snapshot" | "measure" {
+  const atTop = scroll.scrollTop < 1;
+  const atBottom = scroll.scrollTop > Math.max(1, scroll.scrollHeight - scroll.clientHeight - 4);
+  return atTop || atBottom || scroll.lineWrapping ? "measure" : "snapshot";
+}
