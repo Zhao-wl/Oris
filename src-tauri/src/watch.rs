@@ -251,15 +251,21 @@ pub fn classify(
             } else if text == "index" {
                 (!suppression.index_suppressed() && !echo(path, None)).then_some(ChangeKind::Index)
             } else if text == "refs/stash" {
-                Some(ChangeKind::Stash)
+                (!echo(path, None)).then_some(ChangeKind::Stash)
             } else if text == "HEAD" || text == "packed-refs" || first == "refs" {
                 (!echo(path, None)).then_some(ChangeKind::Refs)
             } else if matches!(first, "MERGE_HEAD" | "CHERRY_PICK_HEAD" | "REVERT_HEAD" | "BISECT_LOG" | "rebase-merge" | "rebase-apply") {
                 Some(ChangeKind::InProgress)
             } else if text.is_empty() {
-                // git 目录本身被删除 / 重建。
-                global = true;
-                Some(ChangeKind::Refs)
+                // git 目录本身被删除 / 重建。Windows 上目录内新建 / 删除文件（锁文件、ORIG_HEAD 等）也会报告目录自身的修改：
+                // 写操作尾窗口内修改时间不晚于操作结束的是操作自身的回声（V2-D60），跳过；手动刷新回写 index 的窗口内同样跳过
+                // （回写时建立的 index.lock）。其余情况照旧按全局失效处理；真实的 refs 变化另有自身路径的事件。
+                if echo(path, None) || suppression.index_suppressed() {
+                    None
+                } else {
+                    global = true;
+                    Some(ChangeKind::Refs)
+                }
             } else {
                 None
             };
@@ -521,6 +527,51 @@ mod tests {
         assert_eq!(classify_paths(&["other.txt"]).unwrap().paths, vec!["other.txt".to_owned()], "操作之外的删除照常下发");
         suppression.end_operation(&root, Vec::new(), Duration::ZERO);
         assert_eq!(classify_paths(&[".git/index"]).unwrap().kinds, vec![ChangeKind::Index]);
+    }
+
+    /// V2-D60：git 目录本身的修改（Windows 上目录内新建 / 删除锁文件时报告）与 refs/stash 在尾窗口内同样按回声跳过；
+    /// 窗口外、或操作结束之后才发生的修改照旧下发（git 目录本身仍是全局 refs 失效）。
+    #[test]
+    fn operation_tail_skips_git_dir_and_stash_echo() {
+        let dir = repo();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        let rules = rules(&root);
+        let suppression = Suppression::default();
+        let dirs = vec![root.join(".git")];
+        let classify_paths = |paths: &[&str]| classify("r", &root, &dirs, &rules, &suppression, &paths.iter().map(|p| root.join(p)).collect::<Vec<_>>());
+        let git_dir_event = || classify("r", &root, &dirs, &rules, &suppression, &[root.join(".git")]);
+        // 窗口外：与修复前相同。
+        let outside = git_dir_event().unwrap();
+        assert!(outside.global);
+        assert_eq!(outside.kinds, vec![ChangeKind::Refs]);
+        assert_eq!(classify_paths(&[".git/refs/stash"]).unwrap().kinds, vec![ChangeKind::Stash]);
+        // 操作期间：git 目录内新建 / 删除锁文件，写 refs/stash。
+        suppression.begin_operation();
+        fs::write(root.join(".git/oris-test.lock"), b"x").unwrap();
+        fs::remove_file(root.join(".git/oris-test.lock")).unwrap();
+        fs::write(root.join(".git/refs/stash"), b"0000000000000000000000000000000000000000\n").unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        suppression.end_operation(&root, Vec::new(), Duration::from_secs(5));
+        assert!(git_dir_event().is_none(), "git 目录本身的回声被跳过");
+        assert!(classify_paths(&[".git/refs/stash"]).is_none(), "refs/stash 的回声被跳过");
+        // 操作结束之后外部再次修改：照常下发。
+        std::thread::sleep(Duration::from_millis(20));
+        fs::write(root.join(".git/oris-test-later"), b"x").unwrap();
+        fs::write(root.join(".git/refs/stash"), b"1111111111111111111111111111111111111111\n").unwrap();
+        let later = git_dir_event().unwrap();
+        assert!(later.global);
+        assert_eq!(later.kinds, vec![ChangeKind::Refs]);
+        assert_eq!(classify_paths(&[".git/refs/stash"]).unwrap().kinds, vec![ChangeKind::Stash]);
+        // 尾窗口内 .git 中的删除按现有规则算回声（与 HEAD / refs 相同，由操作刷新覆盖）。
+        fs::remove_file(root.join(".git/refs/stash")).unwrap();
+        assert!(classify_paths(&[".git/refs/stash"]).is_none());
+        // 手动刷新回写 index 的窗口：git 目录本身的事件（index.lock）与 index 一起跳过，refs 自身的事件照常下发。
+        suppression.end_operation(&root, Vec::new(), Duration::ZERO);
+        assert!(git_dir_event().is_some());
+        suppression.index_for(Duration::from_secs(5));
+        assert!(git_dir_event().is_none());
+        assert_eq!(classify_paths(&[".git", ".git/refs/heads/main"]).unwrap().kinds, vec![ChangeKind::Refs]);
+        assert!(!classify_paths(&[".git", ".git/refs/heads/main"]).unwrap().global);
     }
 
     #[test]

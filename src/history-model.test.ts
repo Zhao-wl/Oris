@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { layoutGraph } from "./history-graph";
-import { fetchAgeText, fetchTimeText, historyStatus, loadPullMode, movedEndpoint, parseProgress, PULL_MODE_KEY, rowSegments, ROW_HEIGHT, savePullMode } from "./history-model";
+import { deferVersions, fetchAgeText, fetchTimeText, historyStatus, initialDeferred, loadPullMode, movedEndpoint, parseProgress, PULL_MODE_KEY, rowSegments, ROW_HEIGHT, savePullMode } from "./history-model";
 import type { RefsView } from "./history-api";
 
 describe("commit graph segments", () => {
@@ -87,5 +87,39 @@ describe("progress", () => {
     expect(historyStatus("copied")).toBe("added");
     expect(historyStatus("unmerged")).toBe("modified");
     expect(historyStatus("renamed")).toBe("renamed");
+  });
+});
+
+describe("deferVersions（V2-D60）", () => {
+  it("可见时跟随版本；不可见时只标记失效，切回时一次追上并要求读到该版本", () => {
+    let s = initialDeferred(0, 0);
+    expect(deferVersions(s, false, 0, 0)).toBe(s);
+    s = deferVersions(s, false, 1, 0);
+    expect(s).toMatchObject({ refs: 1, stash: 0, refsUntil: null, stashUntil: null });
+    // 不可见期间多次失效：显示的版本不变，只记失效。
+    s = deferVersions(s, true, 2, 0);
+    s = deferVersions(s, true, 3, 1);
+    s = deferVersions(s, true, 4, 1);
+    expect(s).toMatchObject({ refs: 1, stash: 0, refsPending: true, stashPending: true });
+    // 幂等：同样的输入得到同一个对象。
+    expect(deferVersions(s, true, 4, 1)).toBe(s);
+    // 切回：一次追上最新版本（只触发一次读取），并要求读到该版本后才显示引用 / stash。
+    s = deferVersions(s, false, 4, 1);
+    expect(s).toMatchObject({ refs: 4, stash: 1, refsPending: false, stashPending: false, refsUntil: 4, stashUntil: 1 });
+    expect(deferVersions(s, false, 4, 1)).toBe(s);
+    // 可见时的后续变化不再要求隐藏（refsUntil 保持旧值，读到新版本时已满足）。
+    s = deferVersions(s, false, 5, 1);
+    expect(s).toMatchObject({ refs: 5, refsUntil: 4 });
+    // 不可见但没有失效：切回不读取。
+    const quiet = deferVersions(s, true, 5, 1);
+    expect(quiet).toBe(s);
+    expect(deferVersions(quiet, false, 5, 1)).toBe(s);
+  });
+
+  it("只有 stash 失效时不要求隐藏引用", () => {
+    let s = initialDeferred(3, 3);
+    s = deferVersions(s, true, 3, 4);
+    s = deferVersions(s, false, 3, 4);
+    expect(s).toMatchObject({ refs: 3, stash: 4, refsUntil: null, stashUntil: 4 });
   });
 });

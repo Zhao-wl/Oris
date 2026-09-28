@@ -1,4 +1,4 @@
-import { enumSetting, integerSetting, SettingsRegistry, stringSetting, type SettingsValues } from "./registry";
+import { booleanSetting, enumSetting, integerSetting, SettingsRegistry, stringSetting, type SettingsValues } from "./registry";
 import { DEFAULT_AI_SHORTCUT } from "../ai-shortcut";
 
 /** 设置模型版本；读取到其他版本时回退默认值并提示（不覆盖原文件，直到用户修改）。 */
@@ -55,11 +55,17 @@ export const DEFAULT_AI_PROMPTS: AiOperationPrompts = {
   merge: "@合并 加载合并 SOP：核对目标分支引用；Oris 校验后直接执行；冲突时保留用户的解决步骤。"
 };
 
+export interface UpdateSettings {
+  /** 启动后与每隔几小时检查一次新版本；有新版本时后台下载。 */
+  autoCheck: boolean;
+}
+
 export interface Settings {
   version: typeof SETTINGS_VERSION;
   appearance: AppearanceSettings;
   git: GitSettings;
   ai: AiSettings;
+  update: UpdateSettings;
 }
 
 export const FONT_SIZE_MIN = 11;
@@ -140,9 +146,15 @@ export function createSettingsRegistry({ schemes, defaults = DEFAULT_SCHEMES, de
           return merged;
         }, ui: { label: "操作提示词", control: "text" } }
       ]
+    })
+    .register({
+      id: "update",
+      label: "更新",
+      order: 35,
+      settings: [booleanSetting("autoCheck", true, { label: "自动检查更新", control: "toggle", description: "启动后与每 4 小时检查一次；有新版本时在后台下载" })]
     });
 }
 
 export function toSettings(values: SettingsValues): Settings {
-  return { version: SETTINGS_VERSION, appearance: values.appearance as unknown as AppearanceSettings, git: values.git as unknown as GitSettings, ai: values.ai as unknown as AiSettings };
+  return { version: SETTINGS_VERSION, appearance: values.appearance as unknown as AppearanceSettings, git: values.git as unknown as GitSettings, ai: values.ai as unknown as AiSettings, update: values.update as unknown as UpdateSettings };
 }

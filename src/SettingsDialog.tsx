@@ -6,6 +6,9 @@ import notices from "./themes/generated/NOTICES.txt?raw";
 import { detectAiTools, listAiModels, setAiKey, type ToolCandidate } from "./ai-api";
 import type { AiProfile } from "./settings";
 import { displayAiShortcut } from "./ai-shortcut";
+import { getVersion } from "@tauri-apps/api/app";
+import { useStore } from "./store";
+import { updater } from "./update-model";
 
 interface Props {
   settings: SettingsStore;
@@ -110,6 +113,7 @@ function AiPage({ settings }: { settings: SettingsStore }) {
   const [keyDraft, setKeyDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [warning, setWarning] = useState("");
   const [editingId, setEditingId] = useState(() => ai.activeId || ai.profiles[0]?.id || "");
   const selected = ai.profiles.find((profile) => profile.id === editingId) ?? ai.profiles[0];
   const unusedDrafts = ai.profiles.filter((profile) => !profile.model.trim() && !profile.hasKey && !profile.executable.trim() && !profile.baseUrl.trim());
@@ -130,14 +134,14 @@ function AiPage({ settings }: { settings: SettingsStore }) {
     settings.update("ai", "profiles", ai.profiles.map((profile) => profile.id === selected.id ? { ...profile, ...patch } : profile));
   };
   const check = async () => {
-    setBusy(true); setError("");
-    try { setDetected(await detectAiTools()); setDetectedOnce(true); }
+    setBusy(true); setError(""); setWarning("");
+    try { const tools = await detectAiTools(); setDetected(tools); setDetectedOnce(true); setWarning(tools.flatMap((tool) => tool.warning ? [tool.warning] : []).join("\n")); }
     catch (failure) { setError(String(failure)); }
     finally { setBusy(false); }
   };
   const fetchModels = async (profile: AiProfile) => {
-    setBusy(true); setError("");
-    try { setModelsById((current) => ({ ...current, [profile.id]: [] })); const found = await listAiModels(profile); setModelsById((current) => ({ ...current, [profile.id]: found })); }
+    setBusy(true); setError(""); setWarning("");
+    try { setModelsById((current) => ({ ...current, [profile.id]: [] })); const found = await listAiModels(profile); setModelsById((current) => ({ ...current, [profile.id]: found.models })); setWarning(found.warning ?? ""); }
     catch (failure) { setError(`${String(failure)}；仍可手动输入模型 ID`); }
     finally { setBusy(false); }
   };
@@ -209,8 +213,43 @@ function AiPage({ settings }: { settings: SettingsStore }) {
         <textarea id={`ai-prompt-${key}`} aria-label={`${label}系统提示词`} value={ai.prompts[key]} maxLength={10_000} onChange={(event) => settings.update("ai", "prompts", { ...ai.prompts, [key]: event.target.value })}/>
       </div>)}
     </section>
+    {warning && <p className="settings-warning" role="status">{warning}</p>}
     {error && <p className="settings-error" role="alert">{error}</p>}
     <p className="settings-note">列表只显示已添加的配置，新增项会自动保存。API Key 保存在系统凭据存储中；模型查询失败时可手动输入模型 ID。</p>
+  </div>;
+}
+
+function UpdatePage({ settings }: { settings: SettingsStore }) {
+  const autoCheck = useSettings(settings, (value) => value.update.autoCheck);
+  const state = useStore(updater.store, (value) => value);
+  const [version, setVersion] = useState<string | null>(null);
+  useEffect(() => { getVersion().then(setVersion, () => {}); }, []);
+  const { phase } = state;
+  const status = phase.kind === "checking" ? "正在检查…"
+    : phase.kind === "manual" ? `发现新版本 ${phase.info.version}。当前不是安装版，无法自动更新，请从下载页获取安装包。`
+    : phase.kind === "downloading" ? `正在后台下载 ${phase.info.version}…`
+    : phase.kind === "ready" ? `${phase.info.version} 已下载，点击标题栏的「重启以更新」完成安装。`
+    : phase.kind === "installing" ? "正在启动安装程序…"
+    : phase.kind === "failed" ? null
+    : state.upToDate ? "已是最新版本。" : null;
+  return <div className="settings-page">
+    <dl className="git-facts">
+      <dt>当前版本</dt><dd>{state.currentVersion ?? version ?? "未知"}</dd>
+      <dt>上次检查</dt><dd>{state.checkedAt ? new Date(state.checkedAt).toLocaleString() : "尚未检查"}</dd>
+    </dl>
+    <div className="settings-row">
+      <label htmlFor="settings-update-auto">自动检查更新</label>
+      <input id="settings-update-auto" type="checkbox" checked={autoCheck} onChange={(event) => settings.update("update", "autoCheck", event.target.checked)} />
+      <small>启动后与每 4 小时检查一次；有新版本时在后台下载</small>
+    </div>
+    <div className="settings-row">
+      <button type="button" disabled={["checking", "downloading", "installing"].includes(phase.kind)} onClick={() => void updater.check({ manual: true })}>检查更新</button>
+      {phase.kind === "manual" && <button type="button" onClick={() => void updater.openDownloadPage()}>打开下载页</button>}
+    </div>
+    {status && <p className="settings-note" role="status">{status}</p>}
+    {phase.kind === "failed" && <p className="settings-error" role="alert">{phase.message}</p>}
+    {"info" in phase && phase.info?.notes && <pre className="update-notes">{phase.info.notes}</pre>}
+    <p className="settings-note">更新包来自 GitHub Releases，安装前校验签名；安装时 Oris 会退出并在完成后自动重启。</p>
   </div>;
 }
 
@@ -246,7 +285,7 @@ export default function SettingsDialog({ settings, onClose, gitInUse }: Props) {
         <header><h3>{categories.find((c) => c.id === active)?.label}</h3><button aria-label="关闭设置" onClick={onClose}>×</button></header>
         {settings.notice === "corrupted" && <p className="settings-error">设置文件已损坏，已使用默认值（项目列表不受影响）。</p>}
         {settings.notice === "incompatible" && <p className="settings-error">设置文件版本不兼容，已使用默认值。</p>}
-        {active === "appearance" ? <AppearancePage settings={settings} /> : active === "git" ? <GitPage settings={settings} gitInUse={gitInUse} /> : active === "shortcuts" ? <ShortcutsPage settings={settings} /> : <AiPage settings={settings} />}
+        {active === "appearance" ? <AppearancePage settings={settings} /> : active === "git" ? <GitPage settings={settings} gitInUse={gitInUse} /> : active === "shortcuts" ? <ShortcutsPage settings={settings} /> : active === "update" ? <UpdatePage settings={settings} /> : <AiPage settings={settings} />}
       </div>
     </div>
   </div>;

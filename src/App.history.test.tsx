@@ -270,3 +270,58 @@ describe("explicit fetch (A10)", () => {
     expect(bridge.operation).toHaveBeenLastCalledWith("a", "unstaged", expect.any(String), { kind: "fetch", remote: "backup" });
   });
 });
+
+describe("V2-D60：写操作后的历史重读", () => {
+  const fetchOutcome = (): OperationOutcome => ({ opId: "op", repoId: "a", kind: "fetch", status: "succeeded", message: "已获取 origin", output: "", outputTruncated: false, snapshot: snap(), confirmation: null, backup: null, lockLeft: false, gitProcesses: 1, elapsedMs: 1 });
+  const runFetch = async () => { await click(q(".sync-fetch .sync-main")); };
+  const openCommitTab = async () => { await click(all(".git-tabs button").find((b) => b.textContent?.startsWith("提交"))!); };
+  const counts = () => ({ refs: bridge.refs.mock.calls.length, log: bridge.log.mock.calls.length, changes: bridge.changes.mock.calls.length });
+
+  it("历史页不可见时写操作只标记失效；切回时重读一次，读完前不显示过期的引用", async () => {
+    bridge.operation.mockResolvedValue(fetchOutcome());
+    await mount();
+    await openLog();
+    expect(all(".log-row")[0].querySelector(".ref-chip.head")).toBeTruthy();
+    await openCommitTab();
+    await runFetch();
+    // 一键获取不读取 refs；操作结束后历史页也不读取。
+    const afterOp = counts();
+    await flush();
+    expect(counts()).toEqual(afterOp);
+    // 切回：refs 与日志各读一次；读完之前不显示旧的 HEAD / 引用标记、分支列表，“跳到 HEAD”不可用。
+    let release: (view: RefsView) => void = () => {};
+    bridge.refs.mockImplementationOnce(() => new Promise<RefsView>((resolve) => { release = resolve; }));
+    await openLog();
+    expect(counts()).toEqual({ refs: afterOp.refs + 1, log: afterOp.log + 1, changes: afterOp.changes });
+    expect(all(".log-row").length).toBe(4);
+    expect(host.querySelectorAll(".log-row .ref-chip").length).toBe(0);
+    expect(q(".log-current")?.textContent).toBe("当前工作分支：● …");
+    expect(all(".log-branch").map((b) => b.textContent)).toEqual(["全部分支"]);
+    expect(button("跳到 HEAD").disabled).toBe(true);
+    expect(q(".log-count")?.textContent).toContain("读取中");
+    await act(async () => release(refsView(O("1")))); await flush();
+    expect(all(".log-row")[0].querySelector(".ref-chip.head")).toBeTruthy();
+    expect(q(".log-current")?.textContent).toContain("● main");
+    expect(button("跳到 HEAD").disabled).toBe(false);
+    // 同一提交的变化文件按固定 OID 读取，不因 refs 变化重读。
+    expect(counts().changes).toBe(afterOp.changes);
+    // 再次切走、切回而没有新的失效：不读取。
+    await openCommitTab(); await openLog();
+    expect(counts()).toEqual({ refs: afterOp.refs + 1, log: afterOp.log + 1, changes: afterOp.changes });
+  });
+
+  it("历史页可见时一次写操作只重读一次，重读期间保持原有显示（不闪烁）", async () => {
+    bridge.operation.mockResolvedValue(fetchOutcome());
+    await mount();
+    await openLog();
+    const before = counts();
+    let release: (view: RefsView) => void = () => {};
+    bridge.refs.mockImplementationOnce(() => new Promise<RefsView>((resolve) => { release = resolve; }));
+    await runFetch();
+    expect(counts()).toEqual({ refs: before.refs + 1, log: before.log + 1, changes: before.changes });
+    expect(all(".log-row")[0].querySelector(".ref-chip.head")).toBeTruthy();
+    expect(q(".log-current")?.textContent).toContain("● main");
+    await act(async () => release(refsView())); await flush();
+    expect(counts()).toEqual({ refs: before.refs + 1, log: before.log + 1, changes: before.changes });
+  });
+});

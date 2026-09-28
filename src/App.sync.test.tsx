@@ -116,6 +116,21 @@ describe("sync entry (B11)", () => {
     expect(requests().slice(1)).toEqual([{ kind: "fetch", remote: null }, { kind: "fetch", remote: "origin" }]);
   });
 
+  it("drops a remote choice that arrives after switching to another project", async () => {
+    const repoB = { ...repo, repoId: "b", displayName: "b", worktreePath: "C:/b", gitDir: "C:/b/.git", commonDir: "C:/b/.git" };
+    bridge.open.mockImplementation(async (path: string) => (path === "C:/b" ? { ...snap(), repo: repoB } : snap()));
+    localStorage.setItem(WORKSPACE_KEY, JSON.stringify({ version: 2, activeRepoId: "a", projects: [repo, repoB].map((r) => ({ repo: r, gitExecutable: "", pinned: false, lastOpenedAt: 0, anchor: defaultAnchor() })) }));
+    let answer: () => void = () => {};
+    bridge.operation.mockImplementationOnce(() => new Promise<OperationOutcome>((resolve) => { answer = () => void chooseRemote(["mirror", "origin"])().then(resolve); }));
+    await mount();
+    await click(main("fetch"));
+    await click(q(".project-tab:nth-child(2) .project-switch"));
+    expect(q(".project-tab.active")?.getAttribute("title")).toBe("C:/b");
+    await act(async () => answer()); await flush();
+    expect(q(".remote-choice-dialog")).toBeNull();
+    expect(requests()).toEqual([{ kind: "fetch", remote: null }]);
+  });
+
   it("publishes a branch without an upstream in one click, disables pull there, and disables both on a detached HEAD", async () => {
     bridge.open.mockResolvedValue(snap([change("a.txt")], idle, null));
     bridge.refs.mockResolvedValue(refsView({}, { state: "noUpstream" }));
