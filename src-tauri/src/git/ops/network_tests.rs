@@ -100,7 +100,7 @@ impl Harness {
 }
 
 fn fetch(remote: &str) -> OperationRequest {
-    OperationRequest::Fetch { remote: remote.into() }
+    OperationRequest::Fetch { remote: Some(remote.into()) }
 }
 
 /// 仓库指纹（不含 objects / logs / hooks）：键为相对路径。
@@ -203,6 +203,33 @@ fn a10_fetch_does_not_recurse_into_submodules() {
     assert!(!outcome.output.contains("Fetching submodule"), "{}", outcome.output);
     let kinds = changed(&before, &fingerprint(&r.local));
     assert!(kinds.iter().all(|k| k == "remote-refs" || k.starts_with("git:FETCH_HEAD")), "{kinds:?}");
+}
+
+#[test]
+fn one_click_fetch_uses_the_upstream_remote_or_asks_which_remote() {
+    let r = remote_setup();
+    let new_main = commit(&r.other, "b.txt", "remote work\n", "remote work");
+    git_in(&r.other, &["push", "-q", "origin", "main"]);
+    // 另一个 remote 在字母序上排在前面：默认目标仍是当前分支上游所属的 origin。
+    git_in(&r.local, &["remote", "add", "alpha", r.bare.to_str().unwrap()]);
+    let h = Harness::new(&r.local);
+    let outcome = h.run(OperationRequest::Fetch { remote: None });
+    assert_eq!(outcome.status, OpStatus::Succeeded, "{}", outcome.message);
+    assert!(outcome.message.starts_with("已获取 origin"), "{}", outcome.message);
+    assert_eq!(text(&r.local, &["rev-parse", "refs/remotes/origin/main"]), new_main);
+    assert!(text(&r.local, &["for-each-ref", "refs/remotes/alpha"]).is_empty(), "只获取默认 remote");
+    // 分离 HEAD、有多个 remote：不执行，返回可选的 remote。
+    git_in(&r.local, &["switch", "-q", "--detach"]);
+    let before = fingerprint(&r.local);
+    let outcome = h.run(OperationRequest::Fetch { remote: None });
+    assert_eq!(outcome.status, OpStatus::NeedsConfirmation, "{}", outcome.message);
+    let confirmation = outcome.confirmation.unwrap();
+    assert_eq!((confirmation.reason, confirmation.paths), ("chooseRemote", vec!["alpha".to_owned(), "origin".to_owned()]));
+    assert_eq!(fingerprint(&r.local), before);
+    // 只有一个 remote：直接获取它。
+    git_in(&r.local, &["remote", "remove", "alpha"]);
+    let outcome = h.run(OperationRequest::Fetch { remote: None });
+    assert_eq!(outcome.status, OpStatus::Succeeded, "{}", outcome.message);
 }
 
 #[test]

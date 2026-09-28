@@ -223,8 +223,7 @@ describe("compare and file history (A09)", () => {
     // main 在外部前进：提示端点已移动，比较仍使用固定的 OID，直到用户选择按新位置重新比较。
     bridge.refs.mockImplementation(async () => refsView(O("9")));
     bridge.operation.mockResolvedValue({ opId: "op", repoId: "a", kind: "fetch", status: "succeeded", message: "已获取 origin", output: "", outputTruncated: false, snapshot: snap(), confirmation: null, backup: null, lockLeft: false, gitProcesses: 1, elapsedMs: 1 } satisfies OperationOutcome);
-    await click(q(".sync-button")); await click(button("获取…", q(".sync-popover")!));
-    await click(button("获取", q(".fetch-dialog")!));
+    await click(q(".sync-fetch .sync-main"));
     expect(q(".log-moved")?.textContent).toContain("main 已移动到 99999999");
     const calls = bridge.compare.mock.calls.length;
     await click(button("按新位置重新比较"));
@@ -247,30 +246,25 @@ describe("compare and file history (A09)", () => {
 });
 
 describe("explicit fetch (A10)", () => {
-  it("defaults to the upstream remote, runs one fetch operation and records Oris' completion time", async () => {
+  it("fetches the default remote in one click, runs one fetch operation and records Oris' completion time", async () => {
     bridge.operation.mockResolvedValue({ opId: "op", repoId: "a", kind: "fetch", status: "succeeded", message: "已获取 origin：1 个远端跟踪引用 / 标签有更新", output: "", outputTruncated: false, snapshot: snap(), confirmation: null, backup: null, lockLeft: false, gitProcesses: 1, elapsedMs: 1 } satisfies OperationOutcome);
     await mount();
-    await click(q(".sync-button")); await click(button("获取…", q(".sync-popover")!));
-    const dialog = q(".fetch-dialog")!;
-    expect(dialog.textContent).toContain("不修改工作区");
-    expect((dialog.querySelector("select") as HTMLSelectElement).value).toBe("origin");
-    await click(button("获取", dialog));
+    expect(q(".sync-fetch .sync-main")?.getAttribute("title")).toContain("不改工作区");
+    await click(q(".sync-fetch .sync-main"));
     expect(bridge.operation).toHaveBeenCalledTimes(1);
-    expect(bridge.operation).toHaveBeenLastCalledWith("a", "unstaged", expect.any(String), { kind: "fetch", remote: "origin" });
+    expect(bridge.operation).toHaveBeenLastCalledWith("a", "unstaged", expect.any(String), { kind: "fetch", remote: null });
     expect(JSON.parse(localStorage.getItem(FETCH_LOG_KEY)!)["C:/a"].remote).toBe("origin");
     expect(q(".op-status")?.textContent).toContain("已获取 origin");
   });
 
-  it("asks the user to choose a remote when the current branch has no valid upstream", async () => {
+  it("marks no default in fetch ▾ when the current branch has no valid upstream, and fetches the chosen remote", async () => {
     bridge.refs.mockImplementation(async () => ({ ...refsView(), defaultRemote: null }));
+    bridge.operation.mockResolvedValue({ opId: "op", repoId: "a", kind: "fetch", status: "succeeded", message: "已获取 backup：没有新的变化", output: "", outputTruncated: false, snapshot: snap(), confirmation: null, backup: null, lockLeft: false, gitProcesses: 1, elapsedMs: 1 } satisfies OperationOutcome);
     await mount();
-    await click(q(".sync-button")); await click(button("获取…", q(".sync-popover")!));
-    const dialog = q(".fetch-dialog")!;
-    expect(button("获取", dialog).disabled).toBe(true);
-    expect(dialog.textContent).toContain("请选择要获取的 remote");
-    const select = dialog.querySelector("select") as HTMLSelectElement;
-    await act(async () => { Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(select, "backup"); select.dispatchEvent(new Event("change", { bubbles: true })); });
-    await flush();
-    expect(button("获取", dialog).disabled).toBe(false);
+    await click(q(".sync-fetch .sync-more"));
+    const items = all(".sync-menu .sync-menu-item");
+    expect(items.map((item) => item.textContent)).toEqual(["origin", "backup"]);
+    await click(items[1]);
+    expect(bridge.operation).toHaveBeenLastCalledWith("a", "unstaged", expect.any(String), { kind: "fetch", remote: "backup" });
   });
 });

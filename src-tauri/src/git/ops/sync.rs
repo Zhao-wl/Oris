@@ -40,6 +40,21 @@ impl GitAdapter {
         Some(Upstream { remote, merge })
     }
 
+    /// 未指定 remote 时的默认目标（一键获取 / 推送）：当前分支上游所属的 remote；没有上游时取仅有的一个 remote。
+    /// 有多个 remote 而无法确定时不执行，返回“选择 remote”确认，由界面列出 remote 后带上所选 remote 重试。
+    pub(super) fn default_remote(&self, what: &str) -> Result<Result<String, Step>, GitError> {
+        let remotes = self.remote_names()?;
+        let upstream = self.current_branch_ref().and_then(|full| full.strip_prefix("refs/heads/").map(str::to_owned)).and_then(|branch| self.upstream_of(&branch));
+        if let Some(up) = upstream.filter(|up| remotes.contains(&up.remote)) {
+            return Ok(Ok(up.remote));
+        }
+        match remotes.as_slice() {
+            [] => Err(GitError::WriteBlocked("该仓库没有配置 remote；Oris 不会新增 remote".into())),
+            [only] => Ok(Ok(only.clone())),
+            _ => Ok(Err(Step::confirm("chooseRemote", format!("当前分支没有可用的上游，仓库有多个 remote：请选择要{what}的 remote"), remotes))),
+        }
+    }
+
     fn current_branch_short(&self, what: &str) -> Result<String, GitError> {
         let Some(full) = self.current_branch_ref() else {
             return Err(GitError::WriteBlocked(format!("处于分离 HEAD：不能{what}，请先切换到分支或从这里新建分支")));
@@ -137,7 +152,11 @@ impl GitAdapter {
             (Some(up), None) => (up.remote.clone(), up.merge.clone(), false),
             (Some(up), Some(chosen)) if chosen == up.remote => (up.remote.clone(), up.merge.clone(), false),
             (_, Some(chosen)) => (chosen.to_owned(), format!("refs/heads/{branch}"), true),
-            (None, None) => return Err(GitError::WriteBlocked(format!("分支 {branch} 没有上游：请选择要推送到的 remote"))),
+            // 没有上游：只有一个 remote 时直接推送并设为上游（“发布分支”），多个时请界面选择。
+            (None, None) => match self.default_remote("推送到")? {
+                Ok(only) => (only, format!("refs/heads/{branch}"), true),
+                Err(step) => return Ok(step),
+            },
         };
         self.require_remote(&remote)?;
         if !destination.starts_with("refs/heads/") || destination.contains(['+', ':', ' ']) {
