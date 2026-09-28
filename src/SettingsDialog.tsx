@@ -216,6 +216,15 @@ function AiPage({ settings }: { settings: SettingsStore }) {
     {warning && <p className="settings-warning" role="status">{warning}</p>}
     {error && <p className="settings-error" role="alert">{error}</p>}
     <p className="settings-note">列表只显示已添加的配置，新增项会自动保存。API Key 保存在系统凭据存储中；模型查询失败时可手动输入模型 ID。</p>
+    <div className="settings-note ai-data-note" aria-label="AI 发送的数据">
+      <p>AI 为可选功能：只有在你生成提交信息、发送 AI 指令或查询模型时，Oris 才会把下列内容发送给当前 AI 组合（API 服务或本机的 codex / claude 工具），不会在后台自动发送。</p>
+      <ul>
+        <li>生成提交信息：已暂存的文件列表与已暂存的改动（最多约 90 KB）。</li>
+        <li>按描述选择文件提交：候选文件列表、已暂存与未暂存的改动（各最多约 90 KB）、未跟踪文件开头最多 2 KB（最多 40 个），合计最多约 18 万字符。</li>
+        <li>AI 指令：项目与分支名、未暂存 / 已暂存文件列表、分支与远端名称、当前打开文件两侧的内容（各最多 12,000 字符）、外观设置与已保存 AI 组合的名称和模型；指令提到 stash、丢弃记录、撤销提交或历史时，另附 stash 说明、丢弃记录的文件路径、HEAD 提交或最近 20 条提交的标题与作者。</li>
+      </ul>
+      <p>API Key 只随请求发送给该组合的服务地址。</p>
+    </div>
   </div>;
 }
 

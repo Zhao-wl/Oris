@@ -358,6 +358,9 @@ button.danger:not(:disabled):hover { color:var(--error, #ff7b72); border-color:v
 .ai-prompt-settings { display:flex; flex-direction:column; gap:9px; padding-top:12px; border-top:1px solid var(--border); }
 .ai-prompt-settings h4 { margin:0; font-size:13px; }
 .ai-prompt-settings .settings-note { margin:0; }
+.ai-data-note { margin-top:6px; }
+.ai-data-note p { margin:0 0 4px; }
+.ai-data-note ul { margin:0 0 4px; padding-left:18px; }
 .ai-prompt-field { display:flex; flex-direction:column; gap:6px; }
 .ai-prompt-field textarea { width:100%; min-height:86px; resize:vertical; padding:8px 10px; color:var(--text); background:var(--bg); border:1px solid var(--border); border-radius:5px; font:inherit; line-height:1.45; }
 .commit-progress, .commit-result { display:flex; flex-direction:column; gap:4px; font-size:12px; min-width:0; }

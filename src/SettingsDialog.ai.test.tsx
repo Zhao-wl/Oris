@@ -62,3 +62,10 @@ it("edits and resets each operation's system prompt independently", async () => 
   expect(settings.get().ai.prompts.stagedMessage).toBe(DEFAULT_AI_PROMPTS.stagedMessage);
   expect(described.value).toBe(DEFAULT_AI_PROMPTS.describedCommit);
 });
+
+it("说明 AI 会发送哪些数据，未配置时不检测也不联网（V2-D72）", async () => {
+  const note = host.querySelector('[aria-label="AI 发送的数据"]')?.textContent ?? "";
+  for (const text of ["不会在后台自动发送", "已暂存的改动", "未跟踪文件开头最多 2 KB", "当前打开文件两侧的内容", "API Key 只随请求发送"]) expect(note).toContain(text);
+  expect(detectAiTools).not.toHaveBeenCalled();
+  expect(listAiModels).not.toHaveBeenCalled();
+});
