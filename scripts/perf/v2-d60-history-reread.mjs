@@ -18,6 +18,8 @@ if (!exe) throw new Error("缺少 --exe");
 const port = Number(option("port", 9871));
 const iterations = Number(option("iterations", 3));
 const label = option("label", "v2-d60");
+// --history-visible：写操作期间历史页保持可见（提交需要“提交”页，提交后回到历史页）。
+const historyVisible = args.includes("--history-visible");
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const outDir = path.join(projectRoot, "artifacts", "gui-probe", label);
 mkdirSync(outDir, { recursive: true });
@@ -26,7 +28,7 @@ mkdirSync(runDir, { recursive: true });
 assertOutside(runDir);
 const log = (...parts) => console.log(new Date().toISOString().slice(11, 23), ...parts);
 const q = JSON.stringify;
-const report = { exe: path.resolve(exe), exeSha256: sha256File(exe), machine: machineInfo(), startedAt: new Date().toISOString(), iterations, method: "CDP 页面事件；Git 进程为 GIT_TRACE2_EVENT 文件数（点击 → 成功后 1.5 s 内）", ops: {}, failures: [] };
+const report = { exe: path.resolve(exe), exeSha256: sha256File(exe), machine: machineInfo(), startedAt: new Date().toISOString(), iterations, method: "CDP 页面事件；Git 进程为 GIT_TRACE2_EVENT 文件数（点击 → 成功后 1.5 s 内）", ops: {}, historyVisibleMode: historyVisible, failures: [] };
 
 const cfg = (repo) => { for (const [k, v] of [["user.name", "Oris Perf"], ["user.email", "oris-perf@example.invalid"], ["commit.gpgsign", "false"], ["core.autocrlf", "false"], ["pull.rebase", "false"]]) git(repo, ["config", k, v]); };
 const put = (repo, rel, text) => { const full = path.join(repo, rel); mkdirSync(path.dirname(full), { recursive: true }); writeFileSync(full, text); };
@@ -191,17 +193,19 @@ try {
   await openTab("历史");
   await waitUntil(`document.querySelectorAll('.log-row').length > 0`, 30000);
   await sleep(800);
-  await openTab("提交");
+  if (!historyVisible) await openTab("提交");
   await sleep(1500);
+  const V = { historyVisible };
+  const home = async () => { if (historyVisible) await openTab("历史"); else await openTab("提交"); };
   for (let i = 0; i < iterations; i++) {
     const tag = `${i}`;
     git(other, ["pull", "-q", "--ff-only"]);
     put(other, `remote/r-${tag}.txt`, `remote ${tag}\n`); commit(other, `remote ${tag}`); git(other, ["push", "-q", "origin", "main"]);
     await syncDialog("获取…", ".fetch-dialog");
-    await probe("fetch", `window.__w.button('获取', document.querySelector('.fetch-dialog'))`, `window.__w.counts().includes('↓1')`);
+    await probe("fetch", `window.__w.button('获取', document.querySelector('.fetch-dialog'))`, `window.__w.counts().includes('↓1')`, V);
     let rev = await evaluate(`window.__w.revision()`);
     await syncDialog("选项…", ".pull-dialog");
-    await probe("pull（仅快进）", `window.__w.button('拉取', document.querySelector('.pull-dialog'))`, `window.__w.counts().includes('↑0 ↓0') && window.__w.revision() !== ${q(rev)}`);
+    await probe("pull（仅快进）", `window.__w.button('拉取', document.querySelector('.pull-dialog'))`, `window.__w.counts().includes('↑0 ↓0') && window.__w.revision() !== ${q(rev)}`, V);
     git(repo, ["switch", "-q", "-c", `topic-${tag}`]); put(repo, `topic/t-${tag}.txt`, `topic ${tag}\n`); commit(repo, `topic ${tag}`); git(repo, ["switch", "-q", "main"]);
     await refresh();
     rev = await evaluate(`window.__w.revision()`);
@@ -209,28 +213,34 @@ try {
     await click(`window.__w.rowButton(${q(`topic-${tag}`)}, '更多 ▾')`);
     await click(`window.__w.button('合并到当前分支…')`);
     await waitUntil(`!!document.querySelector('.merge-dialog')`);
-    await probe("merge（快进）", `window.__w.button('合并', document.querySelector('.merge-dialog'))`, `window.__w.counts().includes('↑1') && window.__w.revision() !== ${q(rev)}`);
+    await probe("merge（快进）", `window.__w.button('合并', document.querySelector('.merge-dialog'))`, `window.__w.counts().includes('↑1') && window.__w.revision() !== ${q(rev)}`, V);
     await syncDialog("预览…", ".push-dialog");
-    await probe("push", `window.__w.button('推送', document.querySelector('.push-dialog'))`, `window.__w.counts().includes('↑0 ↓0')`);
+    await probe("push", `window.__w.button('推送', document.querySelector('.push-dialog'))`, `window.__w.counts().includes('↑0 ↓0')`, V);
     for (const target of ["perf-alt", "main"]) {
       await openBranches();
-      await probe("切换分支", `window.__w.rowButton(${q(target)}, '切换')`, `window.__w.branchLabel().includes(${q(target)})`);
+      await probe("切换分支", `window.__w.rowButton(${q(target)}, '切换')`, `window.__w.branchLabel().includes(${q(target)})`, V);
     }
     // 提交：在终端暂存一个改动（不计入），界面中提交。
     const crel = `commit/c-${tag}.txt`;
     put(repo, crel, `commit ${tag}\n`); git(repo, ["add", "--", crel]);
     await refresh();
     await openTab("提交");
+    // 终端暂存的改动在界面中出现后再提交。
+    await waitUntil(`!(window.__w.gitTab('提交')?.textContent ?? '').endsWith('· 0')`, 20000);
     await evaluate(`(() => { const box = document.querySelector('input[aria-label="提交并推送"]'); if (box?.checked) box.click(); return true; })()`);
     await evaluate(`window.__w.setIn(document, 'textarea[aria-label="提交信息"]', 'v2-d60 commit ${tag}')`);
     rev = await evaluate(`window.__w.revision()`);
     await probe("提交", `window.__w.button('提交', document.querySelector('.commit-editor')?.parentElement ?? document)`, `window.__w.revision() !== ${q(rev)}`);
+    // 推送到远端（终端，不计入），避免下一轮远端新提交与本地提交分叉。
+    git(repo, ["push", "-q", "origin", "main"]);
+    await refresh();
+    await home();
     // stash push / pop：入口在历史页左侧（历史页可见）。
     const rel = `tracked/${String(100 + i).padStart(6, "0")}.txt`;
     put(repo, rel, `stash probe ${i}\n`);
     await refresh();
     await waitUntil(`!!window.__op.row(${q(rel)})`, 20000);
-    await probeTab("切回历史页（此前 7 个写操作在“提交”页执行）");
+    if (historyVisible) await openTab("历史"); else await probeTab("切回历史页（此前 7 个写操作在“提交”页执行）");
     await waitUntil(`!!window.__w.button('储藏…')`, 20000);
     await click(`window.__w.button('储藏…')`);
     await waitUntil(`!!document.querySelector('.stash-form')`);
@@ -242,7 +252,7 @@ try {
     await probe("stash pop（历史页可见）", `window.__w.button('弹出', document.querySelector('.stash-detail'))`, `window.__w.stashCount() === 0`, { historyVisible: true });
     if (await evaluate(`!!window.__w.button('← 返回本地变化')`)) await click(`window.__w.button('← 返回本地变化')`);
     git(repo, ["checkout", "-q", "--", rel]);
-    await openTab("提交");
+    await home();
     await refresh();
     log(`第 ${i + 1}/${iterations} 轮完成`);
   }
