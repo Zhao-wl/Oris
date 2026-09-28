@@ -513,3 +513,70 @@ fn file_history_includes_merges_that_changed_the_file_against_the_first_parent()
     assert!(subjects.contains(&"topic edit") && subjects.contains(&"main edit") && subjects.contains(&"base"));
     assert!(history.reached_origin);
 }
+
+/// V2-D60：拉取 / 合并相关配置合并为一次 `config --get-regexp` 读取，取值与逐项 `config --get` 相同
+/// （子节区分大小写、节名 / 变量名不区分、同一键取最后一个值、没有值的键为空字符串）。
+#[test]
+fn refs_view_config_values_match_individual_config_get() {
+    let dir = init();
+    let p = dir.path();
+    commit(p, "a.txt", "1\n", "one", 0);
+    // Windows 的引用文件不区分大小写，不能同时建 Feat.X 与 feat.x；feat.x 只作为不应命中的配置节。
+    git(p, &["branch", "Feat.X"]);
+    let mut config = fs::OpenOptions::new().append(true).open(p.join(".git/config")).unwrap();
+    use std::io::Write;
+    writeln!(config, "[pull]\n\trebase\n[merge]\n\tff = false\n[MERGE]\n\tFF = only\n[branch \"Feat.X\"]\n\trebase = merges\n[Branch \"feat.x\"]\n\tREBASE = true").unwrap();
+    drop(config);
+    let get = |key: &str| {
+        let out = Command::new("git").arg("-C").arg(p).args(["config", "--get", key]).output().unwrap();
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    };
+    let adapter = open_adapter(p);
+    for (branch, key) in [("Feat.X", "branch.Feat.X.rebase"), ("main", "pull.rebase")] {
+        git(p, &["switch", "-q", branch]);
+        let view = adapter.history_refs().unwrap();
+        assert_eq!(view.pull_rebase, get(key), "{branch}");
+        assert_eq!(view.merge_ff, get("merge.ff"), "{branch}");
+    }
+    assert_eq!(adapter.history_refs().unwrap().merge_ff.as_deref(), Some("only"));
+    assert_eq!(get("branch.Feat.X.rebase").as_deref(), Some("merges"));
+    assert_eq!(get("branch.feat.x.rebase").as_deref(), Some("true"));
+}
+
+/// V2-D60：HEAD 状态改由 `for-each-ref` 的 `%(HEAD)` 取得（分支上时不再另起 symbolic-ref / rev-parse），
+/// 与逐项读取的结果一致；分离 HEAD、尚无提交的分支仍按原方式读取；默认日志起点仍包含分离的 HEAD。
+#[test]
+fn head_state_from_for_each_ref_matches_read_head() {
+    let dir = init();
+    let p = dir.path();
+    // 尚无提交
+    let unborn = refs::read_refs(gp(), p).unwrap();
+    assert_eq!(unborn.head, refs::read_head(gp(), p));
+    assert!(unborn.head.unborn);
+    let first = commit(p, "a.txt", "1\n", "one", 0);
+    let second = commit(p, "a.txt", "2\n", "two", 1);
+    git(p, &["branch", "side", &first]);
+    let attached = refs::read_refs(gp(), p).unwrap();
+    assert_eq!(attached.head, refs::read_head(gp(), p));
+    assert_eq!(attached.head.branch.as_deref(), Some("refs/heads/main"));
+    assert_eq!(attached.head.oid.as_deref(), Some(second.as_str()));
+    assert!(attached.local.iter().any(|b| b.current && b.name == "main"));
+    // 分离 HEAD 在一个不被任何分支指向的提交上：日志起点必须包含它。
+    let detached_commit = {
+        git(p, &["switch", "-q", "--detach", &second]);
+        commit(p, "a.txt", "3\n", "three", 2)
+    };
+    let detached = refs::read_refs(gp(), p).unwrap();
+    assert_eq!(detached.head, refs::read_head(gp(), p));
+    assert!(detached.head.detached);
+    assert!(detached.local.iter().all(|b| !b.current));
+    let page = log::read_log(gp(), p, &LogQuery { refs: vec![], search: None, page_size: 10 }, None).unwrap();
+    assert_eq!(page.commits[0].oid, detached_commit);
+    assert!(page.tips.contains(&detached_commit));
+    // 回到分支：起点来自 for-each-ref（HEAD 所在分支已包含）。
+    git(p, &["switch", "-q", "side"]);
+    let page = log::read_log(gp(), p, &LogQuery { refs: vec![], search: None, page_size: 10 }, None).unwrap();
+    assert!(page.tips.contains(&first) && page.tips.contains(&second));
+    assert!(!page.tips.contains(&detached_commit));
+    assert_eq!(refs::read_refs(gp(), p).unwrap().head, refs::read_head(gp(), p));
+}

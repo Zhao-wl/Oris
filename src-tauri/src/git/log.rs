@@ -171,15 +171,15 @@ pub fn resolve_commit(git: &Path, worktree: &Path, reference: &str) -> Result<St
 }
 
 fn default_tips(git: &Path, worktree: &Path) -> Result<Vec<String>, GitError> {
-    let output = run_required(git, worktree, &["for-each-ref", "--format=%(objectname) %(objecttype)", "refs/heads", "refs/remotes"])?;
-    let mut tips: Vec<String> = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|line| line.split_once(' '))
-        .filter(|(_, kind)| *kind == "commit")
-        .map(|(oid, _)| oid.to_owned())
-        .collect();
-    if let Ok(head) = resolve_commit(git, worktree, "HEAD") {
-        tips.push(head);
+    let output = run_required(git, worktree, &["for-each-ref", "--format=%(objectname) %(objecttype) %(HEAD)", "refs/heads", "refs/remotes"])?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let rows: Vec<Vec<&str>> = text.lines().map(|line| line.splitn(3, ' ').collect()).filter(|f: &Vec<&str>| f.len() == 3 && f[1] == "commit").collect();
+    let mut tips: Vec<String> = rows.iter().map(|f| f[0].to_owned()).collect();
+    // HEAD 指向列表中的分支时它已在起点中（V2-D60：不再另起 rev-parse）；分离 HEAD 时单独解析。
+    if !rows.iter().any(|f| f[2] == "*") {
+        if let Ok(head) = resolve_commit(git, worktree, "HEAD") {
+            tips.push(head);
+        }
     }
     tips.sort();
     tips.dedup();

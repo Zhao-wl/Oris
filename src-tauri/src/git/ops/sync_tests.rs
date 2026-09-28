@@ -204,6 +204,20 @@ fn b11_diverged_ff_only_fails_then_merge_creates_a_merge_commit_even_with_pull_r
 }
 
 #[test]
+fn pull_merge_reports_failure_instead_of_asking_again_when_merge_ff_only_blocks_it() {
+    let r = remote_setup();
+    commit(&r.other, "b.txt", "remote\n", "remote work");
+    git_in(&r.other, &["push", "-q", "origin", "main"]);
+    let local_commit = commit(&r.local, "c.txt", "local\n", "local work");
+    git_in(&r.local, &["config", "merge.ff", "only"]);
+    let outcome = Harness::new(&r.local).run(pull(PullMode::Merge));
+    assert_eq!(outcome.status, OpStatus::Failed, "{}", outcome.message);
+    assert!(outcome.confirmation.is_none());
+    assert!(outcome.message.contains("merge.ff=only") && outcome.message.contains("只允许快进"), "{}", outcome.message);
+    assert_eq!(git_in(&r.local, &["rev-parse", "HEAD"]), local_commit, "HEAD 不变");
+}
+
+#[test]
 fn b11_pull_needs_an_upstream_and_offers_stash_when_local_changes_block_it() {
     let r = remote_setup();
     let h = Harness::new(&r.local);

@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { flatLayout, layoutGraph, type GraphLayout, type GraphRow } from "./history-graph";
 import { commitChanges, compareRevisions, fileHistory, readLog, readRefs, shortOid, shortRef, statusLetter, type Branch, type ChangedFile, type CommitChanges, type CommitInfo, type Comparison, type FileHistory, type LogCursor, type RefsView, type SearchKind, type StashEntry } from "./history-api";
-import { ROW_HEIGHT, isStale, movedEndpoint, nodeX, rowSegments, LANE_WIDTH, refOid, type PinnedEndpoint } from "./history-model";
+import { ROW_HEIGHT, deferVersions, initialDeferred, isStale, movedEndpoint, nodeX, rowSegments, LANE_WIDTH, refOid, type DeferredVersions, type PinnedEndpoint } from "./history-model";
 import { errorText } from "./error-message";
 import HistorySidebar from "./HistorySidebar";
 import PathText from "./PathText";
@@ -103,7 +103,11 @@ export default function HistoryPanel(props: Props) {
   const [mode, setMode] = useState<Mode>({ kind: "commit" });
   const [menu, setMenu] = useState<Menu | null>(null);
   const [scrollTarget, setScrollTarget] = useState<string | null>(null);
-  const stash = useStashList(repoId, stashVersion);
+  // V2-D60：历史页不可见时 refs / stash 变化只标记失效，切回时再读（每次切回最多重读一次）。
+  const deferred = useDeferredVersions(hidden, refsVersion, stashVersion);
+  const shownRefs = deferred.refs, shownStash = deferred.stash;
+  const stash = useStashList(repoId, shownStash);
+  const stashStale = deferred.stashUntil !== null && stash.loaded < deferred.stashUntil;
   // 正在查看的 stash 已被弹出 / 删除：回到提交详情。
   useEffect(() => { if (stash.entries) setMode((current) => current.kind === "stash" && !stash.entries!.some((e) => e.oid === current.oid) ? { kind: "commit" } : current); }, [stash.entries]);
   const [columns, setColumns] = useState(loadColumns);
@@ -118,22 +122,25 @@ export default function HistoryPanel(props: Props) {
   // ---------- 分支与日志 ----------
   const onRefsRef = useRef(onRefs);
   onRefsRef.current = onRefs;
-  const loadRefs = useCallback(() => {
-    void readRefs(repoId).then((view) => { setRefs(view); setRefsError(null); onRefsRef.current?.(view); }, (error) => { if (!isStale(error)) setRefsError(errorText(error)); });
+  /** 已按哪个 refs 版本读完分支列表 / 日志第一页（用于判断切回后的重读是否完成）。 */
+  const [loadedRefs, setLoadedRefs] = useState(-1);
+  const [loadedLog, setLoadedLog] = useState(-1);
+  const loadRefs = useCallback((version: number) => {
+    void readRefs(repoId).then((view) => { setRefs(view); setRefsError(null); setLoadedRefs(version); onRefsRef.current?.(view); }, (error) => { if (!isStale(error)) { setRefsError(errorText(error)); setLoadedRefs(version); } });
   }, [repoId]);
 
   /** 读取第一页（重置已加载的结果）；已选中的提交仍在结果中时保持选择。 */
-  const loadFirst = useCallback(() => {
+  const loadFirst = useCallback((version: number) => {
     const request = ++logRequest.current;
     setLogLoading(true); setLogError(null);
     void readLog(repoId, { refs: filter ? [filter] : [], search: search && search.text.trim() ? { kind: search.kind, text: search.text.trim() } : null, pageSize: PAGE_SIZE }, null).then((page) => {
       if (request !== logRequest.current) return;
-      setCommits(page.commits); setCursor(page.next); setLogLoading(false);
+      setCommits(page.commits); setCursor(page.next); setLogLoading(false); setLoadedLog(version);
       const keep = selectedRef.current && page.commits.some((c) => c.oid === selectedRef.current);
       if (!keep) setSelectedOid(page.commits[0]?.oid ?? null);
     }, (error) => {
       if (request !== logRequest.current || isStale(error)) return;
-      setLogLoading(false); setCommits([]); setCursor(null); setLogError(errorText(error));
+      setLogLoading(false); setCommits([]); setCursor(null); setLogError(errorText(error)); setLoadedLog(version);
     });
   }, [repoId, filter, search]);
 
@@ -154,8 +161,11 @@ export default function HistoryPanel(props: Props) {
     }, (error) => { if (inflight.current === key) inflight.current = null; if (request === logRequest.current && !isStale(error)) { setLogLoading(false); setLogError(errorText(error)); } });
   }, [repoId, cursor, logLoading, search]);
 
-  useEffect(() => { loadRefs(); }, [loadRefs, refsVersion]);
-  useEffect(() => { loadFirst(); }, [loadFirst, refsVersion]);
+  useEffect(() => { loadRefs(shownRefs); }, [loadRefs, shownRefs]);
+  useEffect(() => { loadFirst(shownRefs); }, [loadFirst, shownRefs]);
+  // 不可见期间失效的内容在切回后的重读完成前不显示（旧的分支、HEAD、引用标记与 stash 列表），提交列表保留以维持滚动位置。
+  const refsStale = deferred.refsUntil !== null && (loadedRefs < deferred.refsUntil || loadedLog < deferred.refsUntil);
+  const viewRefs = refsStale ? null : refs;
 
   // 搜索结果彼此多半不相连：只列出节点，不按拓扑布局（否则每个缺失的父提交都占一条泳道，图宽随结果数增长）。
   const searching = !!search?.text.trim();
@@ -168,13 +178,23 @@ export default function HistoryPanel(props: Props) {
 
   // ---------- 选中提交的变化文件（默认第一个父节点，合并提交可选父节点） ----------
   useEffect(() => { setParent(null); }, [selectedOid]);
+  // 提交与父节点都是固定的 OID，结果不随 refs 变化：refs 变化后只在上次读取失败时重试，不重复读取同一提交。
+  const changesKey = useRef<string | null>(null);
   useEffect(() => {
-    if (!selectedOid) { setChanges(null); return; }
-    let live = true;
+    if (!selectedOid) { setChanges(null); changesKey.current = null; return; }
+    const key = `${selectedOid}:${parent ?? ""}`;
+    if (changesKey.current === key) return;
+    let live = true, settled = false;
+    changesKey.current = key;
     setChangesError(null);
-    void commitChanges(repoId, selectedOid, parent).then((result) => { if (live) setChanges(result); }, (error) => { if (live && !isStale(error)) { setChanges(null); setChangesError(errorText(error)); } });
-    return () => { live = false; };
-  }, [repoId, selectedOid, parent, refsVersion]);
+    void commitChanges(repoId, selectedOid, parent).then((result) => { settled = true; if (live) setChanges(result); }, (error) => {
+      settled = true;
+      if (changesKey.current === key) changesKey.current = null;
+      if (live && !isStale(error)) { setChanges(null); setChangesError(errorText(error)); }
+    });
+    // 结果被丢弃（被新的选择取代）时允许之后重新读取。
+    return () => { live = false; if (!settled && changesKey.current === key) changesKey.current = null; };
+  }, [repoId, selectedOid, parent, shownRefs]);
 
   // ---------- 文件历史 ----------
   const loadFileHistory = useCallback((request: FileHistoryRequest, next: LogCursor | null, previous: FileHistory | null) => {
@@ -220,11 +240,11 @@ export default function HistoryPanel(props: Props) {
   const jumpFilter = useRef<string | null>(null);
   useEffect(() => { if (filter !== jumpFilter.current) setHeadNote(null); }, [filter]);
   const jumpHead = () => {
-    const head = refs?.head.oid;
-    if (!head) return;
+    const head = viewRefs?.head.oid;
+    if (!viewRefs || !head) return;
     if (byOid.has(head)) { select(head, true); return; }
     // HEAD 不在当前结果中（被筛选、搜索或尚未加载）：改为浏览 HEAD 所在的分支，HEAD 位于第一行。
-    const target = refs.head.detached || !refs.head.branch ? "HEAD" : refs.head.branch;
+    const target = viewRefs.head.detached || !viewRefs.head.branch ? "HEAD" : viewRefs.head.branch;
     jumpFilter.current = target;
     setSearch(null); setSearchText("");
     setFilter(target);
@@ -313,17 +333,17 @@ export default function HistoryPanel(props: Props) {
       onKeyDown={(event) => { const step = event.shiftKey ? 64 : 16; if (event.key === "ArrowLeft") { event.preventDefault(); resizeTo(side, value - sign * step); } else if (event.key === "ArrowRight") { event.preventDefault(); resizeTo(side, value + sign * step); } }}/>;
   };
 
-  const moved = mode.kind === "compare" ? [movedEndpoint(mode.a, refs), movedEndpoint(mode.b, refs)].filter(Boolean) as string[] : [];
-  const current = refs?.local.find((b) => b.current) ?? null;
-  const headLabel = refs ? refs.head.detached ? `分离 HEAD @ ${shortOid(refs.head.oid)}` : refs.head.unborn ? `${shortRef(refs.head.branch ?? "")}（尚无提交）` : shortRef(refs.head.branch ?? "") : "…";
+  const moved = mode.kind === "compare" ? [movedEndpoint(mode.a, viewRefs), movedEndpoint(mode.b, viewRefs)].filter(Boolean) as string[] : [];
+  const current = viewRefs?.local.find((b) => b.current) ?? null;
+  const headLabel = viewRefs ? viewRefs.head.detached ? `分离 HEAD @ ${shortOid(viewRefs.head.oid)}` : viewRefs.head.unborn ? `${shortRef(viewRefs.head.branch ?? "")}（尚无提交）` : shortRef(viewRefs.head.branch ?? "") : "…";
   const start = Math.max(0, Math.floor(view.top / ROW_HEIGHT) - OVERSCAN);
   const end = Math.min(layout.rows.length, Math.ceil((view.top + view.height) / ROW_HEIGHT) + OVERSCAN);
   const graphWidth = Math.min(MAX_GRAPH_LANES, Math.max(1, layout.width)) * LANE_WIDTH;
   const stashEntry = mode.kind === "stash" ? stash.entries?.find((e) => e.oid === mode.oid) ?? null : null;
 
   return <div ref={root} className="git-body log-layout" hidden={hidden} style={{ gridTemplateColumns: `${columns.left}px ${SPLITTER}px minmax(0, 1fr) ${SPLITTER}px ${columns.right}px` }} onContextMenu={(event) => { if (!(event.target as Element).closest("[data-endpoint]")) setMenu(null); }}>
-    <HistorySidebar refs={refs} refsError={refsError} headLabel={headLabel} current={current} filter={filter} onFilter={setFilter}
-      stashes={stash.entries} stashError={stash.error} selectedStash={mode.kind === "stash" ? mode.oid : null} onStash={(entry) => setMode({ kind: "stash", oid: entry.oid })} onNewStash={onStashPush ? () => setMode({ kind: "stashPush" }) : undefined}
+    <HistorySidebar refs={viewRefs} refsError={refsError} headLabel={headLabel} current={current} filter={filter} onFilter={setFilter}
+      stashes={stashStale ? null : stash.entries} stashError={stash.error} selectedStash={mode.kind === "stash" ? mode.oid : null} onStash={(entry) => setMode({ kind: "stash", oid: entry.oid })} onNewStash={onStashPush ? () => setMode({ kind: "stashPush" }) : undefined}
       blocked={writeBlocked ?? null} onSwitch={onSwitch} onTrack={onTrack} onMenu={(x, y, endpoint) => setMenu({ x, y, endpoint })}/>
     {splitter("left")}
     <section className="log-commits-pane" aria-label={mode.kind === "file" ? "文件历史" : "提交历史"}>
@@ -337,10 +357,10 @@ export default function HistoryPanel(props: Props) {
           <input aria-label="搜索提交" placeholder={searchKind === "sha" ? "SHA 前缀（至少 4 位）" : `按${searchLabels[searchKind]}搜索（字面量）`} value={searchText} onChange={(event) => setSearchText(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); setSearch(searchText.trim() ? { kind: searchKind, text: searchText } : null); } }}/>
           <button type="button" onClick={() => setSearch(searchText.trim() ? { kind: searchKind, text: searchText } : null)}>搜索</button>
           {search && <button type="button" className="quiet" onClick={() => { setSearch(null); setSearchText(""); }}>清除</button>}
-          <button type="button" onClick={jumpHead} disabled={!refs?.head.oid} title="定位到 HEAD（当前检出的提交）">跳到 HEAD</button>
+          <button type="button" onClick={jumpHead} disabled={!viewRefs?.head.oid} title="定位到 HEAD（当前检出的提交）">跳到 HEAD</button>
           <span className="spacer"/>
           {headNote && <span className="log-jump-note" role="status">{headNote}</span>}
-          <span className="log-count">{filter ? `浏览 ${shortRef(filter)} · ` : ""}{commits.length} 个提交{cursor ? " · 还有更多" : ""}{logLoading ? " · 读取中…" : ""}</span>
+          <span className="log-count">{filter ? `浏览 ${shortRef(filter)} · ` : ""}{commits.length} 个提交{cursor ? " · 还有更多" : ""}{logLoading || refsStale ? " · 读取中…" : ""}</span>
         </div>
         {compareStart && <div className="log-compare-start">比较起点：{shortRef(compareStart.label)} @ {shortOid(compareStart.oid)}<span className="spacer"/>在提交或分支上右键“与比较起点比较”<button type="button" className="quiet" onClick={() => setCompareStart(null)}>取消</button></div>}
         {logError && <div className="log-error">{logError}</div>}
@@ -348,7 +368,7 @@ export default function HistoryPanel(props: Props) {
           <div style={{ position: "relative", height: layout.rows.length * ROW_HEIGHT }} data-commit-count={layout.rows.length}>
             {layout.rows.slice(start, end).map((row, offset) => {
               const commit = commits[start + offset];
-              return <CommitRow key={row.oid} row={row} commit={commit} top={(start + offset) * ROW_HEIGHT} graphWidth={graphWidth} loaded={loaded} selected={row.oid === selectedOid} head={refs?.head.oid === row.oid} onPick={() => { select(row.oid); setMode({ kind: "commit" }); }} onMenu={(x, y) => setMenu({ x, y, endpoint: commitEndpoint(commit) })}/>;
+              return <CommitRow key={row.oid} row={row} commit={commit} top={(start + offset) * ROW_HEIGHT} graphWidth={graphWidth} loaded={loaded} selected={row.oid === selectedOid} head={viewRefs?.head.oid === row.oid} decorated={!refsStale} onPick={() => { select(row.oid); setMode({ kind: "commit" }); }} onMenu={(x, y) => setMenu({ x, y, endpoint: commitEndpoint(commit) })}/>;
             })}
           </div>
           {!logLoading && !commits.length && !logError && <div className="log-empty">{search ? "没有匹配的提交" : "没有提交"}</div>}
@@ -358,10 +378,10 @@ export default function HistoryPanel(props: Props) {
     </section>
     {splitter("right")}
     <aside className="log-detail" aria-label={mode.kind === "stash" || mode.kind === "stashPush" ? "stash 内容" : "提交详情"}>
-      {mode.kind === "stash" ? <StashDetail repoId={repoId} entry={stashEntry} version={stashVersion} blocked={writeBlocked ?? null} activeKey={activeKey} onApply={(entry, pop) => onStashApply?.(entry, pop)} onDrop={(entry) => onStashDrop?.(entry)} onOpenFile={onOpenFile}/>
+      {mode.kind === "stash" ? <StashDetail repoId={repoId} entry={stashEntry} version={shownStash} blocked={writeBlocked ?? null} activeKey={activeKey} onApply={(entry, pop) => onStashApply?.(entry, pop)} onDrop={(entry) => onStashDrop?.(entry)} onOpenFile={onOpenFile}/>
         : mode.kind === "stashPush" ? <StashForm selectedFiles={selectedFiles} blocked={writeBlocked ?? null} onPush={(options) => onStashPush ? onStashPush(options) : Promise.resolve(false)} onClose={() => setMode({ kind: "commit" })}/>
         : mode.kind === "compare" ? <CompareDetail mode={mode} moved={moved} activeKey={activeKey} onSwap={() => runCompare(mode.b, mode.a)} onRefresh={() => {
-        const renew = (endpoint: PinnedEndpoint) => { const oid = refOid(endpoint.ref, refs); return oid ? { ...endpoint, oid } : endpoint; };
+        const renew = (endpoint: PinnedEndpoint) => { const oid = refOid(endpoint.ref, viewRefs); return oid ? { ...endpoint, oid } : endpoint; };
         runCompare(renew(mode.a), renew(mode.b));
       }} onClose={() => { setMode({ kind: "commit" }); setCompareStart(null); }} onOpen={(file) => mode.result && openCompareFile(mode.result, mode.a, mode.b, file)}/>
         : mode.kind === "file" ? <FileHistoryDetail mode={mode}/>
@@ -375,13 +395,21 @@ export default function HistoryPanel(props: Props) {
   </div>;
 }
 
+/** 见 `deferVersions`：同一输入幂等，渲染中直接推进。 */
+function useDeferredVersions(hidden: boolean, refs: number, stash: number): DeferredVersions {
+  const state = useRef<DeferredVersions | null>(null);
+  state.current = deferVersions(state.current ?? initialDeferred(refs, stash), hidden, refs, stash);
+  return state.current;
+}
+
 const laneClass = (lane: number) => `lane-${lane % 6}`;
 
-const CommitRow = memo(function CommitRow({ row, commit, top, graphWidth, loaded, selected, head, onPick, onMenu }: { row: GraphRow; commit: CommitInfo; top: number; graphWidth: number; loaded: ReadonlySet<string>; selected: boolean; head: boolean; onPick(): void; onMenu(x: number, y: number): void }) {
+const CommitRow = memo(function CommitRow({ row, commit, top, graphWidth, loaded, selected, head, decorated, onPick, onMenu }: { row: GraphRow; commit: CommitInfo; top: number; graphWidth: number; loaded: ReadonlySet<string>; selected: boolean; head: boolean; decorated: boolean; onPick(): void; onMenu(x: number, y: number): void }) {
   const segments = rowSegments(row, loaded);
-  const refs = commit.refs.filter((r) => r.kind !== "head");
+  // decorated = false：引用已失效、重读尚未完成，不显示旧的引用与 HEAD 标注。
+  const refs = decorated ? commit.refs.filter((r) => r.kind !== "head") : [];
   // HEAD 标注：来自该页日志自身的装饰（与分支列表是否已读取无关）。
-  const isHead = head || commit.refs.some((r) => r.kind === "head");
+  const isHead = decorated && (head || commit.refs.some((r) => r.kind === "head"));
   return <div id={`commit-${commit.oid}`} role="option" aria-selected={selected} data-endpoint data-oid={commit.oid} className={`log-row${selected ? " selected" : ""}`} style={{ position: "absolute", top, left: 0, right: 0, height: ROW_HEIGHT }} onClick={onPick} onContextMenu={(event) => { event.preventDefault(); onPick(); onMenu(event.clientX, event.clientY); }}>
     <svg className="log-graph" width={graphWidth} height={ROW_HEIGHT} aria-hidden="true">
       {segments.map((s, i) => <line key={i} className={`${laneClass(s.lane)}${s.dashed ? " dashed" : ""}`} x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2}/>)}

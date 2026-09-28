@@ -260,7 +260,8 @@ button:disabled { opacity:.45; cursor:default; }
 .scheme-tag { padding:0 5px; font-size:10px; color:var(--dim); border:1px solid var(--border); border-radius:8px; white-space:nowrap; }
 .settings-note { margin:0; color:var(--dim); font-size:12px; }
 .settings-ok { margin:0; color:var(--status-added, #4f9f64); }
-.settings-error { margin:0; color:var(--error, #ff7b72); }
+.settings-error { margin:0; color:var(--error, #ff7b72); white-space:pre-wrap; overflow-wrap:anywhere; }
+.settings-warning { margin:0; color:var(--warning, #d9a24f); white-space:pre-wrap; overflow-wrap:anywhere; }
 .git-facts { display:grid; grid-template-columns:150px 1fr; gap:6px 10px; margin:0; font-size:12px; }
 .git-facts dt { color:var(--dim); }
 .git-facts dd { margin:0; overflow-wrap:anywhere; }
@@ -290,6 +291,12 @@ button.quiet:not(:disabled):hover { color:var(--text); background:var(--hover); 
 button.danger:not(:disabled):hover { color:var(--error, #ff7b72); border-color:var(--error, #ff7b72); }
 .danger-button { color:var(--button-text, white); background:var(--error, #c9463d); border-color:var(--error, #c9463d); }
 .commit-entry { white-space:nowrap; }
+/* 常驻更新提醒（参考 VS Code 标题栏的「更新」按钮）。 */
+.update-button { white-space:nowrap; font-weight:600; color:var(--button-text, white); background:var(--button-bg, #315ee7); border-color:var(--button-bg, #315ee7); }
+.update-button:not(:disabled):hover { filter:brightness(1.12); }
+.update-button.pending:disabled { opacity:1; cursor:default; color:var(--text); background:color-mix(in srgb, var(--button-bg, #315ee7) 22%, var(--chrome)); border-color:color-mix(in srgb, var(--button-bg, #315ee7) 55%, transparent); font-variant-numeric:tabular-nums; }
+.update-button.failed { color:var(--error, #ff7b72); background:transparent; border-color:color-mix(in srgb, var(--error, #ff7b72) 60%, transparent); }
+.update-notes { max-height:180px; overflow:auto; margin:0; padding:8px 10px; white-space:pre-wrap; font:inherit; font-size:12px; color:var(--text); background:var(--panel); border:1px solid var(--border); border-radius:4px; }
 .op-banner { flex:none; padding:7px 12px; color:var(--text); background:color-mix(in srgb, var(--warning, #d9a24f) 16%, var(--panel)); border-bottom:1px solid color-mix(in srgb, var(--warning, #d9a24f) 55%, transparent); font-size:12px; }
 .git-panel { display:flex; flex-direction:column; min-height:0; background:var(--panel); border-top:1px solid var(--border); }
 .git-tabs { display:flex; align-items:center; gap:4px; height:31px; padding:0 8px; background:var(--chrome); }
@@ -310,6 +317,7 @@ button.danger:not(:disabled):hover { color:var(--error, #ff7b72); border-color:v
 .commit-side label { display:flex; align-items:center; gap:5px; }
 .commit-buttons { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
 .commit-side .commit-reason { color:var(--warning, #d9a24f); }
+.commit-side .commit-reason[role="alert"] { white-space:pre-wrap; overflow-wrap:anywhere; }
 .ai-commit-overlay { position:fixed; inset:0; z-index:115; display:grid; place-items:center; background:color-mix(in srgb, var(--bg) 48%, #0009); }
 .ai-commit-dialog { width:min(600px, calc(100vw - 36px)); padding:12px; color:var(--text); background:var(--panel); border:1px solid var(--border); border-radius:9px; box-shadow:0 18px 48px var(--widget-shadow, #000a); }
 .ai-commit-input-row { display:flex; align-items:flex-start; gap:10px; }

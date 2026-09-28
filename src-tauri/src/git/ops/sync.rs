@@ -115,6 +115,10 @@ impl GitAdapter {
                 return Ok(Step::failed(note(format!("{what}时出现 {} 个冲突：已进入“合并进行中”。冲突文件可只读查看，在外部解决后“标记已解决”，再“完成合并”或“中止合并”", self.conflict_count()))));
             }
             if summary.contains("Not possible to fast-forward") || summary.contains("not possible to fast-forward") || summary.contains("Diverging branches") {
+                // 已经是合并方式仍无法快进：用户的 merge.ff=only（或 pull.ff=only）不允许合并提交，“改用合并”没有意义，如实报告失败。
+                if mode == PullMode::Merge {
+                    return Ok(Step::failed(note(format!("{what}失败：本地分支 {branch} 与 {upstream_label} 已分叉，而你的 Git 配置（merge.ff=only 或 pull.ff=only）只允许快进，不能生成合并提交。可在终端修改该配置，或在外部处理分叉；Oris 不做 rebase"))));
+                }
                 return Ok(Step::confirm("diverged", note(format!("本地分支 {branch} 与 {upstream_label} 已分叉，无法仅快进。可以改用“合并远端改动”（会生成合并提交）；Oris 不做 rebase")), vec![]));
             }
             // 文件列表很长时 Git 的提示头会被挤出错误尾部：在全部输出中识别。
