@@ -8,11 +8,11 @@ import type { RefsView } from "./history-api";
 import { defaultAnchor, WORKSPACE_KEY } from "./workspace-model";
 
 const bridge = vi.hoisted(() => ({
-  open: vi.fn(), refresh: vi.fn(), read: vi.fn(), diff: vi.fn(), operation: vi.fn(), refs: vi.fn(), remotes: vi.fn(), log: vi.fn(), changes: vi.fn(), mergeMessage: vi.fn()
+  open: vi.fn(), refresh: vi.fn(), read: vi.fn(), diff: vi.fn(), operation: vi.fn(), removeLocks: vi.fn(), refs: vi.fn(), remotes: vi.fn(), log: vi.fn(), changes: vi.fn(), mergeMessage: vi.fn()
 }));
 vi.mock("./api", () => ({ openRepository: bridge.open, refreshRepository: bridge.refresh, readContentPair: bridge.read, closeRepository: vi.fn(async () => {}), cancelContentRead: vi.fn(async () => {}),
   repositoryDetails: vi.fn(async () => null), activateRepository: vi.fn(async () => true), loadSnapshot: vi.fn(async () => null), saveSnapshot: vi.fn(async () => true), removeSnapshot: vi.fn(async () => {}), decodeContentFrame: (x: unknown) => x }));
-vi.mock("./operations-api", () => ({ runOperation: bridge.operation, cancelOperation: vi.fn(async () => true), lastOperation: vi.fn(async () => null),
+vi.mock("./operations-api", () => ({ runOperation: bridge.operation, removeStaleLocks: bridge.removeLocks, cancelOperation: vi.fn(async () => true), lastOperation: vi.fn(async () => null),
   prepareDiscard: vi.fn(), discardBackups: vi.fn(async () => []), headCommitInfo: vi.fn(async () => null) }));
 vi.mock("./history-api", async (importOriginal) => ({ ...(await importOriginal<typeof import("./history-api")>()),
   readLog: bridge.log, commitChanges: bridge.changes, compareRevisions: vi.fn(), fileHistory: vi.fn(), readRefs: bridge.refs, readRemotes: bridge.remotes, readRevisionPair: vi.fn(),
@@ -252,6 +252,62 @@ describe("decision follow-ups (V2-D48 / V2-D49)", () => {
     expect(toast.textContent).toContain("认证失败");
     await click(button("重试", toast));
     expect(requests()).toEqual([{ kind: "fetch", remote: null }, { kind: "fetch", remote: null }]);
+  });
+
+  describe("stale Git lock files (V2-D65)", () => {
+    const lock = "C:/a/.git/index.lock";
+    const locked = (kind: "fetch" | "pull" | "push", status: "failed" | "needsConfirmation" = "failed") => async () => outcome(kind, { status, snapshot: status === "failed" ? snap() : null, message: "锁文件已存在",
+      confirmation: { reason: "staleLock", message: "仓库中存在 Git 锁文件。最近修改：index.lock（5 分钟前修改）", paths: [lock] } });
+
+    it("asks before removing the lock, then pulls again once", async () => {
+      bridge.operation.mockImplementationOnce(locked("pull", "needsConfirmation"));
+      bridge.removeLocks.mockResolvedValue([lock]);
+      await mount();
+      await click(main("pull"));
+      const dialog = q(".confirm-dialog")!;
+      expect(dialog.textContent).toContain("index.lock");
+      expect(dialog.textContent).toContain("没有其他 Git 进程");
+      expect(bridge.removeLocks).not.toHaveBeenCalled();
+      await click(button("删除锁文件并拉取", dialog));
+      expect(bridge.removeLocks).toHaveBeenCalledWith("a", [lock]);
+      expect(requests()).toEqual([{ kind: "pull", mode: "ffOnly" }, { kind: "pull", mode: "ffOnly" }]);
+      expect(q(".sync-toast.succeeded")).toBeTruthy();
+    });
+
+    it("removes a lock reported by a failed push and pushes again; cancelling keeps the lock and shows the failure", async () => {
+      bridge.operation.mockImplementationOnce(locked("push"));
+      bridge.removeLocks.mockResolvedValue([lock]);
+      await mount();
+      await click(main("push"));
+      await click(button("删除锁文件并推送", q(".confirm-dialog")!));
+      expect(requests()).toEqual([{ kind: "push", remote: null }, { kind: "push", remote: null }]);
+      expect(q(".sync-toast.succeeded")).toBeTruthy();
+
+      bridge.operation.mockImplementationOnce(locked("fetch"));
+      await click(main("fetch"));
+      await click(button("取消", q(".confirm-dialog")!));
+      expect(bridge.removeLocks).toHaveBeenCalledTimes(1);
+      expect(requests().slice(2)).toEqual([{ kind: "fetch", remote: null }]);
+      expect(q(".sync-toast.failed")?.textContent).toContain("锁文件已存在");
+    });
+
+    it("does not ask again when the retry is still locked, and reports a failed removal", async () => {
+      bridge.operation.mockImplementationOnce(locked("pull", "needsConfirmation")).mockImplementationOnce(locked("pull"));
+      bridge.removeLocks.mockResolvedValue([lock]);
+      await mount();
+      await click(main("pull"));
+      await click(button("删除锁文件并拉取", q(".confirm-dialog")!));
+      expect(requests()).toHaveLength(2);
+      expect(q(".confirm-dialog")).toBeNull();
+      expect(q(".sync-toast.failed")?.textContent).toContain("锁文件已存在");
+
+      bridge.operation.mockImplementationOnce(locked("fetch"));
+      bridge.removeLocks.mockRejectedValue({ kind: "writeBlocked", message: "拒绝删除" });
+      await click(main("fetch"));
+      await click(button("删除锁文件并获取远端状态", q(".confirm-dialog")!));
+      expect(requests()).toHaveLength(3);
+      expect(q(".sync-toast.failed")?.textContent).toContain("删除锁文件失败");
+    });
   });
 
   it("explains merge.ff=only in the merge dialog", async () => {

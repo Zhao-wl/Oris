@@ -73,8 +73,8 @@ impl GitAdapter {
         process::run_with(&self.git, &self.worktree, &args, None, true, &ctx.cancel, &ctx.log, &ctx.processes, process::RunOptions { idle: Some(ctx.network_idle), literal_pathspecs: true, index_file: None })
     }
 
-    /// 网络命令结束后的说明：取消 / 超时 / 失败（附认证提示）。成功时返回 None。
-    pub(super) fn network_failure(result: &process::CallResult, what: &str, ctx: &OpContext) -> Option<Step> {
+    /// 网络命令结束后的说明：取消 / 超时 / 失败（附认证提示；锁文件冲突附“删除锁文件并重试”的确认，V2-D65）。成功时返回 None。
+    pub(super) fn network_failure(&self, result: &process::CallResult, what: &str, ctx: &OpContext) -> Option<Step> {
         if result.cancelled {
             return Some(Step::cancelled(format!("已取消{what}")));
         }
@@ -91,7 +91,9 @@ impl GitAdapter {
                 message.push_str("\n");
                 message.push_str(hint);
             }
-            return Some(Step::failed(message));
+            let mut step = Step::failed(message);
+            self.attach_stale_locks(&mut step, &Self::full_output(ctx, result), what);
+            return Some(step);
         }
         None
     }
@@ -124,7 +126,7 @@ impl GitAdapter {
         let after = self.tracking_refs();
         let changed = after.iter().filter(|(name, oid)| before.get(*name) != Some(oid)).count() + before.keys().filter(|name| !after.contains_key(*name)).count();
         let what = format!("获取 {remote}");
-        if let Some(mut step) = Self::network_failure(&result, &what, ctx) {
+        if let Some(mut step) = self.network_failure(&result, &what, ctx) {
             // 失败或取消后已重新读取实际引用：如实说明，不承诺回滚。
             step.message.push_str(&if changed > 0 {
                 format!("。已重新读取实际引用：结束前已有 {changed} 个远端跟踪引用 / 标签被更新，Oris 不会回滚")

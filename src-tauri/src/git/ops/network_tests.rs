@@ -374,3 +374,100 @@ fn v2_d38_fetch_is_allowed_while_an_external_index_lock_exists() {
     assert_eq!(text(&r.local, &["rev-parse", "refs/remotes/origin/main"]), new_main);
     assert_eq!(fs::read_to_string(&lock).unwrap(), "held by test", "不删除、不改动外部锁");
 }
+
+#[test]
+fn v2_d65_push_is_allowed_while_an_external_index_lock_exists() {
+    let r = remote_setup();
+    let local_main = commit(&r.local, "c.txt", "local\n", "local work");
+    let lock = r.local.join(".git/index.lock");
+    fs::write(&lock, "held by test").unwrap();
+    let outcome = Harness::new(&r.local).run(OperationRequest::Push { remote: None });
+    assert_eq!(outcome.status, OpStatus::Succeeded, "{}", outcome.message);
+    assert_eq!(text(&r.bare, &["rev-parse", "refs/heads/main"]), local_main);
+    assert_eq!(fs::read_to_string(&lock).unwrap(), "held by test", "不删除、不改动外部锁");
+}
+
+#[test]
+fn v2_d65_pull_with_an_index_lock_asks_before_removing_it_and_then_succeeds() {
+    let r = remote_setup();
+    let new_main = commit(&r.other, "b.txt", "remote\n", "remote work");
+    git_in(&r.other, &["push", "-q", "origin", "main"]);
+    let lock = r.local.join(".git/index.lock");
+    fs::write(&lock, "left by a crashed git").unwrap();
+    let h = Harness::new(&r.local);
+    let before = fingerprint(&r.local);
+    let outcome = h.run(OperationRequest::Pull { mode: PullMode::FfOnly, stash_first: false, stash_untracked: false });
+    assert_eq!(outcome.status, OpStatus::NeedsConfirmation, "{}", outcome.message);
+    assert_eq!(outcome.git_processes, 0, "确认前不启动任何 Git 进程");
+    let confirmation = outcome.confirmation.expect("staleLock 确认");
+    assert_eq!(confirmation.reason, "staleLock");
+    assert!(confirmation.message.contains("index.lock") && confirmation.message.contains("前修改"), "{}", confirmation.message);
+    assert_eq!(before, fingerprint(&r.local), "确认前仓库未被改动");
+    assert!(lock.exists(), "不会自动删除");
+    let removed = h.adapter.remove_stale_locks(&confirmation.paths).unwrap();
+    assert_eq!(removed.len(), 1);
+    assert!(!lock.exists());
+    // 已被外部释放时再次删除不报错。
+    assert!(h.adapter.remove_stale_locks(&confirmation.paths).unwrap().is_empty());
+    let outcome = h.run(OperationRequest::Pull { mode: PullMode::FfOnly, stash_first: false, stash_untracked: false });
+    assert_eq!(outcome.status, OpStatus::Succeeded, "{}", outcome.message);
+    assert_eq!(text(&r.local, &["rev-parse", "HEAD"]), new_main);
+}
+
+#[test]
+fn v2_d65_fetch_blocked_by_a_ref_lock_offers_removal_and_retry() {
+    let r = remote_setup();
+    let new_main = commit(&r.other, "b.txt", "remote\n", "remote work");
+    git_in(&r.other, &["push", "-q", "origin", "main"]);
+    let lock = r.local.join(".git/refs/remotes/origin/main.lock");
+    fs::create_dir_all(lock.parent().unwrap()).unwrap();
+    fs::write(&lock, "").unwrap();
+    let h = Harness::new(&r.local);
+    let outcome = h.run(fetch("origin"));
+    assert_eq!(outcome.status, OpStatus::Failed, "{}", outcome.message);
+    let confirmation = outcome.confirmation.expect("staleLock 确认");
+    assert_eq!(confirmation.reason, "staleLock");
+    assert_eq!(confirmation.paths.len(), 1, "{:?}", confirmation.paths);
+    assert!(confirmation.paths[0].ends_with("main.lock"), "{:?}", confirmation.paths);
+    assert!(lock.exists(), "不会自动删除");
+    h.adapter.remove_stale_locks(&confirmation.paths).unwrap();
+    assert!(!lock.exists());
+    let outcome = h.run(fetch("origin"));
+    assert_eq!(outcome.status, OpStatus::Succeeded, "{}", outcome.message);
+    assert_eq!(text(&r.local, &["rev-parse", "refs/remotes/origin/main"]), new_main);
+}
+
+#[test]
+fn v2_d65_only_lock_files_inside_the_git_directory_can_be_removed() {
+    let r = remote_setup();
+    let h = Harness::new(&r.local);
+    let outside = r.local.join("build.lock");
+    fs::write(&outside, "user file").unwrap();
+    let config = r.local.join(".git/config");
+    fs::create_dir_all(r.local.join(".git/sub.lock")).unwrap();
+    let rejected = [
+        outside.display().to_string(),
+        config.display().to_string(),
+        r.local.join(".git/sub.lock").display().to_string(),
+        r.local.join(".git/../build.lock").display().to_string(),
+        r.local.join(".git/.lock").display().to_string(),
+        "build.lock".to_owned(),
+    ];
+    for raw in rejected {
+        let error = h.adapter.remove_stale_locks(&[raw.clone()]).unwrap_err();
+        assert!(matches!(&error, GitError::WriteBlocked(m) if m.contains("拒绝删除")), "{raw}: {error}");
+    }
+    // 一批中有一个不合法：全部拒绝，合法的也不删。
+    let index_lock = r.local.join(".git/index.lock");
+    fs::write(&index_lock, "").unwrap();
+    assert!(h.adapter.remove_stale_locks(&[index_lock.display().to_string(), outside.display().to_string()]).is_err());
+    assert!(index_lock.exists() && outside.exists() && config.exists());
+    assert!(h.adapter.remove_stale_locks(&[]).is_err());
+}
+
+#[test]
+fn v2_d65_lock_paths_are_parsed_from_git_output() {
+    let output = "error: cannot lock ref 'refs/remotes/origin/main': Unable to create 'C:/r/.git/refs/remotes/origin/main.lock': File exists.\n\nAnother git process seems to be running in this repository\nfatal: Unable to create 'C:/r/.git/index.lock': File exists.\nfatal: Unable to create 'C:/r/.git/index.lock': File exists.\nerror: cannot lock ref 'refs/heads/x': is at 1 but expected 2";
+    assert_eq!(locks::reported_locks(output), vec!["C:/r/.git/refs/remotes/origin/main.lock".to_owned(), "C:/r/.git/index.lock".to_owned()]);
+    assert!(locks::reported_locks("fatal: Unable to create 'C:/r/.git/config': File exists.").is_empty());
+}

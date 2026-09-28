@@ -42,7 +42,9 @@ export type OperationKind = "stage" | "unstage" | "markResolved" | "discard" | "
 export type OperationStatus = "succeeded" | "failed" | "cancelled" | "needsConfirmation";
 
 export interface Confirmation {
-  reason: "conflictMarkers" | "unrecoverable" | "modifiedSinceDiscard" | "localChanges" | "untrackedOverwritten" | "localExists" | "unmerged" | "diverged" | "chooseRemote";
+  reason: "conflictMarkers" | "unrecoverable" | "modifiedSinceDiscard" | "localChanges" | "untrackedOverwritten" | "localExists" | "unmerged" | "diverged" | "chooseRemote"
+    /** 获取 / 拉取 / 推送遇到 Git 锁文件（paths 为锁文件路径）：确认后删除再重试（V2-D65）。失败结果上也可能附带。 */
+    | "staleLock";
   message: string;
   paths: string[];
 }
@@ -113,6 +115,8 @@ export const hunkMap = (repoId: string, scope: CompareScope, revision: string, p
 export const runOperation = (repoId: string, scope: CompareScope, opId: string, request: OperationRequest) =>
   invoke<OperationOutcome>("run_operation", { repoId, scope, opId, request });
 export const cancelOperation = (repoId: string) => invoke<boolean>("cancel_operation", { repoId });
+/** 删除用户确认过的残留锁文件（只接受仓库 Git 目录内的 *.lock）；返回实际删除的路径。 */
+export const removeStaleLocks = (repoId: string, paths: string[]) => invoke<string[]>("remove_stale_locks", { repoId, paths });
 export const lastOperation = (repoId: string) => invoke<LastOperation | null>("last_operation", { repoId });
 export const prepareDiscard = (repoId: string, scope: CompareScope, pathIds: string[]) => invoke<DiscardPlan>("prepare_discard", { repoId, scope, pathIds });
 export const discardBackups = (repoId: string) => invoke<BackupSummary[]>("discard_backups", { repoId });
