@@ -27,6 +27,16 @@ pub struct RefsView {
     pub merge_ff: Option<String>,
 }
 
+/// 标题栏“获取 ▾”所需的最小信息：不列出分支、不计算领先 / 落后（`read_refs` 在大仓库上较慢）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemotesView {
+    pub remotes: Vec<String>,
+    /// 当前分支上游所属的 remote（仍存在时）；与一键获取的默认目标一致。
+    pub default_remote: Option<String>,
+    pub fetch_head_at: Option<u64>,
+}
+
 fn is_oid(value: &str) -> bool {
     (value.len() == 40 || value.len() == 64) && value.bytes().all(|b| b.is_ascii_hexdigit())
 }
@@ -73,6 +83,28 @@ impl GitAdapter {
         log::file_history(&self.git, &self.worktree, start, &path, page_size, cursor)
     }
 
+    /// remote 列表与默认 remote：`git remote` 加一次只读当前分支上游的 `for-each-ref`，共两个进程。
+    pub fn history_remotes(&self) -> Result<RemotesView, GitError> {
+        let output = run_required(&self.git, &self.worktree, &["remote"])?;
+        let remotes: Vec<String> = String::from_utf8_lossy(&output.stdout).lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect();
+        // %(HEAD) 为 “*” 的那一行是当前分支；分离 HEAD 时没有这一行。
+        let default_remote = run_readonly(&self.git, &self.worktree, &["for-each-ref", "--format=%(HEAD)%00%(upstream:remotename)", "refs/heads"])
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| String::from_utf8_lossy(&o.stdout).lines().find_map(|line| line.strip_prefix("*\0").map(str::to_owned)))
+            .filter(|remote| remotes.contains(remote));
+        Ok(RemotesView { remotes, default_remote, fetch_head_at: self.fetch_head_at() })
+    }
+
+    fn fetch_head_at(&self) -> Option<u64> {
+        [self.git_dir.join("FETCH_HEAD"), self.common_dir.join("FETCH_HEAD")]
+            .iter()
+            .filter_map(|path| fs::metadata(path).ok()?.modified().ok())
+            .max()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64)
+    }
+
     pub fn history_refs(&self) -> Result<RefsView, GitError> {
         let refs = refs::read_refs(&self.git, &self.worktree)?;
         let default_remote = refs
@@ -82,12 +114,7 @@ impl GitAdapter {
             .filter(|branch| matches!(branch.tracking, Some(Tracking::Known { .. } | Tracking::Unknown { .. })))
             .and_then(|branch| branch.remote.clone())
             .filter(|remote| refs.remotes.contains(remote));
-        let fetch_head_at = [self.git_dir.join("FETCH_HEAD"), self.common_dir.join("FETCH_HEAD")]
-            .iter()
-            .filter_map(|path| fs::metadata(path).ok()?.modified().ok())
-            .max()
-            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_millis() as u64);
+        let fetch_head_at = self.fetch_head_at();
         let config = |key: &str| {
             run_readonly(&self.git, &self.worktree, &["config", "--get", key]).ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
         };

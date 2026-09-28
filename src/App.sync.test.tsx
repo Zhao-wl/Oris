@@ -8,14 +8,14 @@ import type { RefsView } from "./history-api";
 import { defaultAnchor, WORKSPACE_KEY } from "./workspace-model";
 
 const bridge = vi.hoisted(() => ({
-  open: vi.fn(), refresh: vi.fn(), read: vi.fn(), diff: vi.fn(), operation: vi.fn(), refs: vi.fn(), log: vi.fn(), changes: vi.fn(), mergeMessage: vi.fn()
+  open: vi.fn(), refresh: vi.fn(), read: vi.fn(), diff: vi.fn(), operation: vi.fn(), refs: vi.fn(), remotes: vi.fn(), log: vi.fn(), changes: vi.fn(), mergeMessage: vi.fn()
 }));
 vi.mock("./api", () => ({ openRepository: bridge.open, refreshRepository: bridge.refresh, readContentPair: bridge.read, closeRepository: vi.fn(async () => {}), cancelContentRead: vi.fn(async () => {}),
   repositoryDetails: vi.fn(async () => null), activateRepository: vi.fn(async () => true), loadSnapshot: vi.fn(async () => null), saveSnapshot: vi.fn(async () => true), removeSnapshot: vi.fn(async () => {}), decodeContentFrame: (x: unknown) => x }));
 vi.mock("./operations-api", () => ({ runOperation: bridge.operation, cancelOperation: vi.fn(async () => true), lastOperation: vi.fn(async () => null),
   prepareDiscard: vi.fn(), discardBackups: vi.fn(async () => []), headCommitInfo: vi.fn(async () => null) }));
 vi.mock("./history-api", async (importOriginal) => ({ ...(await importOriginal<typeof import("./history-api")>()),
-  readLog: bridge.log, commitChanges: bridge.changes, compareRevisions: vi.fn(), fileHistory: vi.fn(), readRefs: bridge.refs, readRevisionPair: vi.fn(),
+  readLog: bridge.log, commitChanges: bridge.changes, compareRevisions: vi.fn(), fileHistory: vi.fn(), readRefs: bridge.refs, readRemotes: bridge.remotes, readRevisionPair: vi.fn(),
   stashList: vi.fn(async () => []), stashChanges: vi.fn(), checkBranchName: vi.fn(async () => {}), mergeMessage: bridge.mergeMessage }));
 vi.mock("./diff", () => ({ calculateDiff: bridge.diff }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
@@ -70,6 +70,7 @@ beforeEach(() => {
   bridge.read.mockImplementation(async (_r: string, _s: string, _v: string, pathId: string) => pair(pathId));
   bridge.diff.mockImplementation(async (requestId: string, contentIds: [string, string]) => ({ requestId, contentIds, changes: [], hunks: [], elapsedMs: 0 }));
   bridge.refs.mockResolvedValue(refsView());
+  bridge.remotes.mockResolvedValue({ remotes: ["origin"], defaultRemote: "origin", fetchHeadAt: null });
   bridge.log.mockResolvedValue({ commits: [{ oid: O("2"), parents: [O("1")], subject: "topic work", body: "", authorName: "A", authorEmail: "a@x", authorTime: 1_700_000_000, committerName: "A", committerEmail: "a@x", committerTime: 1_700_000_000, refs: [] }], next: null, tips: [] });
   bridge.changes.mockResolvedValue({ oid: O("2"), parent: O("1"), parents: [O("1")], files: [] });
   bridge.mergeMessage.mockResolvedValue("Merge branch 'topic'");
@@ -96,7 +97,10 @@ describe("sync entry (B11)", () => {
 
   it("lists remotes only when fetch ▾ is opened, and asks which remote when the backend cannot decide", async () => {
     await mount();
+    const refsCalls = bridge.refs.mock.calls.length;
     await click(more("fetch"));
+    expect(bridge.remotes).toHaveBeenCalledWith("a");
+    expect(bridge.refs.mock.calls.length).toBe(refsCalls);
     const menu = q(".sync-menu")!;
     expect(menu.textContent).toContain("origin当前分支上游所属，主按钮默认");
     await click([...menu.querySelectorAll<HTMLButtonElement>(".sync-menu-item")].find((b) => b.textContent?.includes("origin")));

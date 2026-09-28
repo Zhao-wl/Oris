@@ -639,6 +639,14 @@ async fn read_refs(repo_id: String, registry: State<'_, RepositoryRegistry>) -> 
     history_call(opened, HistoryKind::Refs, false, move |adapter, _| adapter.history_refs()).await
 }
 
+/// remote 列表与默认获取目标（标题栏“获取 ▾”）：不读取分支与领先 / 落后，比 `read_refs` 轻。
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn read_remotes(repo_id: String, registry: State<'_, RepositoryRegistry>) -> Result<git::history::RemotesView, GitError> {
+    let opened = opened(&registry, &repo_id)?;
+    history_call(opened, HistoryKind::Refs, false, move |adapter, _| adapter.history_remotes()).await
+}
+
 /// 历史版本的两端内容：`left` 为 None 表示空树；两端都是已固定的提交 OID（不读取 index 或工作区）。
 #[cfg(feature = "desktop")]
 #[tauri::command]
@@ -837,6 +845,7 @@ pub fn run() {
             compare_revisions,
             file_history,
             read_refs,
+            read_remotes,
             read_revision_pair,
             stash_list,
             stash_changes,

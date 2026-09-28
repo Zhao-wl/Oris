@@ -552,7 +552,8 @@ button.op-status { padding:0 6px; border:0; background:transparent; font-size:11
 .sync-menu-item > span:last-child { display:flex; flex-direction:column; }
 .sync-menu-item small { color:var(--dim); font-size:11px; }
 .sync-dot { flex:none; width:12px; color:var(--blue); }
-.sync-toast { position:fixed; right:16px; bottom:38px; z-index:90; display:flex; align-items:center; gap:8px; min-width:320px; max-width:520px; padding:9px 10px 9px 12px; color:var(--text); background:var(--panel); border:1px solid var(--border); border-left:3px solid var(--ok, #81bd83); border-radius:5px; box-shadow:0 8px 24px var(--widget-shadow, #0009); font-size:12px; }
+/* 放在底部 Git 页签栏与状态栏之上，不遮挡页签栏右端的“展开 / 收起”。 */
+.sync-toast { position:fixed; right:16px; bottom:66px; z-index:90; display:flex; align-items:center; gap:8px; min-width:320px; max-width:520px; padding:9px 10px 9px 12px; color:var(--text); background:var(--panel); border:1px solid var(--border); border-left:3px solid var(--ok, #81bd83); border-radius:5px; box-shadow:0 8px 24px var(--widget-shadow, #0009); font-size:12px; }
 .sync-toast.failed { border-left-color:var(--error, #ff7b72); }
 .sync-toast.cancelled { border-left-color:var(--warning, #d9a24f); }
 .sync-toast-text { flex:1; display:flex; flex-direction:column; min-width:0; overflow-wrap:anywhere; }
