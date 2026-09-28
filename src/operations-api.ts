@@ -12,6 +12,7 @@ export type OperationRequest =
   | { kind: "hunkUnstage"; pathId: string; contentIds: [string, string]; hunk: HunkRef }
   | { kind: "hunkDiscard"; pathId: string; contentIds: [string, string]; hunk: HunkRef; confirmedUnrecoverable?: boolean }
   | { kind: "commit"; message: string }
+  | { kind: "commitSelected"; message: string; pathIds: string[]; expectedRevision: string }
   | { kind: "undoCommit"; expectedHead: string }
   | { kind: "fetch"; remote: string }
   | { kind: "stashPush"; message?: string | null; includeUntracked?: boolean; pathIds?: string[] | null }
@@ -33,7 +34,7 @@ export type OperationRequest =
 /** “stash 后切换”：Git 因工作区改动拒绝切换、用户确认后，先储藏（可含未跟踪文件）再切换，切换后不自动恢复。 */
 export interface StashFirst { stashFirst?: boolean; stashUntracked?: boolean }
 
-export type OperationKind = "stage" | "unstage" | "markResolved" | "discard" | "undoDiscard" | "commit" | "undoCommit" | "fetch"
+export type OperationKind = "stage" | "unstage" | "markResolved" | "discard" | "undoDiscard" | "commit" | "commitSelected" | "undoCommit" | "fetch"
   | "hunkStage" | "hunkUnstage" | "hunkDiscard"
   | "stashPush" | "stashApply" | "stashPop" | "stashDrop"
   | "branchCreate" | "branchSwitch" | "branchTrack" | "checkout" | "branchRename" | "branchDelete" | "setUpstream"
