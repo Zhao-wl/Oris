@@ -63,7 +63,9 @@ const H = String.raw`
     running() { return !!document.querySelector('.op-status.running'); },
     succeeded() { return !!document.querySelector('.op-status.succeeded'); },
     status() { return document.querySelector('.op-status')?.textContent ?? ''; },
-    counts() { return document.querySelector('.branch-counts')?.textContent ?? ''; },
+    /** 领先 / 落后（V2-D64 后在推送 / 拉取主按钮上），格式 "↑a ↓b"；没有上游或执行中时为空串。 */
+    counts() { const up = document.querySelector('.sync-push .sync-main .sync-count')?.textContent; const down = document.querySelector('.sync-pull .sync-main .sync-count')?.textContent; return up && down ? up + ' ' + down : ''; },
+    syncMain(kind) { return document.querySelector('.sync-' + kind + ' .sync-main'); },
     revision() { return /revision (\w+)/.exec(document.querySelector('.diff-footer')?.textContent ?? '')?.[1] ?? null; },
     branchLabel() { return document.querySelector('.branch-button')?.textContent ?? ''; },
     branchRow(name) { return qa('.branch-row').find((r) => r.querySelector('.branch-row-name')?.textContent.replace(/^● /, '') === name) ?? null; },
@@ -108,9 +110,7 @@ async function timed(name, expr, extra, timeout = 60000) {
   await sleep(400);
   return r;
 }
-const openSync = async () => { if (!(await evaluate(`!!document.querySelector('.sync-popover')`))) await click(`document.querySelector('.sync-button')`); await waitUntil(`(document.querySelector('.sync-popover')?.textContent ?? '').includes('获取远端状态') && !document.querySelector('.sync-popover').textContent.includes('正在读取')`); };
-const syncDialog = async (label, cls) => { await openSync(); await click(`window.__w.button(${q(label)}, document.querySelector('.sync-popover'))`); await waitUntil(`!!document.querySelector(${q(cls)}) && !document.querySelector(${q(cls)}).textContent.includes('正在读取')`); };
-const openBranches = async () => { if (!(await evaluate(`!!document.querySelector('.branch-popover:not(.sync-popover)')`))) await click(`document.querySelector('.branch-button')`); await waitUntil(`document.querySelectorAll('.branch-row').length > 0`); };
+const openBranches = async () => { if (!(await evaluate(`!!document.querySelector('.branch-popover')`))) await click(`document.querySelector('.branch-button')`); await waitUntil(`document.querySelectorAll('.branch-row').length > 0`); };
 const openTab = async (prefix) => { if (!(await evaluate(`window.__w.gitTab(${q(prefix)})?.classList.contains('active')`))) await click(`window.__w.gitTab(${q(prefix)})`); await sleep(300); };
 
 const monitor = startLoadMonitor({ log });
@@ -158,11 +158,10 @@ async function round(tag, i) {
     // 1. 获取与拉取（仅快进）：另一个克隆先推送一个提交
     git(other, ["pull", "-q", "--ff-only"]);
     put(other, `remote/r-${tag}.txt`, `remote ${tag}\n`); commit(other, `remote ${tag}`); git(other, ["push", "-q", "origin", "main"]);
-    await syncDialog("获取…", ".fetch-dialog");
-    await timed("fetch", `window.__w.button('获取', document.querySelector('.fetch-dialog'))`, `window.__w.counts().includes('↓1')`);
+    // V2-D64 后获取 / 拉取 / 推送为标题栏主按钮一键执行，计时从点击主按钮开始（此前为点击确认框中的按钮）。
+    await timed("fetch", `window.__w.syncMain('fetch')`, `window.__w.counts().includes('↓1')`);
     let rev = await evaluate(`window.__w.revision()`);
-    await syncDialog("选项…", ".pull-dialog");
-    await timed("pull（仅快进）", `window.__w.button('拉取', document.querySelector('.pull-dialog'))`, `window.__w.counts().includes('↑0 ↓0') && window.__w.revision() !== ${q(rev)}`);
+    await timed("pull（仅快进）", `window.__w.syncMain('pull')`, `window.__w.counts().includes('↑0 ↓0') && window.__w.revision() !== ${q(rev)}`);
     // 2. 合并本地 topic（快进）
     git(repo, ["switch", "-q", "-c", `topic-${tag}`]); put(repo, `topic/t-${tag}.txt`, `topic ${tag}\n`); commit(repo, `topic ${tag}`); git(repo, ["switch", "-q", "main"]);
     await refresh();
@@ -173,8 +172,7 @@ async function round(tag, i) {
     await waitUntil(`!!document.querySelector('.merge-dialog')`);
     await timed("merge（快进）", `window.__w.button('合并', document.querySelector('.merge-dialog'))`, `window.__w.counts().includes('↑1') && window.__w.revision() !== ${q(rev)}`);
     // 3. 推送到上游
-    await syncDialog("预览…", ".push-dialog");
-    await timed("push", `window.__w.button('推送', document.querySelector('.push-dialog'))`, `window.__w.counts().includes('↑0 ↓0')`);
+    await timed("push", `window.__w.syncMain('push')`, `window.__w.counts().includes('↑0 ↓0')`);
     // 4. 切换分支（main → perf-alt → main，每次 20 个文件变化）
     for (const target of ["perf-alt", "main"]) {
       await openBranches();
