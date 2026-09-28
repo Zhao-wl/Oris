@@ -14,12 +14,14 @@ const time = (seconds: number) => new Date(seconds * 1000).toLocaleString();
 export function useStashList(repoId: string, version: number) {
   const [entries, setEntries] = useState<StashEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** 已读完的版本（读取失败也算读完，错误会显示）。 */
+  const [loaded, setLoaded] = useState(-1);
   useEffect(() => {
     let live = true;
-    void stashList(repoId).then((list) => { if (live) { setEntries(list); setError(null); } }, (e) => { if (live && !isStale(e)) setError(errorText(e)); });
+    void stashList(repoId).then((list) => { if (live) { setEntries(list); setError(null); setLoaded(version); } }, (e) => { if (live && !isStale(e)) { setError(errorText(e)); setLoaded(version); } });
     return () => { live = false; };
   }, [repoId, version]);
-  return { entries, error };
+  return { entries, error, loaded };
 }
 
 export const stashLabel = (entry: StashEntry) => `stash@{${entry.index}}`;

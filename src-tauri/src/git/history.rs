@@ -88,12 +88,33 @@ impl GitAdapter {
             .max()
             .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_millis() as u64);
-        let config = |key: &str| {
-            run_readonly(&self.git, &self.worktree, &["config", "--get", key]).ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
-        };
+        // 三个配置项一次读出（V2-D60：原为三次 `config --get`）；取值规则与 `--get` 相同：同一键取最后一个值。
+        let values = run_readonly(&self.git, &self.worktree, &["config", "-z", "--get-regexp", PULL_CONFIG_KEYS])
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| parse_config_values(&o.stdout))
+            .unwrap_or_default();
+        let config = |key: &str| values.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v.trim().to_owned());
         let current = refs.head.branch.as_deref().and_then(|b| b.strip_prefix("refs/heads/")).map(str::to_owned);
         let pull_rebase = current.as_deref().and_then(|b| config(&format!("branch.{b}.rebase"))).or_else(|| config("pull.rebase"));
         let merge_ff = config("merge.ff");
         Ok(RefsView { refs, default_remote, fetch_head_at, pull_rebase, merge_ff })
     }
+}
+
+/// `pull.rebase`、`merge.ff` 与各分支的 `branch.<name>.rebase`（Git 输出的键：节名与变量名为小写，子节保持原样）。
+const PULL_CONFIG_KEYS: &str = r"^(pull\.rebase|merge\.ff|branch\..*\.rebase)$";
+
+/// 解析 `git config -z --get-regexp` 的输出：每条为 `键\n值\0`，没有值的键（隐式 true）为 `键\0`，与 `--get` 一样记为空字符串。
+fn parse_config_values(raw: &[u8]) -> Vec<(String, String)> {
+    raw.split(|b| *b == 0)
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| {
+            let text = String::from_utf8_lossy(entry);
+            match text.split_once('\n') {
+                Some((key, value)) => (key.to_owned(), value.to_owned()),
+                None => (text.into_owned(), String::new()),
+            }
+        })
+        .collect()
 }
