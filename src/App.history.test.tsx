@@ -173,6 +173,19 @@ describe("Git log tab (A07 / A08)", () => {
     expect(reading()).toContain("history:commit:");
   });
 
+  it("renders huge commits (e.g. a whole-repo root import) as a virtual list instead of one DOM row per file", async () => {
+    const total = 100_000;
+    const files = Array.from({ length: total }, (_, i) => ({ path: `Assets/f${i}.cs`, oldPath: null, pathId: `id-${i}`, oldPathId: null, status: "added" }));
+    bridge.changes.mockImplementation(async (_repo: string, oid: string) => ({ oid, parent: null, parents: [], files }));
+    await mount();
+    await openLog();
+    expect(q(".log-detail .log-group")?.textContent).toContain(`变化文件 · ${total}`);
+    expect(q(".log-detail [data-virtual-count]")?.getAttribute("data-virtual-count")).toBe(String(total));
+    expect(all(".log-detail .log-file").length).toBeLessThan(200);
+    await click(all(".log-detail .log-file")[0]);
+    expect(bridge.revision).toHaveBeenLastCalledWith("a", null, O("3"), "id-0", null, expect.any(String));
+  });
+
   it("opens a commit file in the same diff reader with pinned endpoints, then returns to the local reading position", async () => {
     await mount();
     expect(reading()).toBe("a:unstaged:id-a.txt");
