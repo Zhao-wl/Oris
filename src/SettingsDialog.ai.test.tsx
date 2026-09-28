@@ -5,6 +5,9 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import SettingsDialog from "./SettingsDialog";
 import { createSettingsRegistry, DEFAULT_AI_PROMPTS, SettingsStore } from "./settings";
 import { schemeIndex } from "./themes/runtime";
+import { detectAiTools, listAiModels } from "./ai-api";
+
+vi.mock("./ai-api", () => ({ detectAiTools: vi.fn(), listAiModels: vi.fn(), setAiKey: vi.fn() }));
 
 let host: HTMLDivElement;
 let root: Root;
@@ -32,6 +35,18 @@ it("starts empty, reuses an unfinished API profile, and can clear it", async () 
   await click([...host.querySelectorAll("button")].find((button) => button.textContent?.startsWith("清理未配置项"))!);
   expect(host.querySelectorAll(".ai-profile-card")).toHaveLength(0);
   expect(settings.get().ai.profiles).toHaveLength(0);
+});
+
+it("shows the Codex version warning from detection and model checks", async () => {
+  const warning = "当前 Codex CLI 版本为 0.144.6，低于写入模型列表的 Codex 0.158.0";
+  vi.mocked(detectAiTools).mockResolvedValue([{ provider: "codex", executable: "C:/npm/codex.cmd", models: ["gpt-6-astra"], warning }]);
+  vi.mocked(listAiModels).mockResolvedValue({ models: ["gpt-6-astra"], warning: null });
+  await click([...host.querySelectorAll("button")].find((button) => button.textContent === "自动检测本机工具")!);
+  expect(host.querySelector(".settings-warning")?.textContent).toBe(warning);
+  await click([...host.querySelectorAll("button")].find((button) => button.textContent === "添加 Codex")!);
+  await click([...host.querySelectorAll("button")].find((button) => button.textContent === "检测模型")!);
+  expect(host.querySelector(".settings-warning")).toBeNull();
+  expect(listAiModels).toHaveBeenCalledWith(expect.objectContaining({ provider: "codex", executable: "C:/npm/codex.cmd" }));
 });
 
 it("edits and resets each operation's system prompt independently", async () => {
