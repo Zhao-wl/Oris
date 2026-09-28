@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { parseAiAction } from "./ai-actions";
+import { aiActionCatalogue, parseAiAction } from "./ai-actions";
 
 it("accepts a typed Git plan but discards model supplied authority flags", () => {
   const action = parseAiAction({ kind: "git", summary: "合并功能分支", operation: { kind: "merge", target: "refs/heads/feature", expected: "stale", noFf: true, force: true } });
@@ -19,4 +19,10 @@ it("accepts settings and view plans only from the whitelist", () => {
   expect(parseAiAction({ kind: "view", view: { action: "openHistory" } })).toMatchObject({ kind: "view", view: { action: "openHistory" } });
   expect(() => parseAiAction({ kind: "settings", setting: "fontSize", value: 100 })).toThrow();
   expect(() => parseAiAction({ kind: "view", view: { action: "runShell", value: "rm -rf" } })).toThrow();
+});
+
+it("V2-D67：不接受修改 Git 可执行文件路径的设置计划，能力清单中也不列出", () => {
+  expect(() => parseAiAction({ kind: "settings", setting: "gitExecutable", value: "C:/evil/git.exe" })).toThrow(/Git 可执行文件路径/);
+  expect(() => parseAiAction({ kind: "settings", setting: "git.executable", value: "" })).toThrow(/Git 可执行文件路径/);
+  expect(Object.keys(aiActionCatalogue().settings)).not.toContain("gitExecutable");
 });

@@ -481,7 +481,9 @@ async function localSuite() {
     await ctx.pull(); await ctx.settle();
     status = await ctx.evaluate(`window.__s.opStatus()`);
     e = evidence("外部 index.lock 时拉取", r.local, before, []);
-    check("B16 外部 index.lock：拉取在启动写进程前报错，不删除锁、不重试", status.cls.includes("failed") && status.text.includes("index.lock") && readFileSync(lock, "utf8") === "held" && e.changedCount === 0, { status, e });
+    // V2-D65（用户已确认）：同步遇到 Git 锁文件时，前置检查返回确认（说明锁文件、可删除后重试），不启动 Git；
+    // 用户确认之前不删除锁、不重试。原检查按“报错”判定，随该决策更新。
+    check("B16 外部 index.lock（V2-D65）：拉取在启动写进程前停下并请用户确认（可删除锁后重试）；确认前不删除锁、不重试，仓库不变", (status.cls.includes("needsConfirmation") || status.cls.includes("failed")) && status.text.includes("index.lock") && readFileSync(lock, "utf8") === "held" && e.changedCount === 0, { status, e });
     unlinkSync(lock);
   } catch (error) {
     fail(`本地验收中断：${String(error.stack ?? error).slice(0, 1200)}`);

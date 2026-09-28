@@ -5,7 +5,7 @@ type Field = "text" | "number" | "boolean" | "paths" | "pathsOrAll" | "scope" | 
 type Schema = Record<string, Field>;
 type AiGitOperation = OperationRequest | { kind: "stage" | "unstage"; pathIds: "all" };
 
-/** AI 只能提出 Oris 已有的类型化操作；确认、强制与备份覆盖标志不接受模型赋值。 */
+/** AI 只能提出 Oris 已有的类型化操作；确认、强制与备份覆盖标志不接受模型赋值，Oris 执行时也不代为确认（V2-D68）。 */
 export const AI_GIT_SCHEMAS: Record<string, Schema> = {
   stage: { pathIds: "pathsOrAll" }, unstage: { pathIds: "pathsOrAll" }, markResolved: { pathIds: "paths" },
   discard: { scope: "scope", pathIds: "paths" }, undoDiscard: { backupId: "text" },
@@ -27,7 +27,7 @@ export const AI_VIEW_ACTIONS = ["openSettings", "openHistory", "openOutput", "op
 export type AiViewAction = typeof AI_VIEW_ACTIONS[number];
 export type AiAction =
   | { kind: "git"; summary: string; operation: AiGitOperation }
-  | { kind: "settings"; summary: string; setting: "themeMode" | "fontSize" | "lightScheme" | "darkScheme" | "gitExecutable" | "aiActiveId" | "aiShortcut"; value: string | number }
+  | { kind: "settings"; summary: string; setting: "themeMode" | "fontSize" | "lightScheme" | "darkScheme" | "aiActiveId" | "aiShortcut"; value: string | number }
   | { kind: "view"; summary: string; view: { action: AiViewAction; value?: string | boolean } }
   | { kind: "answer"; message: string }
   | { kind: "commitSelected"; summary: string };
@@ -51,7 +51,9 @@ export function parseAiAction(raw: unknown): AiAction {
   if (value.kind === "commitSelected") return { kind: "commitSelected", summary: summary || "选择相关文件并生成提交信息" };
   if (value.kind === "settings") {
     const key = value.setting;
-    const setting = key === "themeMode" || key === "fontSize" || key === "lightScheme" || key === "darkScheme" || key === "gitExecutable" || key === "aiActiveId" || key === "aiShortcut" ? key : null;
+    // V2-D67：Git 可执行文件路径决定 Oris 运行哪个程序（修改后立即运行校验），不交给模型修改。
+    if (key === "gitExecutable" || key === "git.executable") throw new Error("AI 不能修改 Git 可执行文件路径，请在“设置 → Git”中手动修改");
+    const setting = key === "themeMode" || key === "fontSize" || key === "lightScheme" || key === "darkScheme" || key === "aiActiveId" || key === "aiShortcut" ? key : null;
     if (!setting || (setting === "fontSize" ? typeof value.value !== "number" || !Number.isInteger(value.value) || value.value < 11 || value.value > 18 : typeof value.value !== "string")) throw new Error("AI 返回了无效的设置计划");
     if (setting === "themeMode" && !["light", "dark", "system"].includes(value.value as string)) throw new Error("主题模式无效");
     return { kind: "settings", summary: summary || `修改 ${setting}`, setting, value: value.value as string | number };
@@ -81,7 +83,7 @@ export function parseAiAction(raw: unknown): AiAction {
 }
 
 export function aiActionCatalogue() {
-  return { git: Object.entries(AI_GIT_SCHEMAS).map(([kind, required]) => ({ kind, required, optional: AI_GIT_OPTIONAL[kind] ?? {} })), settings: { themeMode: ["light", "dark", "system"], fontSize: [11, 18], lightScheme: "方案 ID", darkScheme: "方案 ID", gitExecutable: "Git 可执行文件路径或空字符串", aiActiveId: "已保存的 AI 配置 ID", aiShortcut: "CtrlOrMeta+P 等组合键" }, view: AI_VIEW_ACTIONS, note: "view 的 value 为目标路径、项目 ID、文件 ID、枚举值或布尔值；无参数的操作不需要 value。stage/unstage 的 pathIds 可为具体文件 ID 数组，或字符串 all，表示整个当前范围。用户要求暂存或取消暂存但未限定部分文件时，使用 all；明确限定部分文件时才选择具体文件 ID。描述驱动提交用 commitSelected。" };
+  return { git: Object.entries(AI_GIT_SCHEMAS).map(([kind, required]) => ({ kind, required, optional: AI_GIT_OPTIONAL[kind] ?? {} })), settings: { themeMode: ["light", "dark", "system"], fontSize: [11, 18], lightScheme: "方案 ID", darkScheme: "方案 ID", aiActiveId: "已保存的 AI 配置 ID", aiShortcut: "CtrlOrMeta+P 等组合键" }, view: AI_VIEW_ACTIONS, note: "view 的 value 为目标路径、项目 ID、文件 ID、枚举值或布尔值；无参数的操作不需要 value。stage/unstage 的 pathIds 可为具体文件 ID 数组，或字符串 all，表示整个当前范围。用户要求暂存或取消暂存但未限定部分文件时，使用 all；明确限定部分文件时才选择具体文件 ID。描述驱动提交用 commitSelected。" };
 }
 
 export const aiScope = (value: string): CompareScope | null => value === "unstaged" || value === "staged" || value === "all" ? value : null;

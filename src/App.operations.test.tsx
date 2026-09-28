@@ -247,6 +247,48 @@ describe("commit panel (B07)", () => {
     expect(bridge.operation).toHaveBeenCalledWith("a", "unstaged", expect.any(String), { kind: "unstage", pathIds: ["id-a.txt", "id-b.txt"] });
     expect(host.querySelector(".ai-commit-dialog")).toBeNull();
   });
+  it("V2-D68：AI 丢弃不代替用户确认，后端要求确认时停止并说明、不重试", async () => {
+    settings.update("ai", "profiles", [{ id: "test-ai", name: "Test AI", kind: "cli", provider: "codex", executable: "/bin/false", baseUrl: "", model: "test-model", hasKey: false }]);
+    settings.update("ai", "activeId", "test-ai");
+    bridge.planAi.mockResolvedValue({ kind: "git", operation: { kind: "discard", scope: "unstaged", pathIds: ["id-a.txt"], confirmedUnrecoverable: true } });
+    bridge.operation.mockResolvedValue(outcome("discard", null, { status: "needsConfirmation", message: "需要确认", confirmation: { reason: "unrecoverable", message: "1 个文件超过 50 MiB 备份预算，丢弃后不可撤销", paths: ["a.txt"] } }));
+    await mount();
+    await click(host.querySelector(".titlebar .commit-entry")!);
+    await type(host.querySelector<HTMLTextAreaElement>('textarea[aria-label="输入 AI 指令"]')!, "丢弃 a.txt");
+    await click(host.querySelector<HTMLButtonElement>('[aria-label="确认 AI 指令"]')!);
+    expect(bridge.operation).toHaveBeenCalledOnce();
+    expect(bridge.operation).toHaveBeenCalledWith("a", "unstaged", expect.any(String), { kind: "discard", scope: "unstaged", pathIds: ["id-a.txt"], confirmedUnrecoverable: false });
+    expect(host.querySelector(".ai-commit-dialog [role=alert]")?.textContent).toContain("丢弃后不可撤销");
+    expect(host.querySelector(".ai-commit-dialog [role=alert]")?.textContent).toContain("AI 不代替你确认");
+    expect(host.querySelector(".confirm-dialog")).toBeNull();
+  });
+  it("AI 执行时前置检查未通过（例如外部 index.lock）：输入框显示具体原因，不重试", async () => {
+    settings.update("ai", "profiles", [{ id: "test-ai", name: "Test AI", kind: "cli", provider: "codex", executable: "/bin/false", baseUrl: "", model: "test-model", hasKey: false }]);
+    settings.update("ai", "activeId", "test-ai");
+    bridge.planAi.mockResolvedValue({ kind: "git", operation: { kind: "stage", pathIds: ["id-a.txt"] } });
+    bridge.operation.mockRejectedValue(new Error("另一个 Git 进程正在使用仓库（存在 index.lock）"));
+    await mount();
+    await click(host.querySelector(".titlebar .commit-entry")!);
+    await type(host.querySelector<HTMLTextAreaElement>('textarea[aria-label="输入 AI 指令"]')!, "暂存 a.txt");
+    await click(host.querySelector<HTMLButtonElement>('[aria-label="确认 AI 指令"]')!);
+    expect(bridge.operation).toHaveBeenCalledOnce();
+    expect(host.querySelector(".ai-commit-dialog [role=alert]")?.textContent).toContain("index.lock");
+  });
+  it("V2-D67：AI 不能修改 Git 可执行文件路径；规划上下文不含 Git 设置", async () => {
+    settings.update("ai", "profiles", [{ id: "test-ai", name: "Test AI", kind: "cli", provider: "codex", executable: "/bin/false", baseUrl: "", model: "test-model", hasKey: false }]);
+    settings.update("ai", "activeId", "test-ai");
+    const before = settings.get().git.executable;
+    bridge.planAi.mockResolvedValue({ kind: "settings", setting: "gitExecutable", value: "C:/evil/git.exe" });
+    await mount();
+    await click(host.querySelector(".titlebar .commit-entry")!);
+    await type(host.querySelector<HTMLTextAreaElement>('textarea[aria-label="输入 AI 指令"]')!, "@设置 改 Git 路径");
+    await click(host.querySelector<HTMLButtonElement>('[aria-label="确认 AI 指令"]')!);
+    expect(settings.get().git.executable).toBe(before);
+    expect(host.querySelector(".ai-commit-dialog [role=alert]")?.textContent).toContain("AI 不能修改 Git 可执行文件路径");
+    const context = bridge.planAi.mock.calls[0][2] as Record<string, unknown>;
+    expect(context).not.toHaveProperty("gitSetting");
+    expect(JSON.stringify((context.capability as { settings: object }).settings)).not.toContain("gitExecutable");
+  });
   it("opens the AI commit input from the top button and the window shortcut", async () => {
     await mount();
     await click(host.querySelector(".titlebar .commit-entry")!);

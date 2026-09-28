@@ -1,4 +1,5 @@
 //! AI 只负责生成文本与文件建议；Git 写入始终走 ops 写通道。
+use crate::git::ops::process::ProcessTree;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
@@ -139,6 +140,25 @@ fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
     })
 }
 
+/// `.cmd` / `.bat` 由 cmd.exe 解释，Rust 拒绝向它们传递含换行的参数（无法安全转义，启动时报
+/// “batch file arguments are invalid”）；npm 安装的 claude.cmd 属于这种情况。此时把换行换成空格（内容不变，只是不分行），
+/// 其他可执行文件原样传递。
+fn batch_safe_argument<'a>(executable: &Path, text: &'a str) -> std::borrow::Cow<'a, str> {
+    let batch = executable.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat"));
+    if batch && text.contains(['\r', '\n']) {
+        std::borrow::Cow::Owned(text.replace("\r\n", " ").replace(['\r', '\n'], " "))
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    }
+}
+
+/// 结束 AI 工具的整棵进程树，再回收直接子进程。
+fn end_tree(tree: &ProcessTree, child: &mut std::process::Child) {
+    tree.terminate();
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 /// AI CLI 的进程工厂：Windows 下不弹出控制台窗口（npm 装的 `.cmd` 包装同样适用）。
 fn cli_command(executable: &Path) -> Command {
     let mut command = Command::new(executable);
@@ -154,21 +174,22 @@ fn cli_command(executable: &Path) -> Command {
 /// 运行 `<tool> --version`，5 秒内成功退出时返回其 stdout。
 fn tool_version(executable: &Path) -> Option<String> {
     let mut output = tempfile::tempfile().ok()?;
-    let mut process = cli_command(executable)
+    let mut command = cli_command(executable);
+    command
         .arg("--version")
         .stdin(Stdio::null())
         .stdout(output.try_clone().ok()?)
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+        .stderr(Stdio::null());
+    ProcessTree::prepare(&mut command);
+    let mut process = command.spawn().ok()?;
+    let tree = ProcessTree::attach(&process);
     let started = Instant::now();
     let okay = loop {
         if let Ok(Some(status)) = process.try_wait() {
             break status.success();
         }
         if started.elapsed() > Duration::from_secs(5) {
-            let _ = process.kill();
-            let _ = process.wait();
+            end_tree(&tree, &mut process);
             break false;
         }
         std::thread::sleep(Duration::from_millis(30));
@@ -249,6 +270,81 @@ mod failure_tests {
             .unwrap();
         assert!(output.status.success());
         assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "0");
+    }
+
+    /// 带唯一标记的测试孙进程（`ping -w <标记>`）的 PID；只查询本测试创建的进程。
+    #[cfg(windows)]
+    fn marked_pings(marker: u32) -> Vec<u32> {
+        let script = format!("Get-CimInstance Win32_Process -Filter \"Name='PING.EXE'\" | Where-Object {{ $_.CommandLine -match ' -w {marker} ' }} | ForEach-Object {{ $_.ProcessId }}");
+        let output = Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", &script]).output().unwrap();
+        String::from_utf8_lossy(&output.stdout).lines().filter_map(|line| line.trim().parse().ok()).collect()
+    }
+
+    /// 假的 codex 命令行工具（临时目录中的 .cmd）：记录工作目录与参数，再启动一个孙进程并等待。
+    /// 取消时整个进程树都要结束（npm 安装的 codex.cmd 同样是 cmd.exe → node 两层）；工作目录是临时目录，参数带只读沙箱。
+    #[cfg(windows)]
+    #[test]
+    fn cancelled_cli_ends_the_process_tree_and_runs_sandboxed_in_a_temp_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = 3000 + std::process::id() % 5000;
+        let record = dir.path().join("record");
+        fs::create_dir_all(&record).unwrap();
+        let fake = dir.path().join("fake-codex.cmd");
+        let record_text = record.to_string_lossy();
+        fs::write(&fake, format!("@echo off\r\ncd > \"{record_text}\\cwd.txt\"\r\necho %* > \"{record_text}\\args.txt\"\r\nping -n 30 -w {marker} 127.0.0.1 > nul\r\n")).unwrap();
+        let profile = AiProfile { id: "test".into(), kind: "cli".into(), provider: "codex".into(), executable: fake.to_string_lossy().into_owned(), base_url: String::new(), model: "fake-model".into() };
+        let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+        let flag = cancelled.clone();
+        let canceller = std::thread::spawn(move || {
+            // 等孙进程启动后再取消。
+            let started = Instant::now();
+            while marked_pings(marker).is_empty() && started.elapsed() < Duration::from_secs(20) {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            flag.store(true, Ordering::Relaxed);
+        });
+        let result = run_cli(&profile, Path::new("."), "system", "prompt", &cancelled);
+        canceller.join().unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        let left = marked_pings(marker);
+        // 清理：只结束本测试标记的进程。
+        for pid in &left {
+            let _ = Command::new("taskkill").args(["/F", "/PID", &pid.to_string()]).output();
+        }
+        assert_eq!(result.unwrap_err(), "AI 生成已取消");
+        assert!(left.is_empty(), "取消后孙进程仍在运行：{left:?}");
+        let cwd = fs::read_to_string(record.join("cwd.txt")).unwrap();
+        let cwd = cwd.trim().to_owned();
+        assert_ne!(Path::new(&cwd), std::env::current_dir().unwrap(), "不应在当前目录运行");
+        let temp = std::env::temp_dir();
+        let temp_long = dunce::canonicalize(&temp).unwrap_or(temp.clone());
+        assert!(Path::new(&cwd).starts_with(&temp) || Path::new(&cwd).starts_with(&temp_long), "应在临时目录运行：{cwd}");
+        let args = fs::read_to_string(record.join("args.txt")).unwrap();
+        for expected in ["exec", "--sandbox read-only", "--ephemeral", "--skip-git-repo-check", "-m fake-model", "--output-last-message"] {
+            assert!(args.contains(expected), "参数缺少 {expected}：{args}");
+        }
+    }
+
+    /// npm 安装的 claude.cmd：多行系统提示词也能启动（换行换成空格），结果从 stdout 读取；参数不提供任何工具。
+    #[cfg(windows)]
+    #[test]
+    fn claude_batch_wrapper_accepts_multiline_system_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let record = dir.path().join("args.txt");
+        let fake = dir.path().join("claude.cmd");
+        fs::write(&fake, format!("@echo off\r\necho %* > \"{}\"\r\necho {{\"kind\":\"answer\",\"message\":\"ok\"}}\r\n", record.to_string_lossy())).unwrap();
+        let profile = AiProfile { id: "test".into(), kind: "cli".into(), provider: "claude".into(), executable: fake.to_string_lossy().into_owned(), base_url: String::new(), model: "claude-haiku-4-5".into() };
+        // cmd.exe 的 echo 按系统代码页写文件：这里用 ASCII 文本，读取时按字节比较。
+        let output = run_cli(&profile, Path::new("."), "line1\nline2 \"quoted\"\r\nline3", "prompt", &AtomicBool::new(false)).unwrap();
+        assert_eq!(parse_json_output(&output).unwrap()["message"], "ok");
+        let args = String::from_utf8_lossy(&fs::read(&record).unwrap()).into_owned();
+        assert!(args.contains("line1 line2") && args.contains("line3"), "{args}");
+        for expected in ["-p", "--tools \"\"", "mcp__*", "--max-turns 1", "--no-session-persistence"] {
+            assert!(args.contains(expected), "参数缺少 {expected}：{args}");
+        }
+        // .exe 等其他可执行文件原样传递。
+        assert_eq!(batch_safe_argument(Path::new("claude.exe"), "a\nb"), "a\nb");
+        assert_eq!(batch_safe_argument(Path::new("CLAUDE.CMD"), "a\r\nb\nc"), "a b c");
     }
 
     #[test]
@@ -360,17 +456,99 @@ async fn response_json(response: reqwest::Response) -> Result<Value, String> {
     let body = response
         .text()
         .await
-        .map_err(|e| format!("读取 AI 响应失败：{e}"))?;
+        .map_err(|e| format!("读取 AI 响应失败：{}", request_error(&e)))?;
     if body.len() > 2_000_000 {
         return Err("AI 响应过大".into());
     }
     if !status.is_success() {
-        return Err(format!(
-            "AI 服务返回 HTTP {}，请检查 API Key、模型权限与 Base URL",
-            status.as_u16()
-        ));
+        let code = status.as_u16();
+        return Err(match code {
+            401 | 403 => format!("AI 服务拒绝了请求（HTTP {code}）：请检查 API Key 与该模型的访问权限"),
+            429 => format!("AI 服务限流或额度不足（HTTP {code}）：请稍后再试；Oris 不会自动重试"),
+            _ => format!("AI 服务返回 HTTP {code}，请检查 API Key、模型权限与 Base URL"),
+        });
     }
     serde_json::from_str(&body).map_err(|_| "AI 响应不是 JSON".into())
+}
+
+/// reqwest 错误的中文说明（超时、连接失败单独说明，不附带英文原文以外的内部细节）。
+fn request_error(error: &reqwest::Error) -> String {
+    if error.is_timeout() {
+        "AI 服务在限定时间内没有响应，已停止；请检查网络或稍后重试（Oris 不会自动重试）".into()
+    } else if error.is_connect() {
+        "无法连接 AI 服务：请检查网络、代理与 Base URL".into()
+    } else {
+        format!("网络错误（{error}）")
+    }
+}
+
+/// 查询模型的超时。
+pub(crate) const MODELS_TIMEOUT: Duration = Duration::from_secs(15);
+/// HTTP 生成的超时。
+pub(crate) const HTTP_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// API 提供方的模型列表（不读取密钥，便于测试指向本机假服务）。
+pub(crate) async fn http_models(profile: &AiProfile, api_key: &str, timeout: Duration) -> Result<Vec<String>, String> {
+    let base = base_url(profile)?;
+    let client = reqwest::Client::builder().timeout(timeout).build().map_err(|e| e.to_string())?;
+    let request = client.get(endpoint(&base, "models"));
+    let request = if profile.provider == "anthropic" {
+        request.header("x-api-key", api_key).header("anthropic-version", "2023-06-01")
+    } else {
+        request.bearer_auth(api_key)
+    };
+    let data = response_json(request.send().await.map_err(|e| format!("模型查询失败：{}", request_error(&e)))?).await?;
+    let mut models: Vec<String> = data
+        .get("data")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item.get("id").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect();
+    models.sort();
+    models.dedup();
+    Ok(models)
+}
+
+/// API 提供方的一次生成（不读取密钥；取消时丢弃请求，连接随之关闭）。
+pub(crate) async fn http_generate(profile: &AiProfile, api_key: &str, system_prompt: &str, prompt: &str, cancelled: &AtomicBool, timeout: Duration) -> Result<String, String> {
+    let base = base_url(profile)?;
+    let client = reqwest::Client::builder().timeout(timeout).build().map_err(|e| e.to_string())?;
+    let request = match profile.provider.as_str() {
+        "anthropic" => client.post(endpoint(&base, "messages")).header("x-api-key", api_key).header("anthropic-version", "2023-06-01")
+            .json(&json!({ "model": profile.model, "max_tokens": 2048, "system": system_prompt, "messages": [{"role":"user","content":prompt}] })),
+        "openai" => client.post(endpoint(&base, "responses")).bearer_auth(api_key)
+            .json(&json!({ "model": profile.model, "instructions": system_prompt, "input": prompt, "store": false })),
+        _ => client.post(endpoint(&base, "chat/completions")).bearer_auth(api_key)
+            .json(&json!({ "model": profile.model, "messages": [{"role":"system","content":system_prompt},{"role":"user","content":prompt}] })),
+    };
+    let response = cancellable(request.send(), cancelled).await?
+        .map_err(|e| format!("AI 请求失败：{}", request_error(&e)))?;
+    let data = cancellable(response_json(response), cancelled).await??;
+    let content = match profile.provider.as_str() {
+        "anthropic" => data.pointer("/content/0/text").and_then(Value::as_str),
+        "openai" => data.get("output_text").and_then(Value::as_str).or_else(|| {
+            data.get("output")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .flat_map(|item| {
+                    item.get("content")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                })
+                .find(|item| item.get("type").and_then(Value::as_str) == Some("output_text"))
+                .and_then(|item| item.get("text").and_then(Value::as_str))
+        }),
+        _ => data
+            .pointer("/choices/0/message/content")
+            .and_then(Value::as_str),
+    };
+    content
+        .map(str::to_owned)
+        .ok_or_else(|| "AI 没有返回文本".into())
 }
 
 #[cfg(feature = "desktop")]
@@ -388,38 +566,9 @@ pub async fn list_models(profile: &AiProfile) -> Result<ModelList, String> {
             _ => ModelList { models: Vec::new(), warning: None },
         });
     }
-    let base = base_url(profile)?;
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .build()
-        .map_err(|e| e.to_string())?;
+    base_url(profile)?;
     let api_key = key(&profile.id)?;
-    let request = client.get(endpoint(&base, "models"));
-    let request = if profile.provider == "anthropic" {
-        request
-            .header("x-api-key", api_key)
-            .header("anthropic-version", "2023-06-01")
-    } else {
-        request.bearer_auth(api_key)
-    };
-    let data = response_json(
-        request
-            .send()
-            .await
-            .map_err(|e| format!("模型查询失败：{e}"))?,
-    )
-    .await?;
-    let mut models: Vec<String> = data
-        .get("data")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|item| item.get("id").and_then(Value::as_str))
-        .map(str::to_owned)
-        .collect();
-    models.sort();
-    models.dedup();
-    Ok(ModelList { models, warning: None })
+    Ok(ModelList { models: http_models(profile, &api_key, MODELS_TIMEOUT).await?, warning: None })
 }
 
 const CLI_TIMEOUT: Duration = Duration::from_secs(300);
@@ -516,7 +665,7 @@ fn run_cli(profile: &AiProfile, _cwd: &Path, system_prompt: &str, prompt: &str, 
             let file = fs::File::create(&output_path).map_err(|e| e.to_string())?;
             cmd.arg("-p")
                 .arg("--append-system-prompt")
-                .arg(system_prompt)
+                .arg(batch_safe_argument(&executable, system_prompt).as_ref())
                 .arg("--model")
                 .arg(&profile.model)
                 .arg("--tools")
@@ -534,7 +683,10 @@ fn run_cli(profile: &AiProfile, _cwd: &Path, system_prompt: &str, prompt: &str, 
     cmd.current_dir(temp.path())
         .stdin(Stdio::piped())
         .stderr(stderr_file);
+    ProcessTree::prepare(&mut cmd);
     let mut child = cmd.spawn().map_err(|e| format!("启动 AI 工具失败：{e}"))?;
+    // 取消 / 超时时结束整棵进程树：npm 安装的 codex.cmd、claude.cmd 由 cmd.exe 再启动 node，只结束直接子进程会留下孙进程。
+    let tree = ProcessTree::attach(&child);
     if let Some(mut stdin) = child.stdin.take() {
         stdin
             .write_all(prompt.as_bytes())
@@ -543,8 +695,7 @@ fn run_cli(profile: &AiProfile, _cwd: &Path, system_prompt: &str, prompt: &str, 
     let start = Instant::now();
     loop {
         if cancelled.load(Ordering::Relaxed) {
-            let _ = child.kill();
-            let _ = child.wait();
+            end_tree(&tree, &mut child);
             return Err("AI 生成已取消".into());
         }
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
@@ -556,8 +707,7 @@ fn run_cli(profile: &AiProfile, _cwd: &Path, system_prompt: &str, prompt: &str, 
             return Ok(output.chars().take(100_000).collect());
         }
         if start.elapsed() > CLI_TIMEOUT {
-            let _ = child.kill();
-            let _ = child.wait();
+            end_tree(&tree, &mut child);
             return Err(cli_failure(&failure_output(&stderr_path, &output_path), true, None, version_warning()));
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -578,46 +728,9 @@ pub async fn generate(profile: &AiProfile, cwd: &Path, system_prompt: &str, prom
             .await
             .map_err(|e| e.to_string())?;
     }
-    let base = base_url(profile)?;
+    base_url(profile)?;
     let api_key = key(&profile.id)?;
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(120))
-        .build()
-        .map_err(|e| e.to_string())?;
-    let request = match profile.provider.as_str() {
-        "anthropic" => client.post(endpoint(&base, "messages")).header("x-api-key", api_key).header("anthropic-version", "2023-06-01")
-            .json(&json!({ "model": profile.model, "max_tokens": 2048, "system": system_prompt, "messages": [{"role":"user","content":prompt}] })),
-        "openai" => client.post(endpoint(&base, "responses")).bearer_auth(api_key)
-            .json(&json!({ "model": profile.model, "instructions": system_prompt, "input": prompt, "store": false })),
-        _ => client.post(endpoint(&base, "chat/completions")).bearer_auth(api_key)
-            .json(&json!({ "model": profile.model, "messages": [{"role":"system","content":system_prompt},{"role":"user","content":prompt}] })),
-    };
-    let response = cancellable(request.send(), &cancelled).await?
-        .map_err(|e| format!("AI 请求失败：{e}"))?;
-    let data = cancellable(response_json(response), &cancelled).await??;
-    let content = match profile.provider.as_str() {
-        "anthropic" => data.pointer("/content/0/text").and_then(Value::as_str),
-        "openai" => data.get("output_text").and_then(Value::as_str).or_else(|| {
-            data.get("output")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .flat_map(|item| {
-                    item.get("content")
-                        .and_then(Value::as_array)
-                        .into_iter()
-                        .flatten()
-                })
-                .find(|item| item.get("type").and_then(Value::as_str) == Some("output_text"))
-                .and_then(|item| item.get("text").and_then(Value::as_str))
-        }),
-        _ => data
-            .pointer("/choices/0/message/content")
-            .and_then(Value::as_str),
-    };
-    content
-        .map(str::to_owned)
-        .ok_or_else(|| "AI 没有返回文本".into())
+    http_generate(profile, &api_key, system_prompt, prompt, &cancelled, HTTP_TIMEOUT).await
 }
 
 async fn cancellable<F: std::future::Future>(future: F, cancelled: &AtomicBool) -> Result<F::Output, String> {
@@ -638,4 +751,192 @@ pub fn parse_json_output(output: &str) -> Result<Value, String> {
         .unwrap_or(trimmed);
     let stripped = stripped.strip_suffix("```").unwrap_or(stripped).trim();
     serde_json::from_str(stripped).map_err(|_| "AI 未按要求返回 JSON，请重试或更换模型".into())
+}
+
+/// HTTP 路径对本机假模型服务的测试：服务只监听 127.0.0.1，在测试代码内启动，按脚本返回；不访问任何真实模型服务、不读取凭据。
+#[cfg(test)]
+mod http_tests {
+    use super::*;
+    use std::io::{BufRead, BufReader};
+    use std::net::TcpListener;
+    use std::sync::{mpsc, Arc};
+
+    struct Reply {
+        status: u16,
+        body: String,
+        delay: Duration,
+    }
+
+    fn ok(body: Value) -> Reply {
+        Reply { status: 200, body: body.to_string(), delay: Duration::ZERO }
+    }
+
+    /// 收到的请求：路径、全部请求头（小写）与正文。
+    #[derive(Debug)]
+    struct Seen {
+        path: String,
+        headers: String,
+        body: String,
+    }
+
+    /// 启动只接受一次连接的假服务；返回 base URL、请求记录，以及“回复前连接是否已被对方关闭”。
+    fn serve(reply: Reply) -> (String, mpsc::Receiver<Seen>, mpsc::Receiver<bool>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (seen_tx, seen_rx) = mpsc::channel();
+        let (closed_tx, closed_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let Ok((stream, _)) = listener.accept() else { return };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request_line = String::new();
+            reader.read_line(&mut request_line).unwrap();
+            let mut headers = String::new();
+            let mut length = 0usize;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" || line.is_empty() {
+                    break;
+                }
+                let lower = line.to_ascii_lowercase();
+                if let Some(value) = lower.strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap_or(0);
+                }
+                headers.push_str(&lower);
+            }
+            let mut body = vec![0u8; length];
+            reader.read_exact(&mut body).unwrap();
+            let path = request_line.split_whitespace().nth(1).unwrap_or("").to_owned();
+            let _ = seen_tx.send(Seen { path, headers, body: String::from_utf8_lossy(&body).into_owned() });
+            // 慢响应：等待期间检测对方是否已关闭连接（取消 / 超时）。
+            let started = Instant::now();
+            let mut probe = stream.try_clone().unwrap();
+            probe.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+            while started.elapsed() < reply.delay {
+                let mut byte = [0u8; 1];
+                match probe.read(&mut byte) {
+                    Ok(0) => {
+                        let _ = closed_tx.send(true);
+                        return;
+                    }
+                    Ok(_) => {}
+                    Err(error) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
+                    Err(_) => {
+                        let _ = closed_tx.send(true);
+                        return;
+                    }
+                }
+            }
+            let reason = match reply.status {
+                200 => "OK",
+                401 => "Unauthorized",
+                429 => "Too Many Requests",
+                _ => "Error",
+            };
+            let response = format!(
+                "HTTP/1.1 {} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                reply.status,
+                reply.body.len(),
+                reply.body
+            );
+            let mut stream = stream;
+            let _ = stream.write_all(response.as_bytes());
+            let _ = closed_tx.send(false);
+        });
+        (format!("http://127.0.0.1:{port}/v1"), seen_rx, closed_rx)
+    }
+
+    fn profile(provider: &str, base: &str) -> AiProfile {
+        AiProfile { id: "oris-test".into(), kind: "api".into(), provider: provider.into(), executable: String::new(), base_url: base.into(), model: "fake-model".into() }
+    }
+
+    fn run<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(future)
+    }
+
+    fn generate(provider: &str, reply: Reply, timeout: Duration) -> (Result<String, String>, Seen) {
+        let (base, seen, _) = serve(reply);
+        let cancelled = AtomicBool::new(false);
+        let result = run(http_generate(&profile(provider, &base), "sk-oris-test", "系统提示", "用户输入", &cancelled, timeout));
+        (result, seen.recv_timeout(Duration::from_secs(5)).unwrap())
+    }
+
+    #[test]
+    fn compatible_openai_and_anthropic_requests_carry_prompt_key_and_return_the_plan() {
+        let plan = json!({ "kind": "git", "summary": "暂存", "operation": { "kind": "stage", "pathIds": "all" } }).to_string();
+        let (result, seen) = generate("compatible", ok(json!({ "choices": [{ "message": { "content": plan } }] })), HTTP_TIMEOUT);
+        assert_eq!(result.unwrap(), plan);
+        assert_eq!(seen.path, "/v1/chat/completions");
+        assert!(seen.headers.contains("authorization: bearer sk-oris-test"));
+        let body: Value = serde_json::from_str(&seen.body).unwrap();
+        assert_eq!(body["model"], "fake-model");
+        assert_eq!(body["messages"][0]["content"], "系统提示");
+        assert_eq!(body["messages"][1]["content"], "用户输入");
+        let (result, seen) = generate("openai", ok(json!({ "output_text": "{}" })), HTTP_TIMEOUT);
+        assert_eq!(result.unwrap(), "{}");
+        assert_eq!(seen.path, "/v1/responses");
+        assert_eq!(serde_json::from_str::<Value>(&seen.body).unwrap()["store"], false, "OpenAI 请求不保存");
+        let (result, seen) = generate("anthropic", ok(json!({ "content": [{ "type": "text", "text": "{\"kind\":\"answer\"}" }] })), HTTP_TIMEOUT);
+        assert_eq!(result.unwrap(), "{\"kind\":\"answer\"}");
+        assert_eq!(seen.path, "/v1/messages");
+        assert!(seen.headers.contains("x-api-key: sk-oris-test") && !seen.headers.contains("authorization"));
+    }
+
+    #[test]
+    fn http_errors_and_invalid_output_are_explained_in_chinese_without_retry() {
+        for (status, expected) in [(401, "拒绝了请求（HTTP 401）"), (403, "拒绝了请求（HTTP 403）"), (429, "限流或额度不足（HTTP 429）"), (500, "AI 服务返回 HTTP 500")] {
+            // 服务只接受一次连接：若 Oris 重试，第二次连接会失败并改变错误文字。
+            let (base, seen, _) = serve(Reply { status, body: "{\"error\":\"x\"}".into(), delay: Duration::ZERO });
+            let result = run(http_generate(&profile("compatible", &base), "k", "s", "p", &AtomicBool::new(false), HTTP_TIMEOUT));
+            assert!(result.as_ref().unwrap_err().contains(expected), "{status}: {result:?}");
+            assert!(seen.recv_timeout(Duration::from_secs(5)).is_ok());
+        }
+        let (result, _) = generate("compatible", Reply { status: 200, body: "<html>not json</html>".into(), delay: Duration::ZERO }, HTTP_TIMEOUT);
+        assert_eq!(result.unwrap_err(), "AI 响应不是 JSON");
+        let (result, _) = generate("compatible", ok(json!({ "choices": [{ "message": { "content": "好的，我来帮你暂存" } }] })), HTTP_TIMEOUT);
+        assert_eq!(parse_json_output(&result.unwrap()).unwrap_err(), "AI 未按要求返回 JSON，请重试或更换模型");
+        let (result, _) = generate("compatible", ok(json!({ "choices": [] })), HTTP_TIMEOUT);
+        assert_eq!(result.unwrap_err(), "AI 没有返回文本");
+    }
+
+    #[test]
+    fn cancel_closes_the_connection_and_timeout_is_explained() {
+        // 取消：慢响应期间置位，调用立即结束，服务端看到连接被关闭。
+        let (base, seen, closed) = serve(Reply { status: 200, body: "{}".into(), delay: Duration::from_secs(10) });
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let flag = cancelled.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(400));
+            flag.store(true, Ordering::Relaxed);
+        });
+        let started = Instant::now();
+        let result = run(http_generate(&profile("compatible", &base), "k", "s", "p", &cancelled, HTTP_TIMEOUT));
+        assert_eq!(result.unwrap_err(), "AI 生成已取消");
+        assert!(started.elapsed() < Duration::from_secs(3), "取消后应立即结束：{:?}", started.elapsed());
+        assert!(seen.recv_timeout(Duration::from_secs(5)).is_ok());
+        assert_eq!(closed.recv_timeout(Duration::from_secs(5)), Ok(true), "取消后 HTTP 连接应关闭");
+        // 超时：用短超时代替 120 s，服务端同样看到连接被关闭。
+        let (base, _, closed) = serve(Reply { status: 200, body: "{}".into(), delay: Duration::from_secs(10) });
+        let result = run(http_generate(&profile("compatible", &base), "k", "s", "p", &AtomicBool::new(false), Duration::from_millis(500)));
+        let error = result.unwrap_err();
+        assert!(error.contains("没有响应") && !error.contains("operation timed out"), "{error}");
+        assert_eq!(closed.recv_timeout(Duration::from_secs(5)), Ok(true));
+        // 连接失败：本机没有服务监听的端口。
+        let unused = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let result = run(http_generate(&profile("compatible", &format!("http://127.0.0.1:{unused}")), "k", "s", "p", &AtomicBool::new(false), HTTP_TIMEOUT));
+        assert!(result.unwrap_err().contains("无法连接 AI 服务"));
+    }
+
+    #[test]
+    fn models_are_listed_and_base_urls_are_restricted() {
+        let (base, seen, _) = serve(ok(json!({ "data": [{ "id": "b" }, { "id": "a" }, { "id": "b" }] })));
+        let models = run(http_models(&profile("deepseek", &base), "k", MODELS_TIMEOUT)).unwrap();
+        assert_eq!(models, vec!["a", "b"]);
+        assert_eq!(seen.recv_timeout(Duration::from_secs(5)).unwrap().path, "/v1/models");
+        assert!(base_url(&profile("compatible", "http://example.com/v1")).unwrap_err().contains("HTTPS"));
+        assert!(base_url(&profile("compatible", "https://user:pass@example.com/v1")).unwrap_err().contains("账号"));
+        assert!(base_url(&profile("compatible", "https://example.com/v1?key=1")).unwrap_err().contains("查询参数"));
+        assert_eq!(base_url(&profile("compatible", "http://127.0.0.1:9/v1/")).unwrap(), "http://127.0.0.1:9/v1");
+        assert_eq!(base_url(&profile("openai", "")).unwrap(), "https://api.openai.com/v1");
+    }
 }

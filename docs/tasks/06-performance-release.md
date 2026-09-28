@@ -1,8 +1,10 @@
 # 06 — 双平台性能与可安装发布包
 
-状态：Awaiting acceptance（待签名、macOS 最终版本复测、安装 / 卸载实测）。依赖：03、04、05 验收通过。
+状态：Awaiting acceptance（待签名、macOS 最终版本复测、安装 / 卸载实测、AI 真实模型冒烟）。依赖：03、04、05 验收通过。
 
 2026-09-26 Windows 与发布准备（长链阶段 3）：A01–A15 与 B01–B22 在最终构建上重跑，追溯矩阵见 [发布验收结果](../validation/v1-06-release-results.md)；Windows NSIS 内部测试包（未签名）已构建，未安装测试（用户选择只构建，见 [Windows 安装交接清单](../release/windows-install-checklist.md)）；[发行说明草稿](../release/release-notes.md)、[macOS 交接清单](../release/macos-checklist.md)、[第三方许可证清单](../release/third-party-licenses.md)。2026-09-27 发布性能测试（Windows）见 [v1-06-performance](../validation/v1-06-performance.md)：S 数据集 24 项预算中 21 项达标，切换字号（长文件滚动场景）未达标、失焦后内存稳态口径未达标；L 数据集满足有界 / 可取消 / 不崩溃。2026-09-28 用户验收确认 Windows 结果，性能未达标项按现状登记为已知问题（V2-D58–V2-D60），06 保持 Awaiting acceptance。仍未完成：Windows 签名与 macOS 签名 / 公证（阻塞：缺证书）、macOS 最终版本复测、安装 / 卸载实测。
+
+2026-09-28 最终发布候选（RC）复验（长链 20260928-rc 阶段 3，含 AI）：以 v0.3.0 之后的 main 为准，A01–A15 与 B01–B29（B23–B29 为 AI）在 RC 构建 `AE9CAF6C…` 上重跑，追溯矩阵见 [RC 验收结果](../validation/v1-06-rc-results.md)；修复 3 个 AI 缺陷，按用户决定收紧 AI 权限（V2-D67、V2-D68）；AI 只用本机假服务与假命令行工具验证，V2-D69–V2-D73 待用户决定；RC 构建上性能复测完成 4/10 个套件（全部达标），其余未运行（用户要求直接收尾）；B12 真实远端未运行（权限拦截）。仍未完成：签名 / 公证（缺证书）、macOS 最终版本复测、安装 / 卸载实测、AI 真实模型冒烟。
 
 编号迁移：2026-09-23 原 05 顺延为 06；发布范围与授权边界不变。
 
