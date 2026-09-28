@@ -63,6 +63,9 @@ export const commitChanges = (repoId: string, commit: string, parent: string | n
 export const compareRevisions = (repoId: string, left: string, right: string) => invoke<Comparison>("compare_revisions", { repoId, left, right });
 export const fileHistory = (repoId: string, start: string, pathId: string, pageSize: number, cursor: LogCursor | null) => invoke<FileHistory>("file_history", { repoId, start, pathId, pageSize, cursor });
 export const readRefs = (repoId: string) => invoke<RefsView>("read_refs", { repoId });
+/** 标题栏“获取 ▾”：只读 remote 列表与默认目标，不读分支（比 readRefs 轻）。 */
+export interface RemotesView { remotes: string[]; defaultRemote: string | null; fetchHeadAt: number | null }
+export const readRemotes = (repoId: string) => invoke<RemotesView>("read_remotes", { repoId });
 export const readRevisionPair = async (repoId: string, left: string | null, right: string, pathId: string, oldPathId: string | null, requestId: string) =>
   decodeContentFrame(await invoke<ArrayBuffer>("read_revision_pair", { repoId, left, right, pathId, oldPathId, requestId }));
 

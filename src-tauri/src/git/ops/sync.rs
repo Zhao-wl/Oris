@@ -40,6 +40,21 @@ impl GitAdapter {
         Some(Upstream { remote, merge })
     }
 
+    /// 未指定 remote 时的默认目标（一键获取 / 推送）：当前分支上游所属的 remote；没有上游时取仅有的一个 remote。
+    /// 有多个 remote 而无法确定时不执行，返回“选择 remote”确认，由界面列出 remote 后带上所选 remote 重试。
+    pub(super) fn default_remote(&self, what: &str) -> Result<Result<String, Step>, GitError> {
+        let remotes = self.remote_names()?;
+        let upstream = self.current_branch_ref().and_then(|full| full.strip_prefix("refs/heads/").map(str::to_owned)).and_then(|branch| self.upstream_of(&branch));
+        if let Some(up) = upstream.filter(|up| remotes.contains(&up.remote)) {
+            return Ok(Ok(up.remote));
+        }
+        match remotes.as_slice() {
+            [] => Err(GitError::WriteBlocked("该仓库没有配置 remote；Oris 不会新增 remote".into())),
+            [only] => Ok(Ok(only.clone())),
+            _ => Ok(Err(Step::confirm("chooseRemote", format!("当前分支没有可用的上游，仓库有多个 remote：请选择要{what}的 remote"), remotes))),
+        }
+    }
+
     fn current_branch_short(&self, what: &str) -> Result<String, GitError> {
         let Some(full) = self.current_branch_ref() else {
             return Err(GitError::WriteBlocked(format!("处于分离 HEAD：不能{what}，请先切换到分支或从这里新建分支")));
@@ -100,6 +115,10 @@ impl GitAdapter {
                 return Ok(Step::failed(note(format!("{what}时出现 {} 个冲突：已进入“合并进行中”。冲突文件可只读查看，在外部解决后“标记已解决”，再“完成合并”或“中止合并”", self.conflict_count()))));
             }
             if summary.contains("Not possible to fast-forward") || summary.contains("not possible to fast-forward") || summary.contains("Diverging branches") {
+                // 已经是合并方式仍无法快进：用户的 merge.ff=only（或 pull.ff=only）不允许合并提交，“改用合并”没有意义，如实报告失败。
+                if mode == PullMode::Merge {
+                    return Ok(Step::failed(note(format!("{what}失败：本地分支 {branch} 与 {upstream_label} 已分叉，而你的 Git 配置（merge.ff=only 或 pull.ff=only）只允许快进，不能生成合并提交。可在终端修改该配置，或在外部处理分叉；Oris 不做 rebase"))));
+                }
                 return Ok(Step::confirm("diverged", note(format!("本地分支 {branch} 与 {upstream_label} 已分叉，无法仅快进。可以改用“合并远端改动”（会生成合并提交）；Oris 不做 rebase")), vec![]));
             }
             // 文件列表很长时 Git 的提示头会被挤出错误尾部：在全部输出中识别。
@@ -137,7 +156,11 @@ impl GitAdapter {
             (Some(up), None) => (up.remote.clone(), up.merge.clone(), false),
             (Some(up), Some(chosen)) if chosen == up.remote => (up.remote.clone(), up.merge.clone(), false),
             (_, Some(chosen)) => (chosen.to_owned(), format!("refs/heads/{branch}"), true),
-            (None, None) => return Err(GitError::WriteBlocked(format!("分支 {branch} 没有上游：请选择要推送到的 remote"))),
+            // 没有上游：只有一个 remote 时直接推送并设为上游（“发布分支”），多个时请界面选择。
+            (None, None) => match self.default_remote("推送到")? {
+                Ok(only) => (only, format!("refs/heads/{branch}"), true),
+                Err(step) => return Ok(step),
+            },
         };
         self.require_remote(&remote)?;
         if !destination.starts_with("refs/heads/") || destination.contains(['+', ':', ' ']) {
