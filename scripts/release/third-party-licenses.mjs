@@ -101,6 +101,10 @@ const attention = all.filter((e) => {
   return !orGroups.every((group) => group.some((p) => PERMISSIVE.test(p)));
 });
 const missingText = all.filter((e) => e.texts.length === 0);
+// MPL-2.0（文件级 copyleft，V2-D63）：按原样使用、不修改；分发可执行文件时告知源码获取方式（§3.2），并收录许可证全文。
+const mpl = attention.filter((e) => e.ecosystem === "Cargo" && terms(e.license).includes("MPL-2.0"));
+const mplText = mpl.find((e) => e.texts.length);
+const crateSource = (e) => `https://crates.io/crates/${e.name}/${e.version}（源码包 https://static.crates.io/crates/${e.name}/${e.name}-${e.version}.crate）`;
 
 const summary = new Map();
 for (const e of all) summary.set(`${e.ecosystem}|${e.license}`, (summary.get(`${e.ecosystem}|${e.license}`) ?? 0) + 1);
@@ -120,6 +124,9 @@ if (attention.length) {
   for (const e of attention) md.push(`| ${e.ecosystem} | ${e.name} | ${e.version} | ${e.license} |`);
 } else md.push("所有包的许可证表达式中都至少有一个可选用的宽松许可。");
 md.push("");
+if (mpl.length) {
+  md.push(`MPL-2.0 的处理（V2-D63）：Oris 按原样使用上表中的 ${mpl.length} 个 MPL-2.0 组件，没有修改其源文件。MPL-2.0 是文件级 copyleft，分发可执行文件时须告知获取这些组件源码的方式（§3.2）：安装包的 \`THIRD-PARTY-NOTICES.txt\` 开头为每个组件列出对应版本的源码地址，并收录 MPL-2.0 全文${mplText ? `（取自 ${mplText.name} ${mplText.version}）` : ""}。Oris 自身代码不受影响；今后若修改这些组件的文件，修改后的文件须按 MPL-2.0 公开源码。本段是工程上的合规处理，不是法律意见。`, "");
+}
 if (missingText.length) {
   md.push(`以下 ${missingText.length} 个包的源码目录中没有 LICENSE / NOTICE 文件，NOTICES 中只列出许可证名称：`, "");
   md.push(missingText.map((e) => `${e.name} ${e.version}（${e.license}）`).join("、"), "");
@@ -134,11 +141,18 @@ if (noticesPath) {
   const out = [];
   out.push("Oris 第三方软件声明（THIRD-PARTY-NOTICES）", "", "本文件列出随 Oris 分发的第三方组件及其许可证全文（取自各组件源码包）。", "");
   out.push("=".repeat(78), "配色方案（VS Code / Colorsublime-Themes）", "=".repeat(78), readFileSync(path.join(root, "src", "themes", "generated", "NOTICES.txt"), "utf8").replace(/\r\n/g, "\n").trim(), "");
+  if (mpl.length) {
+    out.push("=".repeat(78), "MPL-2.0 组件的源码获取", "=".repeat(78),
+      "以下组件按 Mozilla Public License 2.0 授权，Oris 按原样使用、未修改其源文件。对应版本的源码可从下列地址获取：", "");
+    for (const e of mpl) out.push(`- ${e.name} ${e.version}：${crateSource(e)}${e.repository ? `；上游 ${e.repository.replace(/^git\+/, "")}` : ""}`);
+    out.push("", mplText ? `MPL-2.0 全文见下文 ${mplText.name} ${mplText.version} 一节。` : "MPL-2.0 全文：https://mozilla.org/MPL/2.0/", "");
+  }
   // 相同文本只写一次，其余包引用它。
   const seenText = new Map();
   for (const e of all) {
     out.push("=".repeat(78), `${e.name} ${e.version}（${e.ecosystem}）`, `许可证：${e.license}`, ...(e.repository ? [`来源：${e.repository.replace(/^git\+/, "")}`] : []), "-".repeat(78));
-    if (!e.texts.length) out.push("（源码包中没有许可证文件；许可证条款见上方 SPDX 标识对应的标准文本）");
+    if (!e.texts.length && mplText && mpl.includes(e)) out.push(`（源码包中没有许可证文件；MPL-2.0 全文见 ${mplText.name} ${mplText.version} 一节）`);
+    else if (!e.texts.length) out.push("（源码包中没有许可证文件；许可证条款见上方 SPDX 标识对应的标准文本）");
     for (const t of e.texts) {
       const prior = seenText.get(t.text);
       if (prior) out.push(`[${t.file}] 与 ${prior} 的同名文件内容相同`);

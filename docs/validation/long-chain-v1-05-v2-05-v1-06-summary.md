@@ -105,7 +105,7 @@ AgentHub（`git@github.com:Zhao-wl/AgentHub.git`）真实远端回归本轮**未
 - V2-D56 块丢弃备份整个文件；块操作不带 mode 变化
 - V2-D57 Windows 安装方式（按当前用户、WebView2 引导程序、卸载默认保留应用数据、不构建 MSI）
 
-另需确认：5 个只有 MPL-2.0 的依赖在公开发布前的声明义务（[许可证清单](../release/third-party-licenses.md)）。
+5 个只有 MPL-2.0 的依赖：2026-09-28 按 V2-D63 处理（NOTICES 列出源码地址并收录 MPL-2.0 全文）（[许可证清单](../release/third-party-licenses.md)）。
 
 ## 清理
 
