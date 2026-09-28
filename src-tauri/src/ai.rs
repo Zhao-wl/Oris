@@ -3,10 +3,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     fs,
-    io::Write,
+    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{atomic::{AtomicBool, Ordering}, Arc},
+    sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},
 };
 
@@ -27,6 +27,14 @@ pub struct ToolCandidate {
     pub provider: String,
     pub executable: String,
     pub models: Vec<String>,
+    pub warning: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelList {
+    pub models: Vec<String>,
+    pub warning: Option<String>,
 }
 
 fn secret_entry(id: &str) -> Result<keyring::Entry, String> {
@@ -99,20 +107,20 @@ fn find_executable(name: &str) -> Option<PathBuf> {
     None
 }
 
-fn codex_models() -> Vec<String> {
+/// Codex 桌面版与各 CLI 共用的 `~/.codex/models_cache.json`；由最近运行的那个 Codex 写入。
+fn codex_cache() -> Option<Value> {
     let root = std::env::var_os("CODEX_HOME")
         .map(PathBuf::from)
         .or_else(|| {
             std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
                 .map(|p| PathBuf::from(p).join(".codex"))
-        });
-    let Some(root) = root else { return Vec::new() };
-    let Ok(bytes) = fs::read(root.join("models_cache.json")) else {
-        return Vec::new();
-    };
-    let Ok(data) = serde_json::from_slice::<Value>(&bytes) else {
-        return Vec::new();
-    };
+        })?;
+    let bytes = fs::read(root.join("models_cache.json")).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn codex_models() -> Vec<String> {
+    let Some(data) = codex_cache() else { return Vec::new() };
     data.get("models")
         .and_then(Value::as_array)
         .into_iter()
@@ -123,44 +131,160 @@ fn codex_models() -> Vec<String> {
         .collect()
 }
 
+/// 取文本中首个 `x.y.z` 版本号，忽略 `-alpha` 等预发布后缀。
+fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
+    text.split(|c: char| !(c.is_ascii_digit() || c == '.')).find_map(|token| {
+        let mut parts = token.split('.');
+        Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
+    })
+}
+
+/// 运行 `<tool> --version`，5 秒内成功退出时返回其 stdout。
+fn tool_version(executable: &Path) -> Option<String> {
+    let mut output = tempfile::tempfile().ok()?;
+    let mut process = Command::new(executable)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(output.try_clone().ok()?)
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let started = Instant::now();
+    let okay = loop {
+        if let Ok(Some(status)) = process.try_wait() {
+            break status.success();
+        }
+        if started.elapsed() > Duration::from_secs(5) {
+            let _ = process.kill();
+            let _ = process.wait();
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    };
+    if !okay {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    output.seek(SeekFrom::Start(0)).ok()?;
+    output.read_to_end(&mut bytes).ok()?;
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// 模型列表来自更新的 Codex（常见于桌面版自带 CLI 比 PATH 上的新）时，旧 CLI 可能无法使用其中的模型。
+fn codex_version_warning(cli_version: &str, cache: Option<&Value>) -> Option<String> {
+    let cache_version = cache?.get("client_version")?.as_str()?;
+    let (cli, cached) = (parse_version(cli_version)?, parse_version(cache_version)?);
+    (cli < cached).then(|| {
+        format!(
+            "当前 Codex CLI 版本为 {}.{}.{}，低于写入模型列表的 Codex {cache_version}（通常是 Codex 桌面版），列表中的新模型可能无法使用；请升级该 CLI，或在“可执行文件”中改用较新的 codex",
+            cli.0, cli.1, cli.2
+        )
+    })
+}
+
+fn codex_warning_for(executable: &Path) -> Option<String> {
+    codex_version_warning(&tool_version(executable)?, codex_cache().as_ref())
+}
+
+/// Claude Code 的模型用完整 ID：`sonnet` 等别名由 CLI 按自身版本解析，旧版本会解析到账号已无法访问的型号。
+/// 新模型发布后需同步更新；列表外的模型仍可在设置中手动输入。
+const CLAUDE_MODELS: [&str; 4] = ["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5", "claude-haiku-4-5"];
+
+fn claude_models() -> Vec<String> {
+    CLAUDE_MODELS.iter().map(|&model| model.to_owned()).collect()
+}
+
+fn cli_executable(profile: &AiProfile) -> Option<PathBuf> {
+    if profile.executable.trim().is_empty() {
+        find_executable(&profile.provider)
+    } else {
+        Some(PathBuf::from(profile.executable.trim()))
+    }
+}
+
 pub fn detect_tools() -> Vec<ToolCandidate> {
     [("codex", "codex"), ("claude", "claude")]
         .into_iter()
         .filter_map(|(provider, name)| {
             let executable = find_executable(name)?;
-            let mut process = Command::new(&executable)
-                .arg("--version")
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .ok()?;
-            let started = Instant::now();
-            let okay = loop {
-                if let Ok(Some(status)) = process.try_wait() {
-                    break status.success();
-                }
-                if started.elapsed() > Duration::from_secs(5) {
-                    let _ = process.kill();
-                    let _ = process.wait();
-                    break false;
-                }
-                std::thread::sleep(Duration::from_millis(30));
-            };
-            if !okay {
-                return None;
-            }
-            let models = if provider == "codex" {
-                codex_models()
+            let version = tool_version(&executable)?;
+            let (models, warning) = if provider == "codex" {
+                (codex_models(), codex_version_warning(&version, codex_cache().as_ref()))
             } else {
-                vec!["sonnet".into(), "opus".into(), "haiku".into()]
+                (claude_models(), None)
             };
             Some(ToolCandidate {
                 provider: provider.into(),
                 executable: executable.to_string_lossy().into_owned(),
                 models,
+                warning,
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod failure_tests {
+    use super::*;
+
+    #[test]
+    fn parses_versions_from_tool_output() {
+        assert_eq!(parse_version("codex-cli 0.144.6"), Some((0, 144, 6)));
+        assert_eq!(parse_version("codex-cli 0.158.0-alpha.2.1"), Some((0, 158, 0)));
+        assert_eq!(parse_version("2.1.263 (Claude Code)"), Some((2, 1, 263)));
+        assert_eq!(parse_version("no version"), None);
+    }
+
+    #[test]
+    fn warns_only_when_cli_is_older_than_model_cache() {
+        let cache = json!({ "client_version": "0.158.0" });
+        let warning = codex_version_warning("codex-cli 0.144.6", Some(&cache)).unwrap();
+        assert!(warning.contains("0.144.6") && warning.contains("0.158.0"));
+        assert!(codex_version_warning("codex-cli 0.158.0-alpha.2.1", Some(&cache)).is_none());
+        assert!(codex_version_warning("codex-cli 0.160.0", Some(&cache)).is_none());
+        assert!(codex_version_warning("codex-cli 0.144.6", Some(&json!({}))).is_none());
+        assert!(codex_version_warning("codex-cli 0.144.6", None).is_none());
+    }
+
+    #[test]
+    fn failure_shows_claude_stdout_error_and_login_hint() {
+        let output = "\"claude-haiku-4.5\" isn't described by this version's model catalog\n\nFailed to authenticate. API Error: 401 OAuth access token is invalid.\n";
+        let message = cli_failure(output, false, Some(1), None);
+        assert!(message.starts_with("AI 工具退出码 1；请在终端重新登录该 AI 工具"));
+        assert!(message.ends_with("工具输出：\nFailed to authenticate. API Error: 401 OAuth access token is invalid."));
+    }
+
+    #[test]
+    fn failure_dedupes_codex_errors_and_appends_version_warning() {
+        let error = r#"ERROR: {"type":"error","status":400,"error":{"message":"The 'gpt-6-astra' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again."}}"#;
+        let output = format!("OpenAI Codex v0.144.6\nmodel: gpt-6-astra\n{error}\n{error}\n");
+        let message = cli_failure(&output, false, Some(1), Some("版本提示".into()));
+        assert_eq!(message, format!("AI 工具退出码 1；请升级该 AI 工具，或改用较新的可执行文件\n工具输出：\n{error}\n版本提示"));
+    }
+
+    #[test]
+    fn failure_asks_to_update_claude_for_newer_models() {
+        let output = "\nAPI Error: 400 Claude Code 2.1.263 does not support this model; version 2.1.280 or newer is required. Run 'claude update', or update the Claude desktop app, then try again.\n";
+        assert!(cli_failure(output, false, Some(1), None).starts_with("AI 工具退出码 1；请升级该 AI 工具，或改用较新的可执行文件\n工具输出：\nAPI Error: 400"));
+        assert!(CLAUDE_MODELS.iter().all(|model| model.starts_with("claude-")));
+    }
+
+    #[test]
+    fn failure_recognises_unknown_claude_model() {
+        let output = "\"claude-haiku-4.5\" isn't described by this version's model catalog; update Claude Code\n[claude-code:unrecognized_model] {\"model\":\"claude-haiku-4.5\"}\nThere's an issue with the selected model (claude-haiku-4.5). It may not exist or you may not have access to it.\n";
+        assert_eq!(
+            cli_failure(output, false, Some(1), None),
+            "AI 工具退出码 1；请检查所选模型是否可用\n工具输出：\nThere's an issue with the selected model (claude-haiku-4.5). It may not exist or you may not have access to it."
+        );
+    }
+
+    #[test]
+    fn excerpt_falls_back_to_last_lines_and_limits_length() {
+        assert_eq!(error_excerpt("a\n\nb\nc\nd\n"), "b\nc\nd");
+        assert_eq!(error_excerpt("  \n"), "");
+        assert_eq!(error_excerpt(&"x".repeat(900)).chars().count(), 801);
+        assert_eq!(cli_failure("", true, None, None), format!("AI 工具超过 {} 秒，已终止；请在终端运行该 AI 工具检查详细错误", CLI_TIMEOUT.as_secs()));
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]
@@ -225,12 +349,19 @@ async fn response_json(response: reqwest::Response) -> Result<Value, String> {
     serde_json::from_str(&body).map_err(|_| "AI 响应不是 JSON".into())
 }
 
-pub async fn list_models(profile: &AiProfile) -> Result<Vec<String>, String> {
+#[cfg(feature = "desktop")]
+pub async fn list_models(profile: &AiProfile) -> Result<ModelList, String> {
     if profile.kind == "cli" {
         return Ok(match profile.provider.as_str() {
-            "codex" => codex_models(),
-            "claude" => vec!["sonnet".into(), "opus".into(), "haiku".into()],
-            _ => Vec::new(),
+            "codex" => {
+                let executable = cli_executable(profile);
+                let warning = tauri::async_runtime::spawn_blocking(move || codex_warning_for(&executable?))
+                    .await
+                    .map_err(|e| e.to_string())?;
+                ModelList { models: codex_models(), warning }
+            }
+            "claude" => ModelList { models: claude_models(), warning: None },
+            _ => ModelList { models: Vec::new(), warning: None },
         });
     }
     let base = base_url(profile)?;
@@ -264,35 +395,76 @@ pub async fn list_models(profile: &AiProfile) -> Result<Vec<String>, String> {
         .collect();
     models.sort();
     models.dedup();
-    Ok(models)
+    Ok(ModelList { models, warning: None })
 }
 
 const CLI_TIMEOUT: Duration = Duration::from_secs(300);
 
-fn cli_failure(stderr: &str, timed_out: bool, code: Option<i32>) -> String {
-    let lower = stderr.to_ascii_lowercase();
-    let hint = if lower.contains("login") || lower.contains("authentication") || lower.contains("unauthorized") {
-        "请检查 AI 工具的登录状态"
-    } else if lower.contains("model") && (lower.contains("unsupported") || lower.contains("not found") || lower.contains("does not exist")) {
+/// 从 CLI 输出中摘出错误原文：优先取含错误关键词的行，没有时取末尾几行；去重并限长。
+fn error_excerpt(output: &str) -> String {
+    let lines: Vec<&str> = output.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
+    let is_error = |line: &&str| {
+        let lower = line.to_ascii_lowercase();
+        ["error", "failed", "invalid", "denied", "unauthorized", "not exist"].iter().any(|word| lower.contains(word))
+    };
+    let picked: Vec<&str> = if lines.iter().any(is_error) { lines.iter().copied().filter(is_error).collect() } else { lines };
+    let mut kept: Vec<&str> = Vec::new();
+    for line in picked.into_iter().rev() {
+        if !kept.contains(&line) {
+            kept.push(line);
+        }
+        if kept.len() == 3 {
+            break;
+        }
+    }
+    kept.reverse();
+    let excerpt = kept.join("\n");
+    if excerpt.chars().count() > 800 {
+        format!("{}…", excerpt.chars().take(800).collect::<String>())
+    } else {
+        excerpt
+    }
+}
+
+/// `output` 为 stderr 与 stdout 的合并内容：Claude Code 的 `-p` 模式把认证等错误写到 stdout。
+fn cli_failure(output: &str, timed_out: bool, code: Option<i32>, warning: Option<String>) -> String {
+    let lower = output.to_ascii_lowercase();
+    let hint = if ["newer version", "or newer", "please upgrade", "claude update"].iter().any(|word| lower.contains(word)) {
+        "请升级该 AI 工具，或改用较新的可执行文件"
+    } else if ["login", "authenticat", "unauthorized", "401", "oauth"].iter().any(|word| lower.contains(word)) {
+        "请在终端重新登录该 AI 工具"
+    } else if lower.contains("model") && ["unsupported", "not found", "not exist", "unrecognized"].iter().any(|word| lower.contains(word)) {
         "请检查所选模型是否可用"
     } else if lower.contains("network") || lower.contains("connection") || lower.contains("timed out") {
         "请检查网络连接与代理配置"
     } else {
         "请在终端运行该 AI 工具检查详细错误"
     };
-    if timed_out {
+    let mut message = if timed_out {
         format!("AI 工具超过 {} 秒，已终止；{hint}", CLI_TIMEOUT.as_secs())
     } else {
         format!("AI 工具退出码 {}；{hint}", code.unwrap_or(-1))
+    };
+    let excerpt = error_excerpt(output);
+    if !excerpt.is_empty() {
+        message.push_str("\n工具输出：\n");
+        message.push_str(&excerpt);
     }
+    if let Some(warning) = warning {
+        message.push('\n');
+        message.push_str(&warning);
+    }
+    message
 }
 
 fn run_cli(profile: &AiProfile, _cwd: &Path, system_prompt: &str, prompt: &str, cancelled: &AtomicBool) -> Result<String, String> {
-    let executable = if profile.executable.trim().is_empty() {
-        find_executable(&profile.provider).ok_or_else(|| "未找到 AI 工具，请在设置中指定可执行文件".to_owned())?
-    } else {
-        PathBuf::from(profile.executable.trim())
+    let executable = cli_executable(profile).ok_or_else(|| "未找到 AI 工具，请在设置中指定可执行文件".to_owned())?;
+    let failure_output = |stderr_path: &Path, output_path: &Path| {
+        let stderr = fs::read_to_string(stderr_path).unwrap_or_default();
+        let stdout = if profile.provider == "claude" { fs::read_to_string(output_path).unwrap_or_default() } else { String::new() };
+        format!("{stderr}\n{stdout}")
     };
+    let version_warning = || if profile.provider == "codex" { codex_warning_for(&executable) } else { None };
     let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
     let output_path = temp.path().join("result.txt");
     let stderr_path = temp.path().join("stderr.txt");
@@ -353,8 +525,7 @@ fn run_cli(profile: &AiProfile, _cwd: &Path, system_prompt: &str, prompt: &str, 
         }
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
             if !status.success() {
-                let stderr = fs::read_to_string(&stderr_path).unwrap_or_default();
-                return Err(cli_failure(&stderr, false, status.code()));
+                return Err(cli_failure(&failure_output(&stderr_path, &output_path), false, status.code(), version_warning()));
             }
             let output = fs::read_to_string(output_path)
                 .map_err(|e| format!("读取 AI 工具结果失败：{e}"))?;
@@ -363,14 +534,14 @@ fn run_cli(profile: &AiProfile, _cwd: &Path, system_prompt: &str, prompt: &str, 
         if start.elapsed() > CLI_TIMEOUT {
             let _ = child.kill();
             let _ = child.wait();
-            let stderr = fs::read_to_string(&stderr_path).unwrap_or_default();
-            return Err(cli_failure(&stderr, true, None));
+            return Err(cli_failure(&failure_output(&stderr_path, &output_path), true, None, version_warning()));
         }
         std::thread::sleep(Duration::from_millis(100));
     }
 }
 
-pub async fn generate(profile: &AiProfile, cwd: &Path, system_prompt: &str, prompt: &str, cancelled: Arc<AtomicBool>) -> Result<String, String> {
+#[cfg(feature = "desktop")]
+pub async fn generate(profile: &AiProfile, cwd: &Path, system_prompt: &str, prompt: &str, cancelled: std::sync::Arc<AtomicBool>) -> Result<String, String> {
     if profile.model.trim().is_empty() {
         return Err("请先为 AI 配置选择模型".into());
     }

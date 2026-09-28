@@ -110,6 +110,7 @@ function AiPage({ settings }: { settings: SettingsStore }) {
   const [keyDraft, setKeyDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [warning, setWarning] = useState("");
   const [editingId, setEditingId] = useState(() => ai.activeId || ai.profiles[0]?.id || "");
   const selected = ai.profiles.find((profile) => profile.id === editingId) ?? ai.profiles[0];
   const unusedDrafts = ai.profiles.filter((profile) => !profile.model.trim() && !profile.hasKey && !profile.executable.trim() && !profile.baseUrl.trim());
@@ -130,14 +131,14 @@ function AiPage({ settings }: { settings: SettingsStore }) {
     settings.update("ai", "profiles", ai.profiles.map((profile) => profile.id === selected.id ? { ...profile, ...patch } : profile));
   };
   const check = async () => {
-    setBusy(true); setError("");
-    try { setDetected(await detectAiTools()); setDetectedOnce(true); }
+    setBusy(true); setError(""); setWarning("");
+    try { const tools = await detectAiTools(); setDetected(tools); setDetectedOnce(true); setWarning(tools.flatMap((tool) => tool.warning ? [tool.warning] : []).join("\n")); }
     catch (failure) { setError(String(failure)); }
     finally { setBusy(false); }
   };
   const fetchModels = async (profile: AiProfile) => {
-    setBusy(true); setError("");
-    try { setModelsById((current) => ({ ...current, [profile.id]: [] })); const found = await listAiModels(profile); setModelsById((current) => ({ ...current, [profile.id]: found })); }
+    setBusy(true); setError(""); setWarning("");
+    try { setModelsById((current) => ({ ...current, [profile.id]: [] })); const found = await listAiModels(profile); setModelsById((current) => ({ ...current, [profile.id]: found.models })); setWarning(found.warning ?? ""); }
     catch (failure) { setError(`${String(failure)}；仍可手动输入模型 ID`); }
     finally { setBusy(false); }
   };
@@ -209,6 +210,7 @@ function AiPage({ settings }: { settings: SettingsStore }) {
         <textarea id={`ai-prompt-${key}`} aria-label={`${label}系统提示词`} value={ai.prompts[key]} maxLength={10_000} onChange={(event) => settings.update("ai", "prompts", { ...ai.prompts, [key]: event.target.value })}/>
       </div>)}
     </section>
+    {warning && <p className="settings-warning" role="status">{warning}</p>}
     {error && <p className="settings-error" role="alert">{error}</p>}
     <p className="settings-note">列表只显示已添加的配置，新增项会自动保存。API Key 保存在系统凭据存储中；模型查询失败时可手动输入模型 ID。</p>
   </div>;
