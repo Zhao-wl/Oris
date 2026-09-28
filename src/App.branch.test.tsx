@@ -289,4 +289,18 @@ describe("history sidebar: branches, tags, remotes and stash (B09 / B10)", () =>
     expect(bridge.revision).toHaveBeenLastCalledWith("a", null, O("c"), "id-u.txt", null, expect.any(String));
     expect(q(".history-badge")?.textContent).toContain("未跟踪");
   });
+
+  it("renders a stash with a huge untracked part as a virtual list", async () => {
+    const total = 50_000;
+    const untracked = Array.from({ length: total }, (_, i) => ({ path: `Library/u${i}.bin`, oldPath: null, pathId: `id-u${i}`, oldPathId: null, status: "added" }));
+    bridge.stashChanges.mockImplementation(async (_repo: string, oid: string) => ({ oid, base: O("1"), tracked: [{ path: "a.txt", oldPath: null, pathId: "id-a.txt", oldPathId: null, status: "modified" }], untrackedCommit: O("c"), untracked }));
+    await mount();
+    await openHistory();
+    await click(all(".log-stash")[0]);
+    expect(q(".stash-detail")?.textContent).toContain(`未跟踪文件 · ${total}`);
+    expect(q(".stash-detail [data-virtual-count]")?.getAttribute("data-virtual-count")).toBe(String(total));
+    expect(all(".stash-detail .log-file").length).toBeLessThan(200);
+    await click(all(".stash-detail .log-file").find((b) => b.textContent?.includes("u0.bin"))!);
+    expect(bridge.revision).toHaveBeenLastCalledWith("a", null, O("c"), "id-u0", null, expect.any(String));
+  });
 });

@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
-import { shortOid, stashChanges, stashList, statusLetter, type ChangedFile, type StashChanges, type StashEntry } from "./history-api";
+import { shortOid, stashChanges, stashList, type ChangedFile, type StashChanges, type StashEntry } from "./history-api";
 import type { HistoryFileOpen } from "./HistoryPanel";
 import { isStale } from "./history-model";
 import { errorText } from "./error-message";
-import PathText from "./PathText";
+import FileList from "./ChangedFileList";
 import type { FileChange } from "./types";
 
 export interface StashPushOptions { message: string; includeUntracked: boolean; pathIds: string[] | null }
@@ -72,9 +72,7 @@ export function StashDetail({ repoId, entry, version, blocked, activeKey, onAppl
       right: { oid: untrackedPart ? changes.untrackedCommit! : entry.oid, label: `${stashLabel(entry)}${untrackedPart ? " 未跟踪部分" : ""} ${shortOid(entry.oid)}` }
     });
   };
-  const fileRows = (files: ChangedFile[], part: "tracked" | "untracked") => <ul className="log-files">{files.map((file) => <li key={part + file.pathId} className={activeKey === `stash:${entry.oid}:${part}:${file.pathId}` ? "active" : ""}>
-    <button type="button" className="log-file" title={file.oldPath ? `${file.oldPath} → ${file.path}` : file.path} onClick={() => open(file, part)}><span className={`status-letter ${file.status}`}>{statusLetter[file.status]}</span><PathText path={file.path} className="log-file-path" title={file.path}/>{file.oldPath && <PathText path={file.oldPath} prefix="← " className="log-file-old"/>}</button>
-  </li>)}</ul>;
+  const fileRows = (files: ChangedFile[], part: "tracked" | "untracked") => <FileList files={files} activeKey={activeKey} keyFor={(file) => `stash:${entry.oid}:${part}:${file.pathId}`} onOpen={(file) => open(file, part)}/>;
   return <div className="log-detail-body stash-detail" aria-label="stash 内容">
     <strong className="log-detail-subject">{stashLabel(entry)} · {entry.message || "（无说明）"}</strong>
     <div className="log-meta">{entry.branch || "—"} · {time(entry.time)} · <span className="log-sha-full">{entry.oid}</span>{entry.untracked ? " · 含未跟踪" : ""}</div>

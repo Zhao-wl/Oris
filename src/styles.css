@@ -484,8 +484,8 @@ button.op-status { padding:0 6px; border:0; background:transparent; font-size:11
 .parent-pick.active { background:var(--toggle-on); border-color:var(--toggle-on-border); }
 .log-body { margin:2px 0; padding:5px 7px; max-height:80px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; color:var(--text); background:var(--bg); border:1px solid var(--border); border-radius:4px; font:11px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; }
 .log-files, .log-history { margin:0; padding:0; list-style:none; }
-.log-files li { display:flex; align-items:center; gap:4px; }
-.log-files li.active, .log-history li.active { background:var(--hover); }
+.log-files li, .log-file-row { display:flex; align-items:center; gap:4px; }
+.log-files li.active, .log-file-row.active, .log-history li.active { background:var(--hover); }
 .log-file, .log-history-row { display:flex; align-items:center; gap:6px; flex:1; min-width:0; padding:2px 5px; border-color:transparent; background:transparent; text-align:left; font-size:12px; }
 .log-file-path { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .log-file-old { flex:0 1 auto; min-width:0; overflow:hidden; color:var(--dim); font-size:11px; text-overflow:ellipsis; white-space:nowrap; }

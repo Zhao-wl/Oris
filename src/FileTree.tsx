@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef,
 import type { CompareScope, ContentUnchanged, FileChange } from "./types";
 import { rowActions } from "./operations-model";
 import PathText from "./PathText";
+import VirtualRows, { VIRTUAL_THRESHOLD } from "./VirtualRows";
 
 export type FileAction = "stage" | "unstage" | "markResolved" | "discard";
 
@@ -64,9 +65,7 @@ interface Props {
   actions?: FileActions;
 }
 
-/** 超过该行数时启用虚拟列表（技术方案 §5.7）。 */
-export const VIRTUAL_THRESHOLD = 500;
-const OVERSCAN = 12;
+export { VIRTUAL_THRESHOLD };
 
 function FileButton({ file, selectedPathId, onSelect, depth = 0, showPath = false, statsPending = false, style }: {
   file: FileChange;
@@ -225,35 +224,6 @@ function flattenTree(node: DirectoryNode, depth: number, collapsed: Set<string>,
   for (const file of [...node.files].sort(compareFiles)) rows.push({ kind: "file", file, depth });
 }
 
-/** 固定行高的虚拟列表：只渲染可视区域附近的行，滚动容器为外层 `.files`。 */
-function VirtualRows({ count, render }: { count: number; render(index: number, style: CSSProperties): JSX.Element }) {
-  const host = useRef<HTMLDivElement>(null);
-  const [view, setView] = useState({ top: 0, height: 800, rowHeight: 32 });
-  useLayoutEffect(() => {
-    const container = host.current?.closest(".files") as HTMLElement | null;
-    if (!container) return;
-    const measure = () => {
-      const sample = host.current?.querySelector<HTMLElement>(".file, .tree-row");
-      const rowHeight = sample?.getBoundingClientRect().height || 32;
-      const offset = host.current ? host.current.offsetTop - container.offsetTop : 0;
-      setView((current) => {
-        const next = { top: Math.max(0, container.scrollTop - offset), height: container.clientHeight || 800, rowHeight };
-        return current.top === next.top && current.height === next.height && current.rowHeight === next.rowHeight ? current : next;
-      });
-    };
-    measure();
-    container.addEventListener("scroll", measure, { passive: true });
-    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
-    observer?.observe(container);
-    return () => { container.removeEventListener("scroll", measure); observer?.disconnect(); };
-  }, [count]);
-  const start = Math.max(0, Math.floor(view.top / view.rowHeight) - OVERSCAN);
-  const end = Math.min(count, Math.ceil((view.top + view.height) / view.rowHeight) + OVERSCAN);
-  const rows: JSX.Element[] = [];
-  for (let index = start; index < end; index++) rows.push(render(index, { position: "absolute", top: index * view.rowHeight, left: 0, right: 0 }));
-  return <div ref={host} className="virtual-rows" style={{ position: "relative", height: count * view.rowHeight }} data-virtual-count={count}>{rows}</div>;
-}
-
 /** 列表末尾的折叠区：默认收起，只由点击展开 / 收起；收起时若选中项在其中，分割线文字高亮提示。 */
 function UnchangedFold({ files, selectedPathId, mode, onSelect }: Omit<Props, "statsPending" | "actions">) {
   const [expanded, setExpanded] = useState(false);
@@ -349,7 +319,7 @@ function FileList({ files, selectedPathId, mode, statsPending = false, onSelect 
     return rows;
   }, [virtual, mode, files, collapsed]);
   if (mode === "flat") {
-    if (virtual) return <VirtualRows count={sorted.length} render={(index, style) => (
+    if (virtual) return <VirtualRows scrollParent=".files" sampleRow=".file, .tree-row" count={sorted.length} render={(index, style) => (
       <FileButton key={sorted[index].pathId} file={sorted[index]} selectedPathId={selectedPathId} onSelect={onSelect} showPath statsPending={statsPending} style={style} />
     )} />;
     return <>{sorted.map((file) => (
@@ -358,7 +328,7 @@ function FileList({ files, selectedPathId, mode, statsPending = false, onSelect 
   }
   if (virtual) {
     const toggle = (path: string) => setCollapsed((current) => { const next = new Set(current); if (next.has(path)) next.delete(path); else next.add(path); return next; });
-    return <VirtualRows count={treeRows.length} render={(index, style) => {
+    return <VirtualRows scrollParent=".files" sampleRow=".file, .tree-row" count={treeRows.length} render={(index, style) => {
       const row = treeRows[index];
       if (row.kind === "file") return <FileButton key={row.file.pathId} file={row.file} selectedPathId={selectedPathId} onSelect={onSelect} depth={row.depth + 1} statsPending={statsPending} style={style} />;
       const open = !collapsed.has(row.node.path);
