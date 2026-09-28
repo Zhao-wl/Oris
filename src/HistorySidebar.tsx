@@ -33,12 +33,14 @@ interface Props {
   onSwitch?(branch: Branch): void;
   /** 双击远端跟踪分支：建立同名本地跟踪分支并切换。 */
   onTrack?(branch: Branch): void;
+  /** 本地分支分组的“清理…”：fetch --prune 后删除上游已消失（远端分支已被删除）的本地分支。 */
+  onPruneGone?(): void;
   onMenu(x: number, y: number, endpoint: PinnedEndpoint): void;
 }
 
 /** 历史页左侧（参考 SourceTree 侧栏）：本地分支、标签、远端分支（按 remote 分组）、Stash，可搜索、可折叠。 */
 export default function HistorySidebar(props: Props) {
-  const { refs, refsError, headLabel, current, filter, onFilter, stashes, stashError, selectedStash, onStash, onNewStash, blocked, onSwitch, onTrack, onMenu } = props;
+  const { refs, refsError, headLabel, current, filter, onFilter, stashes, stashError, selectedStash, onStash, onNewStash, blocked, onSwitch, onTrack, onPruneGone, onMenu } = props;
   const [query, setQuery] = useState("");
   const [collapsed, setCollapsed] = useState(loadCollapsed);
   const toggle = (key: string) => setCollapsed((currentSet) => {
@@ -51,6 +53,7 @@ export default function HistorySidebar(props: Props) {
   const searching = needle.length > 0;
   const matches = (...texts: (string | null | undefined)[]) => !searching || texts.some((text) => text?.toLocaleLowerCase().includes(needle));
   const local = (refs?.local ?? []).filter((b) => matches(b.name));
+  const tracked = (refs?.local ?? []).some((b) => !b.current && b.tracking && b.tracking.state !== "noUpstream");
   const tags = (refs?.tags ?? []).filter((t) => matches(t.name));
   const remoteGroups = useMemo(() => {
     const groups = new Map<string, Branch[]>();
@@ -74,7 +77,8 @@ export default function HistorySidebar(props: Props) {
     {refs?.shallow && <div className="log-note">浅克隆：领先 / 落后数不可靠，显示为未知</div>}
     <div className="log-branch-list" aria-label="按分支筛选历史">
       {!searching && <div role="listbox" aria-label="全部分支"><button type="button" role="option" aria-selected={filter === null} className={`log-branch${filter === null ? " browsing" : ""}`} onClick={() => onFilter(null)}>全部分支</button></div>}
-      <Group id="local" label="本地分支" count={local.length} open={open("local")} searching={searching} onToggle={toggle}>
+      <Group id="local" label="本地分支" count={local.length} open={open("local")} searching={searching} onToggle={toggle}
+        action={onPruneGone && tracked && <button type="button" className="log-group-action" disabled={!!blocked} title={blocked ?? "获取远端并清理已删除的远端分支（fetch --prune），然后删除上游已消失的本地分支"} onClick={onPruneGone}>清理…</button>}>
         {local.map((branch) => <RefRow key={branch.fullName} name={branch.name} fullName={branch.fullName} oid={branch.oid} current={branch.current} browsing={filter === branch.fullName}
           extra={{ ...trackingText(branch.tracking), state: branch.tracking?.state ?? "" }} title={rowTitle(branch.current ? "当前工作分支" : blocked ?? "双击切换到该分支")}
           onPick={() => onFilter(branch.fullName)} onOpen={!branch.current && !blocked && onSwitch ? () => onSwitch(branch) : undefined} onMenu={(x, y) => onMenu(x, y, endpoint(branch.fullName, branch.oid, branch.name))}/>)}

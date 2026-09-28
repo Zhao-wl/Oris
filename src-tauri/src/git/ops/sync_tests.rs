@@ -489,7 +489,7 @@ fn b14_external_rebase_cherry_pick_revert_and_bisect_block_every_new_write() {
             OperationRequest::Push { remote: Some("origin".into()) },
             OperationRequest::Merge { target: "refs/heads/topic".into(), expected: topic.clone(), no_ff: false },
             OperationRequest::MergeCommit { message: "x".into() },
-            OperationRequest::Fetch { remote: Some("origin".into()) },
+            OperationRequest::Fetch { remote: Some("origin".into()), prune: false },
             OperationRequest::BranchSwitch { name: "refs/heads/topic".into(), stash_first: false, stash_untracked: false },
             OperationRequest::StashPush { message: None, include_untracked: false, path_ids: None },
             OperationRequest::Commit { message: "x".into() },
