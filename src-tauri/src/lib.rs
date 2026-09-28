@@ -2,6 +2,8 @@ mod git;
 #[cfg(feature = "desktop")]
 mod ai;
 mod snapshot_store;
+#[cfg(feature = "desktop")]
+mod updater;
 #[cfg(any(test, feature = "desktop"))]
 mod watch;
 
@@ -772,6 +774,8 @@ pub fn application_context() -> tauri::Context<tauri::Wry> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(updater::UpdaterState::default())
         .manage(RepositoryRegistry::default())
         .manage(WatcherRegistry::default())
         .manage(ops::Runner::default())
@@ -841,7 +845,11 @@ pub fn run() {
             stash_list,
             stash_changes,
             check_branch_name,
-            merge_message
+            merge_message,
+            updater::check_update,
+            updater::download_update,
+            updater::install_update,
+            updater::open_releases_page
         ])
         .run(application_context())
         .expect("failed to run Oris");

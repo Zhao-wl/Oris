@@ -99,6 +99,14 @@ export const integerSetting = (key: string, min: number, max: number, defaultVal
   ui: { ...ui, min, max, step: 1 }
 });
 
+export const booleanSetting = (key: string, defaultValue: boolean, ui: SettingUi): SettingDefinition<boolean> => ({
+  key,
+  type: "boolean",
+  defaultValue,
+  validate: (value) => (typeof value === "boolean" ? value : undefined),
+  ui
+});
+
 export const stringSetting = (key: string, defaultValue: string, ui: SettingUi, validate: (value: string) => boolean = () => true): SettingDefinition<string> => ({
   key,
   type: "string",
