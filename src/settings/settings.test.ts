@@ -44,9 +44,9 @@ describe("settings model, registry and persistence", () => {
 
   it("registry: categories are ordered, a new category needs no framework change, invalid fields fall back per item", () => {
     const reg = registry();
-    expect(reg.list().map((c) => c.id)).toEqual(["appearance", "git", "ai"]);
+    expect(reg.list().map((c) => c.id)).toEqual(["appearance", "git", "ai", "update"]);
     reg.register({ id: "reading", label: "Diff 阅读", order: 15, settings: [integerSetting("tabSize", 1, 8, 4, { label: "Tab 宽度", control: "slider" })] });
-    expect(reg.list().map((c) => c.id)).toEqual(["appearance", "reading", "git", "ai"]);
+    expect(reg.list().map((c) => c.id)).toEqual(["appearance", "reading", "git", "ai", "update"]);
     expect(reg.defaults().reading).toEqual({ tabSize: 4 });
     const { values, corrected } = reg.normalize({ appearance: { fontSize: 99, themeMode: "system", lightScheme: "dark-2026" }, git: { executable: "C:/Git/bin/git.exe" }, unknown: { x: 1 } });
     expect(values.appearance.fontSize).toBe(13);
