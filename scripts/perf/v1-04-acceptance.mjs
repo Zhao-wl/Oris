@@ -575,8 +575,11 @@ async function remoteSuite() {
     // 分离 HEAD 的当前分支表达。
     git(r.local, ["switch", "-q", "--detach", "HEAD"]);
     await ctx.click(`window.__op.button('↻ 本地刷新')`); await ctx.waitUntil(`!window.__op.loading()`);
+    // V2-D60：历史页不可见时 refs 变化只标记失效，切回时重读；因此切回历史页后再检查（读取隐藏页面的 DOM 不代表用户可见的状态）。
+    // 切回的同一帧不应显示过期的当前分支。
+    const onSwitchBack = await ctx.evaluate(`(() => { window.__h.gitTab('历史').click(); return new Promise((r) => requestAnimationFrame(() => r(window.__h.current()))); })()`);
     await ctx.waitUntil(`window.__h.current().includes('分离 HEAD')`, 15000);
-    check("A08 分离 HEAD 时当前工作分支显示为分离状态", true, await ctx.evaluate(`window.__h.current()`));
+    check("A08 分离 HEAD 时当前工作分支显示为分离状态（切回历史页时不显示过期的分支）", !onSwitchBack.includes("● main"), { onSwitchBack, after: await ctx.evaluate(`window.__h.current()`) });
   } catch (error) {
     fail(`远端验收中断：${String(error.stack ?? error).slice(0, 1200)}`);
     try { await ctx.shot("remote-failure"); } catch { /* ignore */ }

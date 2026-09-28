@@ -1,6 +1,6 @@
 # V2 实施任务
 
-状态：V2-01、V2-06、V2-03、V2-04、V2-05 已完成（Windows，见下表）；V2-02 功能完成并已合入、性能复测交给发布性能测试。共同输入：[V2 产品规格](../../specs/v2-product.md)、[V2 技术方案](../../architecture/v2-architecture.md)、[V2 验收计划](../../validation/v2-acceptance.md)、[V2 决策登记](../../decisions/v2-decisions.md)。V1 任务总表见 [../README.md](../README.md)；V1 文档中“明确不支持”的列表只约束 V1 范围。
+状态：V2-01、V2-06、V2-03、V2-04、V2-05 已完成（Windows，见下表）；V2-02 功能完成并已合入、性能复测交给发布性能测试。发布已知问题 V2-D60（写操作后历史页后台重读）已修复（2026-09-28，[结果](../../validation/v2-d60-history-reread-results.md)）。共同输入：[V2 产品规格](../../specs/v2-product.md)、[V2 技术方案](../../architecture/v2-architecture.md)、[V2 验收计划](../../validation/v2-acceptance.md)、[V2 决策登记](../../decisions/v2-decisions.md)。V1 任务总表见 [../README.md](../README.md)；V1 文档中“明确不支持”的列表只约束 V1 范围。
 
 ## 五条纵向任务
 
