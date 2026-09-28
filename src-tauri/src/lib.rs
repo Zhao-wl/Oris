@@ -1,5 +1,6 @@
 mod git;
-#[cfg(feature = "desktop")]
+#[cfg(any(test, feature = "desktop"))]
+#[cfg_attr(not(feature = "desktop"), allow(dead_code))]
 mod ai;
 mod snapshot_store;
 #[cfg(any(test, feature = "desktop"))]
@@ -197,7 +198,7 @@ fn set_ai_key(id: String, key: Option<String>) -> Result<(), String> { ai::set_k
 
 #[cfg(feature = "desktop")]
 #[tauri::command]
-async fn list_ai_models(profile: ai::AiProfile) -> Result<Vec<String>, String> { ai::list_models(&profile).await }
+async fn list_ai_models(profile: ai::AiProfile) -> Result<ai::ModelList, String> { ai::list_models(&profile).await }
 
 #[cfg(feature = "desktop")]
 #[tauri::command]
