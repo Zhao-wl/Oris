@@ -1246,7 +1246,8 @@ export default function App() {
   };
   const runAiOperation = async (request: OperationRequest): Promise<boolean> => {
     const outcome = await runOp(request);
-    if (!outcome) throw new Error("操作未开始，请查看操作输出");
+    // 前置检查未通过（外部锁、进行中状态、写锁被占用等）：显示 OperationRunner 给出的原因。
+    if (!outcome) throw new Error(opStore.get()[currentRead.current.repo ?? ""]?.last?.message || "操作未开始，请查看操作输出");
     // V2-D68：需要用户确认的情况（不可撤销的丢弃、覆盖之后的修改、仍有冲突标记、删除未合并分支等）不由 AI 代为确认。
     if (outcome.status === "needsConfirmation") throw new Error(`${outcome.confirmation?.message || outcome.message || "当前状态需要确认"}。AI 不代替你确认，请用对应的按钮操作`);
     if (outcome.status !== "succeeded") throw new Error(outcome.message || "操作未完成");

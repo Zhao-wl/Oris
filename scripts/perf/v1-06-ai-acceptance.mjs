@@ -51,8 +51,11 @@ put("docs/readme.md", "# 说明\n\n初始内容\n");
 put("notes/todo.md", "- 待办 1\n");
 git(repo, ["add", "-A"]); git(repo, ["commit", "-q", "-m", "base"]);
 git(repo, ["branch", "feature"]);
+let round = 0;
+/** 写入一轮新的本地改动（每轮内容不同，避免与已提交的修改相同而没有差异）。 */
 const dirty = () => {
-  put("src/app.ts", Array.from({ length: 30 }, (_, i) => i === 5 ? "export const value5 = 555; // AI 测试修改" : `export const value${i} = ${i};`).join("\n") + "\n");
+  round++;
+  put("src/app.ts", Array.from({ length: 30 }, (_, i) => i === 5 ? `export const value5 = ${round}55; // AI 测试修改 ${round}` : `export const value${i} = ${i};`).join("\n") + "\n");
   put("docs/readme.md", "# 说明\n\n修改后的说明（readme 相关改动）\n");
   put("untracked/new-note.txt", `未跟踪文件开头\n${"x".repeat(3000)}\n结尾不应发送\n`);
 };
@@ -130,10 +133,16 @@ const markedPings = () => {
 // ---------- 进程级网络核对与凭据核对 ----------
 /** 测试实例进程树（含 WebView2 与子进程）当前的对外 TCP 连接（排除回环地址与监听）。 */
 function externalConnections(rootPid) {
-  const pids = processTreeDetailed(rootPid).processes.map((p) => p.pid);
-  const script = `$ids = @(${pids.join(",")}); Get-NetTCPConnection -ErrorAction SilentlyContinue | Where-Object { $ids -contains $_.OwningProcess -and $_.State -ne 'Listen' -and $_.RemoteAddress -notin @('127.0.0.1','::1','0.0.0.0','::') } | ForEach-Object { "$($_.OwningProcess) $($_.RemoteAddress):$($_.RemotePort) $($_.State)" }`;
+  const tree = processTreeDetailed(rootPid).processes;
+  const roles = new Map(tree.map((p) => [p.pid, p.role]));
+  const script = `$ids = @(${tree.map((p) => p.pid).join(",")}); Get-NetTCPConnection -ErrorAction SilentlyContinue | Where-Object { $ids -contains $_.OwningProcess -and $_.State -ne 'Listen' -and $_.RemoteAddress -notin @('127.0.0.1','::1','0.0.0.0','::') } | ForEach-Object { "$($_.OwningProcess) $($_.RemoteAddress) $($_.RemotePort) $($_.State)" }`;
   const r = spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8" });
-  return { pids: pids.length, external: r.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean), names: processTreeDetailed(rootPid).processes.map((p) => p.name) };
+  const external = r.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).map((line) => {
+    const [pid, address, remotePort, state] = line.split(" ");
+    const ptr = spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", `(Resolve-DnsName -Type PTR ${address} -ErrorAction SilentlyContinue | Select-Object -First 1).NameHost`], { encoding: "utf8" }).stdout.trim() || null;
+    return { pid: Number(pid), role: roles.get(Number(pid)) ?? "?", remote: `${address}:${remotePort}`, host: ptr, state };
+  });
+  return { processes: tree.length, roles: [...new Set(tree.map((p) => p.role))], external, codexOrClaude: tree.some((p) => /codex|claude/i.test(p.role)) };
 }
 const credentialLines = () => {
   const r = spawnSync("cmdkey", ["/list"], { encoding: "utf8" });
@@ -230,7 +239,11 @@ try {
   report.network.push({ phase: "未配置 AI：启动 → 打开项目 → 阅读 → 打开 AI 入口并发送指令", start: netStart, end: netEnd });
   check("B23 未配置 AI：入口可见（按钮与 Ctrl+P），发送指令只给出配置说明", opened.ok && byShortcut.ok && unconfiguredError.includes("请在设置 → AI 中选择已配置模型的 AI 组合"), { unconfiguredError, openMs: opened.ms });
   check("B23 未配置 AI：没有发出任何 AI 请求（假模型服务未收到请求）", requests.length === beforeCount, { requests: requests.length - beforeCount });
-  check("B23 未配置 AI：测试实例进程树没有对外 TCP 连接，也没有 codex / claude 进程", netStart.external.length === 0 && netEnd.external.length === 0 && !netEnd.names.some((n) => /codex|claude/i.test(n)), { netStart, netEnd });
+  // Oris 与 Git 自身不应有任何对外连接；WebView2 运行时进程自身的连接单独列出（不经 Oris 代码发起）。
+  const own = [...netStart.external, ...netEnd.external].filter((c) => !String(c.role).startsWith("webview"));
+  const webview = [...netStart.external, ...netEnd.external].filter((c) => String(c.role).startsWith("webview"));
+  check("B23 未配置 AI：Oris 与 Git 子进程没有对外 TCP 连接，也没有 codex / claude 进程", own.length === 0 && !netStart.codexOrClaude && !netEnd.codexOrClaude, { own, netStart, netEnd });
+  check("B23 未配置 AI：WebView2 运行时进程也没有对外 TCP 连接", webview.length === 0, { webview });
   report.timings.openAiInput = opened;
   report.stopUnconfigured = await stop();
 
@@ -407,7 +420,7 @@ try {
     await waitUntil(`document.querySelector('textarea[aria-label="提交信息"]').value === 'docs: 更新说明'`, 20000);
     const req = requests.at(-1);
     const text = req?.body?.messages?.[1]?.content ?? "";
-    check("B25 生成提交信息：只发送已暂存的文件与改动（readme），不发送未暂存 / 未跟踪内容；结果只填入输入框、不提交", requests.length - count === 1 && text.includes("docs/readme.md") && text.includes("修改后的说明") && !text.includes("value5 = 555") && !text.includes("未跟踪文件开头") && git(repo, ["rev-parse", "HEAD"]) === headAfter, { length: text.length });
+    check("B25 生成提交信息：只发送已暂存的文件与改动（readme），不发送未暂存 / 未跟踪内容；结果只填入输入框、不提交", requests.length - count === 1 && text.includes("docs/readme.md") && text.includes("修改后的说明") && !text.includes("AI 测试修改") && !text.includes("未跟踪文件开头") && git(repo, ["rev-parse", "HEAD"]) === headAfter, { length: text.length });
     await evaluate(`window.__ai.setIn('textarea[aria-label="提交信息"]', '')`);
   }
   {
@@ -444,7 +457,7 @@ try {
     await closeAi(); await sleep(600);
     const committed = git(repo, ["show", "--name-only", "--format=%s", "HEAD"]);
     const changed = diffFingerprints(before, fp());
-    check("B25 描述驱动提交：发送候选文件列表、已暂存与未暂存改动、未跟踪文件开头（不超过 2 KB）", candidatePrompt.includes("docs/readme.md") && candidatePrompt.includes("src/app.ts") && candidatePrompt.includes("value5 = 555") && candidatePrompt.includes("未跟踪文件开头") && !candidatePrompt.includes("结尾不应发送"), { length: candidatePrompt.length });
+    check("B25 描述驱动提交：发送候选文件列表、已暂存与未暂存改动、未跟踪文件开头（不超过 2 KB）", candidatePrompt.includes("docs/readme.md") && candidatePrompt.includes("src/app.ts") && candidatePrompt.includes("AI 测试修改") && candidatePrompt.includes("未跟踪文件开头") && !candidatePrompt.includes("结尾不应发送"), { length: candidatePrompt.length });
     check("B27 描述驱动提交：只提交模型选中的整文件（readme），其他改动保留在工作区", !error && git(repo, ["rev-parse", "HEAD"]) !== head && committed.startsWith("docs: 按描述提交 readme") && committed.includes("docs/readme.md") && !committed.includes("src/app.ts") && !changed.some((k) => !k.startsWith(".git")), { committed, changed: changed.filter((k) => !k.startsWith(".git")), error });
   }
 

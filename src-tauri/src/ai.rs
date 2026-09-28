@@ -140,6 +140,18 @@ fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
     })
 }
 
+/// `.cmd` / `.bat` 由 cmd.exe 解释，Rust 拒绝向它们传递含换行的参数（无法安全转义，启动时报
+/// “batch file arguments are invalid”）；npm 安装的 claude.cmd 属于这种情况。此时把换行换成空格（内容不变，只是不分行），
+/// 其他可执行文件原样传递。
+fn batch_safe_argument<'a>(executable: &Path, text: &'a str) -> std::borrow::Cow<'a, str> {
+    let batch = executable.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat"));
+    if batch && text.contains(['\r', '\n']) {
+        std::borrow::Cow::Owned(text.replace("\r\n", " ").replace(['\r', '\n'], " "))
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    }
+}
+
 /// 结束 AI 工具的整棵进程树，再回收直接子进程。
 fn end_tree(tree: &ProcessTree, child: &mut std::process::Child) {
     tree.terminate();
@@ -311,6 +323,28 @@ mod failure_tests {
         for expected in ["exec", "--sandbox read-only", "--ephemeral", "--skip-git-repo-check", "-m fake-model", "--output-last-message"] {
             assert!(args.contains(expected), "参数缺少 {expected}：{args}");
         }
+    }
+
+    /// npm 安装的 claude.cmd：多行系统提示词也能启动（换行换成空格），结果从 stdout 读取；参数不提供任何工具。
+    #[cfg(windows)]
+    #[test]
+    fn claude_batch_wrapper_accepts_multiline_system_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let record = dir.path().join("args.txt");
+        let fake = dir.path().join("claude.cmd");
+        fs::write(&fake, format!("@echo off\r\necho %* > \"{}\"\r\necho {{\"kind\":\"answer\",\"message\":\"ok\"}}\r\n", record.to_string_lossy())).unwrap();
+        let profile = AiProfile { id: "test".into(), kind: "cli".into(), provider: "claude".into(), executable: fake.to_string_lossy().into_owned(), base_url: String::new(), model: "claude-haiku-4-5".into() };
+        // cmd.exe 的 echo 按系统代码页写文件：这里用 ASCII 文本，读取时按字节比较。
+        let output = run_cli(&profile, Path::new("."), "line1\nline2 \"quoted\"\r\nline3", "prompt", &AtomicBool::new(false)).unwrap();
+        assert_eq!(parse_json_output(&output).unwrap()["message"], "ok");
+        let args = String::from_utf8_lossy(&fs::read(&record).unwrap()).into_owned();
+        assert!(args.contains("line1 line2") && args.contains("line3"), "{args}");
+        for expected in ["-p", "--tools \"\"", "mcp__*", "--max-turns 1", "--no-session-persistence"] {
+            assert!(args.contains(expected), "参数缺少 {expected}：{args}");
+        }
+        // .exe 等其他可执行文件原样传递。
+        assert_eq!(batch_safe_argument(Path::new("claude.exe"), "a\nb"), "a\nb");
+        assert_eq!(batch_safe_argument(Path::new("CLAUDE.CMD"), "a\r\nb\nc"), "a b c");
     }
 
     #[test]
@@ -631,7 +665,7 @@ fn run_cli(profile: &AiProfile, _cwd: &Path, system_prompt: &str, prompt: &str, 
             let file = fs::File::create(&output_path).map_err(|e| e.to_string())?;
             cmd.arg("-p")
                 .arg("--append-system-prompt")
-                .arg(system_prompt)
+                .arg(batch_safe_argument(&executable, system_prompt).as_ref())
                 .arg("--model")
                 .arg(&profile.model)
                 .arg("--tools")

@@ -262,6 +262,18 @@ describe("commit panel (B07)", () => {
     expect(host.querySelector(".ai-commit-dialog [role=alert]")?.textContent).toContain("AI 不代替你确认");
     expect(host.querySelector(".confirm-dialog")).toBeNull();
   });
+  it("AI 执行时前置检查未通过（例如外部 index.lock）：输入框显示具体原因，不重试", async () => {
+    settings.update("ai", "profiles", [{ id: "test-ai", name: "Test AI", kind: "cli", provider: "codex", executable: "/bin/false", baseUrl: "", model: "test-model", hasKey: false }]);
+    settings.update("ai", "activeId", "test-ai");
+    bridge.planAi.mockResolvedValue({ kind: "git", operation: { kind: "stage", pathIds: ["id-a.txt"] } });
+    bridge.operation.mockRejectedValue(new Error("另一个 Git 进程正在使用仓库（存在 index.lock）"));
+    await mount();
+    await click(host.querySelector(".titlebar .commit-entry")!);
+    await type(host.querySelector<HTMLTextAreaElement>('textarea[aria-label="输入 AI 指令"]')!, "暂存 a.txt");
+    await click(host.querySelector<HTMLButtonElement>('[aria-label="确认 AI 指令"]')!);
+    expect(bridge.operation).toHaveBeenCalledOnce();
+    expect(host.querySelector(".ai-commit-dialog [role=alert]")?.textContent).toContain("index.lock");
+  });
   it("V2-D67：AI 不能修改 Git 可执行文件路径；规划上下文不含 Git 设置", async () => {
     settings.update("ai", "profiles", [{ id: "test-ai", name: "Test AI", kind: "cli", provider: "codex", executable: "/bin/false", baseUrl: "", model: "test-model", hasKey: false }]);
     settings.update("ai", "activeId", "test-ai");
