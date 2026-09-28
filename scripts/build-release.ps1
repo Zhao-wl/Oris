@@ -8,6 +8,13 @@
 .PARAMETER Bundles
   与 -Bundle 一起使用：只生成指定格式（例如 nsis；逗号分隔）。默认按 tauri.conf.json 的 targets。
 
+.PARAMETER UpdaterArtifacts
+  与 -Bundle 一起使用：为安装包生成自动更新签名（.sig）。需要 TAURI_SIGNING_PRIVATE_KEY 与
+  TAURI_SIGNING_PRIVATE_KEY_PASSWORD，通常由 scripts\publish-release.ps1 设置。
+
+.PARAMETER ExtraConfig
+  额外合并的 Tauri 配置文件（可多个），例如自动更新端到端测试用的独立标识与测试端点。
+
 .PARAMETER Test
   构建前先运行 npm test。
 
@@ -24,6 +31,8 @@
 param(
   [switch]$Bundle,
   [string]$Bundles,
+  [switch]$UpdaterArtifacts,
+  [string[]]$ExtraConfig,
   [switch]$Test,
   [string]$OutputRoot
 )
@@ -99,6 +108,7 @@ try {
   # 先只编译；安装包在验证入口之后单独生成（需要编译产物中的 WebView2Loader.dll）。
   $buildArgs = @('run', 'tauri', '--', 'build', '--features', 'tauri/custom-protocol', '--no-bundle')
   if ($configPath) { $buildArgs += @('--config', $configPath) }
+  foreach ($extra in $ExtraConfig) { $buildArgs += @('--config', [IO.Path]::GetFullPath($extra)) }
   $started = Get-Date
   Invoke-Step "构建 release (npm $($buildArgs -join ' '))" { npm @buildArgs }
   # Execute the same compiled context used by oris.exe; this creates no window.
@@ -124,9 +134,16 @@ try {
       $resources[$stagedLoader] = 'WebView2Loader.dll'
     }
     $bundleConfigPath = Join-Path $resourceDir 'bundle-config.json'
-    [IO.File]::WriteAllText($bundleConfigPath, (@{ bundle = @{ resources = $resources } } | ConvertTo-Json -Depth 4), (New-Object Text.UTF8Encoding($false)))
+    $bundleSection = @{ resources = $resources }
+    # 更新签名只在发版时生成：平时的打包不需要私钥。
+    if ($UpdaterArtifacts) {
+      if (-not $env:TAURI_SIGNING_PRIVATE_KEY) { throw '-UpdaterArtifacts 需要 TAURI_SIGNING_PRIVATE_KEY（请使用 scripts\publish-release.ps1）' }
+      $bundleSection.createUpdaterArtifacts = $true
+    }
+    [IO.File]::WriteAllText($bundleConfigPath, (@{ bundle = $bundleSection } | ConvertTo-Json -Depth 4), (New-Object Text.UTF8Encoding($false)))
     $bundleArgs = @('run', 'tauri', '--', 'bundle', '--features', 'tauri/custom-protocol')
     if ($configPath) { $bundleArgs += @('--config', $configPath) }
+    foreach ($extra in $ExtraConfig) { $bundleArgs += @('--config', [IO.Path]::GetFullPath($extra)) }
     $bundleArgs += @('--config', $bundleConfigPath)
     if ($Bundles) { $bundleArgs += @('--bundles', $Bundles) }
     Invoke-Step "生成安装包 (npm $($bundleArgs -join ' '))" { npm @bundleArgs }

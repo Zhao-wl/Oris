@@ -1320,7 +1320,7 @@ function installRailInput(rail: HTMLElement, view: EditorView, onUserInput: () =
   const pointerDown = (event: PointerEvent) => {
     if (event.button !== 0 || rail.getAttribute("aria-disabled") === "true") return;
     const bandRect = band.getBoundingClientRect();
-    // Markers paint above the band; pressing one inside the band still grabs the band.
+    // The band paints above the translucent markers; a marker press inside the band still grabs the band.
     const onMarker = event.target instanceof HTMLElement && event.target.classList.contains("diff-overview-marker");
     const onBand = event.target === band || (onMarker && event.clientY >= bandRect.top && event.clientY <= bandRect.bottom);
     if (!onBand && event.target !== rail && event.target !== markers) return;

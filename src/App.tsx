@@ -14,7 +14,7 @@ import { ProjectStore, parsePersistedSnapshot, persistableSnapshot, scopeView, s
 import { createStore, useStore } from "./store";
 import ConfirmDialog, { type ConfirmRequest } from "./ConfirmDialog";
 import GitPanel, { type GitTab, type OperationRecord, type RunningOperation } from "./GitPanel";
-import { cancelOperation, discardBackups, headCommitInfo, hunkMap as readHunkMap, prepareDiscard, runOperation, type BackupSummary, type HeadCommitInfo, type HunkMap, type OperationOutcome, type OperationRequest } from "./operations-api";
+import { cancelOperation, discardBackups, headCommitInfo, hunkMap as readHunkMap, prepareDiscard, removeStaleLocks, runOperation, type BackupSummary, type HeadCommitInfo, type HunkMap, type OperationOutcome, type OperationRequest } from "./operations-api";
 import { fileLevelBlock, hunkMapKey, latin1View, matchHunks } from "./hunk-model";
 import type { HunkHeaderAction, HunkHeaders } from "./DiffViewer";
 import { operationLabels, optimisticMove, pathIdsFor, refsKinds, selectionAfterOperation, stashKinds, switchKinds, undoCommitText, unsupportedInProgress, writeBlockedReason } from "./operations-model";
@@ -25,14 +25,13 @@ import { cancelAiGeneration, generateAiCommit, planAiAction, type AiPlan } from 
 import { aiActionCatalogue, aiScope, parseAiAction, type AiAction } from "./ai-actions";
 import { mentionedPromptTags } from "./ai-prompt-tags";
 import HistoryPanel, { type FileHistoryRequest, type HistoryFileOpen } from "./HistoryPanel";
-import FetchDialog from "./FetchDialog";
 import { readLog, readRefs, readRevisionPair, stashList, type Branch, type RefsView, type StashEntry } from "./history-api";
 import BranchPopover, { type BranchActions } from "./BranchPopover";
 import { NewBranchDialog, RenameBranchDialog, TrackChoiceDialog, UpstreamDialog, type NewBranchRequest } from "./BranchDialogs";
 import { type StashPushOptions } from "./StashPanel";
 import PathText from "./PathText";
-import { MergeCommitDialog, MergeDialog, PullDialog, PushDialog, SyncPopover, type SyncActions } from "./SyncPanel";
-import { fetchTimeText, historyStatus, isStale as isStaleError, loadFetchRecord, parseProgress, saveFetchRecord } from "./history-model";
+import { MergeCommitDialog, MergeDialog, RemoteChoiceDialog, SyncToast, SyncToolbar, type SyncKind, type SyncToastState } from "./SyncPanel";
+import { fetchAgeText, fetchTimeText, historyStatus, isStale as isStaleError, loadFetchRecord, loadPullMode, parseProgress, saveFetchRecord, savePullMode, type PullMode } from "./history-model";
 import SelectionNotice from "./SelectionNotice";
 import SpecialFileView from "./SpecialFileView";
 import { describeSpecial, isSvgPath, lfsNotice, metaChanges, noVisibleDifferenceReason, shortcut, sideLabel } from "./reading-model";
@@ -40,6 +39,7 @@ import { settings } from "./appearance";
 import { FONT_SIZE_DEFAULT, FONT_SIZE_MAX, FONT_SIZE_MIN, useSettings } from "./settings";
 import type { CompareScope, ConflictVersion, ContentPair, DiffDocument, FileChange, RepositorySnapshot, WhitespaceMode } from "./types";
 import { schemeIndex } from "./themes/runtime";
+import UpdateButton from "./UpdateButton";
 import { ContentCache, DiffCache, RequestGate, projectName, moveProject, contentCacheKey, defaultAnchor, loadWorkspace, removeProject, resolveReadingSelection, saveWorkspace, upsertProject, type ProjectRecord, type ReadingAnchor } from "./workspace-model";
 
 const newRequestId = () => crypto.randomUUID();
@@ -60,6 +60,8 @@ const scopeLabels: Record<CompareScope, { short: string; endpoints: [string, str
 function ToggleButton({ label, pressed, disabled = false, title, onClick }: { label: string; pressed: boolean; disabled?: boolean; title?: string; onClick(): void }) {
   return <button className={`toggle-button ${pressed ? "active" : "inactive"}`} aria-pressed={pressed} disabled={disabled} title={title} onClick={onClick}>{label}</button>;
 }
+
+let syncToastSeq = 0;
 
 export default function App() {
   const nativeWindowFocused = useRef(false);
@@ -113,6 +115,7 @@ export default function App() {
   const aiPlannedRevision = useRef<{ repoId: string | null; revision: string | null } | null>(null);
   useEffect(() => { setAiOpen(false); }, [workspaceState.activeRepoId]);
   const aiShortcut = useSettings(settings, (value) => value.ai.shortcut);
+  const autoCheckUpdates = useSettings(settings, (value) => value.update.autoCheck);
   const [filter, setFilter] = useState("");
   const [projectFilter, setProjectFilter] = useState("");
   const [fileView, setFileView] = useState<"flat" | "tree">("flat");
@@ -151,6 +154,8 @@ export default function App() {
   interface RepoOps { running: RunningOperation | null; lines: string[]; last: OperationRecord | null; lastCommit: OperationRecord | null; backups: BackupSummary[]; lastBackup: BackupSummary | null }
   const opStore = useRef(createStore<Record<string, RepoOps>>({})).current;
   const repoOps = useStore(opStore, (map) => (activeRepoId ? map[activeRepoId] : undefined));
+  /** 任一仓库正在运行的写操作；重启更新前需要确认。 */
+  const busyOperation = useStore(opStore, (map) => { const running = Object.values(map).find((ops) => ops.running)?.running; return running ? operationLabels[running.kind] : null; });
   const updateOps = useCallback((repoId: string, patch: Partial<RepoOps> | ((current: RepoOps) => Partial<RepoOps>)) => {
     opStore.set((map) => {
       const current = map[repoId] ?? { running: null, lines: [], last: null, lastCommit: null, backups: [], lastBackup: null };
@@ -168,7 +173,6 @@ export default function App() {
   const [refsVersion, setRefsVersion] = useState(0);
   const [fileHistoryRequest, setFileHistoryRequest] = useState<FileHistoryRequest | null>(null);
   const [refsView, setRefsView] = useState<RefsView | null>(null);
-  const [fetchOpen, setFetchOpen] = useState(false);
   const [fetchRecordVersion, setFetchRecordVersion] = useState(0);
   // ---------- 分支与 stash（V2-03） ----------
   const [branchOpen, setBranchOpen] = useState(false);
@@ -178,9 +182,11 @@ export default function App() {
   const [trackChoice, setTrackChoice] = useState<{ remote: Branch; existing: string } | null>(null);
   const [stashVersion, setStashVersion] = useState(0);
   // ---------- 同步与合并（V2-04） ----------
-  const [syncOpen, setSyncOpen] = useState(false);
-  const [pullOpen, setPullOpen] = useState(false);
-  const [pushOpen, setPushOpen] = useState(false);
+  const [syncMenu, setSyncMenu] = useState<SyncKind | null>(null);
+  const [remoteChoice, setRemoteChoice] = useState<{ repoId: string; kind: "fetch" | "push"; remotes: string[]; message: string } | null>(null);
+  const [syncToast, setSyncToast] = useState<SyncToastState | null>(null);
+  const [pullModeVersion, setPullModeVersion] = useState(0);
+  const [remotesFetchHeadAt, setRemotesFetchHeadAt] = useState<number | null>(null);
   const [mergeTarget, setMergeTarget] = useState<{ ref: string; oid: string; label: string } | null>(null);
   const [mergeCommitOpen, setMergeCommitOpen] = useState(false);
   const [multiSelection, setMultiSelection] = useState<ReadonlySet<string>>(() => new Set());
@@ -699,11 +705,13 @@ export default function App() {
   }, [pair, latin1Active, readable]);
   const viewDocument = latin1Active ? latin1Doc : diffDocument;
   useEffect(() => { if (gitTab === "log" && activeRepoId) setLogMounted(activeRepoId); }, [gitTab, activeRepoId]);
-  useEffect(() => { setRefsView(null); setFileHistoryRequest(null); setBranchOpen(false); setSyncOpen(false); }, [activeRepoId]);
+  useEffect(() => { setRefsView(null); setFileHistoryRequest(null); setBranchOpen(false); setSyncMenu(null); setSyncToast(null); setRemotesFetchHeadAt(null); setRemoteChoice(null); }, [activeRepoId]);
   const detachedOid = snapshot?.branchInfo && !snapshot.branchInfo.head ? snapshot.branchInfo.oid : null;
   const worktreePath = snapshot?.repo.worktreePath ?? null;
-  const fetchText = useMemo(() => refsView && !refsView.remotes.length ? "该仓库没有配置 remote" : fetchTimeText(worktreePath ? loadFetchRecord(localStorage, worktreePath) : null, refsView?.fetchHeadAt ?? null), [worktreePath, refsView, fetchRecordVersion]);
-  const fetchRunning = repoOps?.running?.kind === "fetch";
+  const fetchHeadAt = Math.max(refsView?.fetchHeadAt ?? 0, remotesFetchHeadAt ?? 0) || null;
+  const fetchText = useMemo(() => refsView && !refsView.remotes.length ? "该仓库没有配置 remote" : fetchTimeText(worktreePath ? loadFetchRecord(localStorage, worktreePath) : null, fetchHeadAt), [worktreePath, refsView, fetchHeadAt, fetchRecordVersion]);
+  const fetchAge = useMemo(() => fetchAgeText(worktreePath ? loadFetchRecord(localStorage, worktreePath) : null, fetchHeadAt), [worktreePath, fetchHeadAt, fetchRecordVersion, repoOps?.running]);
+  const pullMode = useMemo(() => (worktreePath ? loadPullMode(localStorage, worktreePath) : "ffOnly"), [worktreePath, pullModeVersion]);
   const networkRunning = !!repoOps?.running && ["fetch", "pull", "push"].includes(repoOps.running.kind);
   const fetchProgress = networkRunning ? parseProgress(repoOps?.lines ?? []) : null;
   const mergeInProgress = !!snapshot?.inProgress?.merge;
@@ -850,10 +858,8 @@ export default function App() {
   /** 提交；勾选“提交并推送”时提交成功后推送：已有上游直接推送，否则打开推送预览选择 remote。 */
   const commit = async (message: string, push: boolean) => {
     const outcome = await runOp({ kind: "commit", message });
-    if (push && outcome?.status === "succeeded") {
-      if (outcome.snapshot?.branchInfo?.upstream) void runOp({ kind: "push", remote: null });
-      else { freshRefsView(); setPushOpen(true); }
-    }
+    // 没有上游时同样一键发布：只有一个 remote 时直接推送并设为上游，多个时选择 remote。
+    if (push && outcome?.status === "succeeded") void runPush();
     return outcome;
   };
   const aiProfile = () => {
@@ -876,46 +882,105 @@ export default function App() {
     const outcome = await runOp({ kind: "commitSelected", message: plan.message, pathIds: plan.pathIds, expectedRevision: plan.revision });
     return outcome?.status === "succeeded";
   };
-  /** 显式获取远端状态（R-REMOTE）：确认框选择 remote 后执行；成功时记录完成时间。 */
-  const startFetch = async (remote: string) => {
-    setFetchOpen(false);
+  /** 同步结果提示：取 runOp 记录的最近结果；需要确认的中间结果不提示（由对话框接手）。 */
+  const showSyncResult = (repoId: string, kind: SyncKind, retry: () => void) => {
+    const last = opStore.get()[repoId]?.last;
+    if (!last || last.kind !== kind || last.status === "needsConfirmation" || currentRead.current.repo !== repoId) return;
+    const [title, ...rest] = last.message.split("\n");
+    const detail = rest.join("\n").trim();
+    const actions = last.status !== "failed" ? [] : kind === "push" && title.includes("被拒绝") ? [{ label: "拉取", run: () => void runPull() }] : [{ label: "重试", run: retry }, { label: "查看输出", run: () => setGitTab("output") }];
+    setSyncToast({ id: ++syncToastSeq, kind, status: last.status, title, detail: detail ? (detail.length > 240 ? `${detail.slice(0, 240)}…` : detail) : null, actions });
+  };
+  /** 同步遇到 Git 锁文件（V2-D65）：二次确认后删除锁文件，返回 true 表示调用方应重试一次。取消或删除失败时返回 false。 */
+  const clearStaleLock = async (repoId: string, kind: SyncKind, outcome: OperationOutcome | null): Promise<boolean> => {
+    const confirmation = outcome?.confirmation;
+    if (confirmation?.reason !== "staleLock" || currentRead.current.repo !== repoId) return false;
+    const ok = await askConfirm({
+      title: "仓库被 Git 锁文件占用",
+      message: confirmation.message,
+      items: confirmation.paths,
+      warning: "删除前请确认没有其他 Git 进程（终端、IDE、其他 Git 客户端）正在操作该仓库",
+      notes: ["正在运行的 Git 进程持有的锁被删除后，可能导致该进程的写入与 Oris 的写入互相覆盖"],
+      confirmLabel: `删除锁文件并${operationLabels[kind]}`,
+      danger: true
+    });
+    if (!ok) return false;
+    try { await removeStaleLocks(repoId, confirmation.paths); return true; }
+    catch (error) { updateOps(repoId, { last: { kind, status: "failed", message: `删除锁文件失败：${errorText(error)}`, output: "", at: Date.now() } }); return false; }
+  };
+  /** 一键获取 / 推送无法确定 remote：只在结果所属的仓库仍是当前项目时弹出选择框（切换项目后丢弃）。 */
+  const askRemote = (repoId: string, kind: "fetch" | "push", confirmation: { paths: string[]; message: string }) => {
+    if (currentRead.current.repo === repoId) setRemoteChoice({ repoId, kind, remotes: confirmation.paths, message: confirmation.message });
+  };
+  /** 获取远端状态（R-REMOTE）：不指定 remote 时由后端取默认目标；无法确定时选择 remote 后重试。成功时记录完成时间。 */
+  const runFetch = async (remote: string | null) => {
+    const repoId = activeRepoId;
     const worktree = snapshot?.repo.worktreePath;
-    const outcome = await runOp({ kind: "fetch", remote });
+    if (!repoId) return;
+    setSyncToast(null);
+    let outcome = await runOp({ kind: "fetch", remote });
+    if (await clearStaleLock(repoId, "fetch", outcome)) outcome = await runOp({ kind: "fetch", remote });
+    if (outcome?.status === "needsConfirmation" && outcome.confirmation?.reason === "chooseRemote") { askRemote(repoId, "fetch", outcome.confirmation); return; }
     if (outcome?.status === "succeeded" && worktree) {
-      try { saveFetchRecord(localStorage, worktree, { remote, at: Date.now() }); } catch { /* 存储可选 */ }
+      const used = remote ?? /^已获取 (.+?)：/.exec(outcome.message)?.[1] ?? "默认 remote";
+      try { saveFetchRecord(localStorage, worktree, { remote: used, at: Date.now() }); } catch { /* 存储可选 */ }
       setFetchRecordVersion((value) => value + 1);
     }
-  };
-  const openFetch = () => {
-    // 默认目标取决于当前分支与已有 remote：打开时总是重新读取，不沿用之前的读取结果。
-    setRefsView(null);
-    setFetchOpen(true);
-    if (activeRepoId) void readRefs(activeRepoId).then(setRefsView, () => {});
+    showSyncResult(repoId, "fetch", () => void runFetch(remote));
   };
   const loadRefsView = () => { if (activeRepoId) void readRefs(activeRepoId).then(setRefsView, () => {}); };
   /** 对话框依赖当前分支与上游：打开时清空后重新读取，不沿用旧结果。 */
   const freshRefsView = () => { setRefsView(null); loadRefsView(); };
-  /** 拉取：仅快进因分叉失败时询问“改用合并”；工作区改动阻止时询问“stash 后拉取”（拉取后不自动恢复）。 */
-  const runPull = async (initial: "ffOnly" | "merge") => {
-    setPullOpen(false);
+  const choosePullMode = (mode: PullMode) => {
+    if (!worktreePath) return;
+    try { savePullMode(localStorage, worktreePath, mode); } catch { /* 存储可选 */ }
+    setPullModeVersion((value) => value + 1);
+  };
+  /** 拉取 ▾“更换上游”：读取 refs 后打开当前分支的上游对话框。 */
+  const changeUpstream = () => {
+    if (!activeRepoId) return;
+    void readRefs(activeRepoId).then((view) => { setRefsView(view); const current = view.local.find((branch) => branch.current); if (current) setUpstreamBranch(current); }, () => {});
+  };
+  /** 拉取（默认方式按仓库记住）：仅快进因分叉失败时询问“改用合并”；工作区改动阻止时询问“stash 后拉取”（拉取后不自动恢复）。 */
+  const runPull = async (initial: PullMode = pullMode) => {
+    const repoId = activeRepoId;
+    if (!repoId) return;
+    setSyncToast(null);
     let request: Extract<OperationRequest, { kind: "pull" }> = { kind: "pull", mode: initial };
-    for (let attempt = 0; attempt < 3; attempt++) {
+    let lockCleared = false;
+    for (let attempt = 0; attempt < 4; attempt++) {
       const outcome = await runOp(request);
+      // 锁文件只处理一次：删除后仍被锁住就如实报告，不反复询问。
+      if (outcome?.confirmation?.reason === "staleLock" && !lockCleared) {
+        if (!(await clearStaleLock(repoId, "pull", outcome))) break;
+        lockCleared = true;
+        continue;
+      }
       const confirmation = outcome?.status === "needsConfirmation" ? outcome.confirmation : null;
-      if (!confirmation) return;
+      if (!confirmation) break;
       if (confirmation.reason === "diverged" && request.mode === "ffOnly") {
-        const ok = await askConfirm({ title: "改用合并", message: confirmation.message, notes: ["会生成一个合并提交；Oris 不做 rebase，也不提供强制推送"], confirmLabel: "改用合并拉取" });
+        const ok = await askConfirm({ title: "本地与上游已分叉", message: confirmation.message, notes: ["改用合并会生成一个合并提交；Oris 不做 rebase，也不提供强制推送", "想以后都这样拉取，可在标题栏“拉取 ▾”中改为“合并远端改动”"], confirmLabel: "改用合并拉取" });
         if (!ok) return;
         request = { ...request, mode: "merge" };
       } else if ((confirmation.reason === "localChanges" || confirmation.reason === "untrackedOverwritten") && !request.stashFirst) {
         const untracked = confirmation.reason === "untrackedOverwritten";
-        const ok = await askConfirm({ title: "stash 后拉取", message: confirmation.message, items: confirmation.paths, notes: [untracked ? "将储藏全部本地改动，包含未跟踪文件" : "将储藏已跟踪文件的全部改动（不含未跟踪文件）", "储藏为新的 stash@{0}；拉取后不会自动恢复，之后可在底部“历史”页左侧的 Stash 中应用或弹出"], confirmLabel: "stash 后拉取" });
+        const ok = await askConfirm({ title: "工作区改动会被拉取覆盖", message: confirmation.message, items: confirmation.paths, notes: [untracked ? "将储藏全部本地改动，包含未跟踪文件" : "将储藏已跟踪文件的全部改动（不含未跟踪文件）", "储藏为新的 stash@{0}；拉取后不会自动恢复，之后可在底部“历史”页左侧的 Stash 中应用或弹出"], confirmLabel: "stash 后拉取" });
         if (!ok) return;
         request = { ...request, stashFirst: true, stashUntracked: untracked };
-      } else return;
+      } else break;
     }
+    showSyncResult(repoId, "pull", () => void runPull(initial));
   };
-  const runPush = (remote: string | null) => { setPushOpen(false); void runOp({ kind: "push", remote }); };
+  /** 推送：有上游时推到上游；没有上游时发布到仅有的 remote，有多个 remote 时选择后重试。 */
+  const runPush = async (remote: string | null = null) => {
+    const repoId = activeRepoId;
+    if (!repoId) return;
+    setSyncToast(null);
+    let outcome = await runOp({ kind: "push", remote });
+    if (await clearStaleLock(repoId, "push", outcome)) outcome = await runOp({ kind: "push", remote });
+    if (outcome?.status === "needsConfirmation" && outcome.confirmation?.reason === "chooseRemote") { askRemote(repoId, "push", outcome.confirmation); return; }
+    showSyncResult(repoId, "push", () => void runPush(remote));
+  };
   const startMerge = (target: { ref: string; oid: string; label: string }) => { setBranchOpen(false); freshRefsView(); setMergeTarget(target); };
   const runMerge = (noFf: boolean) => { const target = mergeTarget; setMergeTarget(null); if (target) void runOp({ kind: "merge", target: target.ref, expected: target.oid, noFf }); };
   const abortMerge = async () => {
@@ -932,12 +997,7 @@ export default function App() {
     const stored = projects.get(repoId)?.snapshot;
     if (stored) void selectFile(scopeView(stored, projects.get(repoId)?.details, "unstaged"), first, activeProject?.gitExecutable ?? "");
   };
-  const syncActions: SyncActions = {
-    onFetch: () => { setSyncOpen(false); openFetch(); },
-    onPull: () => { setSyncOpen(false); freshRefsView(); setPullOpen(true); },
-    onPush: () => { setSyncOpen(false); freshRefsView(); setPushOpen(true); },
-    onSetUpstream: (branch) => { setSyncOpen(false); loadRefsView(); setUpstreamBranch(branch); }
-  };
+  const syncRunning = networkRunning && repoOps?.running ? repoOps.running.kind as SyncKind : null;
   /** 切换类操作：Git 因工作区改动拒绝时询问“stash 后切换”；切换后不自动恢复。 */
   const runSwitch = async (request: OperationRequest) => {
     let outcome = await runOp(request);
@@ -962,6 +1022,62 @@ export default function App() {
     if (outcome?.status === "needsConfirmation" && outcome.confirmation?.reason === "unmerged") {
       const again = await askConfirm({ title: `删除未合并的分支 ${branch.name}`, message: outcome.confirmation.message, warning: "未合并：删除后这些提交只能通过 reflog 找回", confirmLabel: "仍然删除", danger: true });
       if (again) await runOp({ kind: "branchDelete", name: branch.fullName, force: true });
+    }
+  };
+  /**
+   * 一键清理远端已删除的本地分支：先对本地分支上游所在的每个 remote `fetch --prune`，再按最新引用列出上游已消失的分支；
+   * 确认后逐个 `-d`，未合并的汇总后再强确认 `-D`。获取失败时仍按本地已知状态继续，并在确认框中说明。
+   */
+  const pruneGoneBranches = async () => {
+    const repoId = activeRepoId;
+    const worktree = snapshot?.repo.worktreePath;
+    if (!repoId) return;
+    const before = await readRefs(repoId).catch(() => null);
+    const remotes = [...new Set((before?.local ?? []).filter((b) => b.tracking && b.tracking.state !== "noUpstream" && b.remote).map((b) => b.remote!))];
+    const fetchFailed: string[] = [];
+    for (const remote of remotes) {
+      const outcome = await runOp({ kind: "fetch", remote, prune: true });
+      if (outcome?.status !== "succeeded") { fetchFailed.push(remote); continue; }
+      if (worktree) { try { saveFetchRecord(localStorage, worktree, { remote, at: Date.now() }); } catch { /* 存储可选 */ } setFetchRecordVersion((value) => value + 1); }
+    }
+    if (currentRead.current.repo !== repoId) return;
+    const refs = await readRefs(repoId).catch(() => null);
+    if (!refs) return;
+    setRefsView(refs);
+    const branches = refs.local.filter((b) => !b.current && b.tracking?.state === "gone");
+    const failedNote = fetchFailed.length ? `获取 ${fetchFailed.join("、")} 失败，以下结果基于本地已知的远端状态` : null;
+    if (!branches.length) {
+      updateOps(repoId, { last: { kind: "fetch", status: fetchFailed.length ? "failed" : "succeeded", message: [failedNote, "没有需要清理的本地分支（上游都还存在）"].filter(Boolean).join("；"), output: "", at: Date.now() } });
+      return;
+    }
+    const ok = await askConfirm({
+      title: "清理本地分支",
+      message: `以下 ${branches.length} 个本地分支的上游在远端已被删除，删除这些本地分支？`,
+      items: branches.map((branch) => branch.name),
+      warning: failedNote ?? undefined,
+      notes: ["已合并的分支直接删除；未合并的会再次确认", "远端分支不受影响"],
+      confirmLabel: "删除",
+      danger: true
+    });
+    if (!ok) return;
+    const deleted: string[] = [], unmerged: Branch[] = [], failed: string[] = [];
+    for (const branch of branches) {
+      const outcome = await runOp({ kind: "branchDelete", name: branch.fullName });
+      if (outcome?.status === "succeeded") deleted.push(branch.name);
+      else if (outcome?.status === "needsConfirmation" && outcome.confirmation?.reason === "unmerged") unmerged.push(branch);
+      else failed.push(branch.name);
+    }
+    if (unmerged.length) {
+      const again = await askConfirm({ title: "删除未合并的分支", message: `以下 ${unmerged.length} 个分支有提交尚未合并到当前分支（常见于在远端被压缩合并或变基合并的分支）。`, items: unmerged.map((branch) => branch.name), warning: "未合并：删除后这些提交只能通过 reflog 找回", confirmLabel: "仍然删除", danger: true });
+      for (const branch of again ? unmerged : []) {
+        const outcome = await runOp({ kind: "branchDelete", name: branch.fullName, force: true });
+        if (outcome?.status === "succeeded") deleted.push(branch.name); else failed.push(branch.name);
+      }
+      if (!again) failed.push(...unmerged.map((branch) => `${branch.name}（未合并，已保留）`));
+    }
+    if (branches.length > 1) {
+      const message = [`已删除 ${deleted.length} 个分支${deleted.length ? `：${deleted.join("、")}` : ""}`, failed.length ? `未删除：${failed.join("、")}` : ""].filter(Boolean).join("；");
+      updateOps(repoId, { last: { kind: "branchDelete", status: failed.length && !deleted.length ? "failed" : "succeeded", message, output: "", at: Date.now() } });
     }
   };
   const branchActions: BranchActions = {
@@ -1153,9 +1269,9 @@ export default function App() {
       else if (name === "openHistory") setGitTab("log");
       else if (name === "openOutput") setGitTab("output");
       else if (name === "openCommit") setGitTab("commit");
-      else if (name === "openFetch") openFetch();
-      else if (name === "openPull") { freshRefsView(); setPullOpen(true); }
-      else if (name === "openPush") { freshRefsView(); setPushOpen(true); }
+      else if (name === "openFetch") setSyncMenu("fetch");
+      else if (name === "openPull") setSyncMenu("pull");
+      else if (name === "openPush") setSyncMenu("push");
       else if (name === "openBranchMenu") setBranchOpen(true);
       else if (name === "refresh") await refreshActive();
       else if (name === "setScope" && typeof value === "string" && aiScope(value)) await setCompareScope(aiScope(value)!);
@@ -1372,7 +1488,9 @@ export default function App() {
   const ignoredWhitespace = diffDocument?.whitespace === "ignore" ? diffDocument.ignoredWhitespace ?? 0 : null;
 
   return <main className={`app${focusMode ? " focus-mode" : ""}`}>
-    <header className="titlebar"><span className="logo">O</span><strong>{activeProject ? projectName(activeProject) : "Oris"}</strong>{snapshot && <span className="branch-anchor"><button type="button" className="branch branch-button" aria-expanded={branchOpen} title="分支：搜索、切换、新建与管理" onClick={() => setBranchOpen((value) => !value)}>⑂ {snapshot.repo.branch} ▾</button>{branchOpen && activeRepoId && <BranchPopover repoId={activeRepoId} refsVersion={refsVersion} blocked={writeBlocked} actions={branchActions} onClose={() => setBranchOpen(false)}/>}</span>}{snapshot?.branchInfo?.upstream && <span className="branch-counts" title={`相对上游 ${snapshot.branchInfo.upstream}：领先 ${snapshot.branchInfo.ahead ?? "?"}、落后 ${snapshot.branchInfo.behind ?? "?"}`}>↑{snapshot.branchInfo.ahead ?? "?"} ↓{snapshot.branchInfo.behind ?? "?"}</span>}{stale && <span className="stale-badge">旧快照</span>}{runtime?.verifying && <span className="stale-badge verifying" title="显示上次保存的快照，正在后台校验；校验完成前写操作不可用">校验中</span>}{snapshot && !snapshot.branchInfo?.upstream && snapshot.branchInfo?.head && <span className="branch-counts" title="当前分支没有配置上游，领先 / 落后数不可用">无上游</span>}{snapshot && <span className="branch-anchor"><button type="button" className="sync-button" aria-expanded={syncOpen} title={`同步：获取、拉取、推送。${fetchText}`} onClick={() => setSyncOpen((value) => !value)}>{networkRunning && repoOps?.running ? `⇅ 正在${operationLabels[repoOps.running.kind]}…` : "⇅ 同步 ▾"}</button>{syncOpen && activeRepoId && <SyncPopover repoId={activeRepoId} refsVersion={refsVersion} blocked={writeBlocked} fetchText={fetchText} actions={syncActions} onClose={() => setSyncOpen(false)} onRefs={setRefsView}/>}</span>}<span className="spacer"/><button className="commit-entry" onClick={() => setAiOpen(true)} title="AI（Ctrl+P / ⌘P）">✦ AI</button><button className="settings-button" onClick={() => setSettingsOpen(true)} aria-label="设置" title="设置（Ctrl+,）">⚙ 设置</button></header>
+    <header className="titlebar"><span className="logo">O</span><strong>{activeProject ? projectName(activeProject) : "Oris"}</strong>{snapshot && <span className="branch-anchor"><button type="button" className="branch branch-button" aria-expanded={branchOpen} title="分支：搜索、切换、新建与管理" onClick={() => setBranchOpen((value) => !value)}>⑂ {snapshot.repo.branch} ▾</button>{branchOpen && activeRepoId && <BranchPopover repoId={activeRepoId} refsVersion={refsVersion} blocked={writeBlocked} actions={branchActions} onClose={() => setBranchOpen(false)}/>}</span>}{snapshot && activeRepoId && <SyncToolbar repoId={activeRepoId} branch={{ head: snapshot.branchInfo?.head ?? null, upstream: snapshot.branchInfo?.upstream ?? null, ahead: snapshot.branchInfo?.ahead ?? null, behind: snapshot.branchInfo?.behind ?? null }}
+        blocked={writeBlocked} running={syncRunning} fetchAge={fetchAge} fetchTitle={fetchText} pullMode={pullMode} menu={syncMenu} onMenu={setSyncMenu}
+        onFetch={(remote) => void runFetch(remote)} onPull={() => void runPull()} onPush={() => void runPush()} onCancel={() => void cancelOperation(activeRepoId)} onPullMode={choosePullMode} onChangeUpstream={changeUpstream} onRemotes={(view) => setRemotesFetchHeadAt(view.fetchHeadAt)}/>}{stale && <span className="stale-badge">旧快照</span>}{runtime?.verifying && <span className="stale-badge verifying" title="显示上次保存的快照，正在后台校验；校验完成前写操作不可用">校验中</span>}<span className="spacer"/><UpdateButton autoCheck={autoCheckUpdates} busyReason={busyOperation}/><button className="commit-entry" onClick={() => setAiOpen(true)} title="AI（Ctrl+P / ⌘P）">✦ AI</button><button className="settings-button" onClick={() => setSettingsOpen(true)} aria-label="设置" title="设置（Ctrl+,）">⚙ 设置</button></header>
     <section className="projectbar" aria-label="项目切换"><button className="primary" onClick={chooseRepository}>添加项目</button><input value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)} placeholder="搜索项目或完整路径" aria-label="搜索项目"/><div className="project-tabs">{visibleProjects.map(project => <ProjectTab key={project.repo.repoId} project={project} active={project.repo.repoId === activeRepoId}
       onSelect={() => void switchProject(project)}
       onRename={customName => setWorkspaceState(current => ({ ...current, projects: current.projects.map(p => p.repo.repoId === project.repo.repoId ? { ...p, customName } : p) }))}
@@ -1393,10 +1511,11 @@ export default function App() {
       onCommit={commit} onGenerateMessage={aiMessage} onUndoCommit={(head) => void undoCommit(head)} onUndoDiscard={(id) => void undoDiscard(id)} onCancel={() => { if (activeRepoId) void cancelOperation(activeRepoId); }}
       logContent={activeRepoId && logMounted === activeRepoId ? <HistoryPanel key={activeRepoId} repoId={activeRepoId} refsVersion={refsVersion} hidden={gitTab !== "log"} fileHistoryRequest={fileHistoryRequest} activeKey={historyReading?.key ?? null} onOpenFile={(open) => void openHistoryFile(open)} onRefs={setRefsView}
         writeBlocked={writeBlocked} onCheckout={(oid) => void runSwitch({ kind: "checkout", commit: oid })} onNewBranch={(start) => { loadRefsView(); setNewBranch({ initial: start }); }} onMerge={detachedOid ? undefined : startMerge}
-        onSwitch={branchActions.onSwitch} onTrack={branchActions.onTrack} stashVersion={stashVersion} selectedFiles={stashSelection}
+        onSwitch={branchActions.onSwitch} onTrack={branchActions.onTrack} onDeleteBranch={(branch) => void deleteBranch(branch)} onPruneGone={() => void pruneGoneBranches()} stashVersion={stashVersion} selectedFiles={stashSelection}
         onStashPush={stashPush} onStashApply={(entry, pop) => void runOp({ kind: "stashApply", index: entry.index, oid: entry.oid, pop })} onStashDrop={(entry) => void stashDrop(entry)}/> : null}/>
-    {pullOpen && <PullDialog refs={refsView} blocked={writeBlocked} onConfirm={(mode) => void runPull(mode)} onCancel={() => setPullOpen(false)}/>}
-    {pushOpen && <PushDialog refs={refsView} blocked={writeBlocked} onConfirm={runPush} onCancel={() => setPushOpen(false)}/>}
+    {remoteChoice && remoteChoice.repoId === activeRepoId && <RemoteChoiceDialog kind={remoteChoice.kind} remotes={remoteChoice.remotes} message={remoteChoice.message} onCancel={() => setRemoteChoice(null)}
+      onConfirm={(remote) => { const choice = remoteChoice; setRemoteChoice(null); if (choice.repoId === currentRead.current.repo) void (choice.kind === "fetch" ? runFetch(remote) : runPush(remote)); }}/>}
+    {syncToast && <SyncToast key={syncToast.id} toast={syncToast} onDismiss={() => setSyncToast(null)}/>}
     {mergeTarget && snapshot && <MergeDialog target={mergeTarget} current={snapshot.repo.branch} mergeFf={refsView?.mergeFf ?? null} blocked={writeBlocked ?? (mergeInProgress ? "已有合并在进行中" : null)} onConfirm={runMerge} onCancel={() => setMergeTarget(null)}/>}
     {mergeCommitOpen && activeRepoId && <MergeCommitDialog repoId={activeRepoId} blocked={writeBlocked} onConfirm={(message) => { setMergeCommitOpen(false); void runOp({ kind: "mergeCommit", message }); }} onCancel={() => setMergeCommitOpen(false)}/>}
     {newBranch && activeRepoId && <NewBranchDialog repoId={activeRepoId} refs={refsView} initial={newBranch.initial} blocked={writeBlocked} onConfirm={createBranch} onCancel={() => setNewBranch(null)}/>}
@@ -1405,10 +1524,9 @@ export default function App() {
     {trackChoice && activeRepoId && <TrackChoiceDialog repoId={activeRepoId} remote={trackChoice.remote} existing={trackChoice.existing} refs={refsView} onCancel={() => setTrackChoice(null)}
       onSwitchExisting={() => { const choice = trackChoice; setTrackChoice(null); void runSwitch({ kind: "branchSwitch", name: `refs/heads/${choice.existing}` }); }}
       onTrackAs={(name) => { const choice = trackChoice; setTrackChoice(null); void runSwitch({ kind: "branchTrack", remote: choice.remote.fullName, localName: name }); }}/>}
-    {fetchOpen && <FetchDialog refs={refsView} fetchText={fetchText} blocked={writeBlocked} onConfirm={(remote) => void startFetch(remote)} onCancel={() => setFetchOpen(false)}/>}
     {confirmState && <ConfirmDialog request={confirmState} onConfirm={() => { confirmState.resolve(true); setConfirmState(null); }} onCancel={() => { confirmState.resolve(false); setConfirmState(null); }}/>}
     {settingsOpen && <SettingsDialog settings={settings} onClose={() => setSettingsOpen(false)} gitInUse={snapshot ? { executable: snapshot.git.executable, version: snapshot.git.version, minimumVersion: snapshot.git.minimumVersion } : null}/>}
     {aiOpen && <AiCommitDialog onClose={() => setAiOpen(false)} onGenerate={aiPlan} onPlanAction={planAction} onExecuteAction={executeAction} onCancelGeneration={cancelAiGeneration} onCommit={aiCommit}/>}
-    <footer className="statusbar">{snapshot ? <span className="status-location"><PathText path={snapshot.repo.worktreePath}/><span className="status-suffix">{` · ${snapshot.repo.branch} · ${scopeLabels[scope].short}`}</span></span> : <span>多项目 → 本地差异浏览</span>}<span className="spacer"/>{repoOps?.running ? <><span className="op-status running" role="status">⟳ 正在{operationLabels[repoOps.running.kind]}…{fetchProgress ? ` ${fetchProgress.text}` : ""}</span>{networkRunning && <button type="button" className="op-undo" onClick={() => { if (activeRepoId) void cancelOperation(activeRepoId); }}>取消</button>}</> : repoOps?.last && <button type="button" className={`op-status ${repoOps.last.status}`} title="查看最近一次操作的 Git 输出" onClick={() => setGitTab("output")}>{repoOps.last.status === "succeeded" ? "✓" : repoOps.last.status === "cancelled" ? "■" : repoOps.last.status === "needsConfirmation" ? "?" : "✗"} {repoOps.last.message}</button>}{!repoOps?.running && repoOps?.lastBackup && <button type="button" className="op-undo" disabled={!!writeBlocked} title={`撤销刚才丢弃的 ${repoOps.lastBackup.files} 个文件`} onClick={() => void undoDiscard(repoOps.lastBackup!.id)}>撤销丢弃</button>}{!repoOps?.running && repoOps?.last?.kind === "push" && repoOps.last.status === "failed" && repoOps.last.message.includes("被拒绝") && <button type="button" className="op-undo push-rejected-pull" disabled={!!writeBlocked} title={writeBlocked ?? "打开拉取选项（不会自动再推送）"} onClick={() => { freshRefsView(); setPullOpen(true); }}>拉取…</button>}<span>本机 Git · 缓存 {cache.current.stats().entries}/{cache.current.stats().budget / 1024 / 1024} MiB</span></footer>
+    <footer className="statusbar">{snapshot ? <span className="status-location"><PathText path={snapshot.repo.worktreePath}/><span className="status-suffix">{` · ${snapshot.repo.branch} · ${scopeLabels[scope].short}`}</span></span> : <span>多项目 → 本地差异浏览</span>}<span className="spacer"/>{repoOps?.running ? <><span className="op-status running" role="status">⟳ 正在{operationLabels[repoOps.running.kind]}…{fetchProgress ? ` ${fetchProgress.text}` : ""}</span>{networkRunning && <button type="button" className="op-undo" onClick={() => { if (activeRepoId) void cancelOperation(activeRepoId); }}>取消</button>}</> : repoOps?.last && <button type="button" className={`op-status ${repoOps.last.status}`} title="查看最近一次操作的 Git 输出" onClick={() => setGitTab("output")}>{repoOps.last.status === "succeeded" ? "✓" : repoOps.last.status === "cancelled" ? "■" : repoOps.last.status === "needsConfirmation" ? "?" : "✗"} {repoOps.last.message}</button>}{!repoOps?.running && repoOps?.lastBackup && <button type="button" className="op-undo" disabled={!!writeBlocked} title={`撤销刚才丢弃的 ${repoOps.lastBackup.files} 个文件`} onClick={() => void undoDiscard(repoOps.lastBackup!.id)}>撤销丢弃</button>}{!repoOps?.running && repoOps?.last?.kind === "push" && repoOps.last.status === "failed" && repoOps.last.message.includes("被拒绝") && <button type="button" className="op-undo push-rejected-pull" disabled={!!writeBlocked} title={writeBlocked ?? `按默认方式（${pullMode === "ffOnly" ? "仅快进" : "合并远端改动"}）拉取；不会自动再推送`} onClick={() => void runPull()}>拉取</button>}<span>本机 Git · 缓存 {cache.current.stats().entries}/{cache.current.stats().budget / 1024 / 1024} MiB</span></footer>
   </main>;
 }

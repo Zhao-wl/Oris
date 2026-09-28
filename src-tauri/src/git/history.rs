@@ -27,6 +27,16 @@ pub struct RefsView {
     pub merge_ff: Option<String>,
 }
 
+/// 标题栏“获取 ▾”所需的最小信息：不列出分支、不计算领先 / 落后（`read_refs` 在大仓库上较慢）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemotesView {
+    pub remotes: Vec<String>,
+    /// 当前分支上游所属的 remote（仍存在时）；与一键获取的默认目标一致。
+    pub default_remote: Option<String>,
+    pub fetch_head_at: Option<u64>,
+}
+
 fn is_oid(value: &str) -> bool {
     (value.len() == 40 || value.len() == 64) && value.bytes().all(|b| b.is_ascii_hexdigit())
 }
@@ -73,8 +83,40 @@ impl GitAdapter {
         log::file_history(&self.git, &self.worktree, start, &path, page_size, cursor)
     }
 
+    /// remote 列表与默认 remote：`git remote` 加一次只读当前分支上游的 `for-each-ref`，共两个进程。
+    pub fn history_remotes(&self) -> Result<RemotesView, GitError> {
+        let output = run_required(&self.git, &self.worktree, &["remote"])?;
+        let remotes: Vec<String> = String::from_utf8_lossy(&output.stdout).lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect();
+        // %(HEAD) 为 “*” 的那一行是当前分支；分离 HEAD 时没有这一行。
+        let default_remote = run_readonly(&self.git, &self.worktree, &["for-each-ref", "--format=%(HEAD)%00%(upstream:remotename)", "refs/heads"])
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| String::from_utf8_lossy(&o.stdout).lines().find_map(|line| line.strip_prefix("*\0").map(str::to_owned)))
+            .filter(|remote| remotes.contains(remote));
+        Ok(RemotesView { remotes, default_remote, fetch_head_at: self.fetch_head_at() })
+    }
+
+    fn fetch_head_at(&self) -> Option<u64> {
+        [self.git_dir.join("FETCH_HEAD"), self.common_dir.join("FETCH_HEAD")]
+            .iter()
+            .filter_map(|path| fs::metadata(path).ok()?.modified().ok())
+            .max()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64)
+    }
+
+    /// 共两个 Git 进程：一次 `config --get-regexp`（remote 列表与拉取相关配置）与一次 `for-each-ref`；
+    /// 浅克隆由 shallow 文件判断。原为另外的 `rev-parse --is-shallow-repository` 与 `git remote`，
+    /// Windows 上每个 Git 进程启动约 55 ms，负载高时可达数百毫秒。
     pub fn history_refs(&self) -> Result<RefsView, GitError> {
-        let refs = refs::read_refs(&self.git, &self.worktree)?;
+        // 取值规则与 `--get` 相同：同一键取最后一个值。remote 的取值（URL 等）只用于得到名称，不返回。
+        let values = run_readonly(&self.git, &self.worktree, &["config", "-z", "--get-regexp", REFS_CONFIG_KEYS])
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| parse_config_values(&o.stdout))
+            .unwrap_or_default();
+        let context = refs::RefsContext { shallow: refs::is_shallow(&self.common_dir), remotes: refs::remote_names(values.iter().map(|(k, _)| k.as_str())) };
+        let refs = refs::read_refs_in(&self.git, &self.worktree, context)?;
         let default_remote = refs
             .local
             .iter()
@@ -82,18 +124,7 @@ impl GitAdapter {
             .filter(|branch| matches!(branch.tracking, Some(Tracking::Known { .. } | Tracking::Unknown { .. })))
             .and_then(|branch| branch.remote.clone())
             .filter(|remote| refs.remotes.contains(remote));
-        let fetch_head_at = [self.git_dir.join("FETCH_HEAD"), self.common_dir.join("FETCH_HEAD")]
-            .iter()
-            .filter_map(|path| fs::metadata(path).ok()?.modified().ok())
-            .max()
-            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_millis() as u64);
-        // 三个配置项一次读出（V2-D60：原为三次 `config --get`）；取值规则与 `--get` 相同：同一键取最后一个值。
-        let values = run_readonly(&self.git, &self.worktree, &["config", "-z", "--get-regexp", PULL_CONFIG_KEYS])
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| parse_config_values(&o.stdout))
-            .unwrap_or_default();
+        let fetch_head_at = self.fetch_head_at();
         let config = |key: &str| values.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v.trim().to_owned());
         let current = refs.head.branch.as_deref().and_then(|b| b.strip_prefix("refs/heads/")).map(str::to_owned);
         let pull_rebase = current.as_deref().and_then(|b| config(&format!("branch.{b}.rebase"))).or_else(|| config("pull.rebase"));
@@ -102,8 +133,9 @@ impl GitAdapter {
     }
 }
 
-/// `pull.rebase`、`merge.ff` 与各分支的 `branch.<name>.rebase`（Git 输出的键：节名与变量名为小写，子节保持原样）。
-const PULL_CONFIG_KEYS: &str = r"^(pull\.rebase|merge\.ff|branch\..*\.rebase)$";
+/// 所有 `remote.<name>.*`（得到 remote 列表），以及 `pull.rebase`、`merge.ff` 与各分支的 `branch.<name>.rebase`
+/// （V2-D60 起一次读出）。Git 输出的键：节名与变量名为小写，子节保持原样。
+const REFS_CONFIG_KEYS: &str = r"^(remote\..*|pull\.rebase|merge\.ff|branch\..*\.rebase)$";
 
 /// 解析 `git config -z --get-regexp` 的输出：每条为 `键\n值\0`，没有值的键（隐式 true）为 `键\0`，与 `--get` 一样记为空字符串。
 fn parse_config_values(raw: &[u8]) -> Vec<(String, String)> {

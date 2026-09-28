@@ -204,6 +204,20 @@ fn b11_diverged_ff_only_fails_then_merge_creates_a_merge_commit_even_with_pull_r
 }
 
 #[test]
+fn pull_merge_reports_failure_instead_of_asking_again_when_merge_ff_only_blocks_it() {
+    let r = remote_setup();
+    commit(&r.other, "b.txt", "remote\n", "remote work");
+    git_in(&r.other, &["push", "-q", "origin", "main"]);
+    let local_commit = commit(&r.local, "c.txt", "local\n", "local work");
+    git_in(&r.local, &["config", "merge.ff", "only"]);
+    let outcome = Harness::new(&r.local).run(pull(PullMode::Merge));
+    assert_eq!(outcome.status, OpStatus::Failed, "{}", outcome.message);
+    assert!(outcome.confirmation.is_none());
+    assert!(outcome.message.contains("merge.ff=only") && outcome.message.contains("只允许快进"), "{}", outcome.message);
+    assert_eq!(git_in(&r.local, &["rev-parse", "HEAD"]), local_commit, "HEAD 不变");
+}
+
+#[test]
 fn b11_pull_needs_an_upstream_and_offers_stash_when_local_changes_block_it() {
     let r = remote_setup();
     let h = Harness::new(&r.local);
@@ -235,8 +249,20 @@ fn b11_first_push_sets_upstream_rejected_push_offers_no_force_and_tags_stay_loca
     let h = Harness::new(&r.local);
     git_in(&r.local, &["switch", "-qc", "feature"]);
     let feature = commit(&r.local, "f.txt", "feature\n", "feature");
-    let error = h.try_run(OperationRequest::Push { remote: None }).unwrap_err();
-    assert!(matches!(&error, GitError::WriteBlocked(m) if m.contains("没有上游")), "{error}");
+    // 没有上游且有多个 remote：不执行，请界面选择 remote。
+    git_in(&r.local, &["remote", "add", "mirror", &r.bare.to_string_lossy()]);
+    let outcome = h.run(OperationRequest::Push { remote: None });
+    assert_eq!(outcome.status, OpStatus::NeedsConfirmation, "{}", outcome.message);
+    let confirmation = outcome.confirmation.unwrap();
+    assert_eq!((confirmation.reason, confirmation.paths), ("chooseRemote", vec!["mirror".to_owned(), "origin".to_owned()]));
+    assert!(bare_ref(&r.bare, "refs/heads/feature").is_none(), "选择前没有推送");
+    // 只剩一个 remote：一键“发布分支”，推送到它的同名分支并设为上游。
+    git_in(&r.local, &["remote", "remove", "mirror"]);
+    git_in(&r.local, &["switch", "-qc", "published"]);
+    let outcome = h.run(OperationRequest::Push { remote: None });
+    assert_eq!(outcome.status, OpStatus::Succeeded, "{}", outcome.message);
+    assert_eq!(git_in(&r.local, &["rev-parse", "--abbrev-ref", "published@{u}"]), "origin/published");
+    git_in(&r.local, &["switch", "-q", "feature"]);
     git_in(&r.local, &["tag", "v-local"]);
     git_in(&r.local, &["config", "push.followTags", "true"]);
     let before = fingerprint(&r.local);
@@ -463,7 +489,7 @@ fn b14_external_rebase_cherry_pick_revert_and_bisect_block_every_new_write() {
             OperationRequest::Push { remote: Some("origin".into()) },
             OperationRequest::Merge { target: "refs/heads/topic".into(), expected: topic.clone(), no_ff: false },
             OperationRequest::MergeCommit { message: "x".into() },
-            OperationRequest::Fetch { remote: "origin".into() },
+            OperationRequest::Fetch { remote: Some("origin".into()), prune: false },
             OperationRequest::BranchSwitch { name: "refs/heads/topic".into(), stash_first: false, stash_untracked: false },
             OperationRequest::StashPush { message: None, include_untracked: false, path_ids: None },
             OperationRequest::Commit { message: "x".into() },

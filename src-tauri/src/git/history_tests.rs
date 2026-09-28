@@ -297,6 +297,32 @@ fn upstream_states_use_real_reachability_and_never_fake_zero() {
 }
 
 #[test]
+fn light_remote_read_matches_the_full_refs_default_remote() {
+    let remote_dir = tempfile::tempdir().unwrap();
+    let remote = remote_dir.path().join("remote.git");
+    git(remote_dir.path(), &["init", "-q", "--bare", "-b", "main", &remote.to_string_lossy()]);
+    let dir = init();
+    let p = dir.path();
+    commit(p, "a.txt", "a\n", "base", 0);
+    git(p, &["remote", "add", "origin", &remote.to_string_lossy()]);
+    git(p, &["remote", "add", "alpha", &remote.to_string_lossy()]);
+    let adapter = open_adapter(p);
+    // 没有上游：列出 remote，不指定默认目标。
+    let view = adapter.history_remotes().unwrap();
+    assert_eq!((view.remotes, view.default_remote, view.fetch_head_at), (vec!["alpha".to_owned(), "origin".to_owned()], None, None));
+    // 有上游：默认目标为上游所属的 remote，与 read_refs 一致；获取后有 FETCH_HEAD 时间。
+    git(p, &["push", "-q", "-u", "origin", "main"]);
+    git(p, &["fetch", "-q", "origin"]);
+    let view = adapter.history_remotes().unwrap();
+    assert_eq!(view.default_remote.as_deref(), Some("origin"));
+    assert_eq!(view.default_remote, adapter.history_refs().unwrap().default_remote);
+    assert!(view.fetch_head_at.is_some());
+    // 分离 HEAD：没有当前分支，也就没有默认目标。
+    git(p, &["switch", "-q", "--detach"]);
+    assert_eq!(adapter.history_remotes().unwrap().default_remote, None);
+}
+
+#[test]
 fn read_refs_lists_tags_peeled_to_commits() {
     let dir = init();
     let p = dir.path();
@@ -553,4 +579,40 @@ fn head_state_from_for_each_ref_matches_read_head() {
     assert!(page.tips.contains(&first) && page.tips.contains(&second));
     assert!(!page.tips.contains(&detached_commit));
     assert_eq!(refs::read_refs(gp(), p).unwrap().head, refs::read_head(gp(), p));
+}
+
+#[test]
+fn refs_read_takes_remotes_from_config_and_shallow_from_the_file_with_the_same_results() {
+    let dir = init();
+    let p = dir.path();
+    commit(p, "a.txt", "a\n", "base", 0);
+    // `git remote` 列出配置里出现过的每个 remote（任意变量），按字节序排序；旧式 .git/remotes 文件不列出。
+    git(p, &["config", "remote.zeta.url", "/x"]);
+    git(p, &["config", "remote.alpha.pushurl", "/y"]);
+    git(p, &["config", "remote.onlyfetch.fetch", "+refs/heads/*:refs/remotes/onlyfetch/*"]);
+    git(p, &["config", "remote.Dot.ted.url", "/z"]);
+    git(p, &["config", "--add", "remote.zeta.url", "/x2"]);
+    git(p, &["config", "remote.onlyprune.prune", "true"]);
+    fs::create_dir_all(p.join(".git/remotes")).unwrap();
+    fs::write(p.join(".git/remotes/legacyfile"), "URL: /legacy\n").unwrap();
+    let listed: Vec<String> = git(p, &["remote"]).lines().map(str::to_owned).collect();
+    let adapter = open_adapter(p);
+    let view = adapter.history_refs().unwrap();
+    assert_eq!(view.refs.remotes, listed);
+    assert_eq!(view.refs.remotes, ["Dot.ted", "alpha", "onlyfetch", "onlyprune", "zeta"]);
+    assert_eq!(view.refs, refs::read_refs(gp(), p).unwrap(), "与逐项调用 Git 的读取结果一致");
+    // 浅克隆：由 shallow 文件判断，与 rev-parse --is-shallow-repository 一致。
+    assert!(!view.refs.shallow);
+    let remote_dir = tempfile::tempdir().unwrap();
+    commit(p, "b.txt", "b\n", "second", 1);
+    let shallow = remote_dir.path().join("shallow");
+    git(remote_dir.path(), &["clone", "-q", "--depth", "1", &format!("file://{}", p.to_string_lossy().replace('\\', "/")), &shallow.to_string_lossy()]);
+    assert_eq!(git(&shallow, &["rev-parse", "--is-shallow-repository"]), "true");
+    let shallow_view = open_adapter(&shallow).history_refs().unwrap();
+    assert!(shallow_view.refs.shallow);
+    assert_eq!(shallow_view.refs, refs::read_refs(gp(), &shallow).unwrap());
+    // 没有任何 remote：配置里没有匹配项时列表为空（Git 此时以状态 1 结束，不算错误）。
+    let empty = init();
+    commit(empty.path(), "a.txt", "a\n", "base", 0);
+    assert!(open_adapter(empty.path()).history_refs().unwrap().refs.remotes.is_empty());
 }

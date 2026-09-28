@@ -73,8 +73,8 @@ impl GitAdapter {
         process::run_with(&self.git, &self.worktree, &args, None, true, &ctx.cancel, &ctx.log, &ctx.processes, process::RunOptions { idle: Some(ctx.network_idle), literal_pathspecs: true, index_file: None })
     }
 
-    /// 网络命令结束后的说明：取消 / 超时 / 失败（附认证提示）。成功时返回 None。
-    pub(super) fn network_failure(result: &process::CallResult, what: &str, ctx: &OpContext) -> Option<Step> {
+    /// 网络命令结束后的说明：取消 / 超时 / 失败（附认证提示；锁文件冲突附“删除锁文件并重试”的确认，V2-D65）。成功时返回 None。
+    pub(super) fn network_failure(&self, result: &process::CallResult, what: &str, ctx: &OpContext) -> Option<Step> {
         if result.cancelled {
             return Some(Step::cancelled(format!("已取消{what}")));
         }
@@ -91,20 +91,31 @@ impl GitAdapter {
                 message.push_str("\n");
                 message.push_str(hint);
             }
-            return Some(Step::failed(message));
+            let mut step = Step::failed(message);
+            self.attach_stale_locks(&mut step, &Self::full_output(ctx, result), what);
+            return Some(step);
         }
         None
     }
 
-    /// 显式 fetch：不 prune、不递归子模块、不触发自动维护，不附带 pull / push / checkout。
-    pub(super) fn op_fetch(&self, remote: &str, ctx: &OpContext) -> Result<Step, GitError> {
+    /// 显式 fetch：默认不 prune（`prune` 时只删除远端已不存在的远端跟踪分支，不 prune 标签）、不递归子模块、不触发自动维护，不附带 pull / push / checkout。
+    pub(super) fn op_fetch(&self, remote: Option<&str>, prune: bool, ctx: &OpContext) -> Result<Step, GitError> {
+        let remote = match remote {
+            Some(chosen) => chosen.to_owned(),
+            None => match self.default_remote("获取")? {
+                Ok(remote) => remote,
+                Err(step) => return Ok(step),
+            },
+        };
+        let remote = remote.as_str();
         self.require_remote(remote)?;
         let before = self.tracking_refs();
         let result = self.network_git(
             &[
                 "fetch",
                 "--progress",
-                "--no-prune",
+                if prune { "--prune" } else { "--no-prune" },
+                "--no-prune-tags",
                 "--no-recurse-submodules",
                 "--no-auto-maintenance",
                 "--no-write-commit-graph",
@@ -114,9 +125,10 @@ impl GitAdapter {
             ctx,
         )?;
         let after = self.tracking_refs();
-        let changed = after.iter().filter(|(name, oid)| before.get(*name) != Some(oid)).count() + before.keys().filter(|name| !after.contains_key(*name)).count();
+        let pruned = before.keys().filter(|name| !after.contains_key(*name)).count();
+        let changed = after.iter().filter(|(name, oid)| before.get(*name) != Some(oid)).count() + pruned;
         let what = format!("获取 {remote}");
-        if let Some(mut step) = Self::network_failure(&result, &what, ctx) {
+        if let Some(mut step) = self.network_failure(&result, &what, ctx) {
             // 失败或取消后已重新读取实际引用：如实说明，不承诺回滚。
             step.message.push_str(&if changed > 0 {
                 format!("。已重新读取实际引用：结束前已有 {changed} 个远端跟踪引用 / 标签被更新，Oris 不会回滚")
@@ -125,7 +137,9 @@ impl GitAdapter {
             });
             return Ok(step);
         }
-        Ok(Step::ok(if changed > 0 {
+        Ok(Step::ok(if prune && pruned > 0 {
+            format!("已获取 {remote}：{changed} 个远端跟踪引用 / 标签有更新，其中 {pruned} 个远端已删除的跟踪引用已清理（工作区与暂存区未改动）")
+        } else if changed > 0 {
             format!("已获取 {remote}：{changed} 个远端跟踪引用 / 标签有更新（工作区与暂存区未改动）")
         } else {
             format!("已获取 {remote}：没有新的变化（工作区与暂存区未改动）")

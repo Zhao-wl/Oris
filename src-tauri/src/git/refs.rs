@@ -111,10 +111,44 @@ pub fn read_head(git: &Path, worktree: &Path) -> HeadState {
     HeadState { detached: branch.is_none() && oid.is_some(), unborn: branch.is_some() && oid.is_none(), branch, oid }
 }
 
+/// 读取 refs 所需、但不在 `for-each-ref` 输出里的仓库信息。
+pub struct RefsContext {
+    pub shallow: bool,
+    /// 与 `git remote` 相同的 remote 列表（按字节序排序）。
+    pub remotes: Vec<String>,
+}
+
+/// 独立读取：浅克隆与 remote 列表各用一次 Git 调用。仓库适配器改用 [`read_refs_in`]，由配置与 shallow 文件提供这两项。
 pub fn read_refs(git: &Path, worktree: &Path) -> Result<RefsSnapshot, GitError> {
     let shallow = run_readonly(git, worktree, &["rev-parse", "--is-shallow-repository"])
         .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
         .unwrap_or(false);
+    let remotes: Vec<String> = run_readonly(git, worktree, &["remote"])
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect())
+        .unwrap_or_default();
+    read_refs_in(git, worktree, RefsContext { shallow, remotes })
+}
+
+/// 与 `git rev-parse --is-shallow-repository` 相同的判断：公共 Git 目录下存在 `shallow` 文件即为浅克隆（不启动进程）。
+pub fn is_shallow(common_dir: &Path) -> bool {
+    common_dir.join("shallow").is_file()
+}
+
+/// 由 `git config --get-regexp '^remote\.'` 的键得到 remote 列表，与 `git remote` 一致：
+/// 出现过任意 `remote.<name>.<变量>` 的都算（变量名不含点，remote 名可以含点），按字节序排序、去重。
+pub fn remote_names<'a>(keys: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let names: std::collections::BTreeSet<String> = keys
+        .into_iter()
+        .filter_map(|key| key.strip_prefix("remote.")?.rsplit_once('.').map(|(name, _)| name.to_owned()))
+        .filter(|name| !name.is_empty())
+        .collect();
+    names.into_iter().collect()
+}
+
+pub fn read_refs_in(git: &Path, worktree: &Path, context: RefsContext) -> Result<RefsSnapshot, GitError> {
+    let RefsContext { shallow, remotes } = context;
     let output = run_required(
         git,
         worktree,
@@ -190,11 +224,6 @@ pub fn read_refs(git: &Path, worktree: &Path) -> Result<RefsSnapshot, GitError> 
             });
         }
     }
-    let remotes: Vec<String> = run_readonly(git, worktree, &["remote"])
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect())
-        .unwrap_or_default();
     // 远端跟踪分支按最长匹配的 remote 名归属（remote 名本身可以含 `/`）。
     for branch in &mut remote {
         branch.remote = remotes.iter().filter(|r| branch.name.starts_with(&format!("{r}/"))).max_by_key(|r| r.len()).cloned();

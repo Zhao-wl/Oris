@@ -5,6 +5,7 @@ import { ROW_HEIGHT, deferVersions, initialDeferred, isStale, movedEndpoint, nod
 import { errorText } from "./error-message";
 import HistorySidebar from "./HistorySidebar";
 import PathText from "./PathText";
+import FileList from "./ChangedFileList";
 import { StashDetail, StashForm, useStashList, type StashPushOptions } from "./StashPanel";
 import type { FileChange } from "./types";
 
@@ -38,6 +39,9 @@ interface Props {
   /** 左侧双击：切换到本地分支、检出远端跟踪分支（建立同名本地跟踪分支）。 */
   onSwitch?(branch: Branch): void;
   onTrack?(branch: Branch): void;
+  /** 本地分支右键“删除分支”；左侧“清理…”：删除上游已消失的本地分支。 */
+  onDeleteBranch?(branch: Branch): void;
+  onPruneGone?(): void;
   /** Stash（V2-03，原“Stash”页并入左侧）：stash 变化时递增的版本、“只储藏选中的文件”的选择与写操作。 */
   stashVersion?: number;
   selectedFiles?: FileChange[];
@@ -84,7 +88,7 @@ interface Menu { x: number; y: number; endpoint: PinnedEndpoint }
  * 中间提交图与列表，右侧详情。单击引用只筛选历史，双击分支才切换；三栏宽度可拖动。
  */
 export default function HistoryPanel(props: Props) {
-  const { repoId, refsVersion, hidden, fileHistoryRequest, activeKey, onOpenFile, onRefs, onCheckout, onNewBranch, onMerge, writeBlocked, onSwitch, onTrack, stashVersion = 0, selectedFiles = [], onStashPush, onStashApply, onStashDrop } = props;
+  const { repoId, refsVersion, hidden, fileHistoryRequest, activeKey, onOpenFile, onRefs, onCheckout, onNewBranch, onMerge, writeBlocked, onSwitch, onTrack, onDeleteBranch, onPruneGone, stashVersion = 0, selectedFiles = [], onStashPush, onStashApply, onStashDrop } = props;
   const [refs, setRefs] = useState<RefsView | null>(null);
   const [refsError, setRefsError] = useState<string | null>(null);
   const [filter, setFilter] = useState<string | null>(null);
@@ -339,12 +343,13 @@ export default function HistoryPanel(props: Props) {
   const start = Math.max(0, Math.floor(view.top / ROW_HEIGHT) - OVERSCAN);
   const end = Math.min(layout.rows.length, Math.ceil((view.top + view.height) / ROW_HEIGHT) + OVERSCAN);
   const graphWidth = Math.min(MAX_GRAPH_LANES, Math.max(1, layout.width)) * LANE_WIDTH;
+  const menuBranch = menu ? viewRefs?.local.find((b) => b.fullName === menu.endpoint.ref) ?? null : null;
   const stashEntry = mode.kind === "stash" ? stash.entries?.find((e) => e.oid === mode.oid) ?? null : null;
 
   return <div ref={root} className="git-body log-layout" hidden={hidden} style={{ gridTemplateColumns: `${columns.left}px ${SPLITTER}px minmax(0, 1fr) ${SPLITTER}px ${columns.right}px` }} onContextMenu={(event) => { if (!(event.target as Element).closest("[data-endpoint]")) setMenu(null); }}>
     <HistorySidebar refs={viewRefs} refsError={refsError} headLabel={headLabel} current={current} filter={filter} onFilter={setFilter}
       stashes={stashStale ? null : stash.entries} stashError={stash.error} selectedStash={mode.kind === "stash" ? mode.oid : null} onStash={(entry) => setMode({ kind: "stash", oid: entry.oid })} onNewStash={onStashPush ? () => setMode({ kind: "stashPush" }) : undefined}
-      blocked={writeBlocked ?? null} onSwitch={onSwitch} onTrack={onTrack} onMenu={(x, y, endpoint) => setMenu({ x, y, endpoint })}/>
+      blocked={writeBlocked ?? null} onSwitch={onSwitch} onTrack={onTrack} onPruneGone={onPruneGone} onMenu={(x, y, endpoint) => setMenu({ x, y, endpoint })}/>
     {splitter("left")}
     <section className="log-commits-pane" aria-label={mode.kind === "file" ? "文件历史" : "提交历史"}>
       {mode.kind === "file" ? <FileHistoryList mode={mode} activeKey={activeKey} onBack={() => setMode({ kind: "commit" })} onMore={() => mode.history?.next && loadFileHistory(mode.request, mode.history.next, mode.history)} onOpen={(entry) => {
@@ -391,7 +396,8 @@ export default function HistoryPanel(props: Props) {
     {menu && <EndpointMenu menu={menu} hasStart={!!compareStart} blocked={writeBlocked ?? null} onClose={() => setMenu(null)} onStart={() => { setCompareStart(menu.endpoint); setMenu(null); }} onCompare={() => compareWith(menu.endpoint)}
       onCheckout={onCheckout && menu.endpoint.ref === menu.endpoint.oid ? () => { setMenu(null); onCheckout(menu.endpoint.oid); } : undefined}
       onNewBranch={onNewBranch ? () => { setMenu(null); onNewBranch({ ref: menu.endpoint.ref, label: menu.endpoint.label }); } : undefined}
-      onMerge={onMerge && menu.endpoint.ref !== refs?.head.branch && menu.endpoint.oid !== refs?.head.oid ? () => { setMenu(null); onMerge({ ref: menu.endpoint.ref, oid: menu.endpoint.oid, label: shortRef(menu.endpoint.label) }); } : undefined}/>}
+      onMerge={onMerge && menu.endpoint.ref !== refs?.head.branch && menu.endpoint.oid !== refs?.head.oid ? () => { setMenu(null); onMerge({ ref: menu.endpoint.ref, oid: menu.endpoint.oid, label: shortRef(menu.endpoint.label) }); } : undefined}
+      deleteBranch={onDeleteBranch && menuBranch ? { current: menuBranch.current, run: () => { setMenu(null); onDeleteBranch(menuBranch); } } : undefined}/>}
   </div>;
 }
 
@@ -421,21 +427,6 @@ const CommitRow = memo(function CommitRow({ row, commit, top, graphWidth, loaded
     <span className="log-sha">{shortOid(commit.oid)}</span>
   </div>;
 });
-
-function FileList({ files, activeKey, keyFor, onOpen, onHistory }: { files: ChangedFile[]; activeKey: string | null; keyFor(file: ChangedFile): string; onOpen(file: ChangedFile): void; onHistory?(file: ChangedFile): void }) {
-  const move = (event: ReactKeyboardEvent<HTMLElement>, index: number) => {
-    const delta = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
-    if (!delta) return;
-    event.preventDefault();
-    const next = files[index + delta];
-    if (next) { onOpen(next); ((event.currentTarget.parentElement?.parentElement?.children[index + delta] as HTMLElement | undefined)?.querySelector("button") as HTMLElement | null)?.focus(); }
-  };
-  if (!files.length) return <div className="log-empty">没有文件变化</div>;
-  return <ul className="log-files" aria-label="变化文件">{files.map((file, index) => <li key={file.pathId + (file.oldPathId ?? "")} className={activeKey === keyFor(file) ? "active" : ""}>
-    <button type="button" className="log-file" title={file.oldPath ? `${file.oldPath} → ${file.path}` : file.path} onClick={() => onOpen(file)} onKeyDown={(event) => move(event, index)}><span className={`status-letter ${file.status}`}>{statusLetter[file.status]}</span><PathText path={file.path} className="log-file-path" title={file.path}/>{file.oldPath && <PathText path={file.oldPath} prefix="← " className="log-file-old"/>}</button>
-    {onHistory && <button type="button" className="quiet log-file-history" title={`查看 ${file.path} 的文件历史`} onClick={() => onHistory(file)}>历史</button>}
-  </li>)}</ul>;
-}
 
 function CommitDetail({ commit, changes, error, activeKey, onParent, onOpen, onHistory }: { commit: CommitInfo; changes: CommitChanges | null; error: string | null; activeKey: string | null; onParent(parent: string): void; onOpen(file: ChangedFile): void; onHistory(file: ChangedFile): void }) {
   const current = changes?.oid === commit.oid ? changes : null;
@@ -495,7 +486,7 @@ function FileHistoryDetail({ mode }: { mode: Extract<Mode, { kind: "file" }> }) 
   </div>;
 }
 
-function EndpointMenu({ menu, hasStart, blocked, onClose, onStart, onCompare, onCheckout, onNewBranch, onMerge }: { menu: Menu; hasStart: boolean; blocked: string | null; onClose(): void; onStart(): void; onCompare(): void; onCheckout?(): void; onNewBranch?(): void; onMerge?(): void }) {
+function EndpointMenu({ menu, hasStart, blocked, onClose, onStart, onCompare, onCheckout, onNewBranch, onMerge, deleteBranch }: { menu: Menu; hasStart: boolean; blocked: string | null; onClose(): void; onStart(): void; onCompare(): void; onCheckout?(): void; onNewBranch?(): void; onMerge?(): void; deleteBranch?: { current: boolean; run(): void } }) {
   const host = useRef<HTMLDivElement>(null);
   useEffect(() => {
     host.current?.querySelector<HTMLButtonElement>("button")?.focus();
@@ -512,5 +503,6 @@ function EndpointMenu({ menu, hasStart, blocked, onClose, onStart, onCompare, on
     {onCheckout && <button type="button" role="menuitem" disabled={!!blocked} title={blocked ?? "检出该提交查看（分离 HEAD），不移动任何分支"} onClick={onCheckout}>检出（分离 HEAD）</button>}
     {onNewBranch && <button type="button" role="menuitem" disabled={!!blocked} title={blocked ?? undefined} onClick={onNewBranch}>从这里新建分支…</button>}
     {onMerge && <button type="button" role="menuitem" disabled={!!blocked} title={blocked ?? undefined} onClick={onMerge}>合并到当前分支…</button>}
+    {deleteBranch && <button type="button" role="menuitem" className="danger" disabled={!!blocked || deleteBranch.current} title={deleteBranch.current ? "不能删除当前分支，请先切换到其他分支" : blocked ?? undefined} onClick={deleteBranch.run}>删除分支…</button>}
   </div>;
 }

@@ -79,10 +79,12 @@ describe("任务 05 阅读体验（App 集成）", () => {
     await mount();
     await select("a.ts");
     expect(host.querySelector("[data-testid=readable]")?.getAttribute("data-hunks")).toBe("1");
-    const reads = bridge.read.mock.calls.length;
+    // 相邻文件的后台预取也会调用 read / diff，只统计当前文件，避免与预取的时序竞争。
+    const currentReads = () => bridge.read.mock.calls.filter((call) => call[3] === "id-a.ts").length;
+    const reads = currentReads();
     await setSelect("空白规则", "ignore");
-    expect(bridge.diff).toHaveBeenLastCalledWith(expect.any(String), ["a1", "a2"], "a  b\n", "a b\n", "ignore");
-    expect(bridge.read.mock.calls.length).toBe(reads);
+    expect(bridge.diff).toHaveBeenCalledWith(expect.any(String), ["a1", "a2"], "a  b\n", "a b\n", "ignore");
+    expect(currentReads()).toBe(reads);
     expect(host.querySelector("[data-testid=readable]")?.getAttribute("data-hunks")).toBe("0");
     expect(host.querySelector(".filter-badge")?.textContent).toBe("已忽略空白 · 略去 1 处");
     expect(host.querySelector(".reading-notice")?.textContent).toContain("忽略空白后没有差异");

@@ -17,7 +17,9 @@ vi.mock("./api", () => ({ openRepository: bridge.open, refreshRepository: bridge
 vi.mock("./operations-api", () => ({ runOperation: bridge.operation, cancelOperation: vi.fn(async () => true), lastOperation: vi.fn(async () => null),
   prepareDiscard: vi.fn(), discardBackups: vi.fn(async () => []), headCommitInfo: vi.fn(async () => null) }));
 vi.mock("./history-api", async (importOriginal) => ({ ...(await importOriginal<typeof import("./history-api")>()),
-  readLog: bridge.log, commitChanges: bridge.changes, compareRevisions: bridge.compare, fileHistory: bridge.fileHistory, readRefs: bridge.refs, readRevisionPair: bridge.revision }));
+  readLog: bridge.log, commitChanges: bridge.changes, compareRevisions: bridge.compare, fileHistory: bridge.fileHistory, readRefs: bridge.refs, readRevisionPair: bridge.revision,
+  // 获取 ▾ 的轻量读取：取自同一份 refs 夹具。
+  readRemotes: async (repoId: string) => { const view = await bridge.refs(repoId); return { remotes: view.remotes, defaultRemote: view.defaultRemote, fetchHeadAt: view.fetchHeadAt }; } }));
 vi.mock("./diff", () => ({ calculateDiff: bridge.diff }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ isFocused: async () => false, onFocusChanged: async () => () => {} }) }));
@@ -171,6 +173,19 @@ describe("Git log tab (A07 / A08)", () => {
     expect(reading()).toContain("history:commit:");
   });
 
+  it("renders huge commits (e.g. a whole-repo root import) as a virtual list instead of one DOM row per file", async () => {
+    const total = 100_000;
+    const files = Array.from({ length: total }, (_, i) => ({ path: `Assets/f${i}.cs`, oldPath: null, pathId: `id-${i}`, oldPathId: null, status: "added" }));
+    bridge.changes.mockImplementation(async (_repo: string, oid: string) => ({ oid, parent: null, parents: [], files }));
+    await mount();
+    await openLog();
+    expect(q(".log-detail .log-group")?.textContent).toContain(`变化文件 · ${total}`);
+    expect(q(".log-detail [data-virtual-count]")?.getAttribute("data-virtual-count")).toBe(String(total));
+    expect(all(".log-detail .log-file").length).toBeLessThan(200);
+    await click(all(".log-detail .log-file")[0]);
+    expect(bridge.revision).toHaveBeenLastCalledWith("a", null, O("3"), "id-0", null, expect.any(String));
+  });
+
   it("opens a commit file in the same diff reader with pinned endpoints, then returns to the local reading position", async () => {
     await mount();
     expect(reading()).toBe("a:unstaged:id-a.txt");
@@ -223,8 +238,7 @@ describe("compare and file history (A09)", () => {
     // main 在外部前进：提示端点已移动，比较仍使用固定的 OID，直到用户选择按新位置重新比较。
     bridge.refs.mockImplementation(async () => refsView(O("9")));
     bridge.operation.mockResolvedValue({ opId: "op", repoId: "a", kind: "fetch", status: "succeeded", message: "已获取 origin", output: "", outputTruncated: false, snapshot: snap(), confirmation: null, backup: null, lockLeft: false, gitProcesses: 1, elapsedMs: 1 } satisfies OperationOutcome);
-    await click(q(".sync-button")); await click(button("获取…", q(".sync-popover")!));
-    await click(button("获取", q(".fetch-dialog")!));
+    await click(q(".sync-fetch .sync-main"));
     expect(q(".log-moved")?.textContent).toContain("main 已移动到 99999999");
     const calls = bridge.compare.mock.calls.length;
     await click(button("按新位置重新比较"));
@@ -247,40 +261,32 @@ describe("compare and file history (A09)", () => {
 });
 
 describe("explicit fetch (A10)", () => {
-  it("defaults to the upstream remote, runs one fetch operation and records Oris' completion time", async () => {
+  it("fetches the default remote in one click, runs one fetch operation and records Oris' completion time", async () => {
     bridge.operation.mockResolvedValue({ opId: "op", repoId: "a", kind: "fetch", status: "succeeded", message: "已获取 origin：1 个远端跟踪引用 / 标签有更新", output: "", outputTruncated: false, snapshot: snap(), confirmation: null, backup: null, lockLeft: false, gitProcesses: 1, elapsedMs: 1 } satisfies OperationOutcome);
     await mount();
-    await click(q(".sync-button")); await click(button("获取…", q(".sync-popover")!));
-    const dialog = q(".fetch-dialog")!;
-    expect(dialog.textContent).toContain("不修改工作区");
-    expect((dialog.querySelector("select") as HTMLSelectElement).value).toBe("origin");
-    await click(button("获取", dialog));
+    expect(q(".sync-fetch .sync-main")?.getAttribute("title")).toContain("不改工作区");
+    await click(q(".sync-fetch .sync-main"));
     expect(bridge.operation).toHaveBeenCalledTimes(1);
-    expect(bridge.operation).toHaveBeenLastCalledWith("a", "unstaged", expect.any(String), { kind: "fetch", remote: "origin" });
+    expect(bridge.operation).toHaveBeenLastCalledWith("a", "unstaged", expect.any(String), { kind: "fetch", remote: null });
     expect(JSON.parse(localStorage.getItem(FETCH_LOG_KEY)!)["C:/a"].remote).toBe("origin");
     expect(q(".op-status")?.textContent).toContain("已获取 origin");
   });
 
-  it("asks the user to choose a remote when the current branch has no valid upstream", async () => {
+  it("marks no default in fetch ▾ when the current branch has no valid upstream, and fetches the chosen remote", async () => {
     bridge.refs.mockImplementation(async () => ({ ...refsView(), defaultRemote: null }));
+    bridge.operation.mockResolvedValue({ opId: "op", repoId: "a", kind: "fetch", status: "succeeded", message: "已获取 backup：没有新的变化", output: "", outputTruncated: false, snapshot: snap(), confirmation: null, backup: null, lockLeft: false, gitProcesses: 1, elapsedMs: 1 } satisfies OperationOutcome);
     await mount();
-    await click(q(".sync-button")); await click(button("获取…", q(".sync-popover")!));
-    const dialog = q(".fetch-dialog")!;
-    expect(button("获取", dialog).disabled).toBe(true);
-    expect(dialog.textContent).toContain("请选择要获取的 remote");
-    const select = dialog.querySelector("select") as HTMLSelectElement;
-    await act(async () => { Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(select, "backup"); select.dispatchEvent(new Event("change", { bubbles: true })); });
-    await flush();
-    expect(button("获取", dialog).disabled).toBe(false);
+    await click(q(".sync-fetch .sync-more"));
+    const items = all(".sync-menu .sync-menu-item");
+    expect(items.map((item) => item.textContent)).toEqual(["origin", "backup"]);
+    await click(items[1]);
+    expect(bridge.operation).toHaveBeenLastCalledWith("a", "unstaged", expect.any(String), { kind: "fetch", remote: "backup" });
   });
 });
 
 describe("V2-D60：写操作后的历史重读", () => {
   const fetchOutcome = (): OperationOutcome => ({ opId: "op", repoId: "a", kind: "fetch", status: "succeeded", message: "已获取 origin", output: "", outputTruncated: false, snapshot: snap(), confirmation: null, backup: null, lockLeft: false, gitProcesses: 1, elapsedMs: 1 });
-  const runFetch = async () => {
-    await click(q(".sync-button")); await click(button("获取…", q(".sync-popover")!));
-    await click(button("获取", q(".fetch-dialog")!));
-  };
+  const runFetch = async () => { await click(q(".sync-fetch .sync-main")); };
   const openCommitTab = async () => { await click(all(".git-tabs button").find((b) => b.textContent?.startsWith("提交"))!); };
   const counts = () => ({ refs: bridge.refs.mock.calls.length, log: bridge.log.mock.calls.length, changes: bridge.changes.mock.calls.length });
 
@@ -291,7 +297,7 @@ describe("V2-D60：写操作后的历史重读", () => {
     expect(all(".log-row")[0].querySelector(".ref-chip.head")).toBeTruthy();
     await openCommitTab();
     await runFetch();
-    // 同步弹层与获取对话框自己的 refs 读取在点击“获取”之前；操作结束后历史页不再读取。
+    // 一键获取不读取 refs；操作结束后历史页也不读取。
     const afterOp = counts();
     await flush();
     expect(counts()).toEqual(afterOp);
@@ -321,11 +327,10 @@ describe("V2-D60：写操作后的历史重读", () => {
     bridge.operation.mockResolvedValue(fetchOutcome());
     await mount();
     await openLog();
-    await click(q(".sync-button")); await click(button("获取…", q(".sync-popover")!));
     const before = counts();
     let release: (view: RefsView) => void = () => {};
     bridge.refs.mockImplementationOnce(() => new Promise<RefsView>((resolve) => { release = resolve; }));
-    await click(button("获取", q(".fetch-dialog")!));
+    await runFetch();
     expect(counts()).toEqual({ refs: before.refs + 1, log: before.log + 1, changes: before.changes });
     expect(all(".log-row")[0].querySelector(".ref-chip.head")).toBeTruthy();
     expect(q(".log-current")?.textContent).toContain("● main");

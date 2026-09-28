@@ -7,6 +7,7 @@ mod branch;
 mod commit;
 mod discard;
 mod hunk;
+mod locks;
 mod network;
 pub mod process;
 mod stage;
@@ -77,7 +78,14 @@ pub enum OperationRequest {
     CommitSelected { message: String, path_ids: Vec<String>, expected_revision: String },
     UndoCommit { expected_head: String },
     /// 显式获取远端状态（R-REMOTE）：只更新远端跟踪引用等 Git 元数据。
-    Fetch { remote: String },
+    /// 不指定 remote 时取默认目标（当前分支上游所属的 remote，或仅有的一个 remote）。
+    Fetch {
+        #[serde(default)]
+        remote: Option<String>,
+        /// 仅“清理本地分支”使用：`--prune` 删除远端已不存在的远端跟踪分支（从不 prune 标签）。普通获取为 false。
+        #[serde(default)]
+        prune: bool,
+    },
     /// 储藏（R-STASH）：可填说明、包含未跟踪文件、只储藏选中的路径。
     StashPush {
         #[serde(default)]
@@ -395,37 +403,12 @@ impl GitAdapter {
     /// 前置检查失败（进行中状态、外部锁、已推送保护）以错误返回，仓库未被改动。
     pub fn run_operation(&self, request: OperationRequest, view_scope: CompareScope, ctx: &OpContext) -> Result<OperationOutcome, GitError> {
         let started = std::time::Instant::now();
-        self.preflight(&request)?;
+        let early = self.preflight(&request)?;
         let lock_before = self.index_lock_exists();
-        let step = match &request {
-            OperationRequest::Stage { path_ids } => self.op_stage(path_ids, false, true, ctx),
-            OperationRequest::MarkResolved { path_ids, confirmed } => self.op_stage(path_ids, true, *confirmed, ctx),
-            OperationRequest::Unstage { path_ids } => self.op_unstage(path_ids, ctx),
-            OperationRequest::Discard { scope, path_ids, confirmed_unrecoverable } => self.op_discard(*scope, path_ids, *confirmed_unrecoverable, ctx),
-            OperationRequest::UndoDiscard { backup_id, overwrite } => self.op_undo_discard(backup_id, *overwrite, ctx),
-            OperationRequest::HunkStage { path_id, content_ids, hunk } => self.op_hunk(HunkAction::Stage, path_id, content_ids, hunk, false, ctx),
-            OperationRequest::HunkUnstage { path_id, content_ids, hunk } => self.op_hunk(HunkAction::Unstage, path_id, content_ids, hunk, false, ctx),
-            OperationRequest::HunkDiscard { path_id, content_ids, hunk, confirmed_unrecoverable } => self.op_hunk(HunkAction::Discard, path_id, content_ids, hunk, *confirmed_unrecoverable, ctx),
-            OperationRequest::Commit { message } => self.op_commit(message, ctx),
-            OperationRequest::CommitSelected { message, path_ids, expected_revision } => self.op_commit_selected(message, path_ids, expected_revision, ctx),
-            OperationRequest::UndoCommit { expected_head } => self.op_undo_commit(expected_head, ctx),
-            OperationRequest::Fetch { remote } => self.op_fetch(remote, ctx),
-            OperationRequest::StashPush { message, include_untracked, path_ids } => self.op_stash_push(message.as_deref(), *include_untracked, path_ids.as_deref(), ctx),
-            OperationRequest::StashApply { index, oid, pop } => self.op_stash_apply(*index, oid, *pop, ctx),
-            OperationRequest::StashDrop { index, oid } => self.op_stash_drop(*index, oid, ctx),
-            OperationRequest::BranchCreate { name, start, switch, stash_first, stash_untracked } => self.op_branch_create(name, start, *switch, *stash_first, *stash_untracked, ctx),
-            OperationRequest::BranchSwitch { name, stash_first, stash_untracked } => self.op_branch_switch(name, *stash_first, *stash_untracked, ctx),
-            OperationRequest::BranchTrack { remote, local_name, stash_first, stash_untracked } => self.op_branch_track(remote, local_name.as_deref(), *stash_first, *stash_untracked, ctx),
-            OperationRequest::Checkout { commit, stash_first, stash_untracked } => self.op_checkout(commit, *stash_first, *stash_untracked, ctx),
-            OperationRequest::BranchRename { name, new_name } => self.op_branch_rename(name, new_name, ctx),
-            OperationRequest::BranchDelete { name, force } => self.op_branch_delete(name, *force, ctx),
-            OperationRequest::SetUpstream { name, upstream } => self.op_set_upstream(name, upstream, ctx),
-            OperationRequest::Pull { mode, stash_first, stash_untracked } => self.op_pull(*mode, *stash_first, *stash_untracked, ctx),
-            OperationRequest::Push { remote } => self.op_push(remote.as_deref(), ctx),
-            OperationRequest::Merge { target, expected, no_ff } => self.op_merge(target, expected, *no_ff, ctx),
-            OperationRequest::MergeAbort => self.op_merge_abort(ctx),
-            OperationRequest::MergeCommit { message } => self.op_merge_commit(message, ctx),
-        }?;
+        let step = match early {
+            Some(step) => step,
+            None => self.dispatch(&request, ctx)?,
+        };
         let git_processes = ctx.processes.load(std::sync::atomic::Ordering::SeqCst);
         // 需要确认时没有任何改动，不必刷新；其余结局（含失败与取消）都重新读取实际状态并如实报告。
         let snapshot = if step.status == OpStatus::NeedsConfirmation {
@@ -438,7 +421,7 @@ impl GitAdapter {
         let lock_left = !lock_before && self.index_lock_exists();
         let mut message = step.message;
         if lock_left {
-            message.push_str("。检测到遗留的 .git/index.lock（通常是被终止的 Git 进程留下）；Oris 不会删除它，请确认没有其他 Git 进程后手动处理");
+            message.push_str("。检测到遗留的 .git/index.lock（通常是被终止的 Git 进程留下）；Oris 不会自动删除它，请确认没有其他 Git 进程后手动处理");
         }
         let (output, output_truncated) = ctx.log.snapshot();
         Ok(OperationOutcome {
@@ -459,12 +442,46 @@ impl GitAdapter {
         })
     }
 
+    /// 按请求类型执行对应操作。
+    fn dispatch(&self, request: &OperationRequest, ctx: &OpContext) -> Result<Step, GitError> {
+        match request {
+            OperationRequest::Stage { path_ids } => self.op_stage(path_ids, false, true, ctx),
+            OperationRequest::MarkResolved { path_ids, confirmed } => self.op_stage(path_ids, true, *confirmed, ctx),
+            OperationRequest::Unstage { path_ids } => self.op_unstage(path_ids, ctx),
+            OperationRequest::Discard { scope, path_ids, confirmed_unrecoverable } => self.op_discard(*scope, path_ids, *confirmed_unrecoverable, ctx),
+            OperationRequest::UndoDiscard { backup_id, overwrite } => self.op_undo_discard(backup_id, *overwrite, ctx),
+            OperationRequest::HunkStage { path_id, content_ids, hunk } => self.op_hunk(HunkAction::Stage, path_id, content_ids, hunk, false, ctx),
+            OperationRequest::HunkUnstage { path_id, content_ids, hunk } => self.op_hunk(HunkAction::Unstage, path_id, content_ids, hunk, false, ctx),
+            OperationRequest::HunkDiscard { path_id, content_ids, hunk, confirmed_unrecoverable } => self.op_hunk(HunkAction::Discard, path_id, content_ids, hunk, *confirmed_unrecoverable, ctx),
+            OperationRequest::Commit { message } => self.op_commit(message, ctx),
+            OperationRequest::CommitSelected { message, path_ids, expected_revision } => self.op_commit_selected(message, path_ids, expected_revision, ctx),
+            OperationRequest::UndoCommit { expected_head } => self.op_undo_commit(expected_head, ctx),
+            OperationRequest::Fetch { remote, prune } => self.op_fetch(remote.as_deref(), *prune, ctx),
+            OperationRequest::StashPush { message, include_untracked, path_ids } => self.op_stash_push(message.as_deref(), *include_untracked, path_ids.as_deref(), ctx),
+            OperationRequest::StashApply { index, oid, pop } => self.op_stash_apply(*index, oid, *pop, ctx),
+            OperationRequest::StashDrop { index, oid } => self.op_stash_drop(*index, oid, ctx),
+            OperationRequest::BranchCreate { name, start, switch, stash_first, stash_untracked } => self.op_branch_create(name, start, *switch, *stash_first, *stash_untracked, ctx),
+            OperationRequest::BranchSwitch { name, stash_first, stash_untracked } => self.op_branch_switch(name, *stash_first, *stash_untracked, ctx),
+            OperationRequest::BranchTrack { remote, local_name, stash_first, stash_untracked } => self.op_branch_track(remote, local_name.as_deref(), *stash_first, *stash_untracked, ctx),
+            OperationRequest::Checkout { commit, stash_first, stash_untracked } => self.op_checkout(commit, *stash_first, *stash_untracked, ctx),
+            OperationRequest::BranchRename { name, new_name } => self.op_branch_rename(name, new_name, ctx),
+            OperationRequest::BranchDelete { name, force } => self.op_branch_delete(name, *force, ctx),
+            OperationRequest::SetUpstream { name, upstream } => self.op_set_upstream(name, upstream, ctx),
+            OperationRequest::Pull { mode, stash_first, stash_untracked } => self.op_pull(*mode, *stash_first, *stash_untracked, ctx),
+            OperationRequest::Push { remote } => self.op_push(remote.as_deref(), ctx),
+            OperationRequest::Merge { target, expected, no_ff } => self.op_merge(target, expected, *no_ff, ctx),
+            OperationRequest::MergeAbort => self.op_merge_abort(ctx),
+            OperationRequest::MergeCommit { message } => self.op_merge_commit(message, ctx),
+        }
+    }
+
     fn index_lock_exists(&self) -> bool {
-        self.git_dir.join("index.lock").exists()
+        self.index_lock_path().exists()
     }
 
     /// 进行中状态与外部锁（技术方案 §4）。只读取文件，不启动进程。
-    fn preflight(&self, request: &OperationRequest) -> Result<(), GitError> {
+    /// 拉取遇到外部 `index.lock` 时返回“删除锁文件并重试”的确认步骤（V2-D65），仓库未被改动。
+    fn preflight(&self, request: &OperationRequest) -> Result<Option<Step>, GitError> {
         let state = status_v2::detect_in_progress(&self.git_dir);
         let blocked = [(state.rebase, "rebase"), (state.cherry_pick, "cherry-pick"), (state.revert, "revert"), (state.bisect, "bisect")];
         if let Some((_, name)) = blocked.iter().find(|(on, _)| *on) {
@@ -488,14 +505,20 @@ impl GitAdapter {
         if state.merge && moves_worktree {
             return Err(GitError::WriteBlocked("合并进行中：请先完成或中止当前合并，再切换分支、检出、储藏或拉取".into()));
         }
-        // fetch 只写远端跟踪引用与 FETCH_HEAD，不碰 index：外部持有 index.lock 时照常允许（V2-D38）。
-        if self.index_lock_exists() && !matches!(request, OperationRequest::Fetch { .. }) {
+        // fetch 只写远端跟踪引用与 FETCH_HEAD、push 只读本地引用并更新远端跟踪引用，都不碰 index：
+        // 外部持有 index.lock 时照常允许（V2-D38、V2-D65）。
+        if self.index_lock_exists() && !matches!(request, OperationRequest::Fetch { .. } | OperationRequest::Push { .. }) {
+            let lock = self.index_lock_path();
+            if matches!(request, OperationRequest::Pull { .. }) {
+                let confirmation = self.stale_lock_confirmation(vec![lock.display().to_string()], "拉取");
+                return Ok(Some(Step::confirm(confirmation.reason, confirmation.message, confirmation.paths)));
+            }
             return Err(GitError::ExternalLock(format!(
-                "另一个 Git 进程正在使用该仓库（存在 {}）。Oris 不会删除锁文件；请等待外部操作结束，或确认没有 Git 进程后手动处理",
-                self.git_dir.join("index.lock").display()
+                "另一个 Git 进程正在使用该仓库（存在 {}）。Oris 不会自动删除锁文件；请等待外部操作结束，或确认没有 Git 进程后手动处理",
+                lock.display()
             )));
         }
-        Ok(())
+        Ok(None)
     }
 
     /// 在写通道上运行命令；失败输出中的锁冲突转换为明确说明。
@@ -533,7 +556,7 @@ impl GitAdapter {
     pub(super) fn failure_message(result: &process::CallResult, what: &str) -> String {
         let summary = result.summary();
         if summary.contains(".lock") && (summary.contains("File exists") || summary.contains("Unable to create")) {
-            format!("{what}失败：另一个 Git 进程正在使用该仓库（锁文件已存在）。Oris 不会删除锁文件，也不会自动重试。\n{summary}")
+            format!("{what}失败：另一个 Git 进程正在使用该仓库（锁文件已存在）。Oris 不会自动删除锁文件，也不会自动重试。\n{summary}")
         } else {
             format!("{what}失败：{summary}")
         }

@@ -3,6 +3,8 @@ mod git;
 #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
 mod ai;
 mod snapshot_store;
+#[cfg(feature = "desktop")]
+mod updater;
 #[cfg(any(test, feature = "desktop"))]
 mod watch;
 
@@ -584,6 +586,21 @@ async fn run_operation(
     .map_err(|error| GitError::Runtime(error.to_string()))?
 }
 
+/// 删除用户在确认框中确认过的残留锁文件（V2-D65）：持有仓库写锁，Oris 自己的写操作运行中时拒绝；返回实际删除的路径。
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn remove_stale_locks(repo_id: String, paths: Vec<String>, registry: State<'_, RepositoryRegistry>, runner: State<'_, ops::Runner>) -> Result<Vec<String>, GitError> {
+    let opened = opened(&registry, &repo_id)?;
+    let guard = runner.begin(&repo_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let removed = opened.adapter.remove_stale_locks(&paths);
+        drop(guard);
+        removed
+    })
+    .await
+    .map_err(|error| GitError::Runtime(error.to_string()))?
+}
+
 /// 取消该仓库正在运行的写操作（终止整个进程树）；返回是否有操作被取消。
 #[cfg(feature = "desktop")]
 #[tauri::command]
@@ -638,6 +655,14 @@ async fn read_refs(repo_id: String, registry: State<'_, RepositoryRegistry>) -> 
     let opened = opened(&registry, &repo_id)?;
     // 分支弹层、日志页、获取确认框可能同时读取 refs：读取廉价且结果相同，彼此不取消（fresh = false）。
     history_call(opened, HistoryKind::Refs, false, move |adapter, _| adapter.history_refs()).await
+}
+
+/// remote 列表与默认获取目标（标题栏“获取 ▾”）：不读取分支与领先 / 落后，比 `read_refs` 轻。
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn read_remotes(repo_id: String, registry: State<'_, RepositoryRegistry>) -> Result<git::history::RemotesView, GitError> {
+    let opened = opened(&registry, &repo_id)?;
+    history_call(opened, HistoryKind::Refs, false, move |adapter, _| adapter.history_remotes()).await
 }
 
 /// 历史版本的两端内容：`left` 为 None 表示空树；两端都是已固定的提交 OID（不读取 index 或工作区）。
@@ -773,6 +798,8 @@ pub fn application_context() -> tauri::Context<tauri::Wry> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(updater::UpdaterState::default())
         .manage(RepositoryRegistry::default())
         .manage(WatcherRegistry::default())
         .manage(ops::Runner::default())
@@ -829,6 +856,7 @@ pub fn run() {
             cancel_ai_generation,
             run_operation,
             cancel_operation,
+            remove_stale_locks,
             last_operation,
             prepare_discard,
             discard_backups,
@@ -838,11 +866,16 @@ pub fn run() {
             compare_revisions,
             file_history,
             read_refs,
+            read_remotes,
             read_revision_pair,
             stash_list,
             stash_changes,
             check_branch_name,
-            merge_message
+            merge_message,
+            updater::check_update,
+            updater::download_update,
+            updater::install_update,
+            updater::open_releases_page
         ])
         .run(application_context())
         .expect("failed to run Oris");

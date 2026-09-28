@@ -80,6 +80,35 @@ export function fetchTimeText(record: FetchRecord | null, fetchHeadAt: number | 
   return fetchHeadAt === null ? "尚未获取过远端状态（远端跟踪分支来自克隆或外部工具）" : "最近一次获取时间未知（由外部工具获取）";
 }
 
+/** 标题栏“获取”按钮上的简短时间：取 Oris 记录与 FETCH_HEAD 中较新的一次；都没有时为 null。 */
+export function fetchAgeText(record: FetchRecord | null, fetchHeadAt: number | null, now = Date.now()): string | null {
+  const at = Math.max(record?.at ?? 0, fetchHeadAt ?? 0);
+  if (!at) return null;
+  const minutes = Math.floor(Math.max(0, now - at) / 60_000);
+  if (minutes < 1) return "刚刚";
+  if (minutes < 60) return `${minutes} 分钟前`;
+  if (minutes < 24 * 60) return `${Math.floor(minutes / 60)} 小时前`;
+  return `${Math.floor(minutes / (24 * 60))} 天前`;
+}
+
+export type PullMode = "ffOnly" | "merge";
+export const PULL_MODE_KEY = "oris.pullMode.v1";
+
+/** 拉取的默认方式按仓库记住（标题栏“拉取 ▾”中选择）；没有记录时为仅快进。 */
+export function loadPullMode(storage: Pick<Storage, "getItem">, worktree: string): PullMode {
+  try {
+    return (JSON.parse(storage.getItem(PULL_MODE_KEY) ?? "{}") as Record<string, unknown>)[worktree] === "merge" ? "merge" : "ffOnly";
+  } catch { return "ffOnly"; }
+}
+
+export function savePullMode(storage: Pick<Storage, "getItem" | "setItem">, worktree: string, mode: PullMode) {
+  let value: Record<string, PullMode> = {};
+  try { value = JSON.parse(storage.getItem(PULL_MODE_KEY) ?? "{}") as Record<string, PullMode>; } catch { /* 损坏时重建 */ }
+  if (!value || typeof value !== "object" || Array.isArray(value)) value = {};
+  if (mode === "ffOnly") delete value[worktree]; else value[worktree] = mode;
+  storage.setItem(PULL_MODE_KEY, JSON.stringify(value));
+}
+
 /** 解析 `--progress` 输出的最后一行进度，例如 “Receiving objects:  45% (9/20)”。 */
 export function parseProgress(lines: readonly string[]): { phase: string; percent: number | null; text: string } | null {
   for (let i = lines.length - 1; i >= 0; i--) {

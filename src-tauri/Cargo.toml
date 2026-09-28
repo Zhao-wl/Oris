@@ -1,6 +1,6 @@
 [package]
 name = "oris"
-version = "0.1.0"
+version = "0.3.0"
 description = "Read-only Git change viewer"
 authors = ["Oris contributors"]
 edition = "2021"
@@ -11,7 +11,7 @@ crate-type = ["rlib"]
 
 [features]
 default = ["desktop"]
-desktop = ["dep:notify", "dep:notify-debouncer-full", "dep:ignore", "dep:tauri", "dep:tauri-plugin-dialog", "dep:webview2-com", "dep:windows-core"]
+desktop = ["dep:notify", "dep:notify-debouncer-full", "dep:ignore", "dep:tauri", "dep:tauri-plugin-dialog", "dep:tauri-plugin-updater", "dep:webview2-com", "dep:windows-core"]
 
 [build-dependencies]
 tauri-build = { version = "2.5.2", features = [] }
@@ -35,6 +35,8 @@ tempfile = "3.23.0"
 tokio = { version = "1.53.1", features = ["time"] }
 tauri = { version = "2.11.6", features = [], optional = true }
 tauri-plugin-dialog = { version = "2.7.3", optional = true }
+# 与 tauri 2.11 兼容的最新版本（2.13 会连带升级 tauri / wry）。
+tauri-plugin-updater = { version = "2.12.0", optional = true }
 thiserror = "2.0.17"
 
 # WebView2 内存目标级别（MemoryUsageTargetLevel）。版本与 tauri / wry 依赖树中的一致，不引入新 crate 版本。
