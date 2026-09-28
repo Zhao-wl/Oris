@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ContentPair, FileChange, RepositorySnapshot } from "./types";
 import type { HunkMap, OperationOutcome } from "./operations-api";
 import { defaultAnchor, WORKSPACE_KEY } from "./workspace-model";
+// 静态导入：mock 内动态 import 在高负载下会慢于 mount() 的固定等待，导致块按钮尚未渲染。
+import { computeDiff } from "./diff-core";
 
 const bridge = vi.hoisted(() => ({ open: vi.fn(), refresh: vi.fn(), read: vi.fn(), diff: vi.fn(), map: vi.fn(), operation: vi.fn() }));
 vi.mock("./api", () => ({ openRepository: bridge.open, refreshRepository: bridge.refresh, readContentPair: bridge.read, closeRepository: vi.fn(async () => {}), cancelContentRead: vi.fn(async () => {}),
@@ -62,10 +64,8 @@ beforeEach(() => {
   bridge.open.mockResolvedValue(snap());
   bridge.refresh.mockResolvedValue(snap());
   bridge.read.mockImplementation(async () => pair());
-  bridge.diff.mockImplementation(async (requestId: string, contentIds: [string, string], left: string, right: string, whitespace = "keep") => {
-    const { computeDiff } = await import("./diff-core");
-    return { requestId, contentIds, whitespace, elapsedMs: 0, ...computeDiff(left, right, whitespace) };
-  });
+  bridge.diff.mockImplementation(async (requestId: string, contentIds: [string, string], left: string, right: string, whitespace = "keep") =>
+    ({ requestId, contentIds, whitespace, elapsedMs: 0, ...computeDiff(left, right, whitespace) }));
   bridge.map.mockResolvedValue(gitMap());
   bridge.operation.mockImplementation(async (_repo: string, _scope: string, _op: string, request: { kind: OperationOutcome["kind"] }) => outcome(request.kind));
   localStorage.setItem(WORKSPACE_KEY, JSON.stringify({ version: 2, activeRepoId: "a", projects: [{ repo, gitExecutable: "", pinned: false, lastOpenedAt: 0, anchor: defaultAnchor() }] }));
