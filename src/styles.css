@@ -292,6 +292,12 @@ button.danger:not(:disabled):hover { color:var(--error, #ff7b72); border-color:v
 .danger-button { color:var(--button-text, white); background:var(--error, #c9463d); border-color:var(--error, #c9463d); }
 .branch-counts { color:var(--dim); font-size:12px; white-space:nowrap; }
 .commit-entry { white-space:nowrap; }
+/* 常驻更新提醒（参考 VS Code 标题栏的「更新」按钮）。 */
+.update-button { white-space:nowrap; font-weight:600; color:var(--button-text, white); background:var(--button-bg, #315ee7); border-color:var(--button-bg, #315ee7); }
+.update-button:not(:disabled):hover { filter:brightness(1.12); }
+.update-button.pending:disabled { opacity:1; cursor:default; color:var(--text); background:color-mix(in srgb, var(--button-bg, #315ee7) 22%, var(--chrome)); border-color:color-mix(in srgb, var(--button-bg, #315ee7) 55%, transparent); font-variant-numeric:tabular-nums; }
+.update-button.failed { color:var(--error, #ff7b72); background:transparent; border-color:color-mix(in srgb, var(--error, #ff7b72) 60%, transparent); }
+.update-notes { max-height:180px; overflow:auto; margin:0; padding:8px 10px; white-space:pre-wrap; font:inherit; font-size:12px; color:var(--text); background:var(--panel); border:1px solid var(--border); border-radius:4px; }
 .op-banner { flex:none; padding:7px 12px; color:var(--text); background:color-mix(in srgb, var(--warning, #d9a24f) 16%, var(--panel)); border-bottom:1px solid color-mix(in srgb, var(--warning, #d9a24f) 55%, transparent); font-size:12px; }
 .git-panel { display:flex; flex-direction:column; min-height:0; background:var(--panel); border-top:1px solid var(--border); }
 .git-tabs { display:flex; align-items:center; gap:4px; height:31px; padding:0 8px; background:var(--chrome); }
