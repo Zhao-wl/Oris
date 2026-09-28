@@ -144,7 +144,7 @@ pub struct FileChange {
     gitlink: bool,
 }
 
-#[cfg(feature = "desktop")]
+#[cfg(any(test, feature = "desktop"))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiCandidate {
@@ -153,7 +153,7 @@ pub struct AiCandidate {
     pub old_path_id: Option<String>,
 }
 
-#[cfg(feature = "desktop")]
+#[cfg(any(test, feature = "desktop"))]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiRepositoryContext {
@@ -383,7 +383,7 @@ impl GitAdapter {
         &self.worktree
     }
 
-    #[cfg(feature = "desktop")]
+    #[cfg(any(test, feature = "desktop"))]
     pub fn ai_context(&self, staged_only: bool) -> Result<AiRepositoryContext, GitError> {
         let state = self.scan(false)?;
         let all = if staged_only { state.lists.staged.clone() } else { self.details_for(&state)?.all.clone() };
