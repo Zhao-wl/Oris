@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chainedWheelDelta, diffMarkerGeometry, mapDiffPosition, railViewportStartLine } from "./diff-scroll";
+import { chainedWheelDelta, diffMarkerGeometry, fontChangeScroll, mapDiffPosition, railViewportStartLine } from "./diff-scroll";
 
 describe("分段 Diff 滚动映射", () => {
   it("N:N 段内保持 1:1", () => {
@@ -87,5 +87,23 @@ describe("分栏滚轮接力", () => {
     expect(chainedWheelDelta(100, { top: 500, max: 500 }, { top: 900, max: 900 })).toBe(0);
     expect(chainedWheelDelta(-100, { top: 0, max: 500 }, { top: 0, max: 900 })).toBe(0);
     expect(chainedWheelDelta(0, { top: 500, max: 500 }, { top: 0, max: 900 })).toBe(0);
+  });
+});
+
+describe("fontChangeScroll（V2-D58）", () => {
+  const at = (scrollTop: number, lineWrapping = false) => fontChangeScroll({ scrollTop, scrollHeight: 40000, clientHeight: 600, lineWrapping });
+  it("滚动在文件中部且不换行时先给出滚动快照", () => {
+    expect(at(24000)).toBe("snapshot");
+    expect(at(1)).toBe("snapshot");
+    expect(at(39395)).toBe("snapshot");
+  });
+  it("顶部、底部与自动换行保持只测量", () => {
+    expect(at(0)).toBe("measure");
+    expect(at(0.5)).toBe("measure");
+    expect(at(39397)).toBe("measure");
+    expect(at(39400)).toBe("measure");
+    expect(at(24000, true)).toBe("measure");
+    // 内容不足一屏
+    expect(fontChangeScroll({ scrollTop: 0, scrollHeight: 300, clientHeight: 600, lineWrapping: false })).toBe("measure");
   });
 });

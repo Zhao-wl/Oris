@@ -324,6 +324,16 @@ async function runPerf({ repo }) {
       const added = [...traces()].filter((n) => !beforeTraces.has(n));
       return { feedbackMs: running.ok ? running.ms : null, confirmMs: confirmed.ok ? running.ms + confirmed.ms : null, ok: running.ok && confirmed.ok, gitProcesses: added.length, commands: commands(added) };
     };
+    // 段落会消耗仓库状态（逐块暂存 / 取消暂存 / 丢弃）：受外部负载干扰而重测时，先把测试仓库的 index 与 many.txt 恢复到段落开始时的字节，
+    // 再手动刷新，保证每次尝试的前置状态相同（第 1 次尝试不做任何恢复）。
+    const indexFile = path.join(repo, ".git", "index"), manyFile = path.join(repo, "many.txt");
+    const checkpoint = () => ({ index: readFileSync(indexFile), many: readFileSync(manyFile) });
+    const restore = async (saved) => {
+      writeFileSync(indexFile, saved.index); writeFileSync(manyFile, saved.many);
+      await click(`window.__op.button('↻ 本地刷新')`); await sleep(300);
+      await waitUntil(`!window.__op.loading() && !document.querySelector('.op-status.running')`, 30000); await sleep(800);
+    };
+    const segment = (name, run) => { const saved = checkpoint(); return measuredSegment(monitor, name, async (attempt) => { if (attempt > 0) await restore(saved); return run(); }, { log }); };
     const measureAction = async (label, scopeLabel) => {
       await scopeTo(scopeLabel);
       await open("many.txt");
@@ -336,19 +346,19 @@ async function runPerf({ repo }) {
       }
       return { total, samples };
     };
-    report.perf.hunkStage = await measuredSegment(monitor, "暂存此块", async () => {
+    report.perf.hunkStage = await segment("暂存此块", async () => {
       const { total, samples } = await measureAction("暂存此块", "未暂存");
       return { what: `many.txt（${total} 块）逐块暂存：点击到状态栏“正在…”（反馈）与到工具栏块数减一（Git 确认并刷新）`, reference: "stage 单文件：乐观反馈 ≤ 50 ms / Git 确认 P95 ≤ 500 ms（只作参照）", feedback: summarize(samples.map((x) => ({ ok: x.feedbackMs !== null, ms: x.feedbackMs }))), confirm: summarize(samples), samples };
-    }, { log });
+    });
     log("暂存此块", report.perf.hunkStage.result.feedback, report.perf.hunkStage.result.confirm);
-    report.perf.hunkUnstage = await measuredSegment(monitor, "取消暂存此块", async () => {
+    report.perf.hunkUnstage = await segment("取消暂存此块", async () => {
       const { samples } = await measureAction("取消暂存此块", "已暂存");
       return { what: "已暂存的块逐块取消暂存", feedback: summarize(samples.map((x) => ({ ok: x.feedbackMs !== null, ms: x.feedbackMs }))), confirm: summarize(samples), samples };
-    }, { log });
+    });
     log("取消暂存此块", report.perf.hunkUnstage.result.feedback, report.perf.hunkUnstage.result.confirm);
     // 丢弃：每次都要确认，测点击“确认”到工具栏块数减一
     await scopeTo("未暂存"); await open("many.txt");
-    report.perf.hunkDiscard = await measuredSegment(monitor, "丢弃此块", async () => {
+    report.perf.hunkDiscard = await segment("丢弃此块", async () => {
       const samples = [];
       const start = await evaluate(totalExpr);
       for (let i = 0; i < Math.min(iterations, start); i++) {
@@ -364,7 +374,7 @@ async function runPerf({ repo }) {
         await sleep(300);
       }
       return { what: "确认丢弃到工具栏块数减一（含整文件备份 hash-object）", feedback: summarize(samples.map((x) => ({ ok: x.ok, ms: x.feedbackMs }))), confirm: summarize(samples), samples };
-    }, { log });
+    });
     log("丢弃此块", report.perf.hunkDiscard.result.feedback, report.perf.hunkDiscard.result.confirm);
     const processes = (segment) => { const counts = segment.result.samples.map((x) => x.gitProcesses); return { min: Math.min(...counts), max: Math.max(...counts), typical: counts.sort((a, b) => a - b)[Math.floor(counts.length / 2)], commands: segment.result.samples[1]?.commands }; };
     report.perf.gitProcesses = { hunkStage: processes(report.perf.hunkStage), hunkUnstage: processes(report.perf.hunkUnstage), hunkDiscard: processes(report.perf.hunkDiscard), note: "每次操作后 1.5 s 内新增的 Git 进程（GIT_TRACE2_EVENT），含按需读取块映射的 git diff、apply --check、apply、刷新 status 等" };

@@ -16,7 +16,7 @@ import { javascript } from "@codemirror/lang-javascript";
 import { Change, getChunks, uncollapseUnchanged, unifiedMergeView } from "@codemirror/merge";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { appearanceExtensions, createAppearanceCompartments, reconfigureAppearance, type AppearanceCompartments, type Scheme } from "./themes/runtime";
-import { chainedWheelDelta, diffMarkerGeometry, mapDiffPosition, railViewportStartLine, type DiffBoundaryPair, type DiffSide } from "./diff-scroll";
+import { chainedWheelDelta, diffMarkerGeometry, fontChangeScroll, mapDiffPosition, railViewportStartLine, type DiffBoundaryPair, type DiffSide } from "./diff-scroll";
 import type { DiffPresentation } from "./diff-presentation";
 import { activeScheme, settings } from "./appearance";
 import { useSettings } from "./settings";
@@ -2041,11 +2041,19 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
   }, [scheme]);
   // 字号：宿主元素上的 CSS 变量在本次提交中生效，编辑器不派发任何事务，只重新测量（与网页字体加载后的处理相同）。
   // 每次 dispatch 都会让 CodeMirror 读取 DOM 选区并强制整页布局，字号切换时逐个编辑器 reconfigure 是主要开销。
+  // V2-D58：滚动在文件中部时，同一像素位置在新字号下对应的行相差很远（13 → 14 px 时约 7%），CodeMirror 第一轮测量会按旧像素
+  // 位置选出一片完全不同的视口并整片重绘，再按滚动锚点修正后第二次整片重绘。这里先按 CodeMirror 自己的锚点规则
+  // （scrollAnchorAt：视口顶部那一行保持相同的像素偏移）给出滚动快照，第一轮就按该行选视口，阅读位置规则不变。
+  // 在顶部、滚到底部、自动换行时保持原来的只测量（见 fontChangeScroll；阅读位置与优化前逐项一致，见 V2-D58 结果）。
   const appliedFontSize = useRef(fontSize);
   useLayoutEffect(() => {
     if (appliedFontSize.current === fontSize) return;
     appliedFontSize.current = fontSize;
-    for (const view of liveViews()) view.requestMeasure();
+    for (const view of liveViews()) {
+      const { scrollTop, scrollHeight, clientHeight } = view.scrollDOM;
+      if (fontChangeScroll({ scrollTop, scrollHeight, clientHeight, lineWrapping: view.lineWrapping }) === "snapshot") view.dispatch({ effects: view.scrollSnapshot() });
+      else view.requestMeasure();
+    }
     const frame = requestAnimationFrame(() => runtime.current.split?.refreshLayout());
     return () => cancelAnimationFrame(frame);
   }, [fontSize]);
