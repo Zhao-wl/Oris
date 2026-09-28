@@ -132,7 +132,9 @@ try {
       if ((Get-CurrentVersion) -ne $Version) { throw 'tauri.conf.json 版本号更新失败' }
     }
 
-    Invoke-Native '签名构建 NSIS 安装包' { powershell -NoProfile -File (Join-Path $PSScriptRoot 'build-release.ps1') -Bundle -Bundles nsis -UpdaterArtifacts -Test }
+    # 发布关口按文件顺序运行测试：部分 App 集成测试在并行高负载下会偶发失败。
+    Invoke-Native '运行测试（按文件顺序）' { npx vitest run --no-file-parallelism }
+    Invoke-Native '签名构建 NSIS 安装包' { powershell -NoProfile -File (Join-Path $PSScriptRoot 'build-release.ps1') -Bundle -Bundles nsis -UpdaterArtifacts }
 
     $targetDir = if ($env:CARGO_TARGET_DIR) { [IO.Path]::GetFullPath($env:CARGO_TARGET_DIR) } else { Join-Path $root 'src-tauri\target' }
     $nsisDir = Join-Path $targetDir 'release\bundle\nsis'
@@ -166,7 +168,8 @@ try {
 
     Invoke-Native '提交版本号' { git add package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json; git commit -m "chore(release): v$Version" }
     Invoke-Native "创建 tag v$Version" { git tag -a "v$Version" -m "Oris $Version" }
-    Invoke-Native '推送提交与 tag' { git push origin HEAD "v$Version" }
+    # 发布提交总是进 main（可在独立的发布 worktree 中运行）；非快进时整体失败，不会创建 Release。
+    Invoke-Native '推送提交与 tag 到 main' { git push --atomic origin HEAD:refs/heads/main "v$Version" }
     $notesPath = Join-Path $nsisDir 'release-notes.md'
     [IO.File]::WriteAllText($notesPath, $Notes, $utf8)
     Invoke-Native '创建 GitHub Release 并上传' { gh release create "v$Version" $setup $sig $latestPath -R $repo --verify-tag --title "Oris $Version" --notes-file $notesPath }

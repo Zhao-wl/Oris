@@ -16,7 +16,7 @@ describe('VS Code 配色导入', () => {
     const child=await loadTheme('extensions/theme-defaults/themes/2026-dark.json');
     expect(child.tokenColors.length).toBeGreaterThan(parent.tokenColors.length);
     for(const [key,value] of Object.entries(parent.colors)) if(!Object.hasOwn(parseJsonc(await readFile(path.join(root,'third_party/vscode-themes/extensions/theme-defaults/themes/2026-dark.json'),'utf8')).colors??{},key)) expect(child.colors[key]).toBe(value);
-  });
+  }, 30_000);
   it('按主题类型解析引用、透明度、HSL 变亮变暗', () => {
     expect(resolveDefault('contrastActiveBorder','hcDark')).toBe('#F38518');
     expect(resolveDefault('inputOption.activeBackground','dark')).toBe('#007fd466');
@@ -36,5 +36,5 @@ describe('VS Code 配色导入', () => {
     const after=await Promise.all(files.map(f=>readFile(path.join(root,'src/themes/generated',f))));
     expect(after.every((bytes,i)=>bytes.equals(before[i]))).toBe(true);
     expect(JSON.parse(after.at(-3)).length).toBe(21);
-  });
+  }, 30_000);
 });

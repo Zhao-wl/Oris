@@ -45,9 +45,9 @@ powershell -NoProfile -File scripts\publish-release.ps1 -Version 0.2.0 -Notes "�
 
 1. 要求工作区干净、tag 不存在、`gh` 已登录；
 2. 把 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 的版本号改为新版本（必须大于当前版本，否则客户端不会认为有更新）；
-3. 运行测试并签名构建 NSIS 安装包（`build-release.ps1 -Bundle -Bundles nsis -UpdaterArtifacts -Test`），生成 `Oris_x.y.z_x64-setup.exe.sig`；
+3. 按文件顺序运行全量测试（并行高负载下部分 App 集成测试会偶发失败），再签名构建 NSIS 安装包（`build-release.ps1 -Bundle -Bundles nsis -UpdaterArtifacts`），生成 `Oris_x.y.z_x64-setup.exe.sig`；
 4. 生成 `latest.json`（版本、说明、发布时间、`windows-x86_64` 的下载地址与签名）；
-5. 提交 `chore(release): vx.y.z`，打 tag，推送，`gh release create` 上传安装包、签名与 `latest.json`。
+5. 提交 `chore(release): vx.y.z`，打 tag，原子推送到远端 main（可在独立的发布 worktree 中运行；非快进则整体失败），`gh release create` 上传安装包、签名与 `latest.json`。
 
 平时的 `npm run package` 不生成更新签名，不需要私钥。
 
