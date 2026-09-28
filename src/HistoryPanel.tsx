@@ -5,6 +5,7 @@ import { ROW_HEIGHT, deferVersions, initialDeferred, isStale, movedEndpoint, nod
 import { errorText } from "./error-message";
 import HistorySidebar from "./HistorySidebar";
 import PathText from "./PathText";
+import FileList from "./ChangedFileList";
 import { StashDetail, StashForm, useStashList, type StashPushOptions } from "./StashPanel";
 import type { FileChange } from "./types";
 
@@ -421,21 +422,6 @@ const CommitRow = memo(function CommitRow({ row, commit, top, graphWidth, loaded
     <span className="log-sha">{shortOid(commit.oid)}</span>
   </div>;
 });
-
-function FileList({ files, activeKey, keyFor, onOpen, onHistory }: { files: ChangedFile[]; activeKey: string | null; keyFor(file: ChangedFile): string; onOpen(file: ChangedFile): void; onHistory?(file: ChangedFile): void }) {
-  const move = (event: ReactKeyboardEvent<HTMLElement>, index: number) => {
-    const delta = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
-    if (!delta) return;
-    event.preventDefault();
-    const next = files[index + delta];
-    if (next) { onOpen(next); ((event.currentTarget.parentElement?.parentElement?.children[index + delta] as HTMLElement | undefined)?.querySelector("button") as HTMLElement | null)?.focus(); }
-  };
-  if (!files.length) return <div className="log-empty">没有文件变化</div>;
-  return <ul className="log-files" aria-label="变化文件">{files.map((file, index) => <li key={file.pathId + (file.oldPathId ?? "")} className={activeKey === keyFor(file) ? "active" : ""}>
-    <button type="button" className="log-file" title={file.oldPath ? `${file.oldPath} → ${file.path}` : file.path} onClick={() => onOpen(file)} onKeyDown={(event) => move(event, index)}><span className={`status-letter ${file.status}`}>{statusLetter[file.status]}</span><PathText path={file.path} className="log-file-path" title={file.path}/>{file.oldPath && <PathText path={file.oldPath} prefix="← " className="log-file-old"/>}</button>
-    {onHistory && <button type="button" className="quiet log-file-history" title={`查看 ${file.path} 的文件历史`} onClick={() => onHistory(file)}>历史</button>}
-  </li>)}</ul>;
-}
 
 function CommitDetail({ commit, changes, error, activeKey, onParent, onOpen, onHistory }: { commit: CommitInfo; changes: CommitChanges | null; error: string | null; activeKey: string | null; onParent(parent: string): void; onOpen(file: ChangedFile): void; onHistory(file: ChangedFile): void }) {
   const current = changes?.oid === commit.oid ? changes : null;
