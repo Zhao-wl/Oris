@@ -93,4 +93,4 @@ Oris 不在仓库中写入自己的文件；仓库里的变化只来自你显式
 
 ## 第三方许可
 
-依赖许可证清单见 [third-party-licenses.md](third-party-licenses.md)，许可证全文随安装包附带（`THIRD-PARTY-NOTICES.txt`）。配色方案的 VS Code 与 Colorsublime（MIT）声明同时显示在“设置 → 外观”。
+依赖许可证清单见 [third-party-licenses.md](third-party-licenses.md)，许可证全文随安装包附带（`THIRD-PARTY-NOTICES.txt`）。配色方案的 VS Code 与 Colorsublime（MIT）声明同时显示在“设置 → 外观”。5 个 MPL-2.0 组件（cssparser、cssparser-macros、dtoa-short、option-ext、selectors）按原样使用、未修改，`THIRD-PARTY-NOTICES.txt` 开头列出了它们对应版本的源码地址。

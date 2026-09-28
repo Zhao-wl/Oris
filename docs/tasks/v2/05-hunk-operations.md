@@ -1,6 +1,6 @@
 # V2-05 — hunk 级暂存与丢弃
 
-状态：Done（Windows，2026-09-26，[结果](../../validation/v2-05-results.md)）：B15、B16、B17 通过；每个 B15 场景都有前后 git diff / --cached 与工作区、index、refs、stash、config 指纹。未验证：macOS、真实焦点。块操作的 Git 确认时延 P95 约 750 ms，只作参照记录（stage 单文件预算 P95 ≤ 500 ms 不适用于块操作），待用户决定是否设预算。依赖：V2-02；默认在 V1 05 之后（空白规则会影响 hunk 语义）。
+状态：Done（Windows，2026-09-26，[结果](../../validation/v2-05-results.md)）：B15、B16、B17 通过；每个 B15 场景都有前后 git diff / --cached 与工作区、index、refs、stash、config 指纹。未验证：macOS、真实焦点。块操作的 Git 确认时延 P95 约 750 ms，只作参照记录（stage 单文件预算 P95 ≤ 500 ms 不适用于块操作）；2026-09-28 按 V2-D61 设为 P95 ≤ 1 s，达标。依赖：V2-02；默认在 V1 05 之后（空白规则会影响 hunk 语义）。
 
 ## 用户闭环
 
