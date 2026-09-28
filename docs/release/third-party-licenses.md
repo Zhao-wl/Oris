@@ -1,40 +1,47 @@
 # 第三方依赖许可证清单
 
-生成方式：`node scripts/release/third-party-licenses.mjs`（本机 `cargo metadata --offline --locked` 与 `package-lock.json`，不联网）。依赖锁文件最后修改提交：`e8cbe09ec7c7`。
+生成方式：`node scripts/release/third-party-licenses.mjs`（本机 `cargo metadata --offline --locked` 与 `package-lock.json`，不联网）。依赖锁文件最后修改提交：`bec460facbe3`。
 
 范围：随产品分发的依赖。Rust 为 `oris`（desktop 特性）的 normal 依赖传递闭包，按 Windows（x86_64-pc-windows-gnu）与 macOS（aarch64-apple-darwin）分别解析；npm 为 `dependencies` 的传递闭包（打包进前端资源）。构建工具（Tauri CLI、Vite、TypeScript、测试框架）、build / dev 依赖不随产品分发，不在此列。许可证字段取自各包自己的元数据，未逐包复核源码。
 
 配色方案数据来自 VS Code 与 Colorsublime-Themes（MIT），声明见 `src/themes/generated/NOTICES.txt`，同时显示在设置 → 外观，并收入安装包的 `THIRD-PARTY-NOTICES.txt`。
 
-合计：Cargo 288 个包（Windows 265、macOS 259），npm 25 个包。
+合计：Cargo 351 个包（Windows 321、macOS 319），npm 25 个包。
 
 ## 按许可证汇总
 
 | 生态 | 许可证（SPDX 表达式） | 包数 |
 | --- | --- | --- |
-| Cargo | MIT OR Apache-2.0 | 140 |
-| Cargo | MIT | 43 |
-| Cargo | Apache-2.0 OR MIT | 26 |
+| Cargo | MIT OR Apache-2.0 | 174 |
+| Cargo | MIT | 56 |
+| Cargo | Apache-2.0 OR MIT | 29 |
 | npm | MIT | 23 |
 | Cargo | Unicode-3.0 | 18 |
-| Cargo | MIT/Apache-2.0 | 14 |
+| Cargo | MIT/Apache-2.0 | 15 |
 | Cargo | Unlicense OR MIT | 11 |
 | Cargo | Zlib OR Apache-2.0 OR MIT | 9 |
 | Cargo | MPL-2.0 | 5 |
-| Cargo | MIT OR Apache-2.0 OR Zlib | 3 |
-| Cargo | BSD-3-Clause | 2 |
+| Cargo | MIT OR Apache-2.0 OR Zlib | 4 |
+| Cargo | BSD-3-Clause | 3 |
 | Cargo | Zlib | 2 |
+| Cargo | Apache-2.0 OR ISC OR MIT | 2 |
 | Cargo | MIT OR Zlib OR Apache-2.0 | 2 |
 | Cargo | BSD-3-Clause OR Apache-2.0 | 2 |
+| Cargo | ISC | 2 |
 | Cargo | Unlicense/MIT | 2 |
+| Cargo | Apache-2.0 | 2 |
 | Cargo | 0BSD OR MIT OR Apache-2.0 | 1 |
+| Cargo | ISC AND (Apache-2.0 OR ISC) | 1 |
+| Cargo | ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0) | 1 |
 | Cargo | BSD-3-Clause AND MIT | 1 |
 | Cargo | BSD-3-Clause/MIT | 1 |
 | Cargo | Apache-2.0 AND MIT | 1 |
 | Cargo | CC0-1.0 OR MIT-0 OR Apache-2.0 | 1 |
+| Cargo | (Apache-2.0 OR MIT) AND BSD-3-Clause | 1 |
 | Cargo | Apache-2.0 / MIT | 1 |
 | Cargo | CC0-1.0 | 1 |
-| Cargo | Apache-2.0 | 1 |
+| Cargo | Apache-2.0 AND ISC | 1 |
+| Cargo | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | 1 |
 | Cargo | (MIT OR Apache-2.0) AND Unicode-3.0 | 1 |
 | npm | Apache-2.0 OR MIT | 1 |
 | npm | MIT OR Apache-2.0 | 1 |
@@ -51,6 +58,8 @@
 | Cargo | option-ext | 0.2.0 | MPL-2.0 |
 | Cargo | selectors | 0.36.1 | MPL-2.0 |
 
+MPL-2.0 的处理（V2-D63）：Oris 按原样使用上表中的 5 个 MPL-2.0 组件，没有修改其源文件。MPL-2.0 是文件级 copyleft，分发可执行文件时须告知获取这些组件源码的方式（§3.2）：安装包的 `THIRD-PARTY-NOTICES.txt` 开头为每个组件列出对应版本的源码地址，并收录 MPL-2.0 全文（取自 cssparser 0.36.0）。Oris 自身代码不受影响；今后若修改这些组件的文件，修改后的文件须按 MPL-2.0 公开源码。本段是工程上的合规处理，不是法律意见。
+
 以下 22 个包的源码目录中没有 LICENSE / NOTICE 文件，NOTICES 中只列出许可证名称：
 
 alloc-stdlib 0.2.4（BSD-3-Clause）、block2 0.6.2（MIT）、defmt-parser 1.0.0（MIT OR Apache-2.0）、dispatch2 0.3.1（Zlib OR Apache-2.0 OR MIT）、objc2 0.6.4（MIT）、objc2-app-kit 0.3.2（Zlib OR Apache-2.0 OR MIT）、objc2-core-foundation 0.3.2（Zlib OR Apache-2.0 OR MIT）、objc2-core-graphics 0.3.2（Zlib OR Apache-2.0 OR MIT）、objc2-encode 4.1.0（MIT）、objc2-exception-helper 0.1.1（Zlib OR Apache-2.0 OR MIT）、objc2-foundation 0.3.2（MIT）、objc2-io-surface 0.3.2（Zlib OR Apache-2.0 OR MIT）、objc2-web-kit 0.3.2（Zlib OR Apache-2.0 OR MIT）、selectors 0.36.1（MPL-2.0）、unic-char-property 0.9.0（MIT/Apache-2.0）、unic-char-range 0.9.0（MIT/Apache-2.0）、unic-common 0.9.0（MIT/Apache-2.0）、unic-ucd-ident 0.9.0（MIT/Apache-2.0）、unic-ucd-version 0.9.0（MIT/Apache-2.0）、webview2-com 0.38.2（MIT）、webview2-com-macros 0.8.1（MIT）、webview2-com-sys 0.38.2（MIT）
@@ -64,6 +73,9 @@ alloc-stdlib 0.2.4（BSD-3-Clause）、block2 0.6.2（MIT）、defmt-parser 1.0.
 | Cargo | alloc-no-stdlib | 2.0.4 | BSD-3-Clause | windows / macos | https://github.com/dropbox/rust-alloc-no-stdlib |
 | Cargo | alloc-stdlib | 0.2.4 | BSD-3-Clause | windows / macos | https://github.com/dropbox/rust-alloc-no-stdlib |
 | Cargo | anyhow | 1.0.104 | MIT OR Apache-2.0 | windows / macos | https://github.com/dtolnay/anyhow |
+| Cargo | atomic-waker | 1.1.2 | Apache-2.0 OR MIT | windows / macos | https://github.com/smol-rs/atomic-waker |
+| Cargo | aws-lc-rs | 1.18.1 | ISC AND (Apache-2.0 OR ISC) | windows / macos | https://github.com/aws/aws-lc-rs |
+| Cargo | aws-lc-sys | 0.45.0 | ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0) | windows / macos | https://github.com/aws/aws-lc-rs |
 | Cargo | base64 | 0.21.7 | MIT OR Apache-2.0 | macos | https://github.com/marshallpierce/rust-base64 |
 | Cargo | base64 | 0.22.1 | MIT OR Apache-2.0 | windows / macos | https://github.com/marshallpierce/rust-base64 |
 | Cargo | base64 | 0.23.1 | MIT OR Apache-2.0 | windows / macos | https://github.com/marshallpierce/rust-base64 |
@@ -86,13 +98,17 @@ alloc-stdlib 0.2.4（BSD-3-Clause）、block2 0.6.2（MIT）、defmt-parser 1.0.
 | Cargo | cargo-platform | 0.1.9 | MIT OR Apache-2.0 | windows / macos | https://github.com/rust-lang/cargo |
 | Cargo | cfb | 0.7.3 | MIT | windows / macos | https://github.com/mdsteele/rust-cfb |
 | Cargo | cfg-if | 1.0.5 | MIT OR Apache-2.0 | windows / macos | https://github.com/rust-lang/cfg-if |
+| Cargo | chacha20 | 0.10.2 | MIT OR Apache-2.0 | windows / macos | https://github.com/RustCrypto/stream-ciphers |
 | Cargo | chrono | 0.4.45 | MIT OR Apache-2.0 | windows / macos | https://github.com/chronotope/chrono |
 | Cargo | cookie | 0.18.2 | MIT OR Apache-2.0 | windows / macos | https://github.com/SergioBenitez/cookie-rs |
+| Cargo | core_detect | 1.0.0 | MIT/Apache-2.0 | windows | https://github.com/thomcc/core_detect |
 | Cargo | core-foundation | 0.10.1 | MIT OR Apache-2.0 | macos | https://github.com/servo/core-foundation-rs |
+| Cargo | core-foundation | 0.9.4 | MIT OR Apache-2.0 | macos | https://github.com/servo/core-foundation-rs |
 | Cargo | core-foundation-sys | 0.8.7 | MIT OR Apache-2.0 | macos | https://github.com/servo/core-foundation-rs |
 | Cargo | core-graphics | 0.25.0 | MIT OR Apache-2.0 | macos | https://github.com/servo/core-foundation-rs |
 | Cargo | core-graphics-types | 0.2.0 | MIT OR Apache-2.0 | macos | https://github.com/servo/core-foundation-rs |
 | Cargo | cpufeatures | 0.2.17 | MIT OR Apache-2.0 | windows / macos | https://github.com/RustCrypto/utils |
+| Cargo | cpufeatures | 0.3.1 | MIT OR Apache-2.0 | windows | https://github.com/RustCrypto/utils |
 | Cargo | crc32fast | 1.5.2 | MIT OR Apache-2.0 | windows / macos | https://github.com/srijs/rust-crc32fast |
 | Cargo | crossbeam-channel | 0.5.17 | MIT OR Apache-2.0 | windows / macos | https://github.com/crossbeam-rs/crossbeam |
 | Cargo | crossbeam-deque | 0.8.8 | MIT OR Apache-2.0 | windows / macos | https://github.com/crossbeam-rs/crossbeam |
@@ -126,8 +142,10 @@ alloc-stdlib 0.2.4（BSD-3-Clause）、block2 0.6.2（MIT）、defmt-parser 1.0.
 | Cargo | dunce | 1.0.5 | CC0-1.0 OR MIT-0 OR Apache-2.0 | windows / macos | https://gitlab.com/kornelski/dunce |
 | Cargo | dyn-clone | 1.0.20 | MIT OR Apache-2.0 | windows / macos | https://github.com/dtolnay/dyn-clone |
 | Cargo | embed_plist | 1.2.2 | MIT OR Apache-2.0 | macos | https://github.com/nvzqz/embed-plist-rs |
+| Cargo | encoding_rs | 0.8.42 | (Apache-2.0 OR MIT) AND BSD-3-Clause | windows / macos | https://github.com/hsivonen/encoding_rs |
 | Cargo | equivalent | 1.0.2 | Apache-2.0 OR MIT | windows / macos | https://github.com/indexmap-rs/equivalent |
 | Cargo | erased-serde | 0.4.10 | MIT OR Apache-2.0 | windows / macos | https://github.com/dtolnay/erased-serde |
+| Cargo | errno | 0.3.14 | MIT OR Apache-2.0 | macos | https://github.com/lambda-fairy/rust-errno |
 | Cargo | fastrand | 2.5.0 | Apache-2.0 OR MIT | windows / macos | https://github.com/smol-rs/fastrand |
 | Cargo | fdeflate | 0.3.7 | MIT OR Apache-2.0 | windows / macos | https://github.com/image-rs/fdeflate |
 | Cargo | file-id | 0.2.3 | MIT OR Apache-2.0 | windows / macos | https://github.com/notify-rs/notify.git |
@@ -139,17 +157,32 @@ alloc-stdlib 0.2.4（BSD-3-Clause）、block2 0.6.2（MIT）、defmt-parser 1.0.
 | Cargo | foreign-types-shared | 0.3.1 | MIT/Apache-2.0 | macos | https://github.com/sfackler/foreign-types |
 | Cargo | form_urlencoded | 1.2.2 | MIT OR Apache-2.0 | windows / macos | https://github.com/servo/rust-url |
 | Cargo | fsevent-sys | 4.1.0 | MIT | macos | https://github.com/octplane/fsevent-rust/tree/master/fsevent-sys |
+| Cargo | futures-channel | 0.3.34 | MIT OR Apache-2.0 | windows / macos | https://github.com/rust-lang/futures-rs |
+| Cargo | futures-core | 0.3.34 | MIT OR Apache-2.0 | windows / macos | https://github.com/rust-lang/futures-rs |
+| Cargo | futures-io | 0.3.34 | MIT OR Apache-2.0 | windows / macos | https://github.com/rust-lang/futures-rs |
+| Cargo | futures-macro | 0.3.34 | MIT OR Apache-2.0 | windows / macos | https://github.com/rust-lang/futures-rs |
+| Cargo | futures-sink | 0.3.34 | MIT OR Apache-2.0 | windows / macos | https://github.com/rust-lang/futures-rs |
+| Cargo | futures-task | 0.3.34 | MIT OR Apache-2.0 | windows / macos | https://github.com/rust-lang/futures-rs |
+| Cargo | futures-util | 0.3.34 | MIT OR Apache-2.0 | windows / macos | https://github.com/rust-lang/futures-rs |
 | Cargo | generic-array | 0.14.7 | MIT | windows / macos | https://github.com/fizyk20/generic-array.git |
+| Cargo | getrandom | 0.2.17 | MIT OR Apache-2.0 | windows / macos | https://github.com/rust-random/getrandom |
 | Cargo | getrandom | 0.3.4 | MIT OR Apache-2.0 | windows / macos | https://github.com/rust-random/getrandom |
 | Cargo | getrandom | 0.4.3 | MIT OR Apache-2.0 | windows / macos | https://github.com/rust-random/getrandom |
 | Cargo | glob | 0.3.4 | MIT OR Apache-2.0 | windows / macos | https://github.com/rust-lang/glob |
 | Cargo | globset | 0.4.20 | Unlicense OR MIT | windows / macos | https://github.com/BurntSushi/ripgrep/tree/master/crates/globset |
+| Cargo | h2 | 0.4.19 | MIT | windows / macos | https://github.com/hyperium/h2 |
 | Cargo | hashbrown | 0.12.3 | MIT OR Apache-2.0 | windows / macos | https://github.com/rust-lang/hashbrown |
 | Cargo | hashbrown | 0.17.1 | MIT OR Apache-2.0 | windows / macos | https://github.com/rust-lang/hashbrown |
 | Cargo | heck | 0.5.0 | MIT OR Apache-2.0 | windows / macos | https://github.com/withoutboats/heck |
 | Cargo | hex | 0.4.3 | MIT OR Apache-2.0 | windows / macos | https://github.com/KokaKiwi/rust-hex |
 | Cargo | html5ever | 0.38.0 | MIT OR Apache-2.0 | windows / macos | https://github.com/servo/html5ever |
 | Cargo | http | 1.5.0 | MIT OR Apache-2.0 | windows / macos | https://github.com/hyperium/http |
+| Cargo | http-body | 1.1.0 | MIT | windows / macos | https://github.com/hyperium/http-body |
+| Cargo | http-body-util | 0.1.5 | MIT | windows / macos | https://github.com/hyperium/http-body |
+| Cargo | httparse | 1.10.1 | MIT OR Apache-2.0 | windows / macos | https://github.com/seanmonstar/httparse |
+| Cargo | hyper | 1.11.1 | MIT | windows / macos | https://github.com/hyperium/hyper |
+| Cargo | hyper-rustls | 0.27.10 | Apache-2.0 OR ISC OR MIT | windows / macos | https://github.com/rustls/hyper-rustls |
+| Cargo | hyper-util | 0.1.20 | MIT | windows / macos | https://github.com/hyperium/hyper-util |
 | Cargo | iana-time-zone | 0.1.65 | MIT OR Apache-2.0 | macos | https://github.com/strawlab/iana-time-zone |
 | Cargo | ico | 0.5.0 | MIT | windows / macos | https://github.com/mdsteele/rust-ico |
 | Cargo | icu_collections | 2.3.0 | Unicode-3.0 | windows / macos | https://github.com/unicode-org/icu4x |
@@ -168,6 +201,7 @@ alloc-stdlib 0.2.4（BSD-3-Clause）、block2 0.6.2（MIT）、defmt-parser 1.0.
 | Cargo | indexmap | 1.9.3 | Apache-2.0 OR MIT | windows / macos | https://github.com/bluss/indexmap |
 | Cargo | indexmap | 2.14.2 | Apache-2.0 OR MIT | windows / macos | https://github.com/indexmap-rs/indexmap |
 | Cargo | infer | 0.19.0 | MIT | windows / macos | https://github.com/bojand/infer |
+| Cargo | ipnet | 2.12.2 | MIT OR Apache-2.0 | windows / macos | https://github.com/krisprice/ipnet |
 | Cargo | itoa | 1.0.18 | MIT OR Apache-2.0 | windows / macos | https://github.com/dtolnay/itoa |
 | Cargo | jiff | 0.2.37 | Unlicense OR MIT | windows / macos | https://github.com/BurntSushi/jiff |
 | Cargo | jiff-core | 0.1.1 | Unlicense OR MIT | windows / macos | https://github.com/BurntSushi/jiff |
@@ -176,10 +210,12 @@ alloc-stdlib 0.2.4（BSD-3-Clause）、block2 0.6.2（MIT）、defmt-parser 1.0.
 | Cargo | json-patch | 3.0.1 | MIT/Apache-2.0 | windows / macos | https://github.com/idubrov/json-patch |
 | Cargo | jsonptr | 0.6.3 | MIT OR Apache-2.0 | windows / macos | https://github.com/chanced/jsonptr |
 | Cargo | keyboard-types | 0.7.0 | MIT OR Apache-2.0 | windows / macos | https://github.com/pyfisch/keyboard-types |
+| Cargo | keyring | 3.6.3 | MIT OR Apache-2.0 | windows / macos | https://github.com/hwchen/keyring-rs.git |
 | Cargo | libc | 0.2.189 | MIT OR Apache-2.0 | windows / macos | https://github.com/rust-lang/libc |
 | Cargo | litemap | 0.8.3 | Unicode-3.0 | windows / macos | https://github.com/unicode-org/icu4x |
 | Cargo | lock_api | 0.4.14 | MIT OR Apache-2.0 | windows / macos | https://github.com/Amanieu/parking_lot |
 | Cargo | log | 0.4.34 | MIT OR Apache-2.0 | windows / macos | https://github.com/rust-lang/log |
+| Cargo | lru-slab | 0.1.3 | MIT OR Apache-2.0 OR Zlib | windows / macos | https://github.com/Ralith/lru-slab |
 | Cargo | markup5ever | 0.38.0 | MIT OR Apache-2.0 | windows / macos | https://github.com/servo/html5ever |
 | Cargo | memchr | 2.8.3 | Unlicense OR MIT | windows / macos | https://github.com/BurntSushi/memchr |
 | Cargo | mime | 0.3.17 | MIT OR Apache-2.0 | windows / macos | https://github.com/hyperium/mime |
@@ -188,6 +224,7 @@ alloc-stdlib 0.2.4（BSD-3-Clause）、block2 0.6.2（MIT）、defmt-parser 1.0.
 | Cargo | mio | 1.2.3 | MIT | windows / macos | https://github.com/tokio-rs/mio |
 | Cargo | moxcms | 0.8.1 | BSD-3-Clause OR Apache-2.0 | windows / macos | https://github.com/awxkee/moxcms.git |
 | Cargo | muda | 0.19.3 | Apache-2.0 OR MIT | windows / macos | https://github.com/tauri-apps/muda |
+| Cargo | multiversion_no_op | 1.0.0 | Apache-2.0 OR MIT | windows / macos | https://github.com/hsivonen/multiversion_no_op |
 | Cargo | new_debug_unreachable | 1.0.6 | MIT | windows / macos | https://github.com/mbrubeck/rust-debug-unreachable |
 | Cargo | notify | 8.2.0 | CC0-1.0 | windows / macos | https://github.com/notify-rs/notify.git |
 | Cargo | notify-debouncer-full | 0.6.0 | MIT OR Apache-2.0 | windows / macos | https://github.com/notify-rs/notify.git |
@@ -223,21 +260,36 @@ alloc-stdlib 0.2.4（BSD-3-Clause）、block2 0.6.2（MIT）、defmt-parser 1.0.
 | Cargo | pxfm | 0.1.30 | BSD-3-Clause OR Apache-2.0 | windows / macos | https://github.com/awxkee/pxfm |
 | Cargo | quick-error | 2.0.1 | MIT/Apache-2.0 | windows / macos | http://github.com/tailhook/quick-error |
 | Cargo | quick-xml | 0.42.0 | MIT | windows / macos | https://github.com/tafia/quick-xml |
+| Cargo | quinn | 0.11.12 | MIT OR Apache-2.0 | windows / macos | https://github.com/quinn-rs/quinn |
+| Cargo | quinn-proto | 0.11.18 | MIT OR Apache-2.0 | windows / macos | https://github.com/quinn-rs/quinn |
+| Cargo | quinn-udp | 0.5.15 | MIT OR Apache-2.0 | windows / macos | https://github.com/quinn-rs/quinn |
 | Cargo | quote | 1.0.47 | MIT OR Apache-2.0 | windows / macos | https://github.com/dtolnay/quote |
+| Cargo | rand | 0.10.3 | MIT OR Apache-2.0 | windows / macos | https://github.com/rust-random/rand |
+| Cargo | rand_core | 0.10.1 | MIT OR Apache-2.0 | windows / macos | https://github.com/rust-random/rand_core |
+| Cargo | rand_pcg | 0.10.2 | MIT OR Apache-2.0 | windows / macos | https://github.com/rust-random/rngs |
 | Cargo | raw-window-handle | 0.6.2 | MIT OR Apache-2.0 OR Zlib | windows / macos | https://github.com/rust-windowing/raw-window-handle |
 | Cargo | ref-cast | 1.0.27 | MIT OR Apache-2.0 | windows / macos | https://github.com/dtolnay/ref-cast |
 | Cargo | ref-cast-impl | 1.0.27 | MIT OR Apache-2.0 | windows / macos | https://github.com/dtolnay/ref-cast |
 | Cargo | regex | 1.13.1 | MIT OR Apache-2.0 | windows / macos | https://github.com/rust-lang/regex |
 | Cargo | regex-automata | 0.4.18 | MIT OR Apache-2.0 | windows / macos | https://github.com/rust-lang/regex |
 | Cargo | regex-syntax | 0.8.11 | MIT OR Apache-2.0 | windows / macos | https://github.com/rust-lang/regex |
+| Cargo | reqwest | 0.13.5 | MIT OR Apache-2.0 | windows / macos | https://github.com/seanmonstar/reqwest |
 | Cargo | rfd | 0.16.0 | MIT | windows / macos | https://github.com/PolyMeilex/rfd |
+| Cargo | ring | 0.17.14 | Apache-2.0 AND ISC | windows / macos | https://github.com/briansmith/ring |
 | Cargo | rustc-hash | 2.1.3 | Apache-2.0 OR MIT | windows / macos | https://github.com/rust-lang/rustc-hash |
+| Cargo | rustix | 1.1.5 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | macos | https://github.com/bytecodealliance/rustix |
+| Cargo | rustls | 0.23.45 | Apache-2.0 OR ISC OR MIT | windows / macos | https://github.com/rustls/rustls |
+| Cargo | rustls-pki-types | 1.15.1 | MIT OR Apache-2.0 | windows / macos | https://github.com/rustls/pki-types |
+| Cargo | rustls-platform-verifier | 0.7.1 | MIT OR Apache-2.0 | windows / macos | https://github.com/rustls/rustls-platform-verifier |
+| Cargo | rustls-webpki | 0.103.15 | ISC | windows / macos | https://github.com/rustls/webpki |
 | Cargo | same-file | 1.0.6 | Unlicense/MIT | windows / macos | https://github.com/BurntSushi/same-file |
 | Cargo | schemars | 0.8.22 | MIT | windows / macos | https://github.com/GREsau/schemars |
 | Cargo | schemars | 0.9.0 | MIT | windows / macos | https://github.com/GREsau/schemars |
 | Cargo | schemars | 1.2.2 | MIT | windows / macos | https://github.com/GREsau/schemars |
 | Cargo | schemars_derive | 0.8.22 | MIT | windows / macos | https://github.com/GREsau/schemars |
 | Cargo | scopeguard | 1.2.0 | MIT OR Apache-2.0 | windows / macos | https://github.com/bluss/scopeguard |
+| Cargo | security-framework | 3.7.0 | MIT OR Apache-2.0 | macos | https://github.com/kornelski/rust-security-framework |
+| Cargo | security-framework-sys | 2.17.0 | MIT OR Apache-2.0 | macos | https://github.com/kornelski/rust-security-framework |
 | Cargo | selectors | 0.36.1 | MPL-2.0 | windows / macos | https://github.com/servo/stylo |
 | Cargo | semver | 1.0.28 | MIT OR Apache-2.0 | windows / macos | https://github.com/dtolnay/semver |
 | Cargo | serde | 1.0.229 | MIT OR Apache-2.0 | windows / macos | https://github.com/serde-rs/serde |
@@ -255,17 +307,23 @@ alloc-stdlib 0.2.4（BSD-3-Clause）、block2 0.6.2（MIT）、defmt-parser 1.0.
 | Cargo | servo_arc | 0.4.3 | MIT OR Apache-2.0 | windows / macos | https://github.com/servo/stylo |
 | Cargo | sha2 | 0.10.9 | MIT OR Apache-2.0 | windows / macos | https://github.com/RustCrypto/hashes |
 | Cargo | simd-adler32 | 0.3.10 | MIT | windows / macos | https://github.com/mcountryman/simd-adler32 |
+| Cargo | simdutf8 | 0.1.5 | MIT OR Apache-2.0 | windows / macos | https://github.com/rusticstuff/simdutf8 |
 | Cargo | siphasher | 1.0.3 | MIT/Apache-2.0 | windows / macos | https://github.com/jedisct1/rust-siphash |
+| Cargo | slab | 0.4.12 | MIT | windows / macos | https://github.com/tokio-rs/slab |
 | Cargo | smallvec | 1.16.1 | MIT OR Apache-2.0 | windows / macos | https://github.com/servo/rust-smallvec |
 | Cargo | socket2 | 0.6.5 | MIT OR Apache-2.0 | windows / macos | https://github.com/rust-lang/socket2 |
 | Cargo | softbuffer | 0.4.8 | MIT OR Apache-2.0 | windows | https://github.com/rust-windowing/softbuffer |
 | Cargo | stable_deref_trait | 1.2.1 | MIT OR Apache-2.0 | windows / macos | https://github.com/storyyeller/stable_deref_trait |
 | Cargo | string_cache | 0.9.0 | MIT OR Apache-2.0 | windows / macos | https://github.com/servo/string-cache |
 | Cargo | strsim | 0.11.1 | MIT | windows / macos | https://github.com/rapidfuzz/strsim-rs |
+| Cargo | subtle | 2.6.1 | BSD-3-Clause | windows / macos | https://github.com/dalek-cryptography/subtle |
 | Cargo | swift-rs | 1.0.8 | MIT OR Apache-2.0 | macos | https://github.com/Brendonovich/swift-rs |
 | Cargo | syn | 2.0.119 | MIT OR Apache-2.0 | windows / macos | https://github.com/dtolnay/syn |
 | Cargo | syn | 3.0.6 | MIT OR Apache-2.0 | windows / macos | https://github.com/dtolnay/syn |
+| Cargo | sync_wrapper | 1.0.2 | Apache-2.0 | windows / macos | https://github.com/Actyx/sync_wrapper |
 | Cargo | synstructure | 0.14.0 | MIT | windows / macos | https://github.com/mystor/synstructure |
+| Cargo | system-configuration | 0.7.0 | MIT OR Apache-2.0 | macos | https://github.com/mullvad/system-configuration-rs |
+| Cargo | system-configuration-sys | 0.6.0 | MIT OR Apache-2.0 | macos | https://github.com/mullvad/system-configuration-rs |
 | Cargo | tao | 0.35.3 | Apache-2.0 | windows / macos | https://github.com/tauri-apps/tao |
 | Cargo | tauri | 2.11.6 | Apache-2.0 OR MIT | windows / macos | https://github.com/tauri-apps/tauri |
 | Cargo | tauri-codegen | 2.6.3 | Apache-2.0 OR MIT | windows / macos | https://github.com/tauri-apps/tauri |
@@ -275,6 +333,7 @@ alloc-stdlib 0.2.4（BSD-3-Clause）、block2 0.6.2（MIT）、defmt-parser 1.0.
 | Cargo | tauri-runtime | 2.11.3 | Apache-2.0 OR MIT | windows / macos | https://github.com/tauri-apps/tauri |
 | Cargo | tauri-runtime-wry | 2.11.4 | Apache-2.0 OR MIT | windows / macos | https://github.com/tauri-apps/tauri |
 | Cargo | tauri-utils | 2.9.3 | Apache-2.0 OR MIT | windows / macos | https://github.com/tauri-apps/tauri |
+| Cargo | tempfile | 3.27.0 | MIT OR Apache-2.0 | windows / macos | https://github.com/Stebalien/tempfile |
 | Cargo | tendril | 0.5.1 | MIT OR Apache-2.0 | windows / macos | https://github.com/servo/html5ever |
 | Cargo | thiserror | 1.0.69 | MIT OR Apache-2.0 | windows / macos | https://github.com/dtolnay/thiserror |
 | Cargo | thiserror | 2.0.20 | MIT OR Apache-2.0 | windows / macos | https://github.com/dtolnay/thiserror |
@@ -286,13 +345,20 @@ alloc-stdlib 0.2.4（BSD-3-Clause）、block2 0.6.2（MIT）、defmt-parser 1.0.
 | Cargo | tinystr | 0.8.4 | Unicode-3.0 | windows / macos | https://github.com/unicode-org/icu4x |
 | Cargo | tinyvec | 1.13.3 | Zlib OR Apache-2.0 OR MIT | windows / macos | https://github.com/Lokathor/tinyvec |
 | Cargo | tokio | 1.53.1 | MIT | windows / macos | https://github.com/tokio-rs/tokio |
+| Cargo | tokio-rustls | 0.26.5 | MIT OR Apache-2.0 | windows / macos | https://github.com/rustls/tokio-rustls |
+| Cargo | tokio-util | 0.7.19 | MIT | windows / macos | https://github.com/tokio-rs/tokio |
 | Cargo | toml | 1.1.6+spec-1.1.0 | MIT OR Apache-2.0 | windows / macos | https://github.com/toml-rs/toml |
 | Cargo | toml_datetime | 1.1.1+spec-1.1.0 | MIT OR Apache-2.0 | windows / macos | https://github.com/toml-rs/toml |
 | Cargo | toml_parser | 1.1.3+spec-1.1.0 | MIT OR Apache-2.0 | windows / macos | https://github.com/toml-rs/toml |
 | Cargo | toml_writer | 1.1.2+spec-1.1.0 | MIT OR Apache-2.0 | windows / macos | https://github.com/toml-rs/toml |
-| Cargo | tracing | 0.1.44 | MIT | windows | https://github.com/tokio-rs/tracing |
-| Cargo | tracing-core | 0.1.36 | MIT | windows | https://github.com/tokio-rs/tracing |
+| Cargo | tower | 0.5.3 | MIT | windows / macos | https://github.com/tower-rs/tower |
+| Cargo | tower-http | 0.6.11 | MIT | windows / macos | https://github.com/tower-rs/tower-http |
+| Cargo | tower-layer | 0.3.3 | MIT | windows / macos | https://github.com/tower-rs/tower |
+| Cargo | tower-service | 0.3.3 | MIT | windows / macos | https://github.com/tower-rs/tower |
+| Cargo | tracing | 0.1.44 | MIT | windows / macos | https://github.com/tokio-rs/tracing |
+| Cargo | tracing-core | 0.1.36 | MIT | windows / macos | https://github.com/tokio-rs/tracing |
 | Cargo | tray-icon | 0.24.2 | MIT OR Apache-2.0 | windows / macos | https://github.com/tauri-apps/tray-icon |
+| Cargo | try-lock | 0.2.5 | MIT | windows / macos | https://github.com/seanmonstar/try-lock |
 | Cargo | typeid | 1.0.3 | MIT OR Apache-2.0 | windows / macos | https://github.com/dtolnay/typeid |
 | Cargo | typenum | 1.20.1 | MIT OR Apache-2.0 | windows / macos | https://github.com/paholg/typenum |
 | Cargo | unic-char-property | 0.9.0 | MIT/Apache-2.0 | windows / macos | https://github.com/open-i18n/rust-unic/ |
@@ -302,11 +368,13 @@ alloc-stdlib 0.2.4（BSD-3-Clause）、block2 0.6.2（MIT）、defmt-parser 1.0.
 | Cargo | unic-ucd-version | 0.9.0 | MIT/Apache-2.0 | windows / macos | https://github.com/open-i18n/rust-unic/ |
 | Cargo | unicode-ident | 1.0.26 | (MIT OR Apache-2.0) AND Unicode-3.0 | windows / macos | https://github.com/dtolnay/unicode-ident |
 | Cargo | unicode-segmentation | 1.13.3 | MIT OR Apache-2.0 | windows / macos | https://github.com/unicode-rs/unicode-segmentation |
+| Cargo | untrusted | 0.9.0 | ISC | windows / macos | https://github.com/briansmith/untrusted |
 | Cargo | url | 2.5.8 | MIT OR Apache-2.0 | windows / macos | https://github.com/servo/rust-url |
 | Cargo | urlpattern | 0.3.0 | MIT | windows / macos | https://github.com/denoland/rust-urlpattern |
 | Cargo | utf8_iter | 1.0.4 | Apache-2.0 OR MIT | windows / macos | https://github.com/hsivonen/utf8_iter |
 | Cargo | uuid | 1.26.1 | Apache-2.0 OR MIT | windows / macos | https://github.com/uuid-rs/uuid |
 | Cargo | walkdir | 2.5.0 | Unlicense/MIT | windows / macos | https://github.com/BurntSushi/walkdir |
+| Cargo | want | 0.3.1 | MIT | windows / macos | https://github.com/seanmonstar/want |
 | Cargo | web_atoms | 0.2.6 | MIT OR Apache-2.0 | windows / macos | https://github.com/servo/html5ever |
 | Cargo | webview2-com | 0.38.2 | MIT | windows | https://github.com/wravery/webview2-rs |
 | Cargo | webview2-com-macros | 0.8.1 | MIT | windows | https://github.com/wravery/webview2-rs |
@@ -324,8 +392,11 @@ alloc-stdlib 0.2.4（BSD-3-Clause）、block2 0.6.2（MIT）、defmt-parser 1.0.
 | Cargo | windows-link | 0.1.3 | MIT OR Apache-2.0 | windows | https://github.com/microsoft/windows-rs |
 | Cargo | windows-link | 0.2.1 | MIT OR Apache-2.0 | windows | https://github.com/microsoft/windows-rs |
 | Cargo | windows-numerics | 0.2.0 | MIT OR Apache-2.0 | windows | https://github.com/microsoft/windows-rs |
+| Cargo | windows-registry | 0.6.1 | MIT OR Apache-2.0 | windows | https://github.com/microsoft/windows-rs |
 | Cargo | windows-result | 0.3.4 | MIT OR Apache-2.0 | windows | https://github.com/microsoft/windows-rs |
+| Cargo | windows-result | 0.4.1 | MIT OR Apache-2.0 | windows | https://github.com/microsoft/windows-rs |
 | Cargo | windows-strings | 0.4.2 | MIT OR Apache-2.0 | windows | https://github.com/microsoft/windows-rs |
+| Cargo | windows-strings | 0.5.1 | MIT OR Apache-2.0 | windows | https://github.com/microsoft/windows-rs |
 | Cargo | windows-sys | 0.59.0 | MIT OR Apache-2.0 | windows | https://github.com/microsoft/windows-rs |
 | Cargo | windows-sys | 0.60.2 | MIT OR Apache-2.0 | windows | https://github.com/microsoft/windows-rs |
 | Cargo | windows-sys | 0.61.2 | MIT OR Apache-2.0 | windows | https://github.com/microsoft/windows-rs |
@@ -340,6 +411,7 @@ alloc-stdlib 0.2.4（BSD-3-Clause）、block2 0.6.2（MIT）、defmt-parser 1.0.
 | Cargo | yoke-derive | 0.8.3 | Unicode-3.0 | windows / macos | https://github.com/unicode-org/icu4x |
 | Cargo | zerofrom | 0.1.8 | Unicode-3.0 | windows / macos | https://github.com/unicode-org/icu4x |
 | Cargo | zerofrom-derive | 0.1.8 | Unicode-3.0 | windows / macos | https://github.com/unicode-org/icu4x |
+| Cargo | zeroize | 1.9.0 | Apache-2.0 OR MIT | windows / macos | https://github.com/RustCrypto/utils |
 | Cargo | zerotrie | 0.2.5 | Unicode-3.0 | windows / macos | https://github.com/unicode-org/icu4x |
 | Cargo | zerovec | 0.11.8 | Unicode-3.0 | windows / macos | https://github.com/unicode-org/icu4x |
 | Cargo | zerovec-derive | 0.11.6 | Unicode-3.0 | windows / macos | https://github.com/unicode-org/icu4x |
