@@ -1,25 +1,25 @@
 # 第三方依赖许可证清单
 
-生成方式：`node scripts/release/third-party-licenses.mjs`（本机 `cargo metadata --offline --locked` 与 `package-lock.json`，不联网）。依赖锁文件最后修改提交：`bec460facbe3`。
+生成方式：`node scripts/release/third-party-licenses.mjs`（本机 `cargo metadata --offline --locked` 与 `package-lock.json`，不联网）。依赖锁文件最后修改提交：`0f77da860351`。
 
 范围：随产品分发的依赖。Rust 为 `oris`（desktop 特性）的 normal 依赖传递闭包，按 Windows（x86_64-pc-windows-gnu）与 macOS（aarch64-apple-darwin）分别解析；npm 为 `dependencies` 的传递闭包（打包进前端资源）。构建工具（Tauri CLI、Vite、TypeScript、测试框架）、build / dev 依赖不随产品分发，不在此列。许可证字段取自各包自己的元数据，未逐包复核源码。
 
 配色方案数据来自 VS Code 与 Colorsublime-Themes（MIT），声明见 `src/themes/generated/NOTICES.txt`，同时显示在设置 → 外观，并收入安装包的 `THIRD-PARTY-NOTICES.txt`。
 
-合计：Cargo 351 个包（Windows 321、macOS 319），npm 25 个包。
+合计：Cargo 359 个包（Windows 324、macOS 326），npm 25 个包。
 
 ## 按许可证汇总
 
 | 生态 | 许可证（SPDX 表达式） | 包数 |
 | --- | --- | --- |
-| Cargo | MIT OR Apache-2.0 | 174 |
-| Cargo | MIT | 56 |
-| Cargo | Apache-2.0 OR MIT | 29 |
+| Cargo | MIT OR Apache-2.0 | 177 |
+| Cargo | MIT | 58 |
+| Cargo | Apache-2.0 OR MIT | 30 |
 | npm | MIT | 23 |
 | Cargo | Unicode-3.0 | 18 |
-| Cargo | MIT/Apache-2.0 | 15 |
+| Cargo | MIT/Apache-2.0 | 16 |
 | Cargo | Unlicense OR MIT | 11 |
-| Cargo | Zlib OR Apache-2.0 OR MIT | 9 |
+| Cargo | Zlib OR Apache-2.0 OR MIT | 10 |
 | Cargo | MPL-2.0 | 5 |
 | Cargo | MIT OR Apache-2.0 OR Zlib | 4 |
 | Cargo | BSD-3-Clause | 3 |
@@ -60,9 +60,9 @@
 
 MPL-2.0 的处理（V2-D63）：Oris 按原样使用上表中的 5 个 MPL-2.0 组件，没有修改其源文件。MPL-2.0 是文件级 copyleft，分发可执行文件时须告知获取这些组件源码的方式（§3.2）：安装包的 `THIRD-PARTY-NOTICES.txt` 开头为每个组件列出对应版本的源码地址，并收录 MPL-2.0 全文（取自 cssparser 0.36.0）。Oris 自身代码不受影响；今后若修改这些组件的文件，修改后的文件须按 MPL-2.0 公开源码。本段是工程上的合规处理，不是法律意见。
 
-以下 22 个包的源码目录中没有 LICENSE / NOTICE 文件，NOTICES 中只列出许可证名称：
+以下 23 个包的源码目录中没有 LICENSE / NOTICE 文件，NOTICES 中只列出许可证名称：
 
-alloc-stdlib 0.2.4（BSD-3-Clause）、block2 0.6.2（MIT）、defmt-parser 1.0.0（MIT OR Apache-2.0）、dispatch2 0.3.1（Zlib OR Apache-2.0 OR MIT）、objc2 0.6.4（MIT）、objc2-app-kit 0.3.2（Zlib OR Apache-2.0 OR MIT）、objc2-core-foundation 0.3.2（Zlib OR Apache-2.0 OR MIT）、objc2-core-graphics 0.3.2（Zlib OR Apache-2.0 OR MIT）、objc2-encode 4.1.0（MIT）、objc2-exception-helper 0.1.1（Zlib OR Apache-2.0 OR MIT）、objc2-foundation 0.3.2（MIT）、objc2-io-surface 0.3.2（Zlib OR Apache-2.0 OR MIT）、objc2-web-kit 0.3.2（Zlib OR Apache-2.0 OR MIT）、selectors 0.36.1（MPL-2.0）、unic-char-property 0.9.0（MIT/Apache-2.0）、unic-char-range 0.9.0（MIT/Apache-2.0）、unic-common 0.9.0（MIT/Apache-2.0）、unic-ucd-ident 0.9.0（MIT/Apache-2.0）、unic-ucd-version 0.9.0（MIT/Apache-2.0）、webview2-com 0.38.2（MIT）、webview2-com-macros 0.8.1（MIT）、webview2-com-sys 0.38.2（MIT）
+alloc-stdlib 0.2.4（BSD-3-Clause）、block2 0.6.2（MIT）、defmt-parser 1.0.0（MIT OR Apache-2.0）、dispatch2 0.3.1（Zlib OR Apache-2.0 OR MIT）、objc2 0.6.4（MIT）、objc2-app-kit 0.3.2（Zlib OR Apache-2.0 OR MIT）、objc2-core-foundation 0.3.2（Zlib OR Apache-2.0 OR MIT）、objc2-core-graphics 0.3.2（Zlib OR Apache-2.0 OR MIT）、objc2-encode 4.1.0（MIT）、objc2-exception-helper 0.1.1（Zlib OR Apache-2.0 OR MIT）、objc2-foundation 0.3.2（MIT）、objc2-io-surface 0.3.2（Zlib OR Apache-2.0 OR MIT）、objc2-osa-kit 0.3.2（Zlib OR Apache-2.0 OR MIT）、objc2-web-kit 0.3.2（Zlib OR Apache-2.0 OR MIT）、selectors 0.36.1（MPL-2.0）、unic-char-property 0.9.0（MIT/Apache-2.0）、unic-char-range 0.9.0（MIT/Apache-2.0）、unic-common 0.9.0（MIT/Apache-2.0）、unic-ucd-ident 0.9.0（MIT/Apache-2.0）、unic-ucd-version 0.9.0（MIT/Apache-2.0）、webview2-com 0.38.2（MIT）、webview2-com-macros 0.8.1（MIT）、webview2-com-sys 0.38.2（MIT）
 
 ## 完整清单
 
@@ -149,6 +149,7 @@ alloc-stdlib 0.2.4（BSD-3-Clause）、block2 0.6.2（MIT）、defmt-parser 1.0.
 | Cargo | fastrand | 2.5.0 | Apache-2.0 OR MIT | windows / macos | https://github.com/smol-rs/fastrand |
 | Cargo | fdeflate | 0.3.7 | MIT OR Apache-2.0 | windows / macos | https://github.com/image-rs/fdeflate |
 | Cargo | file-id | 0.2.3 | MIT OR Apache-2.0 | windows / macos | https://github.com/notify-rs/notify.git |
+| Cargo | filetime | 0.2.29 | MIT/Apache-2.0 | macos | https://github.com/alexcrichton/filetime |
 | Cargo | flate2 | 1.1.10 | MIT OR Apache-2.0 | windows / macos | https://github.com/rust-lang/flate2-rs |
 | Cargo | fnv | 1.0.7 | Apache-2.0 / MIT | windows / macos | https://github.com/servo/rust-fnv |
 | Cargo | foldhash | 0.2.0 | Zlib | windows / macos | https://github.com/orlp/foldhash |
@@ -219,6 +220,7 @@ alloc-stdlib 0.2.4（BSD-3-Clause）、block2 0.6.2（MIT）、defmt-parser 1.0.
 | Cargo | markup5ever | 0.38.0 | MIT OR Apache-2.0 | windows / macos | https://github.com/servo/html5ever |
 | Cargo | memchr | 2.8.3 | Unlicense OR MIT | windows / macos | https://github.com/BurntSushi/memchr |
 | Cargo | mime | 0.3.17 | MIT OR Apache-2.0 | windows / macos | https://github.com/hyperium/mime |
+| Cargo | minisign-verify | 0.2.5 | MIT | windows / macos | https://github.com/jedisct1/rust-minisign-verify |
 | Cargo | miniz_oxide | 0.8.9 | MIT OR Zlib OR Apache-2.0 | windows / macos | https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide |
 | Cargo | miniz_oxide | 0.9.1 | MIT OR Zlib OR Apache-2.0 | windows / macos | https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide |
 | Cargo | mio | 1.2.3 | MIT | windows / macos | https://github.com/tokio-rs/mio |
@@ -239,9 +241,11 @@ alloc-stdlib 0.2.4（BSD-3-Clause）、block2 0.6.2（MIT）、defmt-parser 1.0.
 | Cargo | objc2-exception-helper | 0.1.1 | Zlib OR Apache-2.0 OR MIT | macos | https://github.com/madsmtm/objc2 |
 | Cargo | objc2-foundation | 0.3.2 | MIT | macos | https://github.com/madsmtm/objc2 |
 | Cargo | objc2-io-surface | 0.3.2 | Zlib OR Apache-2.0 OR MIT | macos | https://github.com/madsmtm/objc2 |
+| Cargo | objc2-osa-kit | 0.3.2 | Zlib OR Apache-2.0 OR MIT | macos | https://github.com/madsmtm/objc2 |
 | Cargo | objc2-web-kit | 0.3.2 | Zlib OR Apache-2.0 OR MIT | macos | https://github.com/madsmtm/objc2 |
 | Cargo | once_cell | 1.21.4 | MIT OR Apache-2.0 | windows / macos | https://github.com/matklad/once_cell |
 | Cargo | option-ext | 0.2.0 | MPL-2.0 | windows / macos | https://github.com/soc/option-ext.git |
+| Cargo | osakit | 0.3.1 | MIT OR Apache-2.0 | macos | https://github.com/mdevils/rust-osakit |
 | Cargo | parking_lot | 0.12.5 | MIT OR Apache-2.0 | windows / macos | https://github.com/Amanieu/parking_lot |
 | Cargo | parking_lot_core | 0.9.12 | MIT OR Apache-2.0 | windows / macos | https://github.com/Amanieu/parking_lot |
 | Cargo | percent-encoding | 2.3.2 | MIT OR Apache-2.0 | windows / macos | https://github.com/servo/rust-url/ |
@@ -325,11 +329,13 @@ alloc-stdlib 0.2.4（BSD-3-Clause）、block2 0.6.2（MIT）、defmt-parser 1.0.
 | Cargo | system-configuration | 0.7.0 | MIT OR Apache-2.0 | macos | https://github.com/mullvad/system-configuration-rs |
 | Cargo | system-configuration-sys | 0.6.0 | MIT OR Apache-2.0 | macos | https://github.com/mullvad/system-configuration-rs |
 | Cargo | tao | 0.35.3 | Apache-2.0 | windows / macos | https://github.com/tauri-apps/tao |
+| Cargo | tar | 0.4.46 | MIT OR Apache-2.0 | macos | https://github.com/composefs/tar-rs |
 | Cargo | tauri | 2.11.6 | Apache-2.0 OR MIT | windows / macos | https://github.com/tauri-apps/tauri |
 | Cargo | tauri-codegen | 2.6.3 | Apache-2.0 OR MIT | windows / macos | https://github.com/tauri-apps/tauri |
 | Cargo | tauri-macros | 2.6.3 | Apache-2.0 OR MIT | windows / macos | https://github.com/tauri-apps/tauri |
 | Cargo | tauri-plugin-dialog | 2.7.3 | Apache-2.0 OR MIT | windows / macos | https://github.com/tauri-apps/plugins-workspace |
 | Cargo | tauri-plugin-fs | 2.5.2 | Apache-2.0 OR MIT | windows / macos | https://github.com/tauri-apps/plugins-workspace |
+| Cargo | tauri-plugin-updater | 2.12.0 | Apache-2.0 OR MIT | windows / macos | https://github.com/tauri-apps/plugins-workspace |
 | Cargo | tauri-runtime | 2.11.3 | Apache-2.0 OR MIT | windows / macos | https://github.com/tauri-apps/tauri |
 | Cargo | tauri-runtime-wry | 2.11.4 | Apache-2.0 OR MIT | windows / macos | https://github.com/tauri-apps/tauri |
 | Cargo | tauri-utils | 2.9.3 | Apache-2.0 OR MIT | windows / macos | https://github.com/tauri-apps/tauri |
@@ -407,6 +413,7 @@ alloc-stdlib 0.2.4（BSD-3-Clause）、block2 0.6.2（MIT）、defmt-parser 1.0.
 | Cargo | winnow | 1.0.4 | MIT | windows / macos | https://github.com/winnow-rs/winnow |
 | Cargo | writeable | 0.6.4 | Unicode-3.0 | windows / macos | https://github.com/unicode-org/icu4x |
 | Cargo | wry | 0.55.1 | Apache-2.0 OR MIT | windows / macos | https://github.com/tauri-apps/wry |
+| Cargo | xattr | 1.6.1 | MIT OR Apache-2.0 | macos | https://github.com/Stebalien/xattr |
 | Cargo | yoke | 0.8.3 | Unicode-3.0 | windows / macos | https://github.com/unicode-org/icu4x |
 | Cargo | yoke-derive | 0.8.3 | Unicode-3.0 | windows / macos | https://github.com/unicode-org/icu4x |
 | Cargo | zerofrom | 0.1.8 | Unicode-3.0 | windows / macos | https://github.com/unicode-org/icu4x |
@@ -415,6 +422,7 @@ alloc-stdlib 0.2.4（BSD-3-Clause）、block2 0.6.2（MIT）、defmt-parser 1.0.
 | Cargo | zerotrie | 0.2.5 | Unicode-3.0 | windows / macos | https://github.com/unicode-org/icu4x |
 | Cargo | zerovec | 0.11.8 | Unicode-3.0 | windows / macos | https://github.com/unicode-org/icu4x |
 | Cargo | zerovec-derive | 0.11.6 | Unicode-3.0 | windows / macos | https://github.com/unicode-org/icu4x |
+| Cargo | zip | 4.6.1 | MIT | windows | https://github.com/zip-rs/zip2.git |
 | Cargo | zlib-rs | 0.6.8 | Zlib | windows / macos | https://github.com/trifectatechfoundation/zlib-rs |
 | Cargo | zmij | 1.0.23 | MIT | windows / macos | https://github.com/dtolnay/zmij |
 | Cargo | zune-core | 0.5.3 | MIT OR Apache-2.0 OR Zlib | windows / macos | https://github.com/etemesi254/zune-image |
