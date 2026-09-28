@@ -1024,6 +1024,62 @@ export default function App() {
       if (again) await runOp({ kind: "branchDelete", name: branch.fullName, force: true });
     }
   };
+  /**
+   * 一键清理远端已删除的本地分支：先对本地分支上游所在的每个 remote `fetch --prune`，再按最新引用列出上游已消失的分支；
+   * 确认后逐个 `-d`，未合并的汇总后再强确认 `-D`。获取失败时仍按本地已知状态继续，并在确认框中说明。
+   */
+  const pruneGoneBranches = async () => {
+    const repoId = activeRepoId;
+    const worktree = snapshot?.repo.worktreePath;
+    if (!repoId) return;
+    const before = await readRefs(repoId).catch(() => null);
+    const remotes = [...new Set((before?.local ?? []).filter((b) => b.tracking && b.tracking.state !== "noUpstream" && b.remote).map((b) => b.remote!))];
+    const fetchFailed: string[] = [];
+    for (const remote of remotes) {
+      const outcome = await runOp({ kind: "fetch", remote, prune: true });
+      if (outcome?.status !== "succeeded") { fetchFailed.push(remote); continue; }
+      if (worktree) { try { saveFetchRecord(localStorage, worktree, { remote, at: Date.now() }); } catch { /* 存储可选 */ } setFetchRecordVersion((value) => value + 1); }
+    }
+    if (currentRead.current.repo !== repoId) return;
+    const refs = await readRefs(repoId).catch(() => null);
+    if (!refs) return;
+    setRefsView(refs);
+    const branches = refs.local.filter((b) => !b.current && b.tracking?.state === "gone");
+    const failedNote = fetchFailed.length ? `获取 ${fetchFailed.join("、")} 失败，以下结果基于本地已知的远端状态` : null;
+    if (!branches.length) {
+      updateOps(repoId, { last: { kind: "fetch", status: fetchFailed.length ? "failed" : "succeeded", message: [failedNote, "没有需要清理的本地分支（上游都还存在）"].filter(Boolean).join("；"), output: "", at: Date.now() } });
+      return;
+    }
+    const ok = await askConfirm({
+      title: "清理本地分支",
+      message: `以下 ${branches.length} 个本地分支的上游在远端已被删除，删除这些本地分支？`,
+      items: branches.map((branch) => branch.name),
+      warning: failedNote ?? undefined,
+      notes: ["已合并的分支直接删除；未合并的会再次确认", "远端分支不受影响"],
+      confirmLabel: "删除",
+      danger: true
+    });
+    if (!ok) return;
+    const deleted: string[] = [], unmerged: Branch[] = [], failed: string[] = [];
+    for (const branch of branches) {
+      const outcome = await runOp({ kind: "branchDelete", name: branch.fullName });
+      if (outcome?.status === "succeeded") deleted.push(branch.name);
+      else if (outcome?.status === "needsConfirmation" && outcome.confirmation?.reason === "unmerged") unmerged.push(branch);
+      else failed.push(branch.name);
+    }
+    if (unmerged.length) {
+      const again = await askConfirm({ title: "删除未合并的分支", message: `以下 ${unmerged.length} 个分支有提交尚未合并到当前分支（常见于在远端被压缩合并或变基合并的分支）。`, items: unmerged.map((branch) => branch.name), warning: "未合并：删除后这些提交只能通过 reflog 找回", confirmLabel: "仍然删除", danger: true });
+      for (const branch of again ? unmerged : []) {
+        const outcome = await runOp({ kind: "branchDelete", name: branch.fullName, force: true });
+        if (outcome?.status === "succeeded") deleted.push(branch.name); else failed.push(branch.name);
+      }
+      if (!again) failed.push(...unmerged.map((branch) => `${branch.name}（未合并，已保留）`));
+    }
+    if (branches.length > 1) {
+      const message = [`已删除 ${deleted.length} 个分支${deleted.length ? `：${deleted.join("、")}` : ""}`, failed.length ? `未删除：${failed.join("、")}` : ""].filter(Boolean).join("；");
+      updateOps(repoId, { last: { kind: "branchDelete", status: failed.length && !deleted.length ? "failed" : "succeeded", message, output: "", at: Date.now() } });
+    }
+  };
   const branchActions: BranchActions = {
     onSwitch: (branch) => { setBranchOpen(false); void runSwitch({ kind: "branchSwitch", name: branch.fullName }); },
     onTrack: (branch) => {
@@ -1455,7 +1511,7 @@ export default function App() {
       onCommit={commit} onGenerateMessage={aiMessage} onUndoCommit={(head) => void undoCommit(head)} onUndoDiscard={(id) => void undoDiscard(id)} onCancel={() => { if (activeRepoId) void cancelOperation(activeRepoId); }}
       logContent={activeRepoId && logMounted === activeRepoId ? <HistoryPanel key={activeRepoId} repoId={activeRepoId} refsVersion={refsVersion} hidden={gitTab !== "log"} fileHistoryRequest={fileHistoryRequest} activeKey={historyReading?.key ?? null} onOpenFile={(open) => void openHistoryFile(open)} onRefs={setRefsView}
         writeBlocked={writeBlocked} onCheckout={(oid) => void runSwitch({ kind: "checkout", commit: oid })} onNewBranch={(start) => { loadRefsView(); setNewBranch({ initial: start }); }} onMerge={detachedOid ? undefined : startMerge}
-        onSwitch={branchActions.onSwitch} onTrack={branchActions.onTrack} stashVersion={stashVersion} selectedFiles={stashSelection}
+        onSwitch={branchActions.onSwitch} onTrack={branchActions.onTrack} onDeleteBranch={(branch) => void deleteBranch(branch)} onPruneGone={() => void pruneGoneBranches()} stashVersion={stashVersion} selectedFiles={stashSelection}
         onStashPush={stashPush} onStashApply={(entry, pop) => void runOp({ kind: "stashApply", index: entry.index, oid: entry.oid, pop })} onStashDrop={(entry) => void stashDrop(entry)}/> : null}/>
     {remoteChoice && remoteChoice.repoId === activeRepoId && <RemoteChoiceDialog kind={remoteChoice.kind} remotes={remoteChoice.remotes} message={remoteChoice.message} onCancel={() => setRemoteChoice(null)}
       onConfirm={(remote) => { const choice = remoteChoice; setRemoteChoice(null); if (choice.repoId === currentRead.current.repo) void (choice.kind === "fetch" ? runFetch(remote) : runPush(remote)); }}/>}

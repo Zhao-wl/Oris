@@ -82,6 +82,9 @@ pub enum OperationRequest {
     Fetch {
         #[serde(default)]
         remote: Option<String>,
+        /// 仅“清理本地分支”使用：`--prune` 删除远端已不存在的远端跟踪分支（从不 prune 标签）。普通获取为 false。
+        #[serde(default)]
+        prune: bool,
     },
     /// 储藏（R-STASH）：可填说明、包含未跟踪文件、只储藏选中的路径。
     StashPush {
@@ -453,7 +456,7 @@ impl GitAdapter {
             OperationRequest::Commit { message } => self.op_commit(message, ctx),
             OperationRequest::CommitSelected { message, path_ids, expected_revision } => self.op_commit_selected(message, path_ids, expected_revision, ctx),
             OperationRequest::UndoCommit { expected_head } => self.op_undo_commit(expected_head, ctx),
-            OperationRequest::Fetch { remote } => self.op_fetch(remote.as_deref(), ctx),
+            OperationRequest::Fetch { remote, prune } => self.op_fetch(remote.as_deref(), *prune, ctx),
             OperationRequest::StashPush { message, include_untracked, path_ids } => self.op_stash_push(message.as_deref(), *include_untracked, path_ids.as_deref(), ctx),
             OperationRequest::StashApply { index, oid, pop } => self.op_stash_apply(*index, oid, *pop, ctx),
             OperationRequest::StashDrop { index, oid } => self.op_stash_drop(*index, oid, ctx),

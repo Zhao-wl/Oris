@@ -14,7 +14,7 @@ export type OperationRequest =
   | { kind: "commit"; message: string }
   | { kind: "commitSelected"; message: string; pathIds: string[]; expectedRevision: string }
   | { kind: "undoCommit"; expectedHead: string }
-  | { kind: "fetch"; remote?: string | null }
+  | { kind: "fetch"; remote?: string | null; prune?: boolean }
   | { kind: "stashPush"; message?: string | null; includeUntracked?: boolean; pathIds?: string[] | null }
   | { kind: "stashApply"; index: number; oid: string; pop?: boolean }
   | { kind: "stashDrop"; index: number; oid: string }
