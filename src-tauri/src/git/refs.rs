@@ -112,7 +112,6 @@ pub fn read_head(git: &Path, worktree: &Path) -> HeadState {
 }
 
 pub fn read_refs(git: &Path, worktree: &Path) -> Result<RefsSnapshot, GitError> {
-    let head = read_head(git, worktree);
     let shallow = run_readonly(git, worktree, &["rev-parse", "--is-shallow-repository"])
         .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
         .unwrap_or(false);
@@ -121,14 +120,21 @@ pub fn read_refs(git: &Path, worktree: &Path) -> Result<RefsSnapshot, GitError> 
         worktree,
         &[
             "for-each-ref",
-            "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(upstream)%00%(upstream:track,nobracket)%00%(symref)%00%(upstream:remotename)%00%(*objectname)%00%(*objecttype)",
+            "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(upstream)%00%(upstream:track,nobracket)%00%(symref)%00%(upstream:remotename)%00%(*objectname)%00%(*objecttype)%00%(HEAD)",
             "refs/heads",
             "refs/remotes",
             "refs/tags",
         ],
     )?;
     let text = String::from_utf8_lossy(&output.stdout).into_owned();
-    let rows: Vec<Vec<&str>> = text.lines().map(|line| line.split('\0').collect()).filter(|f: &Vec<&str>| f.len() == 9).collect();
+    let rows: Vec<Vec<&str>> = text.lines().map(|line| line.split('\0').collect()).filter(|f: &Vec<&str>| f.len() == 10).collect();
+    // HEAD 指向某个本地分支（`%(HEAD)` 为 `*`）时直接取该行，不再另起 symbolic-ref / rev-parse（V2-D60）；
+    // 分离 HEAD、分支尚无提交或分支不指向提交时按原方式读取。
+    let head = rows
+        .iter()
+        .find(|f| f[9] == "*" && f[0].starts_with("refs/heads/") && f[2] == "commit")
+        .map(|f| HeadState { branch: Some(f[0].to_owned()), oid: Some(f[1].to_owned()), detached: false, unborn: false })
+        .unwrap_or_else(|| read_head(git, worktree));
     let existing: HashSet<&str> = rows.iter().map(|f| f[0]).collect();
     let (mut local, mut remote, mut tags) = (Vec::new(), Vec::new(), Vec::new());
     for fields in &rows {

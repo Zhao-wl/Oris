@@ -28,15 +28,18 @@ export interface SyncActions {
 }
 
 /** 标题栏“同步”入口（参考图“分支与同步”）：当前分支、上游与领先 / 落后，展开获取 / 拉取 / 推送。 */
-export function SyncPopover({ repoId, refsVersion, blocked, fetchText, actions, onClose }: { repoId: string; refsVersion: number; blocked: string | null; fetchText: string; actions: SyncActions; onClose(): void }) {
+export function SyncPopover({ repoId, refsVersion, blocked, fetchText, actions, onClose, onRefs }: { repoId: string; refsVersion: number; blocked: string | null; fetchText: string; actions: SyncActions; onClose(): void; onRefs?(refs: RefsView): void }) {
   const [refs, setRefs] = useState<RefsView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const host = useRef<HTMLDivElement>(null);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
+  // 读到的 refs 同时交给上层（获取时间说明依赖 FETCH_HEAD 时间），历史页不可见时不必另读一次。
+  const onRefsRef = useRef(onRefs);
+  onRefsRef.current = onRefs;
   useEffect(() => {
     let live = true;
-    void readRefs(repoId).then((view) => { if (live) { setRefs(view); setError(null); } }, (e) => { if (live && !isStale(e)) setError(errorText(e)); });
+    void readRefs(repoId).then((view) => { if (live) { setRefs(view); setError(null); onRefsRef.current?.(view); } }, (e) => { if (live && !isStale(e)) setError(errorText(e)); });
     return () => { live = false; };
   }, [repoId, refsVersion]);
   useEffect(() => {
