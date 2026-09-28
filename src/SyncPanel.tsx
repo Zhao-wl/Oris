@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { mergeMessage, readRefs, shortOid, type RefsView } from "./history-api";
+import { mergeMessage, readRemotes, shortOid, type RemotesView } from "./history-api";
 import { errorText } from "./error-message";
 import { isStale, type PullMode } from "./history-model";
 
@@ -40,6 +40,8 @@ export interface SyncToolbarProps {
   onCancel(): void;
   onPullMode(mode: PullMode): void;
   onChangeUpstream(): void;
+  /** 获取 ▾ 读到 remote 信息时回传（其中的 FETCH_HEAD 时间用于按钮上的“X 分钟前”）。 */
+  onRemotes?(view: RemotesView): void;
 }
 
 const runningLabels: Record<SyncKind, string> = { fetch: "获取中", pull: "拉取中", push: "推送中" };
@@ -99,8 +101,8 @@ export function SyncToolbar(props: SyncToolbarProps) {
   return <span ref={host} className="sync-toolbar">{(["fetch", "pull", "push"] as const).map(split)}</span>;
 }
 
-function SyncMenu({ kind, repoId, branch, pullMode, reason, onMenu, onFetch, onPush, onPullMode, onChangeUpstream }: SyncToolbarProps & { kind: SyncKind; reason: string | null }) {
-  if (kind === "fetch") return <FetchMenu repoId={repoId} reason={reason} onFetch={(remote) => { onMenu(null); onFetch(remote); }}/>;
+function SyncMenu({ kind, repoId, branch, pullMode, reason, onMenu, onFetch, onPush, onPullMode, onChangeUpstream, onRemotes }: SyncToolbarProps & { kind: SyncKind; reason: string | null }) {
+  if (kind === "fetch") return <FetchMenu repoId={repoId} reason={reason} onRemotes={onRemotes} onFetch={(remote) => { onMenu(null); onFetch(remote); }}/>;
   if (kind === "pull") return <div className="sync-menu" role="menu" aria-label="拉取选项">
     <div className="sync-menu-head">拉取方式（选中即设为本仓库默认）</div>
     {pullModes.map(([mode, label, note]) => <button key={mode} type="button" role="menuitemradio" aria-checked={pullMode === mode} className="sync-menu-item" onClick={() => { onMenu(null); onPullMode(mode); }}>
@@ -117,13 +119,15 @@ function SyncMenu({ kind, repoId, branch, pullMode, reason, onMenu, onFetch, onP
   </div>;
 }
 
-/** 获取 ▾：展开时才读取 remote 列表（主按钮不需要）。 */
-function FetchMenu({ repoId, reason, onFetch }: { repoId: string; reason: string | null; onFetch(remote: string): void }) {
-  const [refs, setRefs] = useState<RefsView | null>(null);
+/** 获取 ▾：展开时才读取 remote 列表（主按钮不需要）；用轻量的 readRemotes，不读分支。 */
+function FetchMenu({ repoId, reason, onFetch, onRemotes }: { repoId: string; reason: string | null; onFetch(remote: string): void; onRemotes?(view: RemotesView): void }) {
+  const [refs, setRefs] = useState<RemotesView | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const onRemotesRef = useRef(onRemotes);
+  onRemotesRef.current = onRemotes;
   useEffect(() => {
     let live = true;
-    void readRefs(repoId).then((view) => { if (live) setRefs(view); }, (e) => { if (live && !isStale(e)) setError(errorText(e)); });
+    void readRemotes(repoId).then((view) => { if (live) { setRefs(view); onRemotesRef.current?.(view); } }, (e) => { if (live && !isStale(e)) setError(errorText(e)); });
     return () => { live = false; };
   }, [repoId]);
   return <div className="sync-menu" role="menu" aria-label="获取选项">

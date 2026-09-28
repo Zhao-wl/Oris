@@ -182,6 +182,7 @@ export default function App() {
   const [remoteChoice, setRemoteChoice] = useState<{ kind: "fetch" | "push"; remotes: string[]; message: string } | null>(null);
   const [syncToast, setSyncToast] = useState<SyncToastState | null>(null);
   const [pullModeVersion, setPullModeVersion] = useState(0);
+  const [remotesFetchHeadAt, setRemotesFetchHeadAt] = useState<number | null>(null);
   const [mergeTarget, setMergeTarget] = useState<{ ref: string; oid: string; label: string } | null>(null);
   const [mergeCommitOpen, setMergeCommitOpen] = useState(false);
   const [multiSelection, setMultiSelection] = useState<ReadonlySet<string>>(() => new Set());
@@ -700,11 +701,12 @@ export default function App() {
   }, [pair, latin1Active, readable]);
   const viewDocument = latin1Active ? latin1Doc : diffDocument;
   useEffect(() => { if (gitTab === "log" && activeRepoId) setLogMounted(activeRepoId); }, [gitTab, activeRepoId]);
-  useEffect(() => { setRefsView(null); setFileHistoryRequest(null); setBranchOpen(false); setSyncMenu(null); setSyncToast(null); }, [activeRepoId]);
+  useEffect(() => { setRefsView(null); setFileHistoryRequest(null); setBranchOpen(false); setSyncMenu(null); setSyncToast(null); setRemotesFetchHeadAt(null); }, [activeRepoId]);
   const detachedOid = snapshot?.branchInfo && !snapshot.branchInfo.head ? snapshot.branchInfo.oid : null;
   const worktreePath = snapshot?.repo.worktreePath ?? null;
   const fetchText = useMemo(() => refsView && !refsView.remotes.length ? "该仓库没有配置 remote" : fetchTimeText(worktreePath ? loadFetchRecord(localStorage, worktreePath) : null, refsView?.fetchHeadAt ?? null), [worktreePath, refsView, fetchRecordVersion]);
-  const fetchAge = useMemo(() => fetchAgeText(worktreePath ? loadFetchRecord(localStorage, worktreePath) : null, refsView?.fetchHeadAt ?? null), [worktreePath, refsView, fetchRecordVersion, repoOps?.running]);
+  const fetchHeadAt = Math.max(refsView?.fetchHeadAt ?? 0, remotesFetchHeadAt ?? 0) || null;
+  const fetchAge = useMemo(() => fetchAgeText(worktreePath ? loadFetchRecord(localStorage, worktreePath) : null, fetchHeadAt), [worktreePath, fetchHeadAt, fetchRecordVersion, repoOps?.running]);
   const pullMode = useMemo(() => (worktreePath ? loadPullMode(localStorage, worktreePath) : "ffOnly"), [worktreePath, pullModeVersion]);
   const networkRunning = !!repoOps?.running && ["fetch", "pull", "push"].includes(repoOps.running.kind);
   const fetchProgress = networkRunning ? parseProgress(repoOps?.lines ?? []) : null;
@@ -1398,7 +1400,7 @@ export default function App() {
   return <main className={`app${focusMode ? " focus-mode" : ""}`}>
     <header className="titlebar"><span className="logo">O</span><strong>{activeProject ? projectName(activeProject) : "Oris"}</strong>{snapshot && <span className="branch-anchor"><button type="button" className="branch branch-button" aria-expanded={branchOpen} title="分支：搜索、切换、新建与管理" onClick={() => setBranchOpen((value) => !value)}>⑂ {snapshot.repo.branch} ▾</button>{branchOpen && activeRepoId && <BranchPopover repoId={activeRepoId} refsVersion={refsVersion} blocked={writeBlocked} actions={branchActions} onClose={() => setBranchOpen(false)}/>}</span>}{snapshot && activeRepoId && <SyncToolbar repoId={activeRepoId} branch={{ head: snapshot.branchInfo?.head ?? null, upstream: snapshot.branchInfo?.upstream ?? null, ahead: snapshot.branchInfo?.ahead ?? null, behind: snapshot.branchInfo?.behind ?? null }}
         blocked={writeBlocked} running={syncRunning} fetchAge={fetchAge} fetchTitle={fetchText} pullMode={pullMode} menu={syncMenu} onMenu={setSyncMenu}
-        onFetch={(remote) => void runFetch(remote)} onPull={() => void runPull()} onPush={() => void runPush()} onCancel={() => void cancelOperation(activeRepoId)} onPullMode={choosePullMode} onChangeUpstream={changeUpstream}/>}{stale && <span className="stale-badge">旧快照</span>}{runtime?.verifying && <span className="stale-badge verifying" title="显示上次保存的快照，正在后台校验；校验完成前写操作不可用">校验中</span>}<span className="spacer"/><button className="commit-entry" onClick={() => setAiOpen(true)} title="AI（Ctrl+P / ⌘P）">✦ AI</button><button className="settings-button" onClick={() => setSettingsOpen(true)} aria-label="设置" title="设置（Ctrl+,）">⚙ 设置</button></header>
+        onFetch={(remote) => void runFetch(remote)} onPull={() => void runPull()} onPush={() => void runPush()} onCancel={() => void cancelOperation(activeRepoId)} onPullMode={choosePullMode} onChangeUpstream={changeUpstream} onRemotes={(view) => setRemotesFetchHeadAt(view.fetchHeadAt)}/>}{stale && <span className="stale-badge">旧快照</span>}{runtime?.verifying && <span className="stale-badge verifying" title="显示上次保存的快照，正在后台校验；校验完成前写操作不可用">校验中</span>}<span className="spacer"/><button className="commit-entry" onClick={() => setAiOpen(true)} title="AI（Ctrl+P / ⌘P）">✦ AI</button><button className="settings-button" onClick={() => setSettingsOpen(true)} aria-label="设置" title="设置（Ctrl+,）">⚙ 设置</button></header>
     <section className="projectbar" aria-label="项目切换"><button className="primary" onClick={chooseRepository}>添加项目</button><input value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)} placeholder="搜索项目或完整路径" aria-label="搜索项目"/><div className="project-tabs">{visibleProjects.map(project => <ProjectTab key={project.repo.repoId} project={project} active={project.repo.repoId === activeRepoId}
       onSelect={() => void switchProject(project)}
       onRename={customName => setWorkspaceState(current => ({ ...current, projects: current.projects.map(p => p.repo.repoId === project.repo.repoId ? { ...p, customName } : p) }))}
