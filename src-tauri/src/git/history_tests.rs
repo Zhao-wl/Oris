@@ -487,3 +487,32 @@ fn file_history_includes_merges_that_changed_the_file_against_the_first_parent()
     assert!(subjects.contains(&"topic edit") && subjects.contains(&"main edit") && subjects.contains(&"base"));
     assert!(history.reached_origin);
 }
+
+/// V2-D60：拉取 / 合并相关配置合并为一次 `config --get-regexp` 读取，取值与逐项 `config --get` 相同
+/// （子节区分大小写、节名 / 变量名不区分、同一键取最后一个值、没有值的键为空字符串）。
+#[test]
+fn refs_view_config_values_match_individual_config_get() {
+    let dir = init();
+    let p = dir.path();
+    commit(p, "a.txt", "1\n", "one", 0);
+    // Windows 的引用文件不区分大小写，不能同时建 Feat.X 与 feat.x；feat.x 只作为不应命中的配置节。
+    git(p, &["branch", "Feat.X"]);
+    let mut config = fs::OpenOptions::new().append(true).open(p.join(".git/config")).unwrap();
+    use std::io::Write;
+    writeln!(config, "[pull]\n\trebase\n[merge]\n\tff = false\n[MERGE]\n\tFF = only\n[branch \"Feat.X\"]\n\trebase = merges\n[Branch \"feat.x\"]\n\tREBASE = true").unwrap();
+    drop(config);
+    let get = |key: &str| {
+        let out = Command::new("git").arg("-C").arg(p).args(["config", "--get", key]).output().unwrap();
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    };
+    let adapter = open_adapter(p);
+    for (branch, key) in [("Feat.X", "branch.Feat.X.rebase"), ("main", "pull.rebase")] {
+        git(p, &["switch", "-q", branch]);
+        let view = adapter.history_refs().unwrap();
+        assert_eq!(view.pull_rebase, get(key), "{branch}");
+        assert_eq!(view.merge_ff, get("merge.ff"), "{branch}");
+    }
+    assert_eq!(adapter.history_refs().unwrap().merge_ff.as_deref(), Some("only"));
+    assert_eq!(get("branch.Feat.X.rebase").as_deref(), Some("merges"));
+    assert_eq!(get("branch.feat.x.rebase").as_deref(), Some("true"));
+}
