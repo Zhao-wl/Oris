@@ -13,7 +13,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { GUI_ROOT, assertOutside, diffFingerprints, git, repositoryFingerprint } from "./gui-fixtures.mjs";
-import { PAGE_HELPERS, killOris, launchOris, machineInfo, processTreeDetailed, removeDir, sha256File, sleep, summarize } from "./gui-lib.mjs";
+import { PAGE_HELPERS, externalConnections, killOris, launchOris, machineInfo, removeDir, sha256File, sleep, summarize } from "./gui-lib.mjs";
 
 const args = process.argv.slice(2);
 const option = (name, fallback) => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : fallback; };
@@ -131,19 +131,6 @@ const markedPings = () => {
 };
 
 // ---------- 进程级网络核对与凭据核对 ----------
-/** 测试实例进程树（含 WebView2 与子进程）当前的对外 TCP 连接（排除回环地址与监听）。 */
-function externalConnections(rootPid) {
-  const tree = processTreeDetailed(rootPid).processes;
-  const roles = new Map(tree.map((p) => [p.pid, p.role]));
-  const script = `$ids = @(${tree.map((p) => p.pid).join(",")}); Get-NetTCPConnection -ErrorAction SilentlyContinue | Where-Object { $ids -contains $_.OwningProcess -and $_.State -ne 'Listen' -and $_.RemoteAddress -notin @('127.0.0.1','::1','0.0.0.0','::') } | ForEach-Object { "$($_.OwningProcess) $($_.RemoteAddress) $($_.RemotePort) $($_.State)" }`;
-  const r = spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8" });
-  const external = r.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).map((line) => {
-    const [pid, address, remotePort, state] = line.split(" ");
-    const ptr = spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", `(Resolve-DnsName -Type PTR ${address} -ErrorAction SilentlyContinue | Select-Object -First 1).NameHost`], { encoding: "utf8" }).stdout.trim() || null;
-    return { pid: Number(pid), role: roles.get(Number(pid)) ?? "?", remote: `${address}:${remotePort}`, host: ptr, state };
-  });
-  return { processes: tree.length, roles: [...new Set(tree.map((p) => p.role))], external, codexOrClaude: tree.some((p) => /codex|claude/i.test(p.role)) };
-}
 const credentialLines = () => {
   const r = spawnSync("cmdkey", ["/list"], { encoding: "utf8" });
   return (r.stdout ?? "").split(/\r?\n/).filter((l) => l.includes("oris-test-"));

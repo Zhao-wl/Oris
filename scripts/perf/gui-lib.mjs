@@ -113,6 +113,23 @@ $procs | ForEach-Object { [pscustomobject]@{ pid = $_.ProcessId; ppid = $_.Paren
   };
 }
 
+/**
+ * 测试实例进程树（oris.exe、WebView2、Git 子进程）当前的对外 TCP 连接：排除回环地址与监听，按进程角色归属，并反查远端主机名。
+ * 只读（Get-NetTCPConnection / Resolve-DnsName），不安装抓包驱动、不改系统设置。
+ */
+export function externalConnections(rootPid) {
+  const tree = processTreeDetailed(rootPid).processes;
+  const roles = new Map(tree.map((p) => [p.pid, p.role]));
+  const script = `$ids = @(${tree.map((p) => p.pid).join(",") || "0"}); Get-NetTCPConnection -ErrorAction SilentlyContinue | Where-Object { $ids -contains $_.OwningProcess -and $_.State -ne 'Listen' -and $_.RemoteAddress -notin @('127.0.0.1','::1','0.0.0.0','::') } | ForEach-Object { "$($_.OwningProcess) $($_.RemoteAddress) $($_.RemotePort) $($_.State)" }`;
+  const r = spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8" });
+  const external = (r.stdout ?? "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean).map((line) => {
+    const [pid, address, remotePort, state] = line.split(" ");
+    const ptr = spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", `(Resolve-DnsName -Type PTR ${address} -ErrorAction SilentlyContinue | Select-Object -First 1).NameHost`], { encoding: "utf8" }).stdout?.trim() || null;
+    return { pid: Number(pid), role: roles.get(Number(pid)) ?? "?", remote: `${address}:${remotePort}`, host: ptr, state };
+  });
+  return { at: new Date().toISOString(), processes: tree.length, roles: [...new Set(tree.map((p) => p.role))], external, codexOrClaude: tree.some((p) => /codex|claude/i.test(p.role)) };
+}
+
 /** 统计进程树中常驻 git 子进程（含命令行，只读）。 */
 export function gitChildren(rootPid) {
   const tree = processTree(rootPid);

@@ -1,12 +1,13 @@
 // 一期 06 多项目界面验收（A02，A03 的重启恢复与失效路径）：同名不同路径、重复添加、搜索、双击别名、拖动排序、× 移除只删记录，
 // 重启后恢复别名与顺序，关闭期间被移走的项目有提示。只经 CDP 操作本轮启动并核验过的 Oris 实例（PID + 完整路径 + 主窗口句柄 +
 // 端口归属），不调用任何窗口激活 API；拖动为 CDP 注入的鼠标事件（产生页面 Pointer Events），不是真实鼠标。
-// 用法：node scripts/perf/v1-06-projects.mjs --exe <oris.exe> [--port 9851] [--label v1-06-projects]
+// --net-audit：未配置 AI 的网络核对（V2 验收 B23）：关闭自动更新检查，在各步骤后用 Get-NetTCPConnection 核对测试实例进程树没有对外连接。
+// 用法：node scripts/perf/v1-06-projects.mjs --exe <oris.exe> [--port 9851] [--label v1-06-projects] [--net-audit]
 import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { GUI_ROOT, assertOutside, diffFingerprints, git, repositoryFingerprint } from "./gui-fixtures.mjs";
-import { PAGE_HELPERS, killOris, launchOris, removeDir, sha256File, sleep } from "./gui-lib.mjs";
+import { PAGE_HELPERS, externalConnections, killOris, launchOris, removeDir, sha256File, sleep } from "./gui-lib.mjs";
 
 const args = process.argv.slice(2);
 const option = (name, fallback) => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : fallback; };
@@ -21,7 +22,9 @@ mkdirSync(runDir, { recursive: true });
 assertOutside(runDir);
 const log = (...parts) => console.log(new Date().toISOString().slice(11, 23), ...parts);
 const q = JSON.stringify;
-const report = { exe: path.resolve(exe), exeSha256: sha256File(exe), method: "CDP 页面事件与 CDP 鼠标事件；不是真实鼠标、键盘或系统焦点", checks: {}, failures: [] };
+const netAudit = args.includes("--net-audit");
+const report = { exe: path.resolve(exe), exeSha256: sha256File(exe), method: "CDP 页面事件与 CDP 鼠标事件；不是真实鼠标、键盘或系统焦点", netAudit, network: [], checks: {}, failures: [] };
+const audit = (s, step) => { if (netAudit && s?.app) { const snapshot = { step, ...externalConnections(s.app.pid) }; report.network.push(snapshot); if (snapshot.external.length) log("对外连接", step, JSON.stringify(snapshot.external)); } };
 const fail = (what) => { report.failures.push(what); log("✗", what); };
 const check = (name, ok, detail) => { report.checks[name] = { ok: !!ok, ...(detail === undefined ? {} : { detail }) }; if (ok) log("✓", name); else fail(`${name} ${detail === undefined ? "" : JSON.stringify(detail).slice(0, 700)}`); };
 
@@ -42,6 +45,14 @@ async function start() {
   await call("Emulation.setDeviceMetricsOverride", { width: 1440, height: 850, deviceScaleFactor: 1, mobile: false });
   await evaluate(PAGE_HELPERS);
   log(`已启动 PID ${app.pid}，核验 ${q(app.identity)}`);
+  if (netAudit) {
+    // 自动更新检查（启动 5 s 后访问 GitHub）不属于 AI，核对时关闭；写入设置后重新载入页面。
+    await evaluate(`window.__op.waitUntil(() => !!document.querySelector('.project-empty, .project-tab'), 30000)`, 35000);
+    await evaluate(`(() => { const key = 'oris.settings.v1'; const s = JSON.parse(localStorage.getItem(key) ?? 'null'); if (!s) { for (const key of ['=', '0']) document.body.dispatchEvent(new KeyboardEvent('keydown', { key, ctrlKey: true, bubbles: true, cancelable: true })); } const cur = JSON.parse(localStorage.getItem(key) ?? '{}'); cur.update = { ...(cur.update ?? {}), autoCheck: false }; localStorage.setItem(key, JSON.stringify(cur)); return true; })()`);
+    await call("Page.reload", {});
+    await sleep(1500);
+    await evaluate(PAGE_HELPERS);
+  }
   const waitUntil = (expr, timeout = 30000) => evaluate(`window.__op.waitUntil(() => (${expr}), ${timeout})`, timeout + 5000).then((r) => { if (!r.ok) throw new Error(`等待失败：${expr}`); return r; });
   const click = (expr) => evaluate(`(() => { const n = ${expr}; if (!n) throw new Error('找不到元素：' + ${q(expr)}); n.click(); return true; })()`);
   const shot = async (name) => { await sleep(250); const { data } = await call("Page.captureScreenshot", { format: "png" }); const file = path.join(shotDir, `${name}.png`); writeFileSync(file, Buffer.from(data, "base64")); return path.relative(projectRoot, file); };
@@ -62,6 +73,7 @@ async function stop(s) { try { s.app.cdp.close(); } catch { /* 已关闭 */ } co
 let s = null;
 try {
   s = await start();
+  await sleep(netAudit ? 6000 : 0); audit(s, "第 1 个实例启动 6 s 后");
   await s.waitUntil(`document.querySelector('.project-empty')`);
   for (const repo of repos) await s.add(repo);
   let tabs = await s.tabs();
@@ -98,10 +110,11 @@ try {
   tabs = await s.tabs();
   const order1 = tabs.map((t) => t.path);
   check("A02 拖动页签调整顺序（CDP 鼠标事件）", order1.join() !== order0.join() && order1.length === 3 && order1[0] !== order0[0] && order1.includes(third), { order0, order1, from, to, pointerEvents: await s.evaluate(`window.__ptr`), shot: await s.shot("a02-reordered") });
-  await stop(s); s = null;
+  audit(s, "第 1 个实例结束前"); await stop(s); s = null;
 
   // 重启：别名与顺序恢复
   s = await start();
+  await sleep(netAudit ? 6000 : 0); audit(s, "第 2 个实例启动 6 s 后");
   await s.waitUntil(`document.querySelectorAll('.project-tab').length === 3`);
   await s.waitUntil(`!window.__op.loading()`);
   tabs = await s.tabs();
@@ -112,22 +125,30 @@ try {
   await sleep(500);
   tabs = await s.tabs();
   check("A02 × 移除项目：只移除 Oris 记录，仓库目录与内容不变", tabs.length === 2 && !tabs.some((t) => t.path === sameA) && existsSync(path.join(sameA, ".git")) && diffFingerprints(before[sameA], repositoryFingerprint(sameA)).length === 0, { removedName, tabs, shot: await s.shot("a02-removed") });
-  await stop(s); s = null;
+  audit(s, "第 2 个实例结束前"); await stop(s); s = null;
 
   // 关闭期间项目目录被移走：重启后有提示，不显示为无变化
   const moved = `${third}-moved`;
   renameSync(third, moved);
   s = await start();
+  await sleep(netAudit ? 6000 : 0); audit(s, "第 3 个实例启动 6 s 后");
   await s.waitUntil(`document.querySelectorAll('.project-tab').length === 2`);
   await s.click(`[...document.querySelectorAll('.project-tab')].find((t) => t.title === ${q(third)})?.querySelector('.project-switch')`);
   await s.waitUntil(`!window.__op.loading() && (document.querySelector('.state.error') || /失效|不存在|无法|失败/.test(document.querySelector('.restore-status')?.textContent ?? '') || /失效|不存在|无法|失败/.test(document.querySelector('.selection-notice')?.textContent ?? ''))`, 30000);
   const invalid = await s.evaluate(`({ error: document.querySelector('.state.error')?.textContent ?? null, status: document.querySelector('.restore-status')?.textContent ?? null, notice: document.querySelector('.selection-notice')?.textContent ?? null, rows: window.__op.rows() })`);
   check("A03 关闭期间项目目录被移走：切换到该项目时明确提示，不显示为无变化", (invalid.error || invalid.notice || /失效|不存在|无法|失败/.test(invalid.status ?? "")) && invalid.rows.length === 0, { invalid, shot: await s.shot("a03-invalid-path") });
-  await stop(s); s = null;
+  audit(s, "第 3 个实例结束前"); await stop(s); s = null;
   renameSync(moved, third);
   // B17：整个过程中两个保留的仓库不变（被移走的仓库已移回原处后再比较）
   const changed = repos.flatMap((r) => diffFingerprints(before[r], repositoryFingerprint(r)).map((k) => `${path.basename(path.dirname(r))}/${path.basename(r)}:${k}`));
   check("B17 添加 / 切换 / 搜索 / 别名 / 排序 / 移除 / 重启：三个仓库的工作区与 .git 都不变", changed.length === 0, changed);
+  if (netAudit) {
+    const all = report.network.flatMap((n) => n.external.map((c) => ({ step: n.step, ...c })));
+    const own = all.filter((c) => !String(c.role).startsWith("webview"));
+    const webview = all.filter((c) => String(c.role).startsWith("webview"));
+    check("B23 未配置 AI：完整多项目流程中 Oris 与 Git 子进程没有对外 TCP 连接，也没有 codex / claude 进程", own.length === 0 && !report.network.some((n) => n.codexOrClaude), { samples: report.network.length, own });
+    check("B23 未配置 AI：完整多项目流程中 WebView2 运行时进程没有对外 TCP 连接", webview.length === 0, { webview });
+  }
 } catch (error) {
   fail(`异常：${error?.stack ?? error}`);
 } finally {
