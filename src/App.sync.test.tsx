@@ -116,6 +116,15 @@ describe("sync entry (B11)", () => {
     expect(requests().slice(1)).toEqual([{ kind: "fetch", remote: null }, { kind: "fetch", remote: "origin" }]);
   });
 
+  it("says the fetch time is unknown once fetch ▾ sees an external fetch after the Oris one (R-REMOTE)", async () => {
+    await mount();
+    await click(main("fetch"));
+    expect(main("fetch").title).toContain("上次由 Oris 获取");
+    bridge.remotes.mockResolvedValue({ remotes: ["origin"], defaultRemote: "origin", fetchHeadAt: Date.now() + 60_000 });
+    await click(more("fetch"));
+    expect(main("fetch").title).toContain("时间未知");
+  });
+
   it("drops a remote choice that arrives after switching to another project", async () => {
     const repoB = { ...repo, repoId: "b", displayName: "b", worktreePath: "C:/b", gitDir: "C:/b/.git", commonDir: "C:/b/.git" };
     bridge.open.mockImplementation(async (path: string) => (path === "C:/b" ? { ...snap(), repo: repoB } : snap()));

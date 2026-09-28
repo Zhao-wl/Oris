@@ -708,8 +708,8 @@ export default function App() {
   useEffect(() => { setRefsView(null); setFileHistoryRequest(null); setBranchOpen(false); setSyncMenu(null); setSyncToast(null); setRemotesFetchHeadAt(null); setRemoteChoice(null); }, [activeRepoId]);
   const detachedOid = snapshot?.branchInfo && !snapshot.branchInfo.head ? snapshot.branchInfo.oid : null;
   const worktreePath = snapshot?.repo.worktreePath ?? null;
-  const fetchText = useMemo(() => refsView && !refsView.remotes.length ? "该仓库没有配置 remote" : fetchTimeText(worktreePath ? loadFetchRecord(localStorage, worktreePath) : null, refsView?.fetchHeadAt ?? null), [worktreePath, refsView, fetchRecordVersion]);
   const fetchHeadAt = Math.max(refsView?.fetchHeadAt ?? 0, remotesFetchHeadAt ?? 0) || null;
+  const fetchText = useMemo(() => refsView && !refsView.remotes.length ? "该仓库没有配置 remote" : fetchTimeText(worktreePath ? loadFetchRecord(localStorage, worktreePath) : null, fetchHeadAt), [worktreePath, refsView, fetchHeadAt, fetchRecordVersion]);
   const fetchAge = useMemo(() => fetchAgeText(worktreePath ? loadFetchRecord(localStorage, worktreePath) : null, fetchHeadAt), [worktreePath, fetchHeadAt, fetchRecordVersion, repoOps?.running]);
   const pullMode = useMemo(() => (worktreePath ? loadPullMode(localStorage, worktreePath) : "ffOnly"), [worktreePath, pullModeVersion]);
   const networkRunning = !!repoOps?.running && ["fetch", "pull", "push"].includes(repoOps.running.kind);
