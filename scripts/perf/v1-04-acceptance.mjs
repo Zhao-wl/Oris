@@ -197,7 +197,12 @@ const H = String.raw`
     paneText() { return document.querySelector('.log-commits-pane')?.textContent ?? ''; },
     opStatus() { const n = document.querySelector('.op-status'); return n ? { cls: n.className, text: n.textContent } : null; },
     running() { return !!document.querySelector('.op-status.running'); },
-    fetchDialog() { return document.querySelector('.fetch-dialog'); },
+    /** 标题栏分体按钮（V2-D64）：获取主按钮一键获取默认 remote，获取 ▾ 列出 remote；无法确定 remote 时弹出 .remote-choice-dialog。 */
+    syncMain(kind) { return document.querySelector('.sync-' + kind + ' .sync-main'); },
+    syncMore(kind) { return document.querySelector('.sync-' + kind + ' .sync-more'); },
+    syncMenu() { return document.querySelector('.sync-menu'); },
+    syncMenuItem(text) { return qa('.sync-menu [role^=menuitem]').find((b) => (b.lastElementChild?.firstChild?.textContent ?? '') === text) ?? null; },
+    remoteChoice() { return document.querySelector('.remote-choice-dialog'); },
     setSelect(el, value) { Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(el, value); el.dispatchEvent(new Event('change', { bubbles: true })); },
     setInputEl(el, value) { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, value); el.dispatchEvent(new Event('input', { bubbles: true })); },
     search(kind, text) { window.__h.setSelect(document.querySelector('select[aria-label="搜索类型"]'), kind); const input = document.querySelector('input[aria-label="搜索提交"]'); window.__h.setInputEl(input, text); input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); },
@@ -451,12 +456,14 @@ async function remoteSuite() {
   report.fixtures = { ...(report.fixtures ?? {}), remote: r };
   const ctx = await start("remote", { GIT_TRACE2_EVENT: traceDir, ORIS_NETWORK_IDLE_TIMEOUT_MS: "4000" });
   const traces = () => new Set(readdirSync(traceDir));
+  /** 打开 获取 ▾ 并等 remote 列表读取完成（读取同时回传 FETCH_HEAD 时间）。 */
+  const openFetchMenu = async () => { if (!(await ctx.evaluate(`!!window.__h.syncMenu()`))) await ctx.click(`window.__h.syncMore('fetch')`); await ctx.waitUntil(`!!window.__h.syncMenu() && !window.__h.syncMenu().textContent.includes('正在读取')`); };
+  const closeFetchMenu = async () => { if (await ctx.evaluate(`!!window.__h.syncMenu()`)) await ctx.click(`window.__h.syncMore('fetch')`); };
+  /** 获取：choose=false 时点主按钮（默认 remote）；choose=true 时在 获取 ▾ 中点选指定 remote。 */
   const fetchVia = async (remote, choose = false) => {
-    await ctx.click(`window.__op.button('⇣ 获取…') ?? document.querySelector('.sync-button')`); if (await ctx.evaluate(`!!document.querySelector('.sync-popover')`)) await ctx.click(`[...document.querySelectorAll('.sync-popover button')].find((b) => b.textContent === '获取…')`);
-    await ctx.waitUntil(`!!window.__h.fetchDialog() && !window.__h.fetchDialog().textContent.includes('正在读取 remote')`);
-    if (choose) await ctx.evaluate(`window.__h.setSelect(window.__h.fetchDialog().querySelector('select'), ${q(remote)})`);
-    await sleep(150);
-    await ctx.click(`window.__h.button('获取', window.__h.fetchDialog())`);
+    if (!choose) { await ctx.click(`window.__h.syncMain('fetch')`); return; }
+    await openFetchMenu();
+    await ctx.click(`window.__h.syncMenuItem(${q(remote)})`);
   };
   const settle = (timeout = 30000) => ctx.waitUntil(`!window.__h.running() && window.__h.opStatus()`, timeout);
   try {
@@ -490,30 +497,34 @@ async function remoteSuite() {
     const fetchArgs = fetchCommands.find((c) => c.startsWith("fetch")) ?? "";
     check("A10 显式 fetch：更新远端跟踪分支（不 prune、不递归子模块、不自动维护），工作区 / index / 当前分支 / config 不变", status.cls.includes("succeeded") && git(r.local, ["rev-parse", "refs/remotes/origin/main"]) === remoteHead && git(r.local, ["for-each-ref", "refs/remotes/origin/stale"]).includes("stale") && e.unexpected.length === 0 && /--no-prune/.test(fetchArgs) && /--no-recurse-submodules/.test(fetchArgs) && /--no-auto-maintenance/.test(fetchArgs) && !fetchCommands.some((c) => /^(pull|push|checkout|switch|merge|gc|maintenance)/.test(c)), { status, e, fetchArgs, fetchCommands });
     await ctx.waitUntil(`window.__h.branches().find((b) => b.name.replace('● ', '') === 'main')?.track === '↑0 ↓1'`, 15000);
-    // 历史页改造（866a799）后，获取时间显示在标题栏“同步”按钮的提示与同步弹层中（原 .log-fetch-time 已移除）。
-    const fetchTime = await ctx.evaluate(`document.querySelector('.sync-button')?.title ?? ''`);
+    // 获取时间显示在标题栏“获取”主按钮的提示中（V2-D64；原 .log-fetch-time、“同步”按钮已移除）。
+    const fetchTime = await ctx.evaluate(`window.__h.syncMain('fetch')?.title ?? ''`);
     check("A10 获取后分支列表与日志刷新；记录 Oris 获取时间", fetchTime.includes("上次由 Oris 获取 origin") && (await ctx.evaluate(`window.__h.rows().length`)) > 0, { fetchTime, shot: await ctx.shot("a10-after-fetch") });
     // 外部 fetch 之后：时间显示为未知。
     await sleep(6000);
     git(r.local, ["fetch", "-q", "--no-prune"]);
-    await ctx.click(`window.__op.button('⇣ 获取…') ?? document.querySelector('.sync-button')`); if (await ctx.evaluate(`!!document.querySelector('.sync-popover')`)) await ctx.click(`[...document.querySelectorAll('.sync-popover button')].find((b) => b.textContent === '获取…')`);
-    await ctx.waitUntil(`!!window.__h.fetchDialog() && window.__h.fetchDialog().textContent.includes('时间未知')`, 15000);
-    check("A10 外部工具获取后，获取时间显示为未知", true, await ctx.evaluate(`window.__h.fetchDialog().textContent`));
-    await ctx.click(`window.__h.button('取消', window.__h.fetchDialog())`);
+    // 展开 获取 ▾ 会重新读取 remote 与 FETCH_HEAD 时间；之后主按钮提示应说明时间未知。
+    // 等待失败只记为检查失败，不中断后续检查。
+    await openFetchMenu();
+    const unknownTime = await ctx.evaluate(`window.__op.waitUntil(() => window.__h.syncMain('fetch').title.includes('时间未知'), 15000)`, 20000);
+    check("A10 外部工具获取后，获取时间显示为未知", unknownTime.ok, await ctx.evaluate(`window.__h.syncMain('fetch').title`));
+    await closeFetchMenu();
     // ---------- 无上游：必须选择 remote ----------
     git(r.local, ["remote", "add", "backup", r.bare]);
     git(r.local, ["switch", "-q", "solo"]);
     await ctx.click(`window.__op.button('↻ 本地刷新')`); await ctx.waitUntil(`!window.__op.loading()`); await sleep(800);
-    await ctx.click(`window.__op.button('⇣ 获取…') ?? document.querySelector('.sync-button')`); if (await ctx.evaluate(`!!document.querySelector('.sync-popover')`)) await ctx.click(`[...document.querySelectorAll('.sync-popover button')].find((b) => b.textContent === '获取…')`);
-    await ctx.waitUntil(`!!window.__h.fetchDialog() && !window.__h.fetchDialog().textContent.includes('正在读取 remote')`);
-    const noUpstream = await ctx.evaluate(`({ text: window.__h.fetchDialog().textContent, disabled: window.__h.button('获取', window.__h.fetchDialog()).disabled })`);
-    await ctx.click(`window.__h.button('取消', window.__h.fetchDialog())`);
     before = fingerprint(r.local); beforeIndex = git(r.local, ["ls-files", "-s"]);
-    await fetchVia("backup", true);
+    // 一键获取无法确定 remote（没有上游、有两个 remote）：不执行，列出 remote 请用户选择。
+    await ctx.click(`window.__h.syncMain('fetch')`);
+    await ctx.waitUntil(`!!window.__h.remoteChoice()`, 15000);
+    const noUpstream = await ctx.evaluate(`({ text: window.__h.remoteChoice().textContent, remotes: [...window.__h.remoteChoice().querySelectorAll('input[type=radio]')].map((i) => i.getAttribute('aria-label')).sort()})`);
+    noUpstream.fetchedBeforeChoice = git(r.local, ["for-each-ref", "refs/remotes/backup"]) !== "";
+    await ctx.click(`window.__h.remoteChoice().querySelector('input[aria-label="backup"]')`);
+    await ctx.click(`window.__h.button('获取', window.__h.remoteChoice())`);
     await settle();
     status = await ctx.evaluate(`window.__h.opStatus()`);
     e = fetchEvidence("fetch backup（无上游时选择 remote）", r.local, before, beforeIndex, ["remote-refs", "git:FETCH_HEAD"]);
-    check("A10 无上游：要求选择已有 remote，选择后只获取该 remote，不自行配置上游", noUpstream.disabled && noUpstream.text.includes("请选择") && status.cls.includes("succeeded") && git(r.local, ["for-each-ref", "refs/remotes/backup/main"]).includes("backup/main") && git(r.local, ["config", "--get", "branch.solo.remote"], { allowFail: true }) === "" && e.unexpected.length === 0, { noUpstream, status, e });
+    check("A10 无上游：要求选择已有 remote，选择后只获取该 remote，不自行配置上游", noUpstream.text.includes("请选择要获取的 remote") && noUpstream.remotes.join() === "backup,origin" && !noUpstream.fetchedBeforeChoice && status.cls.includes("succeeded") && git(r.local, ["for-each-ref", "refs/remotes/backup/main"]).includes("backup/main") && git(r.local, ["config", "--get", "branch.solo.remote"], { allowFail: true }) === "" && e.unexpected.length === 0, { noUpstream, status, e });
     git(r.local, ["switch", "-q", "main"]);
     await ctx.click(`window.__op.button('↻ 本地刷新')`); await ctx.waitUntil(`!window.__op.loading()`); await sleep(800);
     // ---------- 取消：结束进程树，重读 refs 如实报告 ----------
@@ -619,9 +630,7 @@ async function realSuite() {
       const before = fingerprint(clone);
       const beforeIndex = git(clone, ["ls-files", "-s"]);
       const started = Date.now();
-      await ctx.click(`window.__op.button('⇣ 获取…') ?? document.querySelector('.sync-button')`); if (await ctx.evaluate(`!!document.querySelector('.sync-popover')`)) await ctx.click(`[...document.querySelectorAll('.sync-popover button')].find((b) => b.textContent === '获取…')`);
-      await ctx.waitUntil(`!!window.__h.fetchDialog() && !window.__h.fetchDialog().textContent.includes('正在读取 remote')`);
-      await ctx.click(`window.__h.button('获取', window.__h.fetchDialog())`);
+      await ctx.click(`window.__h.syncMain('fetch')`);
       await ctx.waitUntil(`!window.__h.running() && window.__h.opStatus()`, 120000);
       const status = await ctx.evaluate(`window.__h.opStatus()`);
       const e = fetchEvidence(`AgentHub ${label} fetch`, clone, before, beforeIndex, ["remote-refs", "git:FETCH_HEAD"]);
