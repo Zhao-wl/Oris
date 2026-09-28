@@ -14,7 +14,7 @@ export type OperationRequest =
   | { kind: "commit"; message: string }
   | { kind: "commitSelected"; message: string; pathIds: string[]; expectedRevision: string }
   | { kind: "undoCommit"; expectedHead: string }
-  | { kind: "fetch"; remote: string }
+  | { kind: "fetch"; remote?: string | null }
   | { kind: "stashPush"; message?: string | null; includeUntracked?: boolean; pathIds?: string[] | null }
   | { kind: "stashApply"; index: number; oid: string; pop?: boolean }
   | { kind: "stashDrop"; index: number; oid: string }
@@ -42,7 +42,7 @@ export type OperationKind = "stage" | "unstage" | "markResolved" | "discard" | "
 export type OperationStatus = "succeeded" | "failed" | "cancelled" | "needsConfirmation";
 
 export interface Confirmation {
-  reason: "conflictMarkers" | "unrecoverable" | "modifiedSinceDiscard" | "localChanges" | "untrackedOverwritten" | "localExists" | "unmerged" | "diverged";
+  reason: "conflictMarkers" | "unrecoverable" | "modifiedSinceDiscard" | "localChanges" | "untrackedOverwritten" | "localExists" | "unmerged" | "diverged" | "chooseRemote";
   message: string;
   paths: string[];
 }

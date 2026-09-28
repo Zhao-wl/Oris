@@ -97,7 +97,15 @@ impl GitAdapter {
     }
 
     /// 显式 fetch：不 prune、不递归子模块、不触发自动维护，不附带 pull / push / checkout。
-    pub(super) fn op_fetch(&self, remote: &str, ctx: &OpContext) -> Result<Step, GitError> {
+    pub(super) fn op_fetch(&self, remote: Option<&str>, ctx: &OpContext) -> Result<Step, GitError> {
+        let remote = match remote {
+            Some(chosen) => chosen.to_owned(),
+            None => match self.default_remote("获取")? {
+                Ok(remote) => remote,
+                Err(step) => return Ok(step),
+            },
+        };
+        let remote = remote.as_str();
         self.require_remote(remote)?;
         let before = self.tracking_refs();
         let result = self.network_git(

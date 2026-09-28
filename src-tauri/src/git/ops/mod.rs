@@ -77,7 +77,11 @@ pub enum OperationRequest {
     CommitSelected { message: String, path_ids: Vec<String>, expected_revision: String },
     UndoCommit { expected_head: String },
     /// 显式获取远端状态（R-REMOTE）：只更新远端跟踪引用等 Git 元数据。
-    Fetch { remote: String },
+    /// 不指定 remote 时取默认目标（当前分支上游所属的 remote，或仅有的一个 remote）。
+    Fetch {
+        #[serde(default)]
+        remote: Option<String>,
+    },
     /// 储藏（R-STASH）：可填说明、包含未跟踪文件、只储藏选中的路径。
     StashPush {
         #[serde(default)]
@@ -409,7 +413,7 @@ impl GitAdapter {
             OperationRequest::Commit { message } => self.op_commit(message, ctx),
             OperationRequest::CommitSelected { message, path_ids, expected_revision } => self.op_commit_selected(message, path_ids, expected_revision, ctx),
             OperationRequest::UndoCommit { expected_head } => self.op_undo_commit(expected_head, ctx),
-            OperationRequest::Fetch { remote } => self.op_fetch(remote, ctx),
+            OperationRequest::Fetch { remote } => self.op_fetch(remote.as_deref(), ctx),
             OperationRequest::StashPush { message, include_untracked, path_ids } => self.op_stash_push(message.as_deref(), *include_untracked, path_ids.as_deref(), ctx),
             OperationRequest::StashApply { index, oid, pop } => self.op_stash_apply(*index, oid, *pop, ctx),
             OperationRequest::StashDrop { index, oid } => self.op_stash_drop(*index, oid, ctx),

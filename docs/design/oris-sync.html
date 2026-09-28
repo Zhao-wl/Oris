@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Oris 同步工具栏 · 交互效果图</title>
+<style>
+*{box-sizing:border-box}html,body{margin:0}body{background:#121316;color:#d5d7dc;font:13px/1.45 "Segoe UI","Microsoft YaHei",sans-serif}button,select{font:inherit}button{cursor:pointer}
+.top{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:12px 18px;background:#17191d;border-bottom:1px solid #383b40}.top strong{font-size:14px;margin-right:6px}.top .hint{color:#9b9ea8}.top button{border:1px solid #42464d;background:#282b30;color:inherit;border-radius:5px;padding:4px 9px}.top button.active{background:#263f61;border-color:#79a8f8;color:#79a8f8}.top button:hover{background:#334a74}
+.note{margin:12px 18px 0;padding:7px 11px;border-left:3px solid #6c9df2;background:#242b39;color:#c7d3e9}
+.shell{--bg:#1e1f22;--panel:#2b2d30;--chrome:#26272b;--text:#bcbec4;--sub:#92959e;--border:#393b40;--hover:#334a74;--accent:#79a8f8;--accentbg:#263f61;--danger:#ed7777;--ok:#81bd83;--warn:#e0a23b;position:relative;margin:14px 18px 26px;height:560px;min-width:980px;border:1px solid #50535a;border-radius:8px;overflow:hidden;display:grid;grid-template-rows:42px 49px minmax(0,1fr) 25px;background:var(--bg);color:var(--text)}
+.shell button,.shell select{color:var(--text);background:var(--panel);border:1px solid var(--border);border-radius:4px}.shell button:hover:not(:disabled){background:var(--hover)}.shell button:disabled{opacity:.45;cursor:not-allowed}
+.title{display:flex;align-items:center;gap:8px;background:var(--chrome);padding:0 11px;border-bottom:1px solid var(--border)}.logo{display:grid;place-items:center;width:24px;height:24px;border-radius:5px;background:#7165d3;color:#fff;font-weight:700}.space{flex:1}.title .branch{padding:3px 8px}
+.split{position:relative;display:inline-flex}.split>.main{border-radius:4px 0 0 4px;padding:3px 9px;display:inline-flex;align-items:center;gap:5px;min-width:0}.split>.more{border-radius:0 4px 4px 0;border-left:0;padding:3px 5px;color:var(--sub)}.main small{color:var(--sub);font-size:11px}.main .n{color:var(--accent);font-weight:600}.main .n.zero{color:var(--sub);font-weight:400}.main.running{background:var(--accentbg);border-color:var(--accent)}
+.spin{display:inline-block;width:11px;height:11px;border:2px solid var(--accent);border-right-color:transparent;border-radius:50%;animation:s .8s linear infinite}@keyframes s{to{transform:rotate(360deg)}}
+.menu{position:absolute;top:calc(100% + 4px);left:0;z-index:20;min-width:260px;background:var(--panel);border:1px solid var(--border);border-radius:6px;box-shadow:0 10px 30px #000a;padding:5px 0}.menu .item{display:flex;gap:8px;align-items:flex-start;width:100%;border:0!important;border-radius:0!important;background:transparent!important;text-align:left;padding:6px 12px}.menu .item:hover{background:var(--hover)!important}.menu .item small{display:block;color:var(--sub);font-size:11px}.menu .dot{width:12px;color:var(--accent)}.menu hr{border:0;border-top:1px solid var(--border);margin:5px 0}.menu .head{padding:4px 12px;color:var(--sub);font-size:11px}.menu .commit{padding:3px 12px 3px 32px;font:12px/1.5 Consolas,"Microsoft YaHei",monospace;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:380px}.menu .commit i{color:var(--sub);font-style:normal;margin-right:6px}
+.projects{display:flex;align-items:center;gap:8px;background:var(--chrome);padding:5px 8px;border-bottom:1px solid var(--border)}.ptab{min-width:164px;height:37px;padding:4px 8px;border:1px solid var(--accent);border-radius:5px;background:var(--panel);font-size:12px;line-height:1.15}.ptab small{display:block;color:var(--sub);font-size:10px}
+.body{display:grid;place-items:center;color:var(--sub);background:repeating-linear-gradient(0deg,transparent 0 21px,#ffffff06 21px 22px)}
+.status{display:flex;align-items:center;gap:10px;background:var(--chrome);padding:0 9px;font-size:11px;color:var(--sub);border-top:1px solid var(--border)}
+.toasts{position:absolute;right:14px;bottom:36px;display:flex;flex-direction:column;gap:8px;z-index:15}.toast{display:flex;align-items:center;gap:10px;min-width:320px;max-width:460px;background:var(--panel);border:1px solid var(--border);border-left:3px solid var(--ok);border-radius:5px;padding:9px 12px;box-shadow:0 8px 24px #0009}.toast.error{border-left-color:var(--danger)}.toast .msg{flex:1}.toast .msg small{display:block;color:var(--sub)}.toast .x{border:0!important;background:transparent!important;color:var(--sub)}
+.overlay{position:absolute;inset:0;z-index:30;display:grid;place-items:center;background:#0008}.dialog{width:440px;background:var(--panel);border:1px solid var(--border);border-radius:7px;box-shadow:0 20px 55px #000b;padding:16px 18px 14px}.dialog h3{margin:0 0 8px;font-size:14px}.dialog p{margin:6px 0}.dialog .sub{color:var(--sub);font-size:12px}.dialog ul{margin:6px 0;padding-left:18px;font:12px/1.6 Consolas,"Microsoft YaHei",monospace;color:var(--sub)}.dialog .foot{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}.dialog .foot button{padding:4px 12px}.shell button.primary{background:#3574f0;border-color:#3574f0;color:#fff}.shell button.primary:hover{background:#4682fa}.dialog label{display:flex;gap:6px;align-items:center;margin:4px 0}
+.hidden{display:none!important}
+.legend{margin:0 18px 30px;color:#9b9ea8;font-size:12px}.legend b{color:#d5d7dc}
+</style>
+</head>
+<body>
+<div class="top"><strong>Oris · 同步工具栏改版参考</strong><span class="hint">场景：</span><span id="scenes"></span><span class="space" style="flex:1"></span><button type="button" id="reset">重置</button></div>
+<div class="note">点主按钮直接执行，▾ 打开选项。选上面的场景后再点按钮，可以看到对应的决策弹窗或结果提示。演示数据，不执行 Git。</div>
+<div class="shell" id="shell">
+  <header class="title"><span class="logo">O</span><strong>client-x20-x</strong><button type="button" class="branch" id="branch">⑂ dev_X20-61 ▾</button><span id="bar" style="display:flex;gap:6px"></span><span class="space"></span><button type="button">✦ AI</button><button type="button">⚙ 设置</button></header>
+  <div class="projects"><button type="button">添加项目</button><div class="ptab">client<small>E:\Tap4fun\X15\client</small></div><div class="ptab">client-x20-x<small>…\game-workspace\client</small></div></div>
+  <div class="body">（阅读界面）</div>
+  <footer class="status"><span>E:\Tap4fun\X20_2\game-workspace\client · dev_X20-61</span><span class="space"></span><span id="opline"></span></footer>
+  <div class="toasts" id="toasts"></div>
+  <div class="overlay hidden" id="overlay"><div class="dialog" id="dialog" role="dialog" aria-modal="true"></div></div>
+</div>
+<div class="legend"><b>对照旧版：</b>去掉“⇅ 同步 ▾”弹层与获取 / 拉取 / 推送三个说明型确认框；只保留真正需要决定的弹窗（分叉、工作区改动、首次推送且有多个 remote），统一一种样式。按钮状态直接取当前快照的上游与领先 / 落后，打开时不再读取全部 refs。</div>
+<script>
+const SCENES=[
+  ['normal','正常'],['diverged','拉取时已分叉'],['dirty','工作区改动阻止拉取'],['rejected','推送被拒'],
+  ['noUpstream1','无上游 · 1 个 remote'],['noUpstreamN','无上游 · 多个 remote'],['detached','分离 HEAD'],['failAuth','认证失败']
+];
+const init=()=>({scene:state?.scene??'normal',ahead:10,behind:0,fetchedMin:3,pullMode:'ffOnly',running:null,menu:null});
+let state=null;state=init();
+const $=id=>document.getElementById(id);
+const upstream=()=>!state.scene.startsWith('noUpstream');
+const detached=()=>state.scene==='detached';
+function render(){
+  $('scenes').innerHTML=SCENES.map(([id,l])=>`<button type="button" data-scene="${id}" class="${state.scene===id?'active':''}">${l}</button>`).join(' ');
+  $('branch').textContent=detached()?'⑂ 分离 HEAD @ 55b2287 ▾':'⑂ dev_X20-61 ▾';
+  const r=state.running;
+  const btn=(kind,label,title,disabled)=>`<span class="split"><button type="button" class="main ${r===kind?'running':''}" data-run="${kind}" title="${r===kind?'点击取消':title}" ${disabled&&r!==kind?'disabled':''}>${r===kind?`<span class="spin"></span>${{fetch:'获取中',pull:'拉取中',push:'推送中'}[kind]}… <small>✕ 取消</small>`:label}</button><button type="button" class="more" data-menu="${kind}" aria-label="${kind} 选项" ${r?'disabled':''}>▾</button>${state.menu===kind?menu(kind):''}</span>`;
+  const n=(v,a)=>`<span class="n ${v?'':'zero'}">${a}${v}</span>`;
+  const busy=!!r;
+  $('bar').innerHTML=
+    btn('fetch',`⟳ 获取 <small>${state.fetchedMin===0?'刚刚':state.fetchedMin+' 分钟前'}</small>`,'从 origin 获取远端状态；不改工作区',busy)+
+    btn('pull',upstream()?`${n(state.behind,'↓')} 拉取`:'↓ 拉取',detached()?'分离 HEAD：请先切换到分支':!upstream()?'当前分支没有上游：先推送或在 ▾ 中设置上游':`从 origin/dev_X20-61 拉取（${state.pullMode==='ffOnly'?'仅快进':'合并远端改动'}）`,busy||detached()||!upstream())+
+    btn('push',upstream()?`${n(state.ahead,'↑')} 推送`:'↑ 发布分支',detached()?'分离 HEAD：不能推送':upstream()?'推送到 origin/dev_X20-61；不推送 tag':'推送到 remote 的同名分支并设为上游',busy||detached());
+  $('opline').textContent=r?`正在${{fetch:'获取',pull:'拉取',push:'推送'}[r]}… 详情见底部“操作输出”`:'';
+}
+function menu(kind){
+  if(kind==='fetch')return `<div class="menu"><div class="head">获取远端状态（不改工作区）</div><button type="button" class="item" data-act="fetch"><span class="dot">●</span><span>origin<small>当前分支上游所属，主按钮默认</small></span></button><button type="button" class="item" data-act="fetch"><span class="dot"></span><span>upstream</span></button></div>`;
+  if(kind==='pull')return `<div class="menu"><div class="head">拉取方式（选中即设为默认）</div>${[['ffOnly','仅快进','本地没有上游之外的提交时才更新；已分叉时询问'],['merge','合并远端改动','能快进时快进，已分叉时生成合并提交']].map(([m,l,s])=>`<button type="button" class="item" data-mode="${m}"><span class="dot">${state.pullMode===m?'●':''}</span><span>${l}<small>${s}</small></span></button>`).join('')}<hr><button type="button" class="item" data-act="upstream"><span class="dot"></span><span>更换上游…</span></button><div class="head">不做 rebase；配置了 pull.rebase 时也以合并执行。</div></div>`;
+  return `<div class="menu" style="min-width:380px"><div class="head">${upstream()?'将推送到 origin/dev_X20-61 的提交（10）':'origin 上还没有 dev_X20-61，推送后设为上游'}</div>${['a91c2e0 足球：Segment Route 编排生产化','7f03b1d 修正 Terminal Fill 覆盖证明','c2e4410 PitchCanvas 实时演示','…另外 7 个'].map((c,i)=>`<div class="commit">${i<3?`<i>${c.slice(0,7)}</i>${c.slice(8)}`:`<i></i>${c}`}</div>`).join('')}<hr><button type="button" class="item" data-act="push"><span class="dot"></span><span>推送</span></button><div class="head">只推送当前分支；不推送 tag；不提供强制推送。</div></div>`;
+}
+let timer=null;
+function run(kind){
+  state.menu=null;
+  if(state.running===kind){clearTimeout(timer);state.running=null;toast('error',`已取消${{fetch:'获取',pull:'拉取',push:'推送'}[kind]}`,'已写入的远端跟踪引用不回滚，已重新读取实际状态');render();return}
+  if(kind==='push'&&state.scene==='noUpstreamN')return dialog('选择要发布到的 remote',`<p>分支 dev_X20-61 还没有上游。推送到所选 remote 的同名分支，并设为上游。</p><label><input type="radio" name="r" checked> origin</label><label><input type="radio" name="r"> upstream</label>`,'发布',()=>start('push'));
+  if(kind==='pull'&&state.scene==='diverged'&&state.pullMode==='ffOnly')return start('pull',()=>dialog('本地与上游已分叉','<p>本地领先 10 个、落后 2 个提交，无法仅快进。</p><p class="sub">改用合并会生成一个合并提交。Oris 不做 rebase，也不提供强制推送。</p><label><input type="checkbox"> 以后都用“合并远端改动”（可在 拉取 ▾ 中改回）</label>','改用合并拉取',()=>start('pull',()=>{state.behind=0;state.ahead=11;toast('ok','已合并 origin/dev_X20-61','生成合并提交 3d9e1a2')})));
+  if(kind==='pull'&&state.scene==='dirty')return start('pull',()=>dialog('工作区改动会被拉取覆盖','<p>以下文件的本地改动会被拉取覆盖：</p><ul><li>Assets/Scripts/FootballBallDecisionText.cs</li><li>Assets/Scripts/PitchCanvas.LivePresentation.cs</li></ul><p class="sub">储藏为新的 stash@{0}；拉取后不会自动恢复，可在“历史 → Stash”中应用。</p>','储藏后拉取',()=>start('pull',()=>{state.behind=0;toast('ok','已储藏并快进 2 个提交','stash@{0}：拉取前的本地改动')})));
+  start(kind);
+}
+function start(kind,done){
+  state.running=kind;render();
+  timer=setTimeout(()=>{state.running=null;
+    if(done){render();return done()}
+    if(state.scene==='failAuth')toast('error','认证失败：origin','Oris 使用本机凭据（Git Credential Manager / ssh-agent），请在终端登录后重试',[['重试',()=>run(kind)]]);
+    else if(kind==='fetch'){state.fetchedMin=0;if(state.scene!=='rejected')state.behind=2;toast('ok','已获取 origin',`dev_X20-61 上游新增 ${state.behind} 个提交`)}
+    else if(kind==='pull'){toast('ok',state.behind?`已快进 ${state.behind} 个提交`:'已是最新','origin/dev_X20-61');state.behind=0}
+    else if(state.scene==='rejected'){state.behind=3;toast('error','推送被拒绝','远端有 3 个本地没有的新提交，请先拉取；Oris 不提供强制推送',[['拉取',()=>run('pull')]])}
+    else if(!upstream()){state.scene='normal';toast('ok','已发布 dev_X20-61','推送 10 个提交到 origin，并设为上游');state.ahead=0}
+    else{toast('ok',`已推送 ${state.ahead} 个提交`,'origin/dev_X20-61');state.ahead=0}
+    render()},1300);
+}
+function toast(kind,title,sub,actions=[]){
+  const el=document.createElement('div');el.className=`toast ${kind==='error'?'error':''}`;
+  el.innerHTML=`<span class="msg">${title}<small>${sub}</small></span>`;
+  actions.forEach(([l,f])=>{const b=document.createElement('button');b.type='button';b.textContent=l;b.onclick=()=>{el.remove();f()};el.appendChild(b)});
+  const x=document.createElement('button');x.className='x';x.textContent='×';x.onclick=()=>el.remove();el.appendChild(x);
+  $('toasts').appendChild(el);if(kind!=='error')setTimeout(()=>el.remove(),4000);
+}
+function dialog(title,html,ok,onOk){
+  $('dialog').innerHTML=`<h3>${title}</h3>${html}<div class="foot"><button type="button" id="d-cancel">取消</button><button type="button" class="primary" id="d-ok">${ok}</button></div>`;
+  $('overlay').classList.remove('hidden');
+  const close=()=>$('overlay').classList.add('hidden');
+  $('d-cancel').onclick=close;$('d-ok').onclick=()=>{close();onOk()};$('d-ok').focus();
+}
+document.addEventListener('click',e=>{
+  const t=e.target.closest('button');
+  if(t?.dataset.scene){clearTimeout(timer);state={...init(),scene:t.dataset.scene};if(state.scene==='diverged')state.behind=2;$('toasts').innerHTML='';render();return}
+  if(t?.id==='reset'){clearTimeout(timer);state={...init(),scene:'normal'};$('toasts').innerHTML='';render();return}
+  if(t?.dataset.run)return run(t.dataset.run);
+  if(t?.dataset.menu){state.menu=state.menu===t.dataset.menu?null:t.dataset.menu;render();return}
+  if(t?.dataset.mode){state.pullMode=t.dataset.mode;state.menu=null;render();toast('ok',`拉取默认改为“${t.dataset.mode==='ffOnly'?'仅快进':'合并远端改动'}”`,'仅对本仓库生效');return}
+  if(t?.dataset.act==='fetch'||t?.dataset.act==='push')return run(t.dataset.act);
+  if(t?.dataset.act==='upstream'){state.menu=null;render();return dialog('更换上游','<p>当前：origin/dev_X20-61</p><label>新上游 <select><option>origin/dev_X20-61</option><option>origin/main</option></select></label>','设为上游',()=>toast('ok','已设置上游','origin/dev_X20-61'))}
+  if(!e.target.closest('.menu')&&state.menu){state.menu=null;render()}
+});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){$('overlay').classList.add('hidden');if(state.menu){state.menu=null;render()}}});
+render();
+</script>
+</body>
+</html>
