@@ -1,5 +1,6 @@
 use super::*;
-use image::{ImageDecoder, ImageFormat, ImageReader, Limits};
+use image::error::LimitErrorKind;
+use image::{ImageDecoder, ImageError, ImageFormat, ImageReader, Limits};
 use std::io::{Cursor, Read};
 
 pub const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
@@ -205,6 +206,8 @@ pub fn lfs_pointer(bytes: &[u8]) -> Option<(String, u64)> {
     Some((oid?, size?))
 }
 
+const BUDGET_REASON: &str = "图片超过边长 16384 / 单图或双侧总计 40 MP 预算";
+
 pub fn check_dimensions(width: u32, height: u32, remaining: u64) -> Result<u64, String> {
     let pixels = u64::from(width) * u64::from(height);
     if width == 0
@@ -214,7 +217,7 @@ pub fn check_dimensions(width: u32, height: u32, remaining: u64) -> Result<u64, 
         || pixels > MAX_PIXELS
         || pixels > remaining
     {
-        return Err("图片超过边长 16384 / 单图或双侧总计 40 MP 预算".into());
+        return Err(BUDGET_REASON.into());
     }
     Ok(pixels)
 }
@@ -295,9 +298,13 @@ fn inspect_image(
     limits.max_image_height = Some(MAX_EDGE);
     limits.max_alloc = Some(256 * 1024 * 1024);
     reader.limits(limits);
-    let mut decoder = reader
-        .into_decoder()
-        .map_err(|e| format!("图片头解码失败：{e}"))?;
+    // The header decoder enforces MAX_EDGE itself; report that as the same budget reason.
+    let mut decoder = reader.into_decoder().map_err(|e| match e {
+        ImageError::Limits(ref l) if l.kind() == LimitErrorKind::DimensionError => {
+            BUDGET_REASON.to_string()
+        }
+        e => format!("图片头解码失败：{e}"),
+    })?;
     let (width, height) = decoder.dimensions();
     let pixels = check_dimensions(width, height, remaining)?;
     let allocation_bytes = (pixels * 4).max(decoder.total_bytes()) + bytes.len() as u64 * 8;
@@ -799,6 +806,17 @@ mod tests {
             assert_eq!(
                 inspect_image(&bytes, MAX_PIXELS, available).is_ok(),
                 available >= allocation
+            );
+        }
+    }
+    #[test]
+    fn over_edge_png_reports_budget_reason() {
+        for (w, h) in [(MAX_EDGE + 1, 1), (17_000, 64), (1, MAX_EDGE + 1)] {
+            let bytes = encoded(ImageFormat::Png, w, h);
+            assert_eq!(
+                inspect_image(&bytes, MAX_PIXELS, MAX_ALLOCATION).unwrap_err(),
+                BUDGET_REASON,
+                "{w}x{h}"
             );
         }
     }
