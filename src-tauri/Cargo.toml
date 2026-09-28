@@ -45,6 +45,8 @@ webview2-com = { version = "0.38.2", optional = true }
 windows-core = { version = "0.61.2", optional = true }
 
 [dev-dependencies]
+# 测试中驱动 reqwest 的运行时（AI HTTP 路径对本机假服务的测试）；正式构建由 tauri 提供运行时。
+tokio = { version = "1.53.1", features = ["rt"] }
 notify = "8.2.0"
 notify-debouncer-full = "0.6"
 ignore = "0.4"

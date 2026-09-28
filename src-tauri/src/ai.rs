@@ -422,17 +422,99 @@ async fn response_json(response: reqwest::Response) -> Result<Value, String> {
     let body = response
         .text()
         .await
-        .map_err(|e| format!("读取 AI 响应失败：{e}"))?;
+        .map_err(|e| format!("读取 AI 响应失败：{}", request_error(&e)))?;
     if body.len() > 2_000_000 {
         return Err("AI 响应过大".into());
     }
     if !status.is_success() {
-        return Err(format!(
-            "AI 服务返回 HTTP {}，请检查 API Key、模型权限与 Base URL",
-            status.as_u16()
-        ));
+        let code = status.as_u16();
+        return Err(match code {
+            401 | 403 => format!("AI 服务拒绝了请求（HTTP {code}）：请检查 API Key 与该模型的访问权限"),
+            429 => format!("AI 服务限流或额度不足（HTTP {code}）：请稍后再试；Oris 不会自动重试"),
+            _ => format!("AI 服务返回 HTTP {code}，请检查 API Key、模型权限与 Base URL"),
+        });
     }
     serde_json::from_str(&body).map_err(|_| "AI 响应不是 JSON".into())
+}
+
+/// reqwest 错误的中文说明（超时、连接失败单独说明，不附带英文原文以外的内部细节）。
+fn request_error(error: &reqwest::Error) -> String {
+    if error.is_timeout() {
+        "AI 服务在限定时间内没有响应，已停止；请检查网络或稍后重试（Oris 不会自动重试）".into()
+    } else if error.is_connect() {
+        "无法连接 AI 服务：请检查网络、代理与 Base URL".into()
+    } else {
+        format!("网络错误（{error}）")
+    }
+}
+
+/// 查询模型的超时。
+pub(crate) const MODELS_TIMEOUT: Duration = Duration::from_secs(15);
+/// HTTP 生成的超时。
+pub(crate) const HTTP_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// API 提供方的模型列表（不读取密钥，便于测试指向本机假服务）。
+pub(crate) async fn http_models(profile: &AiProfile, api_key: &str, timeout: Duration) -> Result<Vec<String>, String> {
+    let base = base_url(profile)?;
+    let client = reqwest::Client::builder().timeout(timeout).build().map_err(|e| e.to_string())?;
+    let request = client.get(endpoint(&base, "models"));
+    let request = if profile.provider == "anthropic" {
+        request.header("x-api-key", api_key).header("anthropic-version", "2023-06-01")
+    } else {
+        request.bearer_auth(api_key)
+    };
+    let data = response_json(request.send().await.map_err(|e| format!("模型查询失败：{}", request_error(&e)))?).await?;
+    let mut models: Vec<String> = data
+        .get("data")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item.get("id").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect();
+    models.sort();
+    models.dedup();
+    Ok(models)
+}
+
+/// API 提供方的一次生成（不读取密钥；取消时丢弃请求，连接随之关闭）。
+pub(crate) async fn http_generate(profile: &AiProfile, api_key: &str, system_prompt: &str, prompt: &str, cancelled: &AtomicBool, timeout: Duration) -> Result<String, String> {
+    let base = base_url(profile)?;
+    let client = reqwest::Client::builder().timeout(timeout).build().map_err(|e| e.to_string())?;
+    let request = match profile.provider.as_str() {
+        "anthropic" => client.post(endpoint(&base, "messages")).header("x-api-key", api_key).header("anthropic-version", "2023-06-01")
+            .json(&json!({ "model": profile.model, "max_tokens": 2048, "system": system_prompt, "messages": [{"role":"user","content":prompt}] })),
+        "openai" => client.post(endpoint(&base, "responses")).bearer_auth(api_key)
+            .json(&json!({ "model": profile.model, "instructions": system_prompt, "input": prompt, "store": false })),
+        _ => client.post(endpoint(&base, "chat/completions")).bearer_auth(api_key)
+            .json(&json!({ "model": profile.model, "messages": [{"role":"system","content":system_prompt},{"role":"user","content":prompt}] })),
+    };
+    let response = cancellable(request.send(), cancelled).await?
+        .map_err(|e| format!("AI 请求失败：{}", request_error(&e)))?;
+    let data = cancellable(response_json(response), cancelled).await??;
+    let content = match profile.provider.as_str() {
+        "anthropic" => data.pointer("/content/0/text").and_then(Value::as_str),
+        "openai" => data.get("output_text").and_then(Value::as_str).or_else(|| {
+            data.get("output")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .flat_map(|item| {
+                    item.get("content")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                })
+                .find(|item| item.get("type").and_then(Value::as_str) == Some("output_text"))
+                .and_then(|item| item.get("text").and_then(Value::as_str))
+        }),
+        _ => data
+            .pointer("/choices/0/message/content")
+            .and_then(Value::as_str),
+    };
+    content
+        .map(str::to_owned)
+        .ok_or_else(|| "AI 没有返回文本".into())
 }
 
 #[cfg(feature = "desktop")]
@@ -450,38 +532,9 @@ pub async fn list_models(profile: &AiProfile) -> Result<ModelList, String> {
             _ => ModelList { models: Vec::new(), warning: None },
         });
     }
-    let base = base_url(profile)?;
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .build()
-        .map_err(|e| e.to_string())?;
+    base_url(profile)?;
     let api_key = key(&profile.id)?;
-    let request = client.get(endpoint(&base, "models"));
-    let request = if profile.provider == "anthropic" {
-        request
-            .header("x-api-key", api_key)
-            .header("anthropic-version", "2023-06-01")
-    } else {
-        request.bearer_auth(api_key)
-    };
-    let data = response_json(
-        request
-            .send()
-            .await
-            .map_err(|e| format!("模型查询失败：{e}"))?,
-    )
-    .await?;
-    let mut models: Vec<String> = data
-        .get("data")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|item| item.get("id").and_then(Value::as_str))
-        .map(str::to_owned)
-        .collect();
-    models.sort();
-    models.dedup();
-    Ok(ModelList { models, warning: None })
+    Ok(ModelList { models: http_models(profile, &api_key, MODELS_TIMEOUT).await?, warning: None })
 }
 
 const CLI_TIMEOUT: Duration = Duration::from_secs(300);
@@ -641,46 +694,9 @@ pub async fn generate(profile: &AiProfile, cwd: &Path, system_prompt: &str, prom
             .await
             .map_err(|e| e.to_string())?;
     }
-    let base = base_url(profile)?;
+    base_url(profile)?;
     let api_key = key(&profile.id)?;
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(120))
-        .build()
-        .map_err(|e| e.to_string())?;
-    let request = match profile.provider.as_str() {
-        "anthropic" => client.post(endpoint(&base, "messages")).header("x-api-key", api_key).header("anthropic-version", "2023-06-01")
-            .json(&json!({ "model": profile.model, "max_tokens": 2048, "system": system_prompt, "messages": [{"role":"user","content":prompt}] })),
-        "openai" => client.post(endpoint(&base, "responses")).bearer_auth(api_key)
-            .json(&json!({ "model": profile.model, "instructions": system_prompt, "input": prompt, "store": false })),
-        _ => client.post(endpoint(&base, "chat/completions")).bearer_auth(api_key)
-            .json(&json!({ "model": profile.model, "messages": [{"role":"system","content":system_prompt},{"role":"user","content":prompt}] })),
-    };
-    let response = cancellable(request.send(), &cancelled).await?
-        .map_err(|e| format!("AI 请求失败：{e}"))?;
-    let data = cancellable(response_json(response), &cancelled).await??;
-    let content = match profile.provider.as_str() {
-        "anthropic" => data.pointer("/content/0/text").and_then(Value::as_str),
-        "openai" => data.get("output_text").and_then(Value::as_str).or_else(|| {
-            data.get("output")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .flat_map(|item| {
-                    item.get("content")
-                        .and_then(Value::as_array)
-                        .into_iter()
-                        .flatten()
-                })
-                .find(|item| item.get("type").and_then(Value::as_str) == Some("output_text"))
-                .and_then(|item| item.get("text").and_then(Value::as_str))
-        }),
-        _ => data
-            .pointer("/choices/0/message/content")
-            .and_then(Value::as_str),
-    };
-    content
-        .map(str::to_owned)
-        .ok_or_else(|| "AI 没有返回文本".into())
+    http_generate(profile, &api_key, system_prompt, prompt, &cancelled, HTTP_TIMEOUT).await
 }
 
 async fn cancellable<F: std::future::Future>(future: F, cancelled: &AtomicBool) -> Result<F::Output, String> {
@@ -701,4 +717,192 @@ pub fn parse_json_output(output: &str) -> Result<Value, String> {
         .unwrap_or(trimmed);
     let stripped = stripped.strip_suffix("```").unwrap_or(stripped).trim();
     serde_json::from_str(stripped).map_err(|_| "AI 未按要求返回 JSON，请重试或更换模型".into())
+}
+
+/// HTTP 路径对本机假模型服务的测试：服务只监听 127.0.0.1，在测试代码内启动，按脚本返回；不访问任何真实模型服务、不读取凭据。
+#[cfg(test)]
+mod http_tests {
+    use super::*;
+    use std::io::{BufRead, BufReader};
+    use std::net::TcpListener;
+    use std::sync::{mpsc, Arc};
+
+    struct Reply {
+        status: u16,
+        body: String,
+        delay: Duration,
+    }
+
+    fn ok(body: Value) -> Reply {
+        Reply { status: 200, body: body.to_string(), delay: Duration::ZERO }
+    }
+
+    /// 收到的请求：路径、全部请求头（小写）与正文。
+    #[derive(Debug)]
+    struct Seen {
+        path: String,
+        headers: String,
+        body: String,
+    }
+
+    /// 启动只接受一次连接的假服务；返回 base URL、请求记录，以及“回复前连接是否已被对方关闭”。
+    fn serve(reply: Reply) -> (String, mpsc::Receiver<Seen>, mpsc::Receiver<bool>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (seen_tx, seen_rx) = mpsc::channel();
+        let (closed_tx, closed_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let Ok((stream, _)) = listener.accept() else { return };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request_line = String::new();
+            reader.read_line(&mut request_line).unwrap();
+            let mut headers = String::new();
+            let mut length = 0usize;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" || line.is_empty() {
+                    break;
+                }
+                let lower = line.to_ascii_lowercase();
+                if let Some(value) = lower.strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap_or(0);
+                }
+                headers.push_str(&lower);
+            }
+            let mut body = vec![0u8; length];
+            reader.read_exact(&mut body).unwrap();
+            let path = request_line.split_whitespace().nth(1).unwrap_or("").to_owned();
+            let _ = seen_tx.send(Seen { path, headers, body: String::from_utf8_lossy(&body).into_owned() });
+            // 慢响应：等待期间检测对方是否已关闭连接（取消 / 超时）。
+            let started = Instant::now();
+            let mut probe = stream.try_clone().unwrap();
+            probe.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+            while started.elapsed() < reply.delay {
+                let mut byte = [0u8; 1];
+                match probe.read(&mut byte) {
+                    Ok(0) => {
+                        let _ = closed_tx.send(true);
+                        return;
+                    }
+                    Ok(_) => {}
+                    Err(error) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
+                    Err(_) => {
+                        let _ = closed_tx.send(true);
+                        return;
+                    }
+                }
+            }
+            let reason = match reply.status {
+                200 => "OK",
+                401 => "Unauthorized",
+                429 => "Too Many Requests",
+                _ => "Error",
+            };
+            let response = format!(
+                "HTTP/1.1 {} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                reply.status,
+                reply.body.len(),
+                reply.body
+            );
+            let mut stream = stream;
+            let _ = stream.write_all(response.as_bytes());
+            let _ = closed_tx.send(false);
+        });
+        (format!("http://127.0.0.1:{port}/v1"), seen_rx, closed_rx)
+    }
+
+    fn profile(provider: &str, base: &str) -> AiProfile {
+        AiProfile { id: "oris-test".into(), kind: "api".into(), provider: provider.into(), executable: String::new(), base_url: base.into(), model: "fake-model".into() }
+    }
+
+    fn run<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(future)
+    }
+
+    fn generate(provider: &str, reply: Reply, timeout: Duration) -> (Result<String, String>, Seen) {
+        let (base, seen, _) = serve(reply);
+        let cancelled = AtomicBool::new(false);
+        let result = run(http_generate(&profile(provider, &base), "sk-oris-test", "系统提示", "用户输入", &cancelled, timeout));
+        (result, seen.recv_timeout(Duration::from_secs(5)).unwrap())
+    }
+
+    #[test]
+    fn compatible_openai_and_anthropic_requests_carry_prompt_key_and_return_the_plan() {
+        let plan = json!({ "kind": "git", "summary": "暂存", "operation": { "kind": "stage", "pathIds": "all" } }).to_string();
+        let (result, seen) = generate("compatible", ok(json!({ "choices": [{ "message": { "content": plan } }] })), HTTP_TIMEOUT);
+        assert_eq!(result.unwrap(), plan);
+        assert_eq!(seen.path, "/v1/chat/completions");
+        assert!(seen.headers.contains("authorization: bearer sk-oris-test"));
+        let body: Value = serde_json::from_str(&seen.body).unwrap();
+        assert_eq!(body["model"], "fake-model");
+        assert_eq!(body["messages"][0]["content"], "系统提示");
+        assert_eq!(body["messages"][1]["content"], "用户输入");
+        let (result, seen) = generate("openai", ok(json!({ "output_text": "{}" })), HTTP_TIMEOUT);
+        assert_eq!(result.unwrap(), "{}");
+        assert_eq!(seen.path, "/v1/responses");
+        assert_eq!(serde_json::from_str::<Value>(&seen.body).unwrap()["store"], false, "OpenAI 请求不保存");
+        let (result, seen) = generate("anthropic", ok(json!({ "content": [{ "type": "text", "text": "{\"kind\":\"answer\"}" }] })), HTTP_TIMEOUT);
+        assert_eq!(result.unwrap(), "{\"kind\":\"answer\"}");
+        assert_eq!(seen.path, "/v1/messages");
+        assert!(seen.headers.contains("x-api-key: sk-oris-test") && !seen.headers.contains("authorization"));
+    }
+
+    #[test]
+    fn http_errors_and_invalid_output_are_explained_in_chinese_without_retry() {
+        for (status, expected) in [(401, "拒绝了请求（HTTP 401）"), (403, "拒绝了请求（HTTP 403）"), (429, "限流或额度不足（HTTP 429）"), (500, "AI 服务返回 HTTP 500")] {
+            // 服务只接受一次连接：若 Oris 重试，第二次连接会失败并改变错误文字。
+            let (base, seen, _) = serve(Reply { status, body: "{\"error\":\"x\"}".into(), delay: Duration::ZERO });
+            let result = run(http_generate(&profile("compatible", &base), "k", "s", "p", &AtomicBool::new(false), HTTP_TIMEOUT));
+            assert!(result.as_ref().unwrap_err().contains(expected), "{status}: {result:?}");
+            assert!(seen.recv_timeout(Duration::from_secs(5)).is_ok());
+        }
+        let (result, _) = generate("compatible", Reply { status: 200, body: "<html>not json</html>".into(), delay: Duration::ZERO }, HTTP_TIMEOUT);
+        assert_eq!(result.unwrap_err(), "AI 响应不是 JSON");
+        let (result, _) = generate("compatible", ok(json!({ "choices": [{ "message": { "content": "好的，我来帮你暂存" } }] })), HTTP_TIMEOUT);
+        assert_eq!(parse_json_output(&result.unwrap()).unwrap_err(), "AI 未按要求返回 JSON，请重试或更换模型");
+        let (result, _) = generate("compatible", ok(json!({ "choices": [] })), HTTP_TIMEOUT);
+        assert_eq!(result.unwrap_err(), "AI 没有返回文本");
+    }
+
+    #[test]
+    fn cancel_closes_the_connection_and_timeout_is_explained() {
+        // 取消：慢响应期间置位，调用立即结束，服务端看到连接被关闭。
+        let (base, seen, closed) = serve(Reply { status: 200, body: "{}".into(), delay: Duration::from_secs(10) });
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let flag = cancelled.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(400));
+            flag.store(true, Ordering::Relaxed);
+        });
+        let started = Instant::now();
+        let result = run(http_generate(&profile("compatible", &base), "k", "s", "p", &cancelled, HTTP_TIMEOUT));
+        assert_eq!(result.unwrap_err(), "AI 生成已取消");
+        assert!(started.elapsed() < Duration::from_secs(3), "取消后应立即结束：{:?}", started.elapsed());
+        assert!(seen.recv_timeout(Duration::from_secs(5)).is_ok());
+        assert_eq!(closed.recv_timeout(Duration::from_secs(5)), Ok(true), "取消后 HTTP 连接应关闭");
+        // 超时：用短超时代替 120 s，服务端同样看到连接被关闭。
+        let (base, _, closed) = serve(Reply { status: 200, body: "{}".into(), delay: Duration::from_secs(10) });
+        let result = run(http_generate(&profile("compatible", &base), "k", "s", "p", &AtomicBool::new(false), Duration::from_millis(500)));
+        let error = result.unwrap_err();
+        assert!(error.contains("没有响应") && !error.contains("operation timed out"), "{error}");
+        assert_eq!(closed.recv_timeout(Duration::from_secs(5)), Ok(true));
+        // 连接失败：本机没有服务监听的端口。
+        let unused = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let result = run(http_generate(&profile("compatible", &format!("http://127.0.0.1:{unused}")), "k", "s", "p", &AtomicBool::new(false), HTTP_TIMEOUT));
+        assert!(result.unwrap_err().contains("无法连接 AI 服务"));
+    }
+
+    #[test]
+    fn models_are_listed_and_base_urls_are_restricted() {
+        let (base, seen, _) = serve(ok(json!({ "data": [{ "id": "b" }, { "id": "a" }, { "id": "b" }] })));
+        let models = run(http_models(&profile("deepseek", &base), "k", MODELS_TIMEOUT)).unwrap();
+        assert_eq!(models, vec!["a", "b"]);
+        assert_eq!(seen.recv_timeout(Duration::from_secs(5)).unwrap().path, "/v1/models");
+        assert!(base_url(&profile("compatible", "http://example.com/v1")).unwrap_err().contains("HTTPS"));
+        assert!(base_url(&profile("compatible", "https://user:pass@example.com/v1")).unwrap_err().contains("账号"));
+        assert!(base_url(&profile("compatible", "https://example.com/v1?key=1")).unwrap_err().contains("查询参数"));
+        assert_eq!(base_url(&profile("compatible", "http://127.0.0.1:9/v1/")).unwrap(), "http://127.0.0.1:9/v1");
+        assert_eq!(base_url(&profile("openai", "")).unwrap(), "https://api.openai.com/v1");
+    }
 }
