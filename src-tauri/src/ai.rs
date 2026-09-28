@@ -139,10 +139,22 @@ fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
     })
 }
 
+/// AI CLI 的进程工厂：Windows 下不弹出控制台窗口（npm 装的 `.cmd` 包装同样适用）。
+fn cli_command(executable: &Path) -> Command {
+    let mut command = Command::new(executable);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+}
+
 /// 运行 `<tool> --version`，5 秒内成功退出时返回其 stdout。
 fn tool_version(executable: &Path) -> Option<String> {
     let mut output = tempfile::tempfile().ok()?;
-    let mut process = Command::new(executable)
+    let mut process = cli_command(executable)
         .arg("--version")
         .stdin(Stdio::null())
         .stdout(output.try_clone().ok()?)
@@ -226,6 +238,18 @@ pub fn detect_tools() -> Vec<ToolCandidate> {
 #[cfg(test)]
 mod failure_tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn cli_command_creates_no_console_window() {
+        let script = "Add-Type -Name Native -Namespace Oris -MemberDefinition '[DllImport(\"kernel32.dll\")] public static extern IntPtr GetConsoleWindow();'; [Oris.Native]::GetConsoleWindow().ToInt64()";
+        let output = cli_command(Path::new("powershell.exe"))
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "0");
+    }
 
     #[test]
     fn parses_versions_from_tool_output() {
@@ -468,7 +492,7 @@ fn run_cli(profile: &AiProfile, _cwd: &Path, system_prompt: &str, prompt: &str, 
     let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
     let output_path = temp.path().join("result.txt");
     let stderr_path = temp.path().join("stderr.txt");
-    let mut cmd = Command::new(&executable);
+    let mut cmd = cli_command(&executable);
     match profile.provider.as_str() {
         "codex" => {
             let developer_config = format!("developer_instructions={}", serde_json::to_string(system_prompt).map_err(|e| e.to_string())?);
