@@ -516,3 +516,41 @@ fn refs_view_config_values_match_individual_config_get() {
     assert_eq!(get("branch.Feat.X.rebase").as_deref(), Some("merges"));
     assert_eq!(get("branch.feat.x.rebase").as_deref(), Some("true"));
 }
+
+/// V2-D60：HEAD 状态改由 `for-each-ref` 的 `%(HEAD)` 取得（分支上时不再另起 symbolic-ref / rev-parse），
+/// 与逐项读取的结果一致；分离 HEAD、尚无提交的分支仍按原方式读取；默认日志起点仍包含分离的 HEAD。
+#[test]
+fn head_state_from_for_each_ref_matches_read_head() {
+    let dir = init();
+    let p = dir.path();
+    // 尚无提交
+    let unborn = refs::read_refs(gp(), p).unwrap();
+    assert_eq!(unborn.head, refs::read_head(gp(), p));
+    assert!(unborn.head.unborn);
+    let first = commit(p, "a.txt", "1\n", "one", 0);
+    let second = commit(p, "a.txt", "2\n", "two", 1);
+    git(p, &["branch", "side", &first]);
+    let attached = refs::read_refs(gp(), p).unwrap();
+    assert_eq!(attached.head, refs::read_head(gp(), p));
+    assert_eq!(attached.head.branch.as_deref(), Some("refs/heads/main"));
+    assert_eq!(attached.head.oid.as_deref(), Some(second.as_str()));
+    assert!(attached.local.iter().any(|b| b.current && b.name == "main"));
+    // 分离 HEAD 在一个不被任何分支指向的提交上：日志起点必须包含它。
+    let detached_commit = {
+        git(p, &["switch", "-q", "--detach", &second]);
+        commit(p, "a.txt", "3\n", "three", 2)
+    };
+    let detached = refs::read_refs(gp(), p).unwrap();
+    assert_eq!(detached.head, refs::read_head(gp(), p));
+    assert!(detached.head.detached);
+    assert!(detached.local.iter().all(|b| !b.current));
+    let page = log::read_log(gp(), p, &LogQuery { refs: vec![], search: None, page_size: 10 }, None).unwrap();
+    assert_eq!(page.commits[0].oid, detached_commit);
+    assert!(page.tips.contains(&detached_commit));
+    // 回到分支：起点来自 for-each-ref（HEAD 所在分支已包含）。
+    git(p, &["switch", "-q", "side"]);
+    let page = log::read_log(gp(), p, &LogQuery { refs: vec![], search: None, page_size: 10 }, None).unwrap();
+    assert!(page.tips.contains(&first) && page.tips.contains(&second));
+    assert!(!page.tips.contains(&detached_commit));
+    assert_eq!(refs::read_refs(gp(), p).unwrap().head, refs::read_head(gp(), p));
+}
