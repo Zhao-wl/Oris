@@ -172,7 +172,8 @@ const V2_HELPERS = String.raw`
     commitText() { return document.querySelector('textarea[aria-label="提交信息"]')?.value ?? null; },
     tab(prefix) { return qa('.git-tabs button').find((b) => b.textContent.startsWith(prefix)) ?? null; },
     staged() { return Number(/提交 · (\d+)/.exec(window.__v2.tab('提交')?.textContent ?? '')?.[1] ?? NaN); },
-    counts() { return document.querySelector('.branch-counts')?.textContent ?? null; },
+    /** 领先 / 落后（V2-D64 后在推送 / 拉取主按钮上），格式 "↑a ↓b"；没有上游或执行中时为 null。 */
+    counts() { const up = document.querySelector('.sync-push .sync-main .sync-count')?.textContent; const down = document.querySelector('.sync-pull .sync-main .sync-count')?.textContent; return up && down ? up + ' ' + down : null; },
     commitResult() { const n = document.querySelector('.commit-result'); return n ? { cls: n.className, text: n.textContent } : null; },
     commitReason() { return document.querySelector('.commit-reason')?.textContent ?? null; },
     button(text) { return qa('button').find((b) => b.textContent === text) ?? null; },

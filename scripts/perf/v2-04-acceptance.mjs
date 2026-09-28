@@ -1,5 +1,7 @@
 // V2-04 界面验收：B11（pull / push）、B12（进度、取消、超时、认证失败）、B13（merge）、B14（不支持的进行中状态）、
 // B16（外部锁）、B17（只读回归）、B18（凭据脱敏），以及真实远端 AgentHub 的 SSH / HTTPS fetch、pull、push 与推送被拒绝。
+// 同步入口按 V2-D64（docs/design/06-sync-toolbar-ui.md）：标题栏获取 / 拉取 / 推送分体按钮，主按钮一键执行，▾ 放选项；
+// 无法确定 remote 时弹出 .remote-choice-dialog，结果显示在 .sync-toast。
 // 只经 CDP 操作本轮启动并核验过的 Oris 实例（PID + 完整路径 + 主窗口句柄 + 端口归属），不调用任何窗口激活 API；
 // 点击与输入是 CDP 注入的页面事件，不是真实鼠标、键盘或系统焦点。
 // 用法：node scripts/perf/v2-04-acceptance.mjs --exe <oris.exe> [--port 9951] [--only local|real] [--run-id 20260924-2031] [--keep]
@@ -89,14 +91,23 @@ const H = String.raw`
   const setValue = (el, value) => { const proto = el instanceof HTMLSelectElement ? HTMLSelectElement.prototype : el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype; Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, value); el.dispatchEvent(new Event(el instanceof HTMLSelectElement ? 'change' : 'input', { bubbles: true })); };
   window.__s = {
     button(text, root = document) { return qa('button', root).find((b) => b.textContent === text) ?? null; },
-    syncButton() { return document.querySelector('.sync-button'); },
-    sync() { return document.querySelector('.sync-popover'); },
-    syncText() { return window.__s.sync()?.textContent ?? ''; },
+    /** 标题栏分体按钮（V2-D64）：kind 为 fetch / pull / push；main 直接执行，more 为 ▾。 */
+    main(kind) { return document.querySelector('.sync-' + kind + ' .sync-main'); },
+    more(kind) { return document.querySelector('.sync-' + kind + ' .sync-more'); },
+    menu() { return document.querySelector('.sync-menu'); },
+    menuText() { return window.__s.menu()?.textContent ?? ''; },
+    /** 菜单项按主文字匹配（不含 ● 与说明小字）。 */
+    menuItem(text) { return qa('.sync-menu [role^=menuitem]').find((b) => (b.lastElementChild?.firstChild?.textContent ?? '') === text) ?? null; },
+    menuItems() { return qa('.sync-menu [role^=menuitem]').map((b) => ({ text: b.lastElementChild?.firstChild?.textContent ?? '', checked: b.getAttribute('aria-checked'), disabled: b.disabled })); },
+    toast() { const t = document.querySelector('.sync-toast'); return t ? { cls: t.className, text: t.querySelector('.sync-toast-text')?.textContent ?? '', actions: qa('button', t).map((b) => b.textContent).filter((x) => x !== '×') } : null; },
+    toastButton(text) { const t = document.querySelector('.sync-toast'); return t ? window.__s.button(text, t) : null; },
+    remoteChoice() { return document.querySelector('.remote-choice-dialog'); },
     dialog(cls) { return document.querySelector(cls ?? '.branch-dialog, .confirm-dialog'); },
     setIn(root, selector, value) { const el = root.querySelector(selector); if (!el) throw new Error('没有 ' + selector); setValue(el, value); },
     opStatus() { const n = document.querySelector('.op-status'); return n ? { cls: n.className, text: n.textContent } : null; },
     running() { return !!document.querySelector('.op-status.running'); },
-    counts() { return document.querySelector('.branch-counts')?.textContent ?? null; },
+    /** 领先 / 落后（原 .branch-counts，V2-D64 后在推送 / 拉取主按钮上）：格式 "↑a ↓b"；没有上游或执行中时为 null。 */
+    counts() { const up = document.querySelector('.sync-push .sync-main .sync-count')?.textContent; const down = document.querySelector('.sync-pull .sync-main .sync-count')?.textContent; return up && down ? up + ' ' + down : null; },
     banner() { return document.querySelector('.merge-banner')?.textContent ?? null; },
     opBanner() { return document.querySelector('.op-banner')?.textContent ?? null; },
     branchRow(name) { return qa('.branch-row').find((r) => r.querySelector('.branch-row-name')?.textContent.replace(/^● /, '') === name) ?? null; },
@@ -129,15 +140,21 @@ async function start(profile, extraEnv = {}) {
     await sleep(400);
   };
   const refresh = async () => { await evaluate(`window.__op.button('↻ 本地刷新').click()`); await sleep(300); await waitUntil(`!window.__op.loading()`); await sleep(700); };
-  const openSync = async () => { if (!(await evaluate(`!!window.__s.sync()`))) await click(`window.__s.syncButton()`); await waitUntil(`window.__s.syncText().includes('获取远端状态') && !window.__s.syncText().includes('正在读取')`); };
-  const closeSync = async () => { if (await evaluate(`!!window.__s.sync()`)) await click(`window.__s.syncButton()`); };
-  const syncAction = async (label, dialogClass) => { await openSync(); await click(`window.__s.button(${q(label)}, window.__s.sync())`); if (dialogClass) await waitUntil(`!!document.querySelector(${q(dialogClass)}) && !document.querySelector(${q(dialogClass)}).textContent.includes('正在读取')`); };
+  /** 打开某个 ▾ 菜单（获取 ▾ 会读取 remote 列表，等读取结束）；再点同一个 ▾ 关闭。 */
+  const openMenu = async (kind) => {
+    if ((await evaluate(`window.__s.more(${q(kind)})?.getAttribute('aria-expanded')`)) !== "true") await click(`window.__s.more(${q(kind)})`);
+    await waitUntil(`!!window.__s.menu() && !window.__s.menuText().includes('正在读取')`);
+  };
+  const closeMenu = async () => { const open = await evaluate(`['fetch', 'pull', 'push'].find((k) => window.__s.more(k)?.getAttribute('aria-expanded') === 'true') ?? null`); if (open) await click(`window.__s.more(${q(open)})`); await waitUntil(`!window.__s.menu()`); };
   const confirmDialog = async (label, timeout = 30000) => { await waitUntil(`!!document.querySelector('.confirm-dialog')`, timeout); await click(`window.__s.button(${q(label)}, document.querySelector('.confirm-dialog'))`); };
-  const fetch = async () => { await syncAction("获取…", ".fetch-dialog"); await click(`window.__s.button('获取', document.querySelector('.fetch-dialog'))`); await settle(); };
-  const pull = async (mode = "ffOnly") => { await syncAction("选项…", ".pull-dialog"); if (mode === "merge") await evaluate(`document.querySelector('.pull-dialog input[aria-label=合并远端改动]').click()`); await click(`window.__s.button('拉取', document.querySelector('.pull-dialog'))`); };
-  const push = async (remote) => { await syncAction("预览…", ".push-dialog"); if (remote) await evaluate(`window.__s.setIn(document.querySelector('.push-dialog'), 'select', ${q(remote)})`); await sleep(100); await click(`window.__s.button('推送', document.querySelector('.push-dialog'))`); };
-  const openBranches = async () => { if (!(await evaluate(`!!document.querySelector('.branch-popover:not(.sync-popover)')`))) await click(`document.querySelector('.branch-button')`); await waitUntil(`document.querySelectorAll('.branch-row').length > 0`); };
-  return { app, evaluate, waitUntil, shot, click, settle, addProject, refresh, openSync, closeSync, confirmDialog, fetch, pull, push, openBranches };
+  // 主按钮一键执行（V2-D64）：获取默认 remote、按本仓库记住的方式拉取、推送到上游（没有上游时发布到仅有的 remote）。
+  const fetch = async () => { await click(`window.__s.main('fetch')`); await settle(); };
+  const pull = async () => { await click(`window.__s.main('pull')`); };
+  const push = async () => { await click(`window.__s.main('push')`); };
+  /** 在 拉取 ▾ 中选择拉取方式（menuitemradio，选中即设为本仓库默认）。 */
+  const setPullMode = async (mode) => { await openMenu("pull"); await click(`window.__s.menuItem(${q(mode === "merge" ? "合并远端改动" : "仅快进")})`); await waitUntil(`!window.__s.menu()`); };
+  const openBranches = async () => { if (!(await evaluate(`!!document.querySelector('.branch-popover')`))) await click(`document.querySelector('.branch-button')`); await waitUntil(`document.querySelectorAll('.branch-row').length > 0`); };
+  return { app, evaluate, waitUntil, shot, click, settle, addProject, refresh, openMenu, closeMenu, confirmDialog, fetch, pull, push, setPullMode, openBranches };
 }
 async function stop(ctx) {
   try { ctx.app.cdp.close(); } catch { /* 已关闭 */ }
@@ -171,25 +188,31 @@ async function localSuite() {
   try {
     await ctx.waitUntil(`document.querySelector('.project-empty')`);
     await ctx.addProject(r.local);
-    // ---------- B17：浏览同步入口、打开对话框后取消 ----------
+    // ---------- B17：浏览同步按钮、展开三个 ▾ 菜单后关闭 ----------
     let before = fingerprint(r.local);
-    await ctx.openSync();
-    const summary = await ctx.evaluate(`window.__s.syncText()`);
-    await ctx.click(`window.__s.button('选项…', window.__s.sync())`);
-    await ctx.waitUntil(`!!document.querySelector('.pull-dialog')`);
-    await ctx.click(`window.__s.button('取消', document.querySelector('.pull-dialog'))`);
-    await ctx.openSync();
-    await ctx.click(`window.__s.button('预览…', window.__s.sync())`);
-    await ctx.waitUntil(`!!document.querySelector('.push-dialog')`);
-    await ctx.click(`window.__s.button('取消', document.querySelector('.push-dialog'))`);
-    let e = evidence("B17 打开同步入口与拉取 / 推送对话框后取消", r.local, before, []);
-    check("B11 同步入口：当前分支、上游与领先 / 落后持续可见；B17 打开入口与对话框不改仓库", summary.includes("● main → origin/main") && summary.includes("已同步") && (await ctx.evaluate(`window.__s.counts()`)) === "↑0 ↓0" && e.changedCount === 0, { summary, e, shot: await ctx.shot("b11-sync-popover") });
+    const summary = await ctx.evaluate(`({ counts: window.__s.counts(), pull: window.__s.main('pull').title, push: window.__s.main('push').title, labels: ['fetch', 'pull', 'push'].map((k) => window.__s.main(k).textContent) })`);
+    await ctx.openMenu("fetch");
+    summary.fetchMenu = await ctx.evaluate(`window.__s.menuItems()`);
+    await ctx.closeMenu();
+    await ctx.openMenu("pull");
+    summary.pullMenu = await ctx.evaluate(`window.__s.menuItems()`);
+    await ctx.closeMenu();
+    await ctx.openMenu("push");
+    summary.pushHead = await ctx.evaluate(`document.querySelector('.sync-menu-head')?.textContent ?? ''`);
+    const menuShot = await ctx.shot("b11-sync-toolbar");
+    await ctx.closeMenu();
+    let e = evidence("B17 展开获取 / 拉取 / 推送 ▾ 后关闭", r.local, before, []);
+    check("B11 同步按钮：当前分支、上游与领先 / 落后持续可见（推送 / 拉取按钮计数与 ▾ 说明）；B17 展开三个菜单不改仓库",
+      summary.counts === "↑0 ↓0" && summary.pull.includes("从 origin/main 拉取（仅快进）") && summary.push.includes("推送到 origin/main") && summary.pushHead.includes("推送 main → origin/main：领先 0 个提交")
+      && summary.fetchMenu.length === 1 && summary.fetchMenu[0].text === "origin" && summary.pullMenu.find((m) => m.text === "仅快进")?.checked === "true" && e.changedCount === 0, { summary, e, shot: menuShot });
     // ---------- B11 获取 → 仅快进 ----------
     put(r.other, "b.txt", "remote 1\n"); const remote1 = commitAll(r.other, "remote 1"); git(r.other, ["push", "-q", "origin", "main"]);
     await traced("fetch", () => ctx.fetch());
     await ctx.waitUntil(`window.__s.counts() === '↑0 ↓1'`, 15000);
+    const fetchView = await ctx.evaluate(`({ toast: window.__s.toast(), label: window.__s.main('fetch').textContent, title: window.__s.main('fetch').title })`);
+    check("B11 一键获取：主按钮直接获取上游 remote，结果提示成功，按钮显示获取时间", fetchView.toast?.cls.includes("succeeded") && fetchView.toast.text.includes("origin") && fetchView.label.includes("刚刚") && fetchView.title.includes("上次由 Oris 获取 origin") && git(r.local, ["rev-parse", "origin/main"]) === remote1, fetchView);
     before = fingerprint(r.local);
-    await traced("pull 仅快进", async () => { await ctx.pull("ffOnly"); await ctx.settle(); });
+    await traced("pull 仅快进", async () => { await ctx.pull(); await ctx.settle(); });
     let status = await ctx.evaluate(`window.__s.opStatus()`);
     e = evidence("pull 仅快进", r.local, before, ["head", "index", "worktree", "remote-refs"]);
     check("B11 拉取（仅快进，默认）：HEAD 快进到上游，领先 / 落后刷新为 0/0", status.cls.includes("succeeded") && status.text.includes("快进") && git(r.local, ["rev-parse", "HEAD"]) === remote1 && e.unexpected.length === 0 && (await ctx.evaluate(`window.__s.counts()`)) === "↑0 ↓0", { status, e });
@@ -198,18 +221,36 @@ async function localSuite() {
     put(r.other, "c.txt", "remote 2\n"); commitAll(r.other, "remote 2"); git(r.other, ["push", "-q", "origin", "main"]);
     put(r.local, "d.txt", "local\n"); const localCommit = commitAll(r.local, "local work");
     await ctx.refresh();
-    await ctx.openSync(); await ctx.click(`window.__s.button('选项…', window.__s.sync())`);
-    await ctx.waitUntil(`document.querySelector('.pull-dialog')?.textContent.includes('pull.rebase=true')`);
-    const rebaseNote = await ctx.evaluate(`document.querySelector('.pull-dialog').textContent`);
+    // V2-D64 后拉取说明固定写在 拉取 ▾ 中（不再按 pull.rebase 配置条件显示）；是否真的以合并执行由下面的仓库状态核对。
+    await ctx.openMenu("pull");
+    const rebaseNote = await ctx.evaluate(`window.__s.menuText()`);
+    await ctx.closeMenu();
     before = fingerprint(r.local);
-    await ctx.click(`window.__s.button('拉取', document.querySelector('.pull-dialog'))`);
+    await ctx.pull();
     await ctx.waitUntil(`document.querySelector('.confirm-dialog')?.textContent.includes('已分叉')`, 30000);
     const diverged = await ctx.evaluate(`document.querySelector('.confirm-dialog').textContent`);
     const unchangedHead = git(r.local, ["rev-parse", "HEAD"]) === localCommit;
     await ctx.confirmDialog("改用合并拉取"); await ctx.settle();
     status = await ctx.evaluate(`window.__s.opStatus()`);
     e = evidence("pull 分叉后改用合并", r.local, before, ["head", "index", "worktree", "remote-refs"]);
-    check("B11 分叉时仅快进失败并说明原因，改用合并；配置 pull.rebase=true 时界面说明并仍以合并执行", rebaseNote.includes("会以合并方式执行") && diverged.includes("无法仅快进") && unchangedHead && parents(r.local, "HEAD") === 2 && git(r.local, ["rev-parse", "HEAD^1"]) === localCommit && !existsSync(path.join(r.local, ".git", "rebase-merge")) && status.cls.includes("succeeded") && e.unexpected.length === 0, { rebaseNote: rebaseNote.slice(0, 200), diverged: diverged.slice(0, 200), status, e, shot: await ctx.shot("b11-diverged-merged") });
+    check("B11 分叉时仅快进失败并说明原因，改用合并；配置 pull.rebase=true 时界面说明并仍以合并执行", rebaseNote.includes("配置了 pull.rebase 时也以合并执行") && diverged.includes("无法仅快进") && unchangedHead && parents(r.local, "HEAD") === 2 && git(r.local, ["rev-parse", "HEAD^1"]) === localCommit && !existsSync(path.join(r.local, ".git", "rebase-merge")) && status.cls.includes("succeeded") && e.unexpected.length === 0, { rebaseNote: rebaseNote.slice(0, 200), diverged: diverged.slice(0, 200), status, e, shot: await ctx.shot("b11-diverged-merged") });
+    // ---------- B11 拉取方式：拉取 ▾ 选“合并远端改动”后按仓库记住，已分叉时直接合并、不再询问 ----------
+    await ctx.setPullMode("merge");
+    await ctx.openMenu("pull");
+    const modeView = await ctx.evaluate(`({ items: window.__s.menuItems(), title: window.__s.main('pull').title, stored: JSON.parse(localStorage.getItem('oris.pullMode.v1') ?? '{}') })`);
+    await ctx.closeMenu();
+    put(r.other, "c2.txt", "remote 2b\n"); git(r.other, ["pull", "-q", "--no-rebase"]); commitAll(r.other, "remote 2b"); git(r.other, ["push", "-q", "origin", "main"]);
+    put(r.local, "d2.txt", "local b\n"); const localCommit2 = commitAll(r.local, "local work b");
+    await ctx.refresh();
+    before = fingerprint(r.local);
+    await ctx.pull(); await ctx.settle();
+    const askedAgain = await ctx.evaluate(`!!document.querySelector('.confirm-dialog')`);
+    status = await ctx.evaluate(`window.__s.opStatus()`);
+    e = evidence("pull 合并方式（已记住）", r.local, before, ["head", "index", "worktree", "remote-refs"]);
+    check("B11 拉取 ▾ 选择“合并远端改动”：单选项选中、按仓库记住，主按钮已分叉时直接生成合并提交（仍不做 rebase）",
+      modeView.items.find((m) => m.text === "合并远端改动")?.checked === "true" && modeView.items.find((m) => m.text === "仅快进")?.checked === "false" && modeView.title.includes("合并远端改动") && Object.values(modeView.stored).includes("merge")
+      && !askedAgain && parents(r.local, "HEAD") === 2 && git(r.local, ["rev-parse", "HEAD^1"]) === localCommit2 && !existsSync(path.join(r.local, ".git", "rebase-merge")) && status.cls.includes("succeeded") && e.unexpected.length === 0, { modeView, askedAgain, status, e });
+    await ctx.setPullMode("ffOnly");
     git(r.local, ["config", "--unset", "pull.rebase"]);
     // ---------- B11 推送（有上游）与被拒绝 ----------
     before = fingerprint(r.local);
@@ -237,37 +278,74 @@ async function localSuite() {
     before = fingerprint(r.local);
     await ctx.push(); await ctx.settle();
     status = await ctx.evaluate(`window.__s.opStatus()`);
-    // 可操作的入口（按钮 / 菜单项）中不应出现强制推送；状态栏说明文字除外。
-    const forceMentioned = await ctx.evaluate(`[...document.querySelectorAll('button:not(.op-status), [role=menuitem]')].some((b) => /强制|force/i.test(b.textContent))`);
+    const rejectedUi = await ctx.evaluate(`({ toast: window.__s.toast(), statusPull: document.querySelector('.push-rejected-pull')?.textContent ?? null })`);
+    // 可操作的入口（按钮 / 菜单项，含展开的 推送 ▾）中不应出现强制推送；状态栏说明文字除外。
+    const forceIn = () => ctx.evaluate(`[...document.querySelectorAll('button:not(.op-status), [role=menuitem]')].some((b) => /强制|force/i.test(b.textContent))`);
+    let forceMentioned = await forceIn();
+    await ctx.openMenu("push"); forceMentioned ||= await forceIn(); await ctx.closeMenu();
     e = evidence("push 被拒绝", r.local, before, ["remote-refs"]);
-    check("B11 推送被拒绝：提示先拉取，不提供任何强推入口，远端未被改写；不推送 tag", status.cls.includes("failed") && status.text.includes("被拒绝") && status.text.includes("先拉取") && !forceMentioned && bareRef(r.bare, "refs/heads/main") === remote3 && !bareRef(r.bare, "refs/tags/v-local") && e.unexpected.length === 0, { status, forceMentioned, e, shot: await ctx.shot("b11-push-rejected") });
-    // ---------- B11 stash 后拉取 ----------
+    check("B11 推送被拒绝：提示先拉取（结果提示与状态栏均提供“拉取”），不提供任何强推入口，远端未被改写；不推送 tag",
+      status.cls.includes("failed") && status.text.includes("被拒绝") && status.text.includes("先拉取") && rejectedUi.toast?.cls.includes("failed") && rejectedUi.toast.text.includes("被拒绝") && rejectedUi.toast.actions.join() === "拉取" && rejectedUi.statusPull === "拉取"
+      && !forceMentioned && bareRef(r.bare, "refs/heads/main") === remote3 && !bareRef(r.bare, "refs/tags/v-local") && e.unexpected.length === 0, { status, rejectedUi, forceMentioned, e, shot: await ctx.shot("b11-push-rejected") });
+    // ---------- B11 stash 后拉取（从状态栏“拉取”直接拉取） ----------
     put(r.other, "a.txt", "remote edits a\n"); const remote4 = commitAll(r.other, "remote edits a"); git(r.other, ["push", "-q", "origin", "main"]);
     git(r.local, ["reset", "-q", "--hard", "origin/main"]);
     put(r.local, "a.txt", "local uncommitted a\n");
     await ctx.refresh();
     before = fingerprint(r.local);
-    await ctx.pull("ffOnly");
+    const viaStatusBar = await ctx.evaluate(`document.querySelector('.push-rejected-pull')?.textContent === '拉取'`);
+    await ctx.click(`document.querySelector('.push-rejected-pull') ?? window.__s.main('pull')`);
     await ctx.waitUntil(`document.querySelector('.confirm-dialog')?.textContent.includes('stash 后拉取')`, 30000);
     const stashAsk = await ctx.evaluate(`document.querySelector('.confirm-dialog').textContent`);
     await ctx.confirmDialog("stash 后拉取"); await ctx.settle();
     status = await ctx.evaluate(`window.__s.opStatus()`);
     e = evidence("stash 后拉取", r.local, before, ["head", "index", "worktree", "remote-refs", "stash"]);
-    check("B11 工作区改动阻止拉取：提供“stash 后拉取”，拉取后不自动恢复", stashAsk.includes("a.txt") && status.cls.includes("succeeded") && status.text.includes("没有自动恢复") && git(r.local, ["rev-parse", "HEAD"]) === remote4 && read(r.local, "a.txt") === "remote edits a\n" && git(r.local, ["stash", "list"]).includes("拉取前储藏") && e.unexpected.length === 0, { stashAsk: stashAsk.slice(0, 200), status, e });
+    check("B11 推送被拒绝后状态栏“拉取”直接拉取；工作区改动阻止拉取：提供“stash 后拉取”，拉取后不自动恢复", viaStatusBar && stashAsk.includes("a.txt") && status.cls.includes("succeeded") && status.text.includes("没有自动恢复") && git(r.local, ["rev-parse", "HEAD"]) === remote4 && read(r.local, "a.txt") === "remote edits a\n" && git(r.local, ["stash", "list"]).includes("拉取前储藏") && e.unexpected.length === 0, { viaStatusBar, stashAsk: stashAsk.slice(0, 200), status, e });
     // ---------- B11 无上游：拉取不可用；首次推送设置上游 ----------
     git(r.local, ["switch", "-q", "-c", "feature"]); put(r.local, "g.txt", "feature\n"); const feature = commitAll(r.local, "feature");
     await ctx.refresh();
-    await ctx.openSync();
-    const noUpstream = await ctx.evaluate(`({ text: window.__s.syncText(), pull: window.__s.button('选项…', window.__s.sync()).disabled })`);
-    await ctx.closeSync();
+    await ctx.openMenu("pull");
+    const noUpstream = await ctx.evaluate(`({ pull: window.__s.main('pull').disabled, pullTitle: window.__s.main('pull').title, pullLabel: window.__s.main('pull').textContent, push: window.__s.main('push').textContent, setUpstream: window.__s.menuItems().some((m) => m.text === '设置上游…' && !m.disabled), counts: window.__s.counts() })`);
+    await ctx.closeMenu();
+    await ctx.openMenu("push");
+    noUpstream.pushHead = await ctx.evaluate(`document.querySelector('.sync-menu-head')?.textContent ?? ''`);
+    await ctx.closeMenu();
     before = fingerprint(r.local);
-    await ctx.openSync(); await ctx.click(`window.__s.button('预览…', window.__s.sync())`);
-    await ctx.waitUntil(`document.querySelector('.push-dialog')?.textContent.includes('还没有上游') && !document.querySelector('.push-dialog').textContent.includes('正在读取')`);
-    const defaultRemote = await ctx.evaluate(`document.querySelector('.push-dialog select').value`);
-    await ctx.click(`window.__s.button('推送', document.querySelector('.push-dialog'))`); await ctx.settle();
+    await ctx.push(); await ctx.settle();
+    const askedRemote = await ctx.evaluate(`!!window.__s.remoteChoice()`);
     status = await ctx.evaluate(`window.__s.opStatus()`);
     e = evidence("首次推送设置上游", r.local, before, ["remote-refs", "config"]);
-    check("B11 无上游时拉取不可用并引导设置上游；首次推送默认选中唯一的 remote，推送并设置上游", noUpstream.pull && noUpstream.text.includes("没有上游") && defaultRemote === "origin" && status.cls.includes("succeeded") && bareRef(r.bare, "refs/heads/feature") === feature && git(r.local, ["rev-parse", "--abbrev-ref", "feature@{u}"]) === "origin/feature" && e.unexpected.length === 0, { noUpstream, defaultRemote, status, e });
+    check("B11 无上游时拉取不可用并引导设置上游（拉取 ▾ 提供“设置上游…”）；“发布分支”在只有一个 remote 时直接推送到它并设置上游",
+      noUpstream.pull && noUpstream.pullTitle.includes("没有上游") && noUpstream.setUpstream && noUpstream.counts === null && noUpstream.push.includes("发布分支") && noUpstream.pushHead.includes("还没有上游")
+      && !askedRemote && status.cls.includes("succeeded") && bareRef(r.bare, "refs/heads/feature") === feature && git(r.local, ["rev-parse", "--abbrev-ref", "feature@{u}"]) === "origin/feature" && e.unexpected.length === 0, { noUpstream, askedRemote, status, e });
+    // ---------- B11 无上游且有多个 remote：一键获取 / 发布要求选择 remote ----------
+    const backupBare = path.join(runDir, "backup.git");
+    git(runDir, ["clone", "-q", "--bare", r.bare, backupBare]);
+    git(r.local, ["remote", "add", "backup", backupBare]);
+    git(r.local, ["switch", "-q", "-c", "feature2"]); put(r.local, "g2.txt", "feature 2\n"); const feature2 = commitAll(r.local, "feature 2");
+    await ctx.refresh();
+    before = fingerprint(r.local);
+    await ctx.click(`window.__s.main('fetch')`);
+    await ctx.waitUntil(`!!window.__s.remoteChoice()`, 15000);
+    const fetchChoice = await ctx.evaluate(`({ title: window.__s.remoteChoice().querySelector('h3').textContent, text: window.__s.remoteChoice().textContent, remotes: [...window.__s.remoteChoice().querySelectorAll('input[type=radio]')].map((i) => i.getAttribute('aria-label')) })`);
+    await ctx.click(`window.__s.button('取消', window.__s.remoteChoice())`);
+    await ctx.settle();
+    e = evidence("无上游多个 remote：获取时取消选择", r.local, before, []);
+    const fetchCancelled = e.unexpected.length === 0 && !e.categories.includes("remote-refs");
+    before = fingerprint(r.local);
+    await ctx.push();
+    await ctx.waitUntil(`!!window.__s.remoteChoice()`, 15000);
+    const pushChoice = await ctx.evaluate(`({ title: window.__s.remoteChoice().querySelector('h3').textContent, text: window.__s.remoteChoice().textContent, remotes: [...window.__s.remoteChoice().querySelectorAll('input[type=radio]')].map((i) => i.getAttribute('aria-label')) })`);
+    const choiceShot = await ctx.shot("b11-remote-choice");
+    await ctx.click(`window.__s.remoteChoice().querySelector('input[aria-label="backup"]')`);
+    await ctx.click(`window.__s.button('发布', window.__s.remoteChoice())`); await ctx.settle();
+    status = await ctx.evaluate(`window.__s.opStatus()`);
+    e = evidence("无上游多个 remote：选择 backup 后发布", r.local, before, ["remote-refs", "config"]);
+    check("B11 无上游且有多个 remote：一键获取 / 发布不自行决定，列出 remote 请用户选择；取消不联网，选择后只推送到所选 remote 并设为上游",
+      fetchChoice.title === "选择要获取的 remote" && fetchChoice.text.includes("请选择要获取的 remote") && fetchChoice.remotes.sort().join() === "backup,origin" && fetchCancelled
+      && pushChoice.title === "选择要发布到的 remote" && pushChoice.remotes.sort().join() === "backup,origin" && status.cls.includes("succeeded") && bareRef(backupBare, "refs/heads/feature2") === feature2 && !bareRef(r.bare, "refs/heads/feature2") && git(r.local, ["rev-parse", "--abbrev-ref", "feature2@{u}"]) === "backup/feature2" && e.unexpected.length === 0,
+      { fetchChoice, pushChoice, status, e, shot: choiceShot });
+    git(r.local, ["switch", "-q", "feature"]); git(r.local, ["branch", "-q", "-D", "feature2"]); git(r.local, ["remote", "remove", "backup"]);
     // ---------- B12 进度（操作输出）、取消、超时、认证 ----------
     put(r.local, "big.bin", randomBytes(3 * 1024 * 1024).toString("base64")); commitAll(r.local, "big");
     await ctx.refresh();
@@ -282,21 +360,27 @@ async function localSuite() {
     await ctx.refresh();
     before = fingerprint(r.local);
     const headBeforeCancel = git(r.local, ["rev-parse", "HEAD"]);
-    await ctx.pull("ffOnly");
+    await ctx.pull();
     await ctx.waitUntil(`window.__s.running()`, 10000); await sleep(1500);
     const during = processTree(ctx.app.pid).processes.map((p) => p.name);
-    await ctx.click(`[...document.querySelectorAll('.statusbar button')].find((b) => b.textContent === '取消')`);
+    // 执行中主按钮变为“拉取中… ✕ 取消”，其余按钮的 ▾ 不可用（V2-D64）；取消走标题栏主按钮。
+    const runningUi = await ctx.evaluate(`({ label: window.__s.main('pull').textContent, fetchMore: window.__s.more('fetch').disabled, pushMore: window.__s.more('push').disabled })`);
+    await ctx.click(`window.__s.main('pull')`);
     await ctx.settle();
     status = await ctx.evaluate(`window.__s.opStatus()`);
+    const cancelToast = await ctx.evaluate(`window.__s.toast()`);
     await sleep(800);
     const after = processTree(ctx.app.pid).processes.map((p) => p.name);
     e = evidence("pull 取消", r.local, before, []);
-    check("B12 取消拉取：结束整个进程树，重读实际状态如实报告，HEAD 未变化", status.cls.includes("cancelled") && status.text.includes("HEAD 未变化") && git(r.local, ["rev-parse", "HEAD"]) === headBeforeCancel && during.some((n) => /^(sh|sleep|bash)\.exe$/i.test(n)) && !after.some((n) => /^(sh|sleep)\.exe$/i.test(n)) && e.unexpected.length === 0, { status, during, after, e });
+    check("B12 取消拉取（标题栏“拉取中… ✕ 取消”）：结束整个进程树，重读实际状态如实报告，HEAD 未变化", runningUi.label.includes("拉取中") && runningUi.label.includes("取消") && runningUi.fetchMore && runningUi.pushMore && status.cls.includes("cancelled") && status.text.includes("HEAD 未变化") && cancelToast?.cls.includes("cancelled") && git(r.local, ["rev-parse", "HEAD"]) === headBeforeCancel && during.some((n) => /^(sh|sleep|bash)\.exe$/i.test(n)) && !after.some((n) => /^(sh|sleep)\.exe$/i.test(n)) && e.unexpected.length === 0, { runningUi, status, cancelToast, during, after, e });
     before = fingerprint(r.local);
-    await ctx.pull("ffOnly"); await ctx.settle(20000);
+    await ctx.pull(); await ctx.settle(20000);
     status = await ctx.evaluate(`window.__s.opStatus()`);
+    const timeoutToast = await ctx.evaluate(`window.__s.toast()`);
     e = evidence("pull 无输出超时", r.local, before, []);
-    check("B12 无输出超时（测试实例 4 s）：终止并提示可能需要先在终端完成首次认证", status.cls.includes("failed") && status.text.includes("没有任何输出") && git(r.local, ["rev-parse", "HEAD"]) === headBeforeCancel && e.unexpected.length === 0, { status, e });
+    await ctx.click(`window.__s.toastButton('查看输出')`); await sleep(300);
+    const outputOpened = await ctx.evaluate(`!!window.__s.gitTab('操作输出')?.classList.contains('active') && !window.__s.toast()`);
+    check("B12 无输出超时（测试实例 4 s）：终止并提示可能需要先在终端完成首次认证；失败提示提供“重试”“查看输出”", status.cls.includes("failed") && status.text.includes("没有任何输出") && timeoutToast?.cls.includes("failed") && timeoutToast.actions.join() === "重试,查看输出" && outputOpened && git(r.local, ["rev-parse", "HEAD"]) === headBeforeCancel && e.unexpected.length === 0, { status, timeoutToast, outputOpened, e });
     git(r.local, ["config", "--unset", "remote.origin.uploadpack"]);
     await sleep(12000);
     check("B12 取消 / 超时后被终止的 upload-pack 没有继续运行", !existsSync(up.marker), {});
@@ -306,13 +390,15 @@ async function localSuite() {
       const originUrl = git(r.local, ["remote", "get-url", "origin"]);
       git(r.local, ["remote", "set-url", "origin", url.replace("http://", "http://alice:s3cret-token@") + "/repo.git"]);
       before = fingerprint(r.local);
-      await ctx.pull("ffOnly"); await ctx.settle(30000);
+      await ctx.pull(); await ctx.settle(30000);
       status = await ctx.evaluate(`window.__s.opStatus()`);
+      const authToast = await ctx.evaluate(`window.__s.toast()`);
+      const authShot = await ctx.shot("b12-auth-failed");
       await ctx.click(`window.__s.gitTab('操作输出')`); await sleep(300);
       const authOutput = await ctx.evaluate(`window.__s.outputText()`);
       const names = processTree(ctx.app.pid).processes.map((p) => p.name);
       e = evidence("pull 认证失败", r.local, before, []);
-      check("B12 / B18 认证失败：可操作提示、不弹出凭据输入（进程树中没有凭据助手）、URL 凭据已脱敏", status.cls.includes("failed") && /认证失败|没有访问权限/.test(status.text) && !status.text.includes("s3cret") && !authOutput.includes("s3cret") && !names.some((n) => /credential/i.test(n)) && e.unexpected.length === 0, { status: status.text.slice(0, 300), names, e, shot: await ctx.shot("b12-auth-failed") });
+      check("B12 / B18 认证失败：可操作提示、不弹出凭据输入（进程树中没有凭据助手）、URL 凭据已脱敏（状态栏、结果提示、操作输出）", status.cls.includes("failed") && /认证失败|没有访问权限/.test(status.text) && !status.text.includes("s3cret") && authToast?.cls.includes("failed") && /认证失败|没有访问权限/.test(authToast.text) && !authToast.text.includes("s3cret") && !authOutput.includes("s3cret") && !names.some((n) => /credential/i.test(n)) && e.unexpected.length === 0, { status: status.text.slice(0, 300), authToast, names, e, shot: authShot });
       git(r.local, ["remote", "set-url", "origin", originUrl]);
     } finally { server.close(); }
     // ---------- B13 合并：快进、总是创建合并提交、冲突 → 中止 / 解决 → 完成 ----------
@@ -373,12 +459,18 @@ async function localSuite() {
     const rebasing = existsSync(path.join(r.local, ".git", "rebase-merge")) || existsSync(path.join(r.local, ".git", "rebase-apply"));
     await ctx.refresh();
     before = fingerprint(r.local);
-    await ctx.openSync();
-    const syncDisabled = await ctx.evaluate(`['获取…', '选项…', '预览…'].every((label) => window.__s.button(label, window.__s.sync()).disabled)`);
-    await ctx.closeSync();
+    // 写入口：三个主按钮，以及 获取 ▾ 的 remote 项、推送 ▾ 的“推送 / 发布分支”项（▾ 本身只展开选项，可以打开）。
+    const mainsDisabled = await ctx.evaluate(`['fetch', 'pull', 'push'].map((k) => ({ kind: k, disabled: window.__s.main(k).disabled, title: window.__s.main(k).title }))`);
+    await ctx.openMenu("fetch");
+    const fetchItems = await ctx.evaluate(`window.__s.menuItems()`);
+    await ctx.closeMenu();
+    await ctx.openMenu("push");
+    const pushItems = await ctx.evaluate(`window.__s.menuItems()`);
+    await ctx.closeMenu();
+    const syncDisabled = mainsDisabled.every((m) => m.disabled) && fetchItems.length > 0 && fetchItems.every((m) => m.disabled) && pushItems.length > 0 && pushItems.every((m) => m.disabled);
     const banner14 = await ctx.evaluate(`window.__s.opBanner()`);
     e = evidence("rebase 进行中浏览", r.local, before, []);
-    check("B14 外部 rebase 进行中：横幅说明，获取 / 拉取 / 推送等写入口全部禁用，阅读正常", rebasing && banner14?.includes("rebase 进行中") && syncDisabled && e.changedCount === 0, { rebasing, banner14, syncDisabled, shot: await ctx.shot("b14-rebase") });
+    check("B14 外部 rebase 进行中：横幅说明，获取 / 拉取 / 推送等写入口全部禁用，阅读正常", rebasing && banner14?.includes("rebase 进行中") && syncDisabled && e.changedCount === 0, { rebasing, banner14, mainsDisabled, fetchItems, pushItems, shot: await ctx.shot("b14-rebase") });
     spawnSync("git", ["rebase", "--abort"], { cwd: r.local });
     git(r.local, ["switch", "-q", "main"]);
     await ctx.refresh();
@@ -386,7 +478,7 @@ async function localSuite() {
     const lock = path.join(r.local, ".git", "index.lock");
     writeFileSync(lock, "held");
     before = fingerprint(r.local);
-    await ctx.pull("ffOnly"); await ctx.settle();
+    await ctx.pull(); await ctx.settle();
     status = await ctx.evaluate(`window.__s.opStatus()`);
     e = evidence("外部 index.lock 时拉取", r.local, before, []);
     check("B16 外部 index.lock：拉取在启动写进程前报错，不删除锁、不重试", status.cls.includes("failed") && status.text.includes("index.lock") && readFileSync(lock, "utf8") === "held" && e.changedCount === 0, { status, e });
@@ -443,7 +535,7 @@ async function realSuite() {
       // pull：远端新增提交后仅快进。
       const remoteOid = helperCommit(branch, `${proto}-pull`);
       before = fingerprint(clone);
-      await ctx.pull("ffOnly"); await ctx.settle(180000);
+      await ctx.pull(); await ctx.settle(180000);
       result.pull = { status: await ctx.evaluate(`window.__s.opStatus()`), e: evidence(`AgentHub ${proto} pull`, clone, before, ["head", "index", "worktree", "remote-refs"]) };
       check(`B12 真实远端 AgentHub ${proto.toUpperCase()} 拉取（仅快进）`, result.pull.status.cls.includes("succeeded") && git(clone, ["rev-parse", "HEAD"]) === remoteOid && result.pull.e.unexpected.length === 0, result.pull);
       // push：本地提交推送到测试分支。
@@ -459,18 +551,17 @@ async function realSuite() {
       await ctx.refresh();
       before = fingerprint(clone);
       await ctx.push(); await ctx.settle(180000);
-      result.rejected = { status: await ctx.evaluate(`window.__s.opStatus()`), e: evidence(`AgentHub ${proto} push 被拒绝`, clone, before, ["remote-refs"]) };
-      check(`B11 / B12 真实远端 AgentHub ${proto.toUpperCase()} 推送被拒绝：提示先拉取，远端未被改写`, result.rejected.status.cls.includes("failed") && result.rejected.status.text.includes("被拒绝") && lsRemote(branch) === remoteNewer && result.rejected.e.unexpected.length === 0, result.rejected);
-      // 首次推送新分支并设置上游。
+      result.rejected = { status: await ctx.evaluate(`window.__s.opStatus()`), toast: await ctx.evaluate(`window.__s.toast()`), e: evidence(`AgentHub ${proto} push 被拒绝`, clone, before, ["remote-refs"]) };
+      check(`B11 / B12 真实远端 AgentHub ${proto.toUpperCase()} 推送被拒绝：提示先拉取（结果提示提供“拉取”），远端未被改写`, result.rejected.status.cls.includes("failed") && result.rejected.status.text.includes("被拒绝") && result.rejected.toast?.actions.join() === "拉取" && lsRemote(branch) === remoteNewer && result.rejected.e.unexpected.length === 0, result.rejected);
+      // 首次推送新分支并设置上游：没有上游时推送主按钮为“发布分支”，只有 origin 一个 remote，直接发布。
       git(clone, ["switch", "-q", "-c", fresh]);
       await ctx.refresh();
-      await ctx.openSync(); await ctx.click(`window.__s.button('预览…', window.__s.sync())`);
-      await ctx.waitUntil(`document.querySelector('.push-dialog')?.textContent.includes('还没有上游') && !document.querySelector('.push-dialog').textContent.includes('正在读取')`);
+      await ctx.waitUntil(`window.__s.main('push')?.textContent.includes('发布分支')`);
       before = fingerprint(clone);
       record(fresh);
-      await ctx.click(`window.__s.button('推送', document.querySelector('.push-dialog'))`); await ctx.settle(180000);
-      result.firstPush = { status: await ctx.evaluate(`window.__s.opStatus()`), e: evidence(`AgentHub ${proto} 首次推送`, clone, before, ["remote-refs", "config"]) };
-      check(`B11 真实远端 AgentHub ${proto.toUpperCase()} 首次推送新分支并设置上游`, result.firstPush.status.cls.includes("succeeded") && !!lsRemote(fresh) && git(clone, ["rev-parse", "--abbrev-ref", `${fresh}@{u}`]) === `origin/${fresh}`, result.firstPush);
+      await ctx.push(); await ctx.settle(180000);
+      result.firstPush = { status: await ctx.evaluate(`window.__s.opStatus()`), askedRemote: await ctx.evaluate(`!!window.__s.remoteChoice()`), e: evidence(`AgentHub ${proto} 首次推送`, clone, before, ["remote-refs", "config"]) };
+      check(`B11 真实远端 AgentHub ${proto.toUpperCase()} 首次推送新分支（发布分支）并设置上游`, result.firstPush.status.cls.includes("succeeded") && !result.firstPush.askedRemote && !!lsRemote(fresh) && git(clone, ["rev-parse", "--abbrev-ref", `${fresh}@{u}`]) === `origin/${fresh}`, result.firstPush);
       result.shot = await ctx.shot(`real-${proto}`);
     }
   } catch (error) {
