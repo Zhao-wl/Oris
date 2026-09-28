@@ -63,7 +63,7 @@
 - 拉取不执行 rebase（`pull.rebase=true` 时界面说明并仍以合并执行）；不提供强制推送、交互式 rebase、cherry-pick、submodule 更新等操作。
 - stash 列表最多 500 条；Git 拒绝切换分支时只列出 Git 输出中的前若干路径。
 - 推送预览中的“领先 N 个提交”来自本地快照，不代表服务器实时状态。
-- 性能与内存（Windows 实测，见 `docs/validation/v1-06-performance.md`）：S 数据集 24 项预算中 21 项达标。已知问题：在长文件中滚动后切换字号约 160 ms（目标 100 ms）；窗口失焦后内存需要静置一段时间才回落到目标值。macOS 未测。
+- 性能与内存（Windows 实测，见 `docs/validation/v1-06-performance.md`）：S 数据集 24 项预算中 21 项达标。已知问题：窗口失焦后内存需要静置一段时间才回落到目标值。macOS 未测。
 
 ## 安装与卸载
 

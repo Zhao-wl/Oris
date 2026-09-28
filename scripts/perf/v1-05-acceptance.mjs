@@ -535,6 +535,9 @@ async function runPerf() {
     log("滚动", perf.scroll.result.runs.map((r) => `${r.label} P95 ${r.p95} ms，长帧 ${r.longFrames50}`));
 
     // 切换配色 / 主题模式 / 字号：不重建编辑器
+    // 记录外观切换开始时的阅读状态（各编辑器滚动位置、焦点），便于与其他探针的场景对照。
+    perf.appearanceState = await evaluate(`({ active: document.activeElement?.className ?? document.activeElement?.tagName, editors: [...document.querySelectorAll('.diff-host .cm-scroller')].map((sc) => ({ scrollTop: Math.round(sc.scrollTop), scrollHeight: sc.scrollHeight, clientHeight: sc.clientHeight, toBottom: Math.round(sc.scrollHeight - sc.clientHeight - sc.scrollTop) })) })`);
+    log("外观切换前的阅读状态", perf.appearanceState);
     perf.appearance = await measuredSegment(monitor, "外观切换", async () => {
       await evaluate(`document.querySelectorAll('.cm-editor').forEach((n, i) => { n.__orisMark = 'editor-' + i; })`);
       const marked = await evaluate(marks);
