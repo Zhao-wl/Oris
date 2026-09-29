@@ -463,14 +463,17 @@ export default function App() {
 
   const addRepository = useCallback(async (repositoryPath: string, effectiveGitExecutable = settings.get().git.executable) => {
     if (!repositoryPath.trim()) return;
+    // 先占用请求门控：发现期间进行中的自动刷新作废、新的自动刷新延后，避免旧项目的刷新结果把当前项目切回去。
+    const requestId = newRequestId(); repositoryGate.current.activate(requestId); contentGate.current.activate(requestId);
     // 工作区识别（V2-D75）：只读发现；失败（例如不是仓库）时按普通项目的路径报告错误。
     const found = await discoverGroup(repositoryPath.trim(), [], effectiveGitExecutable || null).catch(() => null);
+    if (!repositoryGate.current.accepts(requestId)) return;
     if (found?.isGroup && found.members[0]?.repoId) {
       setError(null);
-      try { await addGroup(found, effectiveGitExecutable); } catch (nextError) { setError(errorText(nextError)); }
+      try { await addGroup(found, effectiveGitExecutable); } catch (nextError) { if (repositoryGate.current.accepts(requestId)) setError(errorText(nextError)); }
+      finally { if (repositoryGate.current.accepts(requestId)) { repositoryGate.current.finish(requestId); contentGate.current.finish(requestId); } }
       return;
     }
-    const requestId = newRequestId(); repositoryGate.current.activate(requestId); contentGate.current.activate(requestId);
     setRefreshing(false);
     setLoading(true); setError(null);
     try {
@@ -561,7 +564,12 @@ export default function App() {
   // 工作区：第一次进入时读取成员并建立共用 watcher；记住当前成员，切回标签或重启后恢复（V2-D77）。
   const activeRootId = activeRoot?.repo.repoId ?? null;
   useEffect(() => { if (activeRootId && !groupsRef.current[activeRootId]) void refreshGroup(activeRootId); }, [activeRootId, refreshGroup]);
-  useEffect(() => { if (activeRepoId) setWorkspaceState((current) => rememberMember(current, activeRepoId)); setPickerOpen(false); }, [activeRepoId]);
+  useEffect(() => {
+    if (activeRepoId) setWorkspaceState((current) => rememberMember(current, activeRepoId));
+    setPickerOpen(false);
+    // 从父仓库历史跳转来的比较只作用一次：离开该子仓库后清除，回来时不再重复打开。
+    setHistoryCompare((request) => (request && request.repoId !== activeRepoId ? null : request));
+  }, [activeRepoId]);
 
   const appliedGit = useRef(gitSetting);
   useEffect(() => {

@@ -91,7 +91,7 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
   bridge.open.mockImplementation(async (path: string, scope: CompareScope) => ({ ...snapshot(path), scope }));
-  bridge.refresh.mockImplementation(async (id: string, scope: CompareScope) => ({ ...snapshot(id === "ws" ? ROOT : `${ROOT}/${id.replace(/-/g, "/")}`), scope, revision: "r2" }));
+  bridge.refresh.mockImplementation(async (id: string, scope: CompareScope) => ({ ...snapshot(id === "ws" ? ROOT : ["battle", "battle-r2", "client"].includes(id) ? `${ROOT}/${id}` : `C:/${id}`), scope, revision: "r2" }));
   bridge.read.mockImplementation(async (id: string, _scope: string, _revision: string, pathId: string) => pair(id, pathId));
   bridge.diff.mockImplementation(async (requestId: string, contentIds: [string, string]) => ({ requestId, contentIds, changes: [], hunks: [], elapsedMs: 0 }));
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
