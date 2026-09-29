@@ -107,7 +107,17 @@ try {
   const waitUntil = (expr, timeout = 30000) => evaluate(`window.__op.waitUntil(() => (${expr}), ${timeout})`, timeout + 5000).then((r) => { if (!r.ok) throw new Error(`等待失败：${expr}`); return r; });
   const key = (k, extra = {}) => evaluate(`(document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent('keydown', { key: ${q(k)}, ctrlKey: true, bubbles: true, cancelable: true, ...${q(extra)} }))`);
   const toggle = (label) => `[...document.querySelectorAll('.toolbar .toggle-button')].find((n) => n.textContent === ${q(label)})`;
-  const settle = async () => { await sleep(900); await waitUntil(`(document.querySelector('.oris-split-view')?.dataset.alignmentReady ?? 'true') === 'true'`, 15000); await sleep(200); };
+  // 等对齐完成且稳定：完成后 500 ms 内没有开始新一轮（对齐完成后行高再被测量时会增量重新对齐，长链 lc4 阶段 2）。
+  const alignmentState = `(() => { const d = document.querySelector('.oris-split-view')?.dataset ?? {}; return (d.alignmentReady ?? 'true') + ':' + (d.alignmentGeneration ?? ''); })()`;
+  const settle = async () => {
+    await sleep(900);
+    for (let i = 0; i < 20; i++) {
+      await waitUntil(`(document.querySelector('.oris-split-view')?.dataset.alignmentReady ?? 'true') === 'true'`, 15000);
+      const before = await evaluate(alignmentState);
+      await sleep(500);
+      if (await evaluate(alignmentState) === before) return;
+    }
+  };
   /** fraction：0–1 按总高度比例；"bottom" 滚到底。 */
   const scroll = (selector, fraction) => evaluate(`(() => { const sc = document.querySelector(${q(selector)}); sc.scrollTop = ${fraction === "bottom" ? "sc.scrollHeight" : `sc.scrollHeight * ${fraction}`}; return sc.scrollTop; })()`);
   // 字号序列：13 → 14 → 15 → 14 → 13 → 12 → 13
