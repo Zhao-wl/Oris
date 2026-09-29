@@ -1,7 +1,7 @@
 // V2-D75 GUI 测量：分级 diff 让改动分散的大文件从 1 块变成几十到上千块，测量块数变多后的阅读器代价。
 // 场景：3,000 行 lc4 夹具（65 块）、3,000 行每 5 行（540 块）、3,000 行整文件缩进（273 块）、10,000 行每 50 行（182 块）、10,000 行每 5 行（1,813 块）。
 // 每个场景 R 份内容不同的副本，互相之间隔 2 个小文件（预取只取上下相邻各 1 个），逐个点击测“未缓存文件切换”；
-// 再在第一份副本上测已缓存切换、开启“对齐变化”、F7 导航、滚轮滚动帧间隔、块操作按钮（块映射是否对得上）、切到统一视图与进程树内存。
+// 再在第一份副本上测已缓存切换、开启“对齐变化”（含对齐时滚动与可见边界误差）、F7 导航、滚轮滚动帧间隔、块操作按钮（块映射是否对得上）、切到统一视图与进程树内存。
 // 只经 CDP 操作本轮启动并核验过的 Oris 实例（launchOris / killOris），不调用任何窗口激活 API；按键为页面内派发的 KeyboardEvent，滚轮为 CDP 输入事件。
 // 用法：node scripts/perf/p-v2-10-gui.mjs --exe <oris.exe> --label <名称> [--port 9887] [--copies 6] [--profile <场景>]
 // --profile：在该场景的已缓存切换期间录制 CPU 剖析，输出自身耗时最高的函数（位置为打包产物中的行:列）。
@@ -94,6 +94,22 @@ try {
   const readState = () => evaluate(`({ hunkCount: Number(document.querySelector('[data-hunk-count]')?.dataset.hunkCount ?? -1), position: document.querySelector('.diff-position')?.textContent ?? null, worker: Number((document.querySelector('.tabbar')?.textContent.match(/Worker ([\\d.]+) ms/) ?? [])[1] ?? NaN) })`);
   const toggle = (text) => `[...document.querySelectorAll('.toolbar .toggle-button')].find((n) => n.textContent === ${q(text)})`;
 
+  /** 右侧滚轮滚动 ms 毫秒（到底后反向），返回 rAF 帧间隔统计。 */
+  const wheelScroll = async (ms) => {
+    const box = await evaluate(`(() => { const b = document.querySelector('.oris-split-pane.right .cm-scroller').getBoundingClientRect(); return { x: b.left + b.width / 2, y: b.top + b.height / 2 }; })()`);
+    await evaluate(`(() => { const sc = document.querySelector('.oris-split-pane.right .cm-scroller'); sc.scrollTop = 0; window.__frames = []; window.__scrolling = true; let last = performance.now(); const tick = (t) => { window.__frames.push(t - last); last = t; if (window.__scrolling) requestAnimationFrame(tick); }; requestAnimationFrame(tick); })()`);
+    const until = Date.now() + ms;
+    let direction = 1;
+    while (Date.now() < until) {
+      await call("Input.dispatchMouseEvent", { type: "mouseWheel", x: box.x, y: box.y, deltaX: 0, deltaY: 120 * direction });
+      const atEnd = await evaluate(`(() => { const sc = document.querySelector('.oris-split-pane.right .cm-scroller'); return sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 2 ? 1 : sc.scrollTop <= 0 ? -1 : 0; })()`);
+      if (atEnd === 1) direction = -1; else if (atEnd === -1 && direction === -1) direction = 1;
+      await sleep(16);
+    }
+    const frames = await evaluate(`(() => { window.__scrolling = false; return window.__frames.slice(2); })()`);
+    return { frames: frames.length, p50: round(percentile(frames, 0.5)), p95: round(percentile(frames, 0.95)), max: round(Math.max(...frames)), longFrames50: frames.filter((f) => f > 50).length };
+  };
+
   await waitUntil(`document.querySelector('.project-empty')`);
   await evaluate(`window.__op.setInput('仓库路径', ${q(repo)})`);
   await waitUntil(`window.__op.button('载入/添加') && !window.__op.button('载入/添加').disabled`);
@@ -138,6 +154,12 @@ try {
     entry.alignOn = { ok: align.ok, ms: round(align.ms), error: align.error };
     await sleep(600);
     entry.alignedHunkCount = (await readState()).hunkCount;
+    // 开启对齐时滚动 4 s，停下后等对齐完成，记录最大边界误差（连接带两侧上下边之差）
+    entry.alignedScroll = await wheelScroll(4000);
+    const settledAlign = await measure(``, `document.querySelector('.oris-split-view')?.dataset.alignmentReady === 'true'`, 30000);
+    await sleep(1500);
+    entry.alignedScroll.settleMs = round(settledAlign.ms);
+    entry.alignedScroll.maxVisibleError = await evaluate(`(() => { const e = [...document.querySelectorAll('.diff-connectors path')].map((p) => Math.max(Math.abs(Number(p.dataset.aTop) - Number(p.dataset.bTop)), Math.abs(Number(p.dataset.aBottom) - Number(p.dataset.bBottom)))); return e.length ? Math.round(Math.max(...e) * 10) / 10 : null; })()`);
     await evaluate(`${toggle("对齐变化")}.click()`); await sleep(800);
     // F7 导航 10 次
     await evaluate(`document.querySelector('.oris-split-pane.right .cm-content')?.focus()`);
@@ -152,18 +174,7 @@ try {
     entry.f7 = summarize(nav);
     entry.positionAfterF7 = (await readState()).position;
     // 滚轮滚动 6 s，rAF 帧间隔
-    const box = await evaluate(`(() => { const b = document.querySelector('.oris-split-pane.right .cm-scroller').getBoundingClientRect(); return { x: b.left + b.width / 2, y: b.top + b.height / 2 }; })()`);
-    await evaluate(`(() => { const sc = document.querySelector('.oris-split-pane.right .cm-scroller'); sc.scrollTop = 0; window.__frames = []; window.__scrolling = true; let last = performance.now(); const tick = (t) => { window.__frames.push(t - last); last = t; if (window.__scrolling) requestAnimationFrame(tick); }; requestAnimationFrame(tick); })()`);
-    const until = Date.now() + 6000;
-    let direction = 1;
-    while (Date.now() < until) {
-      await call("Input.dispatchMouseEvent", { type: "mouseWheel", x: box.x, y: box.y, deltaX: 0, deltaY: 120 * direction });
-      const atEnd = await evaluate(`(() => { const sc = document.querySelector('.oris-split-pane.right .cm-scroller'); return sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 2 ? 1 : sc.scrollTop <= 0 ? -1 : 0; })()`);
-      if (atEnd === 1) direction = -1; else if (atEnd === -1 && direction === -1) direction = 1;
-      await sleep(16);
-    }
-    const frames = await evaluate(`(() => { window.__scrolling = false; return window.__frames.slice(2); })()`);
-    entry.scroll = { frames: frames.length, p50: round(percentile(frames, 0.5)), p95: round(percentile(frames, 0.95)), max: round(Math.max(...frames)), longFrames50: frames.filter((f) => f > 50).length };
+    entry.scroll = await wheelScroll(6000);
     // 块操作按钮：块映射在键盘聚焦 / 指针移入 diff 时读取（V2-D55）
     await evaluate(`document.querySelector('.oris-split-pane.right .cm-scroller').scrollTop = 0`);
     await evaluate(`document.querySelector('.diff-host').dispatchEvent(new FocusEvent('focusin', { bubbles: true }))`);
