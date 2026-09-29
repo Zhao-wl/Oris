@@ -57,7 +57,8 @@ function evidence(name, repo, before, allowed, extra = {}) {
   const changed = diffFingerprints(before, after);
   const categories = categorize(changed);
   const unexpected = categories.filter((c) => !allowed.includes(c) && !BENIGN.has(c));
-  const entry = { name, repo, beforeDigest: before.digest, afterDigest: after.digest, changed: changed.slice(0, 40), changedCount: changed.length, categories, allowed, unexpected, ...extra };
+  const transient = [...new Set([...(before.transient ?? []), ...(after.transient ?? [])])];
+  const entry = { name, repo, beforeDigest: before.digest, afterDigest: after.digest, changed: changed.slice(0, 40), changedCount: changed.length, categories, allowed, unexpected, ...(transient.length ? { transient } : {}), ...extra };
   report.operations.push(entry);
   return entry;
 }

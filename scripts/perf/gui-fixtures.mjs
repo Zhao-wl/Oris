@@ -65,26 +65,32 @@ export async function prepareCoreRepos(runDir, count = 5) {
   return repos;
 }
 
-/** 仓库只读状态指纹：.git 下的 index/HEAD/refs/config 与工作区文件内容。 */
+/**
+ * 仓库只读状态指纹：.git 下的 index/HEAD/refs/config 与工作区文件内容。
+ * 遍历途中消失的文件（例如其他进程短暂持有的 index.lock）不计入指纹，记在 transient 中，由调用方在报告中列出。
+ */
 export function repositoryFingerprint(repo, { includeWorktree = true } = {}) {
   const hash = (buffer) => createHash("sha256").update(buffer).digest("hex");
   const entries = {};
+  const transient = [];
+  const vanished = (error) => error?.code === "ENOENT";
   const walk = (dir, prefix) => {
     for (const name of readdirSync(dir)) {
       const full = path.join(dir, name);
       const rel = prefix ? `${prefix}/${name}` : name;
-      const stat = statSync(full);
+      let stat;
+      try { stat = statSync(full); } catch (error) { if (vanished(error)) { transient.push(rel); continue; } throw error; }
       if (stat.isDirectory()) {
         if (rel === ".git/objects" || rel === ".git/logs") continue;
         if (!includeWorktree && !rel.startsWith(".git")) continue;
         walk(full, rel);
       } else if (includeWorktree || rel.startsWith(".git")) {
-        entries[rel] = hash(readFileSync(full));
+        try { entries[rel] = hash(readFileSync(full)); } catch (error) { if (vanished(error)) { transient.push(rel); continue; } throw error; }
       }
     }
   };
   walk(repo, "");
-  return { files: Object.keys(entries).length, digest: hash(Buffer.from(JSON.stringify(entries))), entries };
+  return { files: Object.keys(entries).length, digest: hash(Buffer.from(JSON.stringify(entries))), entries, transient };
 }
 
 export function diffFingerprints(before, after) {

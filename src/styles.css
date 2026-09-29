@@ -599,9 +599,10 @@ button.op-status { padding:0 6px; border:0; background:transparent; font-size:11
 .diff-host .cm-editor { font-size:var(--diff-font-size, 13px); }
 
 /* V2-05：块标题行（参考图：块操作在块标题行、使用完整动作文字；中央连接带保持纯阅读语义） */
-.diff-host .hunk-title { display:flex; align-items:center; gap:8px; height:24px; box-sizing:border-box; padding:0 8px; border-top:1px solid var(--border); background:var(--chrome); color:var(--dim); font-family:"Segoe UI", "Microsoft YaHei", system-ui, sans-serif; font-size:12px; white-space:nowrap; overflow:hidden; }
-.diff-host .hunk-title .hunk-label { flex:none; }
-.diff-host .hunk-title .hunk-actions { display:inline-flex; gap:4px; margin-left:auto; }
+.diff-host .hunk-title { display:flex; align-items:center; gap:8px; height:24px; box-sizing:border-box; padding:0 8px; border-top:1px solid var(--border); background:var(--chrome); color:var(--dim); font-family:"Segoe UI", "Microsoft YaHei", system-ui, sans-serif; font-size:12px; white-space:nowrap; }
+/* 标题行随内容一样宽（最长行），标签贴住行号栏右侧、按钮贴住可视区域右缘，横向滚动到任何位置都能看到；标题行不能 overflow:hidden，否则 sticky 失效。 */
+.diff-host .hunk-title .hunk-label { flex:none; position:sticky; left:calc(var(--oris-gutter-width, 0px) + 8px); }
+.diff-host .hunk-title .hunk-actions { display:inline-flex; gap:4px; margin-left:auto; position:sticky; right:8px; }
 .diff-host .hunk-title button { padding:0 8px; height:19px; line-height:17px; font-size:12px; }
 .diff-host .hunk-title button.danger { color:var(--error, #ff7b72); }
 .diff-host .hunk-title button:disabled { opacity:.55; cursor:default; }
