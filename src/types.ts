@@ -30,6 +30,8 @@ export interface FileChange {
   contentUnchanged?: ContentUnchanged;
   /** 子模块条目（gitlink）：不提供丢弃。 */
   gitlink?: boolean;
+  /** 子模块条目两侧的提交（V2-D79，列表显示“记录 → 当前”）。 */
+  submodule?: { old: string | null; new: string | null };
   /** 乐观更新中、等待 Git 确认（仅前端）。 */
   pending?: boolean;
 }

@@ -143,6 +143,9 @@ pub struct FileChange {
     /// 子模块条目（gitlink，mode 160000）：不提供丢弃（R-DISCARD）。
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     gitlink: bool,
+    /// 子模块条目两侧的提交（V2-D79：列表中显示“记录 → 当前”）；普通文件为 None。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    submodule: Option<log::SubmodulePointer>,
 }
 
 #[cfg(any(test, feature = "desktop"))]
@@ -1169,6 +1172,7 @@ fn upsert_change(
 ) {
     let path_id = URL_SAFE_NO_PAD.encode(path);
     let value = FileChange {
+        submodule: None,
         path_id: path_id.clone(),
         display_path: String::from_utf8_lossy(path).into_owned(),
         old_path_id: old_path.map(|value| URL_SAFE_NO_PAD.encode(value)),

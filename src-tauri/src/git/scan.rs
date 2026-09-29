@@ -139,6 +139,7 @@ fn file(entry: &Entry, status: FileStatus, old: Option<(&Vec<u8>, &String)>) -> 
         deletions: None,
         content_unchanged: None,
         gitlink: is_gitlink(entry),
+        submodule: None,
     }
 }
 
@@ -227,6 +228,7 @@ pub(super) fn scope_lists(entries: &[Entry], has_head: bool) -> ScopeLists {
                         deletions: None,
                         content_unchanged: None,
                         gitlink: is_gitlink(entry),
+                        submodule: None,
                     });
                 }
                 None
@@ -253,6 +255,35 @@ pub(super) fn scope_lists(entries: &[Entry], has_head: bool) -> ScopeLists {
 }
 
 impl GitAdapter {
+    /// 子模块条目的两侧提交（V2-D79）：已暂存为 HEAD → index，未暂存为 index → 子模块当前 HEAD，全部为 HEAD → 子模块当前 HEAD。
+    /// 子模块 HEAD 只读文件（`media::submodule_head`），不启动 Git。
+    fn attach_pointers(&self, lists: &mut ScopeLists, entries: &[Entry]) {
+        use super::log::SubmodulePointer;
+        if !entries.iter().any(is_gitlink) {
+            return;
+        }
+        let by_id: HashMap<&str, &Entry> = entries.iter().map(|e| (e.path_id.as_str(), e)).collect();
+        let gitlink_oid = |stage: &Option<status_v2::Stage>| stage.as_ref().filter(|s| s.mode == "160000").map(|s| s.oid.clone()).filter(|oid| !oid.bytes().all(|b| b == b'0'));
+        let mut current: HashMap<String, Option<String>> = HashMap::new();
+        let mut worktree_head = |entry: &Entry| -> Option<String> {
+            current
+                .entry(entry.path_id.clone())
+                .or_insert_with(|| std::str::from_utf8(&entry.path).ok().filter(|p| validate_relative(p).is_ok()).and_then(|p| super::media::submodule_head(&self.worktree.join(p), &self.common_dir).1))
+                .clone()
+        };
+        for (list, scope) in [(&mut lists.unstaged, CompareScope::Unstaged), (&mut lists.staged, CompareScope::Staged), (&mut lists.all, CompareScope::All)] {
+            for file in list.iter_mut().filter(|f| f.gitlink) {
+                let Some(entry) = by_id.get(file.path_id.as_str()) else { continue };
+                let (old, new) = match scope {
+                    CompareScope::Staged => (gitlink_oid(&entry.head), gitlink_oid(&entry.index)),
+                    CompareScope::Unstaged => (gitlink_oid(&entry.index), worktree_head(entry)),
+                    CompareScope::All => (gitlink_oid(&entry.head), worktree_head(entry)),
+                };
+                file.submodule = Some(SubmodulePointer { old, new });
+            }
+        }
+    }
+
     /// 读取本地 ref 存储（HEAD 链与 packed-refs），不启动进程。
     pub(super) fn refs_digest(&self) -> Result<Vec<u8>, GitError> {
         let mut digest = Sha256::new();
@@ -343,7 +374,8 @@ impl GitAdapter {
             .map(|path| String::from_utf8_lossy(path).trim_end_matches('/').to_owned())
             .collect();
         let has_head = branch.oid.is_some();
-        let lists = scope_lists(&files.all, has_head);
+        let mut lists = scope_lists(&files.all, has_head);
+        self.attach_pointers(&mut lists, &files.all);
         let mut wt = HashMap::new();
         let mut revision = Sha256::new();
         revision.update(b"oris-v2-scan-1");

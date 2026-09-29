@@ -192,6 +192,8 @@ describe("工作区（V2-07）", () => {
 
   it("嵌套仓库可以手动加入工作区并移出；移除工作区标签时关闭全部成员", async () => {
     bridge.open.mockImplementation(async (path: string, scope: CompareScope) => ({ ...snapshot(path), scope, ...(path === ROOT ? { hasSubmodules: true, nestedRepos: ["tools/standalone"] } : {}) }));
+    // 自动刷新（例如回到前台）返回同样的父仓库状态。
+    bridge.refresh.mockImplementation(async (id: string, scope: CompareScope) => ({ ...snapshot(id === "ws" ? ROOT : `${ROOT}/${id}`), scope, revision: "r2", ...(id === "ws" ? { hasSubmodules: true, nestedRepos: ["tools/standalone"] } : {}) }));
     await addPath(ROOT);
     expect(text(".nested-repo")).toContain("独立仓库，未加入工作区");
     const standalone = member("standalone", "manual", { worktreePath: `${ROOT}/tools/standalone`, relativePath: "tools/standalone", repoId: "tools-standalone" });

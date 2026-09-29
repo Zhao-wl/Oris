@@ -206,6 +206,11 @@ fn b33_pointer_switch_controls_gitlink_rows_and_never_scans_submodule_content() 
     // 打开：只有提交指针变化的 battle 一行；client 只有内部改动（dirty），不显示。
     assert_eq!(names(&on), vec![(".gitmodules".to_owned(), false), ("AGENTS.md".to_owned(), false), ("battle".to_owned(), true)]);
     assert_ne!(off.revision, on.revision);
+    // 指针行带两侧提交：未暂存为 index 中记录的提交 → 子模块当前 HEAD（只读文件得到，不启动 Git）。
+    let pointer = on.files.iter().find(|f| f.display_path == "battle").unwrap().submodule.clone().unwrap();
+    assert_eq!(pointer.old.as_deref(), Some(git_in(&fx.root, &["rev-parse", "HEAD:battle"]).as_str()));
+    assert_eq!(pointer.new.as_deref(), Some(git_in(&battle, &["rev-parse", "HEAD"]).as_str()));
+    assert!(on.files.iter().filter(|f| !f.gitlink).all(|f| f.submodule.is_none()));
     assert_eq!(group::change_count(gp(), &fx.root, false).unwrap(), 2);
     assert_eq!(group::change_count(gp(), &fx.root, true).unwrap(), 3);
     assert_eq!(group::change_count(gp(), &battle, false).unwrap(), 1);

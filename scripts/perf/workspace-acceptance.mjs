@@ -55,6 +55,8 @@ const H = String.raw`
     button: (text, root = document) => qa('button', root).find((b) => b.textContent.trim() === text) ?? null,
     compareHead: () => document.querySelector('.log-detail-body .log-head strong')?.textContent ?? null,
     compareMeta: () => qa('.log-detail-body .log-meta').map((m) => m.textContent),
+    historyErrors: () => qa('.log-error').map((n) => n.textContent),
+    pointerText: (path) => window.__op.row(path)?.querySelector('.submodule-pointer')?.textContent ?? null,
   };
   return true;
 })()`;
@@ -230,7 +232,7 @@ async function localSuite() {
     const clientIndex = { "game-workspace": [/^\.git\/modules\/client\/(index|objects\/)/] };
     fp = segment("在 client 中暂存", fp, clientIndex);
     await ctx.click(`window.__op.scopeButton('已暂存')`);
-    await ctx.waitUntil(`window.__op.row('Assets/Game.cs')`, 15000);
+    await ctx.waitUntil(`window.__op.row('Assets/Game.cs') && !window.__op.row('Assets/Game.cs').querySelector('.file-action')?.disabled`, 15000);
     await ctx.click(`window.__op.row('Assets/Game.cs').querySelector('.file-action')`);
     await ctx.waitUntil(`!window.__op.row('Assets/Game.cs')`, 15000);
     await ctx.click(`window.__op.scopeButton('未暂存')`);
@@ -277,6 +279,8 @@ async function localSuite() {
     await ctx.click(`document.querySelector('.pointer-switch')`);
     await ctx.waitUntil(`window.__op.rows().includes('battle')`, 15000);
     check("B33 开关打开：只显示提交指针变化的 battle（client 只有内部改动，不显示）", q((await ctx.evaluate(`window.__op.rows()`)).sort()) === q(["AGENTS.md", "battle"]), await ctx.evaluate(`window.__op.rows()`));
+    const pointerText = await ctx.evaluate(`window.__w.pointerText('battle')`);
+    check("B33 指针行显示“记录 → 当前”", pointerText === `${oldBattle.slice(0, 7)} → ${newBattle.slice(0, 7)}`, pointerText);
     const toggled = trace.take().filter((e) => e.command.startsWith("status") && e.cwd && samePath(e.cwd, fx.root));
     check("B33 开关打开后父仓库 status 带 --ignore-submodules=dirty", toggled.length > 0 && toggled.every((e) => e.command.includes("--ignore-submodules=dirty")), toggled.map((e) => e.command));
     report.shots.pointers = await ctx.shot("03-pointers");
@@ -295,6 +299,9 @@ async function localSuite() {
     await ctx.waitUntil(`window.__w.picker() === 'battle' && window.__w.compareHead()`, 20000);
     const meta = await ctx.evaluate(`window.__w.compareMeta()`);
     check("B34 跳到 battle 并比较指针的前后两个提交", meta.some((m) => m.includes(oldBattle)) && meta.some((m) => m.includes(newBattle)), meta);
+    await ctx.waitUntil(`document.querySelector('.log-detail-body .log-group')?.textContent.includes('A → B')`, 15000).catch(() => {});
+    const historyErrors = await ctx.evaluate(`window.__w.historyErrors()`);
+    check("B34 比较与历史读取没有错误（子仓库打开后才挂载历史页）", historyErrors.length === 0, historyErrors);
     report.shots.history = await ctx.shot("04-history-compare");
     fp = segment("历史跳转（只读）", fp);
     await stop(ctx);

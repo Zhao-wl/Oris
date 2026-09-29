@@ -937,7 +937,10 @@ export default function App() {
     return readable ? [editorText(pair.left.text ?? ""), editorText(pair.right.text ?? "")] : null;
   }, [pair, latin1Active, readable]);
   const viewDocument = latin1Active ? latin1Doc : diffDocument;
-  useEffect(() => { if (gitTab === "log" && activeRepoId) setLogMounted(activeRepoId); }, [gitTab, activeRepoId]);
+  // 历史页只在当前仓库已在后端打开后挂载：首次切到的工作区成员（或尚在打开的项目）此前读取会报“仓库尚未打开”，
+  // 从父仓库历史跳来的比较请求也要等到这时再执行（V2-D84）。
+  const repoReady = !!activeRepoId && !!runtime?.snapshot && runtime.snapshot.repo.repoId === activeRepoId && opened.current.has(activeRepoId);
+  useEffect(() => { if (gitTab === "log" && activeRepoId && repoReady) setLogMounted(activeRepoId); }, [gitTab, activeRepoId, repoReady]);
   useEffect(() => { setRefsView(null); setFileHistoryRequest(null); setBranchOpen(false); setSyncMenu(null); setSyncToast(null); setRemotesFetchHeadAt(null); setRemoteChoice(null); }, [activeRepoId]);
   const detachedOid = snapshot?.branchInfo && !snapshot.branchInfo.head ? snapshot.branchInfo.oid : null;
   const worktreePath = snapshot?.repo.worktreePath ?? null;

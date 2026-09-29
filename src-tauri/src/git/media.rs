@@ -115,7 +115,7 @@ fn special(side: &mut TextSide, kind: &'static str, reason: impl ToString) {
 
 /// 子模块工作区 HEAD：只读取 `.git`（文件或目录）、`HEAD` 与引用文件，不启动 Git、不初始化。
 /// `.git` 文件指向的目录必须位于子模块目录或父仓库的 commonDir 内，否则不读取。
-fn submodule_head(dir: &Path, common_dir: &Path) -> (bool, Option<String>) {
+pub(super) fn submodule_head(dir: &Path, common_dir: &Path) -> (bool, Option<String>) {
     let read_limited = |path: &Path, limit: u64| -> Option<String> {
         let mut text = String::new();
         fs::File::open(path).ok()?.take(limit).read_to_string(&mut text).ok()?;
