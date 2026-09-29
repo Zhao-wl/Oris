@@ -61,7 +61,21 @@ powershell -NoProfile -File scripts\publish-release.ps1 -Version <版本> -Notes
   ```bash
   git -C ../Oris-release checkout -- package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
   ```
-- **推送被拒（non-fast-forward）**：说明构建期间远端 `main` 有新提交。`--atomic` 保证提交和 tag 都没推上去，也没有创建 Release。删掉本地的发版提交和 tag（`git tag -d v<版本>`，再 `git reset --hard origin/main` 前确认只丢弃这一个发版提交），然后回到第 2、3 步基于新的 `origin/main` 重来，让安装包包含最新代码。发现 `origin/main` 已经变化，也可以提前停掉构建。
+- **推送被拒（non-fast-forward）**：说明构建期间远端 `main` 有新提交。`--atomic` 保证提交和 tag 都没推上去，也没有创建 Release。先看新提交改了哪些文件（`<构建基点>` 是 worktree 创建时的 `origin/main`，也就是发版提交的父提交）：
+  ```bash
+  git -C ../Oris-release fetch origin -q
+  git -C ../Oris-release diff --stat <构建基点> origin/main
+  ```
+  - **只改了 `docs/`**：不影响安装包，也不影响测试，可以直接用已经构建好的产物发布，不必重新构建。签名绑定的是文件和版本号，与提交无关。更新说明也不用改。把发版提交移到新的 `origin/main` 上，重新打 tag 后推送，再手动创建 Release（PowerShell）：
+    ```powershell
+    Set-Location D:\Projects\Research\Oris-release
+    git fetch origin -q; git rebase origin/main; git tag -d v<版本>; git tag -a v<版本> -m "Oris <版本>"; git log --oneline -2
+    # 确认第一行是 chore(release): v<版本>，第二行是最新的 origin/main
+    git push --atomic origin HEAD:refs/heads/main v<版本>
+    $n = "src-tauri\target\release\bundle\nsis"; gh release create v<版本> "$n\Oris_<版本>_x64-setup.exe" "$n\Oris_<版本>_x64-setup.exe.sig" "$n\latest.json" -R Zhao-wl/Oris --verify-tag --title "Oris <版本>" --notes-file "$env:TEMP\oris-<版本>-notes.md"
+    ```
+    rebase 出现冲突，或者推送再次被拒且新提交不只改了 `docs/`，就执行 `git rebase --abort`，然后按下一种情况处理。
+  - **改了其他文件**（代码、测试、脚本、依赖等）：删掉本地的发版提交和 tag（`git tag -d v<版本>`；执行 `git reset --hard origin/main` 前，确认只会丢弃这一个发版提交），然后回到第 2、3 步，基于新的 `origin/main` 重新构建，让安装包包含最新代码并跑过测试。新提交里有用户可见的改动时，同时更新说明。如果构建期间已经发现 `origin/main` 有了代码改动，可以提前停掉构建。
 - **测试失败**：先单独运行失败的测试文件，并在上一个发版 tag 上对比，判断是新引入的回归还是已有的偶发失败。不要为了发版跳过测试。偶发失败要修测试本身的时序问题，另行提交后再发。
 - **Release 创建失败但推送已成功**：tag 已经在远端，修复 gh 的问题后，用生成的安装包、`.sig` 和 `latest.json` 手动执行 `gh release create v<版本> ... --verify-tag`，不要重新构建。
 
