@@ -1,8 +1,23 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { CompareScope, ConflictVersion, ContentPair, RepositoryDetails, RepositorySnapshot } from "./types";
+import type { CompareScope, ConflictVersion, ContentPair, GroupDiscovery, RepositoryDetails, RepositorySnapshot } from "./types";
 
-export const openRepository = (path: string, scope: CompareScope, gitExecutable: string | null, requestId: string) =>
-  invoke<RepositorySnapshot>("open_repository", { path, scope, gitExecutable, requestId });
+/** `submodulePointers`：子模块指针开关（V2-D79，默认关闭）。 */
+export const openRepository = (path: string, scope: CompareScope, gitExecutable: string | null, requestId: string, submodulePointers = false) =>
+  invoke<RepositorySnapshot>("open_repository", { path, scope, gitExecutable, requestId, submodulePointers });
+
+/** 工作区发现（V2-07）：只读，不打开仓库。`manual` 为手动加入的独立嵌套仓库路径。 */
+export const discoverGroup = (path: string, manual: string[], gitExecutable: string | null) =>
+  invoke<GroupDiscovery>("discover_group", { path, manual, gitExecutable });
+
+/** 成员徽标的改动数（V2-D82）：一次只读 status。 */
+export const memberChangeCount = (path: string, submodulePointers: boolean, gitExecutable: string | null) =>
+  invoke<number>("member_change_count", { path, submodulePointers, gitExecutable });
+
+/** 工作区共用一个 watcher（V2-D81）；第一个成员为父仓库。 */
+export const watchGroup = (key: string, members: { repoId: string; worktreePath: string; gitDir: string; commonDir: string }[], gitExecutable: string | null) =>
+  invoke<void>("watch_group", { key, members, gitExecutable });
+
+export const setSubmodulePointers = (repoId: string, show: boolean) => invoke<void>("set_submodule_pointers", { repoId, show });
 
 /** `manual` 为 true 时允许后端回写 index stat 缓存（V2-D09，仅用户手动刷新）。 */
 export const refreshRepository = (repoId: string, scope: CompareScope, requestId: string, manual = false) =>

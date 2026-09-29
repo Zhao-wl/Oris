@@ -1,4 +1,5 @@
 mod content;
+pub mod group;
 pub mod history;
 pub mod stash;
 pub mod log;
@@ -222,6 +223,12 @@ pub struct RepositorySnapshot {
     stats_ready: bool,
     branch_info: Option<scan::BranchSummary>,
     in_progress: Option<scan::InProgressSummary>,
+    /// 未跟踪的嵌套仓库目录（V2-D80），不在文件列表中，界面在列表底部折叠说明。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    nested_repos: Vec<String>,
+    /// 仓库顶层有 `.gitmodules`：界面提供子模块指针开关（V2-D79）。
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    has_submodules: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -310,6 +317,8 @@ pub struct GitAdapter {
     snapshots: Arc<Mutex<HashMap<CompareScope, Vec<read_guard::ReadSnapshot>>>>,
     scans: Arc<Mutex<Vec<Arc<scan::ScanState>>>>,
     reader: object_reader::SharedReader,
+    /// 子模块指针开关（V2-D79，默认关闭）：只影响含 `.gitmodules` 的仓库的 status 参数。
+    submodule_pointers: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl GitAdapter {
@@ -365,7 +374,17 @@ impl GitAdapter {
             snapshots: Arc::default(),
             scans: Arc::default(),
             reader,
+            submodule_pointers: Arc::default(),
         })
+    }
+
+    /// 设置子模块指针开关（V2-D79）；下一次扫描生效。
+    pub fn set_submodule_pointers(&self, show: bool) {
+        self.submodule_pointers.store(show, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub(crate) fn submodule_pointers(&self) -> bool {
+        self.submodule_pointers.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// 关闭项目时立即回收常驻 cat-file 进程（资源上限 §7）。
@@ -501,6 +520,8 @@ impl GitAdapter {
             stats_ready: details.is_some(),
             branch_info: Some((&state.branch).into()),
             in_progress: Some((&state.in_progress).into()),
+            nested_repos: state.nested_repos.clone(),
+            has_submodules: self.worktree.join(".gitmodules").is_file(),
         }
     }
 
@@ -525,19 +546,7 @@ impl GitAdapter {
 
     /// 已跟踪但匹配忽略规则的文件（watcher 不应丢弃它们的变化）。只读 plumbing，失败时返回空集。
     pub fn tracked_ignored_paths(&self) -> std::collections::HashSet<String> {
-        readonly_command(&self.git, &self.worktree, &["ls-files", "-z", "-c", "-i", "--exclude-standard"])
-            .env_remove("GIT_LITERAL_PATHSPECS")
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| {
-                o.stdout
-                    .split(|b| *b == 0)
-                    .filter(|p| !p.is_empty())
-                    .map(|p| String::from_utf8_lossy(p).into_owned())
-                    .collect()
-            })
-            .unwrap_or_default()
+        tracked_ignored_at(&self.git, &self.worktree)
     }
 
     pub fn git_executable_display(&self) -> String {
@@ -645,6 +654,8 @@ impl GitAdapter {
             stats_ready: true,
             branch_info: None,
             in_progress: None,
+            nested_repos: Vec::new(),
+            has_submodules: false,
         })
     }
 
@@ -1479,6 +1490,24 @@ fn stderr_summary(output: &Output) -> String {
     } else {
         message.chars().take(1000).collect()
     }
+}
+
+/// 已跟踪但匹配忽略规则的文件（watcher 不应丢弃它们的变化）。只读 plumbing，失败时返回空集。
+/// 工作区成员在尚未打开 GitAdapter 时也需要它（watcher 分派，技术方案 §10.5）。
+pub fn tracked_ignored_at(git: &Path, worktree: &Path) -> std::collections::HashSet<String> {
+    readonly_command(git, worktree, &["ls-files", "-z", "-c", "-i", "--exclude-standard"])
+        .env_remove("GIT_LITERAL_PATHSPECS")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            o.stdout
+                .split(|b| *b == 0)
+                .filter(|p| !p.is_empty())
+                .map(|p| String::from_utf8_lossy(p).into_owned())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn hash_bytes(bytes: &[u8]) -> String {
@@ -2845,3 +2874,5 @@ mod v2_tests;
 mod history_tests;
 #[cfg(test)]
 mod content_tests;
+#[cfg(test)]
+mod group_tests;

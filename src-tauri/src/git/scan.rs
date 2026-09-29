@@ -107,6 +107,8 @@ pub(super) struct ScanState {
     pub has_head: bool,
     pub branch: BranchInfo,
     pub in_progress: InProgress,
+    /// 未跟踪的嵌套仓库目录（工作区相对路径，不含末尾 `/`），不进入文件列表（V2-D80）。
+    pub nested_repos: Vec<String>,
     pub index_stat: Option<WtStat>,
     pub refs_digest: Vec<u8>,
     pub wt: HashMap<String, WtStat>,
@@ -138,6 +140,16 @@ fn file(entry: &Entry, status: FileStatus, old: Option<(&Vec<u8>, &String)>) -> 
         content_unchanged: None,
         gitlink: is_gitlink(entry),
     }
+}
+
+/// porcelain v2 对未跟踪的嵌套仓库只报告一条以 `/` 结尾的目录记录；目录下有 `.git` 即为嵌套仓库（只检查这一类记录，不遍历目录）。
+pub(super) fn is_nested_repo(worktree: &Path, entry: &Entry) -> bool {
+    entry.x == b'?'
+        && entry.path.ends_with(b"/")
+        && std::str::from_utf8(&entry.path).is_ok_and(|relative| {
+            let relative = relative.trim_end_matches('/');
+            validate_relative(relative).is_ok() && worktree.join(relative).join(".git").exists()
+        })
 }
 
 fn is_gitlink(entry: &Entry) -> bool {
@@ -290,7 +302,7 @@ impl GitAdapter {
     /// 执行一次 status 扫描。`refresh_index` 为 true 时（仅手动刷新）允许 Git 回写 index 的 stat 缓存（V2-D09）。
     pub(super) fn scan(&self, refresh_index: bool) -> Result<Arc<ScanState>, GitError> {
         let refs_digest = self.refs_digest()?;
-        let args = [
+        let mut args = vec![
             "status",
             "--porcelain=v2",
             "-z",
@@ -298,6 +310,10 @@ impl GitAdapter {
             "--untracked-files=all",
             "--find-renames",
         ];
+        // 子模块指针开关（V2-D79）：显式覆盖 `.gitmodules` / config 的 `ignore`；两种取值都不进入子模块检查工作区改动。
+        if self.worktree.join(".gitmodules").is_file() {
+            args.push(if self.submodule_pointers() { "--ignore-submodules=dirty" } else { "--ignore-submodules=all" });
+        }
         let output = if refresh_index {
             let output = index_refresh_command(&self.git, &self.worktree, &args)
                 .output()
@@ -310,7 +326,22 @@ impl GitAdapter {
             run_required(&self.git, &self.worktree, &args)?
         };
         let raw = output.stdout;
-        let (branch, files) = status_v2::parse(&raw)?;
+        let (branch, mut files) = status_v2::parse(&raw)?;
+        // 未跟踪的嵌套仓库目录（放在工作区里的 worktree、独立仓库）不作为未跟踪文件显示（V2-D80）。
+        let mut nested_repos = Vec::new();
+        for list in [&mut files.all, &mut files.unstaged] {
+            list.retain(|entry| {
+                let nested = is_nested_repo(&self.worktree, entry);
+                if nested && !nested_repos.contains(&entry.path) {
+                    nested_repos.push(entry.path.clone());
+                }
+                !nested
+            });
+        }
+        let nested_repos: Vec<String> = nested_repos
+            .iter()
+            .map(|path| String::from_utf8_lossy(path).trim_end_matches('/').to_owned())
+            .collect();
         let has_head = branch.oid.is_some();
         let lists = scope_lists(&files.all, has_head);
         let mut wt = HashMap::new();
@@ -351,6 +382,7 @@ impl GitAdapter {
             has_head,
             branch,
             in_progress,
+            nested_repos,
             index_stat: self.index_stat(),
             refs_digest,
             wt,

@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, 
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { activateRepository, cancelContentRead, closeRepository, loadSnapshot, openRepository, readContentPair, refreshRepository, removeSnapshot, repositoryDetails, saveSnapshot } from "./api";
+import { activateRepository, cancelContentRead, closeRepository, discoverGroup, loadSnapshot, memberChangeCount, openRepository, readContentPair, refreshRepository, removeSnapshot, repositoryDetails, saveSnapshot, setSubmodulePointers, watchGroup } from "./api";
+import RepoPicker, { type MemberBadge } from "./RepoPicker";
+import { applyDiscovery, changeCountOf, groupEntry, groupRootOf, joinPath, rememberMember, removeGroup, samePath, setManualMembers, tabKey, tabProjects } from "./repo-group";
 import { errorText } from "./error-message";
 import { calculateDiff } from "./diff";
 import { availableDiffModes, resolveDiffPresentation, type DiffPresentation } from "./diff-presentation";
@@ -37,7 +39,7 @@ import SpecialFileView from "./SpecialFileView";
 import { describeSpecial, isSvgPath, lfsNotice, metaChanges, noVisibleDifferenceReason, shortcut, sideLabel } from "./reading-model";
 import { settings } from "./appearance";
 import { FONT_SIZE_DEFAULT, FONT_SIZE_MAX, FONT_SIZE_MIN, useSettings } from "./settings";
-import type { CompareScope, ConflictVersion, ContentPair, DiffDocument, FileChange, RepositorySnapshot, WhitespaceMode } from "./types";
+import type { CompareScope, ConflictVersion, ContentPair, DiffDocument, FileChange, GroupDiscovery, GroupMember, RepositorySnapshot, WhitespaceMode } from "./types";
 import { schemeIndex } from "./themes/runtime";
 import UpdateButton from "./UpdateButton";
 import { ContentCache, DiffCache, RequestGate, projectName, moveProject, contentCacheKey, defaultAnchor, loadWorkspace, removeProject, resolveReadingSelection, saveWorkspace, upsertProject, type ProjectRecord, type ReadingAnchor } from "./workspace-model";
@@ -194,6 +196,19 @@ export default function App() {
   const askConfirm = useCallback((request: ConfirmRequest) => new Promise<boolean>((resolve) => setConfirmState({ ...request, resolve })), []);
   const workspaceRef = useRef(workspaceState);
   workspaceRef.current = workspaceState;
+  // ---------- 工作区（V2-07）：发现结果按父仓库 repoId 缓存（不持久化）；成员徽标只在打开选择器时读取 ----------
+  const [groups, setGroups] = useState<Record<string, GroupDiscovery>>({});
+  const groupsRef = useRef(groups);
+  groupsRef.current = groups;
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const pickerOpenRef = useRef(pickerOpen);
+  pickerOpenRef.current = pickerOpen;
+  const [memberBadges, setMemberBadges] = useState<Record<string, MemberBadge>>({});
+  // 工作区的一次性提示（并入、加入 / 移出成员）：切换仓库时不清除，与同步结果提示分开。
+  const [groupToast, setGroupToast] = useState<SyncToastState | null>(null);
+  const [historyCompare, setHistoryCompare] = useState<{ repoId: string; nonce: number; left: string; right: string; label: string } | null>(null);
+  const activeRoot = groupRootOf(workspaceState, activeRepoId);
+  const activeGroup = activeRoot ? groups[activeRoot.repo.repoId] ?? null : null;
 
   currentRead.current = { pair, scope, selected: selectedPathId, repo: activeRepoId, versions };
 
@@ -341,7 +356,9 @@ export default function App() {
     loadDetails.current(result);
     setWorkspaceState((current) => {
       const latest = current.projects.find(entry => entry.repo.repoId === result.repo.repoId);
-      return upsertProject(current, { ...project, customName: latest?.customName ?? project.customName, pinned: latest?.pinned ?? project.pinned, repo: result.repo, lastOpenedAt: Date.now(), anchor: nextAnchor });
+      // 工作区字段与指针开关以最新记录为准：调用方持有的 project 可能是切换前的旧副本（V2-07）。
+      const grouping = latest ? { groupId: latest.groupId, group: latest.group, showSubmodulePointers: latest.showSubmodulePointers } : {};
+      return upsertProject(current, { ...project, ...grouping, customName: latest?.customName ?? project.customName, pinned: latest?.pinned ?? project.pinned, repo: result.repo, lastOpenedAt: Date.now(), anchor: nextAnchor });
     });
     setScope(result.scope); setPath(result.repo.worktreePath); setGitExecutable(project.gitExecutable); setFilter(anchor.filter); setFileView(anchor.fileView); setStale(false);
     const selected = selection.selected;
@@ -371,7 +388,8 @@ export default function App() {
       }
     }
     try {
-      const result = await openRepository(project.repo.worktreePath, anchor.scope, settings.get().git.executable || null, requestId);
+      const pointers = workspaceRef.current.projects.find((entry) => entry.repo.repoId === project.repo.repoId)?.showSubmodulePointers ?? project.showSubmodulePointers ?? false;
+      const result = await openRepository(project.repo.worktreePath, anchor.scope, settings.get().git.executable || null, requestId, pointers);
       if (!repositoryGate.current.accepts(requestId)) return;
       await acceptSnapshot(result, project, anchor, requestId);
       if (!repositoryGate.current.accepts(requestId)) return;
@@ -386,8 +404,72 @@ export default function App() {
     } finally { if (repositoryGate.current.accepts(requestId)) { setLoading(false); repositoryGate.current.finish(requestId); contentGate.current.finish(requestId); } }
   }, [acceptSnapshot]);
 
+  // ---------- 工作区（V2-07） ----------
+  /** 工作区共用一个 watcher（V2-D81）：父仓库在第一位，只登记就绪成员。 */
+  const startGroupWatch = useCallback((discovery: GroupDiscovery) => {
+    const rootId = discovery.members[0]?.repoId;
+    const members = discovery.members
+      .filter((member): member is GroupMember & { repoId: string; gitDir: string; commonDir: string } => member.state === "ready" && !!member.repoId && !!member.gitDir && !!member.commonDir)
+      .map((member) => ({ repoId: member.repoId, worktreePath: member.worktreePath, gitDir: member.gitDir, commonDir: member.commonDir }));
+    if (rootId && members.length) void watchGroup(rootId, members, settings.get().git.executable || null).catch(() => {});
+  }, []);
+  /** 重新发现工作区成员（打开工作区、成员登记或 `.gitmodules` 变化、手动加入 / 移出后）；不切换当前仓库。 */
+  const refreshGroup = useCallback(async (rootId: string) => {
+    const root = workspaceRef.current.projects.find((project) => project.repo.repoId === rootId && project.group);
+    if (!root?.group) return null;
+    const git = settings.get().git.executable || "";
+    const found = await discoverGroup(root.repo.worktreePath, root.group.manual, git || null).catch(() => null);
+    if (!found?.isGroup || found.members[0]?.repoId !== rootId) return null;
+    const current = workspaceRef.current.activeRepoId;
+    const discovery = { ...found, selectedRepoId: groupRootOf(workspaceRef.current, current)?.repo.repoId === rootId ? current : root.group.lastRepoId };
+    setWorkspaceState((state) => {
+      const next = applyDiscovery(state, discovery, git).state;
+      // 当前成员已不在工作区中（例如 worktree 被删除）：退回父仓库。
+      return next.projects.some((project) => project.repo.repoId === next.activeRepoId) ? next : { ...next, activeRepoId: rootId };
+    });
+    setGroups((map) => ({ ...map, [rootId]: discovery }));
+    startGroupWatch(discovery);
+    return discovery;
+  }, [startGroupWatch]);
+  const refreshGroupRef = useRef(refreshGroup);
+  refreshGroupRef.current = refreshGroup;
+  /** 添加工作区（V2-D75、V2-D78）：已有的独立成员项目直接并入；直接添加的是子模块目录时选中该子模块。 */
+  const addGroup = useCallback(async (found: GroupDiscovery, effectiveGitExecutable: string) => {
+    const rootId = found.members[0].repoId!;
+    const existingRoot = workspaceRef.current.projects.find((project) => project.repo.repoId === rootId && project.group);
+    const manual = existingRoot?.group?.manual ?? [];
+    const discovery = manual.length
+      ? { ...(await discoverGroup(found.members[0].worktreePath, manual, effectiveGitExecutable || null).catch(() => found)), selectedRepoId: found.selectedRepoId }
+      : found;
+    const applied = applyDiscovery(workspaceRef.current, discovery, effectiveGitExecutable);
+    workspaceRef.current = applied.state;
+    setWorkspaceState(applied.state);
+    setGroups((map) => ({ ...map, [rootId]: discovery }));
+    startGroupWatch(discovery);
+    const target = applied.state.projects.find((project) => project.repo.repoId === applied.selected);
+    if (!target) return;
+    await loadProject(target);
+    const rootName = discovery.members[0].name;
+    const selected = discovery.members.find((member) => member.repoId === applied.selected);
+    const details = [
+      selected && selected.kind !== "superproject" && !existingRoot ? `已打开工作区 ${rootName} 并选中 ${selected.name}` : null,
+      applied.merged.length ? `原来单独添加的 ${applied.merged.join("、")} 已并入工作区，别名、阅读位置和提交草稿都保留` : null,
+      discovery.ignored.length ? `.gitmodules 中有 ${discovery.ignored.length} 个条目已忽略，见仓库选择器` : null
+    ].filter(Boolean);
+    const title = existingRoot ? `已切换到工作区 ${rootName}` : selected && selected.kind !== "superproject" ? `${selected.name} 属于工作区 ${rootName}` : `已作为工作区添加 ${rootName}`;
+    setProjectMessages((current) => ({ ...current, [applied.selected]: existingRoot ? "已存在，已切换" : "已添加" }));
+    setGroupToast({ id: ++syncToastSeq, kind: "fetch", status: "succeeded", title, detail: details.join("；") || null, actions: [] });
+  }, [loadProject, startGroupWatch]);
+
   const addRepository = useCallback(async (repositoryPath: string, effectiveGitExecutable = settings.get().git.executable) => {
     if (!repositoryPath.trim()) return;
+    // 工作区识别（V2-D75）：只读发现；失败（例如不是仓库）时按普通项目的路径报告错误。
+    const found = await discoverGroup(repositoryPath.trim(), [], effectiveGitExecutable || null).catch(() => null);
+    if (found?.isGroup && found.members[0]?.repoId) {
+      setError(null);
+      try { await addGroup(found, effectiveGitExecutable); } catch (nextError) { setError(errorText(nextError)); }
+      return;
+    }
     const requestId = newRequestId(); repositoryGate.current.activate(requestId); contentGate.current.activate(requestId);
     setRefreshing(false);
     setLoading(true); setError(null);
@@ -401,7 +483,7 @@ export default function App() {
       setProjectMessages((current) => ({ ...current, [result.repo.repoId]: existing ? "已存在，已切换" : "已添加" }));
     } catch (nextError) { if (repositoryGate.current.accepts(requestId)) setError(errorText(nextError)); }
     finally { if (repositoryGate.current.accepts(requestId)) { setLoading(false); repositoryGate.current.finish(requestId); contentGate.current.finish(requestId); } }
-  }, [acceptSnapshot, workspaceState.projects]);
+  }, [acceptSnapshot, addGroup, workspaceState.projects]);
 
   const refreshActive = useCallback(async (reason = "手动刷新") => {
     const automatic = reason !== "手动刷新";
@@ -476,6 +558,11 @@ export default function App() {
     setScope(activeProject.anchor.scope); setFilter(activeProject.anchor.filter); setFileView(activeProject.anchor.fileView); setPath(activeProject.repo.worktreePath); setGitExecutable(activeProject.gitExecutable);
   }, [activeProject?.repo.repoId]);
 
+  // 工作区：第一次进入时读取成员并建立共用 watcher；记住当前成员，切回标签或重启后恢复（V2-D77）。
+  const activeRootId = activeRoot?.repo.repoId ?? null;
+  useEffect(() => { if (activeRootId && !groupsRef.current[activeRootId]) void refreshGroup(activeRootId); }, [activeRootId, refreshGroup]);
+  useEffect(() => { if (activeRepoId) setWorkspaceState((current) => rememberMember(current, activeRepoId)); setPickerOpen(false); }, [activeRepoId]);
+
   const appliedGit = useRef(gitSetting);
   useEffect(() => {
     if (appliedGit.current === gitSetting) return;
@@ -538,7 +625,24 @@ export default function App() {
   useEffect(() => {
     let timer = 0, firstEventAt = 0;
     const unlisten = listen<string | { repoId: string; paths: string[]; global: boolean; kinds?: string[] }>("repository-invalidated", (event) => {
-      const change = typeof event.payload === "string" ? { repoId: event.payload, paths: [], global: true, kinds: [] } : event.payload;
+      let change = typeof event.payload === "string" ? { repoId: event.payload, paths: [] as string[], global: true, kinds: [] as string[] } : event.payload;
+      // 工作区（V2-D81）：成员登记或 .gitmodules 变化时重新读取成员；非当前成员的徽标显示“有变化”；
+      // 子模块的提交变化会改变父仓库记录的指针，父仓库打开了指针开关时一并刷新或标记待刷新。
+      const root = groupRootOf(workspaceRef.current, change.repoId);
+      if (root) {
+        const rootId = root.repo.repoId;
+        if (change.kinds?.includes("members") || (change.repoId === rootId && change.paths.includes(".gitmodules"))) void refreshGroupRef.current(rootId);
+        if (!change.global && change.kinds?.length && change.kinds.every((kind) => kind === "members")) return;
+        if (change.repoId !== currentRead.current.repo) setMemberBadges((map) => ({ ...map, [change.repoId]: { ...map[change.repoId], dirty: true } }));
+        const pointerChange = change.repoId !== rootId && (change.global || !!change.kinds?.some((kind) => kind === "refs"));
+        if (pointerChange && root.showSubmodulePointers) {
+          if (rootId === currentRead.current.repo) {
+            repoGeneration.current.set(change.repoId, (repoGeneration.current.get(change.repoId) ?? 0) + 1);
+            if (projects.get(change.repoId)) projects.update(change.repoId, { dirty: true });
+            change = { repoId: rootId, paths: [], global: false, kinds: ["index"] };
+          } else if (projects.get(rootId)) projects.update(rootId, { dirty: true });
+        }
+      } else if (!change.global && change.kinds?.length && change.kinds.every((kind) => kind === "members")) return;
       // refs 类事件（分支、HEAD、packed-refs）：分支列表与日志重读（任务 04）。
       if (change.repoId === currentRead.current.repo && (change.global || change.kinds?.includes("refs"))) setRefsVersion((value) => value + 1);
       if (change.repoId === currentRead.current.repo && (change.global || change.kinds?.includes("stash"))) setStashVersion((value) => value + 1);
@@ -580,6 +684,7 @@ export default function App() {
     const switchingId = newRequestId(); repositoryGate.current.activate(switchingId); contentGate.current.activate(switchingId);
     historyRef.current = null; setHistoryReading(null);
     setWorkspaceState((current) => ({ ...current, activeRepoId: project.repo.repoId })); setError(null); setNotice(null); setStale(false);
+    setMemberBadges((map) => map[project.repo.repoId]?.dirty ? { ...map, [project.repo.repoId]: { ...map[project.repo.repoId], dirty: false, count: undefined } } : map);
     const stored = projects.get(project.repo.repoId);
     const cached = stored?.snapshot ? scopeView(stored.snapshot, stored.details, project.anchor.scope) : undefined;
     if (!cached || cached.scope !== project.anchor.scope || !opened.current.has(project.repo.repoId)) {
@@ -604,6 +709,10 @@ export default function App() {
     if (cached.scopes) {
       // V2：watcher 持续监听最近 5 个项目；没有变化且 watcher 未被淘汰时不需要重新扫描。
       const watched = await activateRepository(project.repo.repoId).catch(() => false);
+      // 工作区的共用 watcher 被 LRU 淘汰后，activate 只为该成员单独重建了 watcher：恢复工作区 watcher（V2-D81）。
+      const groupRoot = groupRootOf(workspaceRef.current, project.repo.repoId);
+      const discovered = groupRoot ? groupsRef.current[groupRoot.repo.repoId] : undefined;
+      if (!watched && discovered) startGroupWatch(discovered);
       if (currentRead.current.repo !== project.repo.repoId) return;
       if (watched && unchangedSinceScan && !stored?.dirty) return;
     } else if (Date.now() - (checkedAt.current.get(`${project.repo.repoId}:${cached.scope}`) ?? cached.scannedAt) < 3000 && unchangedSinceScan) return;
@@ -656,15 +765,24 @@ export default function App() {
     finally { if (repositoryGate.current.accepts(requestId)) { setLoading(false); repositoryGate.current.finish(requestId); contentGate.current.finish(requestId); } }
   };
   const deleteProject = async (repoId: string) => {
-    const nextProject = workspaceState.projects.find((project) => project.repo.repoId !== repoId) ?? null;
-    cache.current.clearRepo(repoId); opened.current.delete(repoId);
-    for (const key of scopeSnapshots.current.keys()) if (key.startsWith(`${repoId}:`)) scopeSnapshots.current.delete(key);
-    const removedPath = projects.get(repoId)?.snapshot?.repo.worktreePath;
-    projects.remove(repoId);
-    if (removedPath) void removeSnapshot(removedPath).catch(() => {});
-    setWorkspaceState((current) => removeProject(current, repoId));
-    try { await closeRepository(repoId); } catch { /* local record removal is complete */ }
-    if (repoId === activeRepoId) {
+    // 移除工作区：父仓库与全部成员的记录、快照、打开状态一并移除；只删除应用记录，不删除目录（R-WORKSPACE）。
+    const isGroup = !!workspaceState.projects.find((project) => project.repo.repoId === repoId)?.group;
+    const removedIds = isGroup ? removeGroup(workspaceState, repoId).removed : [repoId];
+    const remainingTabs = tabProjects(workspaceState).filter((project) => project.repo.repoId !== repoId);
+    const nextTab = remainingTabs[0] ?? null;
+    const nextProject = nextTab ? (nextTab.group ? groupEntry(workspaceState, nextTab) : nextTab) : null;
+    const activeRemoved = !!activeRepoId && removedIds.includes(activeRepoId);
+    for (const id of removedIds) {
+      cache.current.clearRepo(id); opened.current.delete(id);
+      for (const key of scopeSnapshots.current.keys()) if (key.startsWith(`${id}:`)) scopeSnapshots.current.delete(key);
+      const removedPath = projects.get(id)?.snapshot?.repo.worktreePath;
+      projects.remove(id);
+      if (removedPath) void removeSnapshot(removedPath).catch(() => {});
+    }
+    if (isGroup) { setGroups((map) => { const next = { ...map }; delete next[repoId]; return next; }); setPickerOpen(false); }
+    setWorkspaceState((current) => (isGroup ? removeGroup(current, repoId).state : removeProject(current, repoId)));
+    for (const id of removedIds) { try { await closeRepository(id); } catch { /* local record removal is complete */ } }
+    if (activeRemoved) {
       const requestId = newRequestId(); repositoryGate.current.activate(requestId); contentGate.current.activate(requestId); setPair(null); setDiffDocument(null); setSelectedPathId(null); setError(null);
       setLoading(false); setRefreshing(false); contentPending.current = false;
       repositoryGate.current.finish(requestId); contentGate.current.finish(requestId);
@@ -674,7 +792,95 @@ export default function App() {
 
   const visibleFiles = useMemo(() => { const query = filter.trim().toLocaleLowerCase(); return snapshot?.files.filter((file) => file.displayPath.toLocaleLowerCase().includes(query)).sort(compareFiles) ?? []; }, [snapshot, filter]);
   visibleFilesRef.current = visibleFiles;
-  const visibleProjects = useMemo(() => { const query = projectFilter.trim().toLocaleLowerCase(); return workspaceState.projects.filter((project) => `${projectName(project)} ${project.repo.worktreePath}`.toLocaleLowerCase().includes(query)); }, [projectFilter, workspaceState.projects]);
+  // 工作区成员不单独占标签（V2-D75）；工作区标签也按成员名称匹配搜索。
+  const visibleProjects = useMemo(() => { const query = projectFilter.trim().toLocaleLowerCase(); return tabProjects(workspaceState).filter((project) => `${projectName(project)} ${project.repo.worktreePath} ${project.group ? workspaceState.projects.filter((member) => member.groupId === project.repo.repoId).map(projectName).join(" ") : ""}`.toLocaleLowerCase().includes(query)); }, [projectFilter, workspaceState]);
+  const activeTab = tabKey(workspaceState, activeRepoId);
+  // ---------- 工作区：成员徽标、手动成员、子模块指针开关（V2-D76、V2-D79、V2-D82） ----------
+  const memberBadgesRef = useRef(memberBadges);
+  memberBadgesRef.current = memberBadges;
+  /** 成员改动数只在打开选择器或“刷新全部状态”时读取：最多同时 2 个只读 status，关闭选择器后不再启动新的读取。 */
+  const scanMembers = useCallback((discovery: GroupDiscovery, force: boolean) => {
+    const git = settings.get().git.executable || null;
+    const known: Record<string, MemberBadge> = {};
+    const pending: (GroupMember & { repoId: string })[] = [];
+    for (const member of discovery.members) {
+      if (member.state !== "ready" || !member.repoId || member.repoId === workspaceRef.current.activeRepoId) continue;
+      const badge = memberBadgesRef.current[member.repoId];
+      const runtime = projects.get(member.repoId);
+      if (!force && runtime?.snapshot && !runtime.dirty && !badge?.dirty) { known[member.repoId] = { count: changeCountOf(runtime.snapshot) }; continue; }
+      if (!force && badge && (badge.count !== undefined || badge.scanning) && !badge.dirty) continue;
+      pending.push(member as GroupMember & { repoId: string });
+    }
+    setMemberBadges((map) => ({ ...map, ...known }));
+    let next = 0;
+    const worker = async () => {
+      while (next < pending.length && pickerOpenRef.current) {
+        const member = pending[next++];
+        const id = member.repoId;
+        setMemberBadges((map) => ({ ...map, [id]: { ...map[id], scanning: true } }));
+        const pointers = workspaceRef.current.projects.find((project) => project.repo.repoId === id)?.showSubmodulePointers ?? false;
+        try {
+          const count = await memberChangeCount(member.worktreePath, pointers, git);
+          setMemberBadges((map) => ({ ...map, [id]: { count, scanning: false, dirty: false } }));
+        } catch { setMemberBadges((map) => ({ ...map, [id]: { ...map[id], scanning: false } })); }
+      }
+    };
+    void worker(); void worker();
+  }, [projects]);
+  useEffect(() => { if (pickerOpen && activeGroup) scanMembers(activeGroup, false); }, [pickerOpen, activeGroup, scanMembers]);
+  const pickerBadges = useMemo(() => {
+    const map: Record<string, MemberBadge> = { ...memberBadges };
+    for (const member of activeGroup?.members ?? []) {
+      if (member.repoId && member.repoId !== activeRepoId && projects.get(member.repoId)?.dirty) map[member.repoId] = { ...map[member.repoId], dirty: true };
+    }
+    if (activeRepoId && runtime?.snapshot) map[activeRepoId] = { count: changeCountOf(runtime.snapshot) };
+    return map;
+  }, [memberBadges, activeGroup, activeRepoId, runtime, projects]);
+  /** 手动加入 / 移出独立嵌套仓库（V2-D76）；只改应用记录，不写仓库。 */
+  const changeManual = async (memberPath: string, add: boolean) => {
+    const root = groupRootOf(workspaceRef.current, workspaceRef.current.activeRepoId);
+    if (!root?.group) return;
+    const rootId = root.repo.repoId;
+    const others = root.group.manual.filter((entry) => !samePath(entry, memberPath));
+    const removedMember = add ? undefined : groupsRef.current[rootId]?.members.find((member) => member.kind === "manual" && samePath(member.worktreePath, memberPath));
+    if (removedMember?.repoId && removedMember.repoId === workspaceRef.current.activeRepoId) await switchProject(root);
+    const next = setManualMembers(workspaceRef.current, rootId, add ? [...others, memberPath] : others);
+    workspaceRef.current = next;
+    setWorkspaceState(next);
+    await refreshGroup(rootId);
+    if (removedMember?.repoId) { projects.remove(removedMember.repoId); opened.current.delete(removedMember.repoId); void closeRepository(removedMember.repoId).catch(() => {}); }
+    const name = memberPath.split(/[\\/]/).filter(Boolean).pop() ?? memberPath;
+    setGroupToast({ id: ++syncToastSeq, kind: "fetch", status: "succeeded", title: add ? `已把 ${name} 加入工作区` : `已把 ${name} 移出工作区`, detail: add ? "出现在仓库选择器的“手动加入”分组，可随时移出；不修改仓库" : "只移除 Oris 记录，不删除目录", actions: [] });
+  };
+  /** 子模块指针开关（V2-D79）：按仓库保存，切换后重新扫描当前仓库。 */
+  const toggleSubmodulePointers = async () => {
+    if (!activeProject || !activeRepoId) return;
+    const repoId = activeRepoId;
+    const show = !activeProject.showSubmodulePointers;
+    setWorkspaceState((current) => ({ ...current, projects: current.projects.map((project) => {
+      if (project.repo.repoId !== repoId) return project;
+      const { showSubmodulePointers: _previous, ...rest } = project;
+      return show ? { ...rest, showSubmodulePointers: true } : rest;
+    }) }));
+    try { await setSubmodulePointers(repoId, show); } catch (nextError) { setError(errorText(nextError)); return; }
+    await refreshLatest.current("切换子模块指针");
+  };
+  const nestedRepos = snapshot?.nestedRepos ?? [];
+  const nestedMember = (relative: string) => snapshot && activeGroup ? activeGroup.members.find((member) => samePath(member.worktreePath, joinPath(snapshot.repo.worktreePath, relative))) : undefined;
+  /** 工作区中当前仓库的子模块成员（gitlink 条目“切换到该仓库”）。 */
+  const submoduleMember = (relative: string) => nestedMember(relative);
+  /** 父仓库历史中的子模块指针变化：切换到子仓库并打开两个提交的比较（V2-D84）。 */
+  const compareInSubmodule = (file: { path: string; submodule?: { old: string | null; new: string | null } }) => {
+    const member = submoduleMember(file.path);
+    const record = member?.repoId ? workspaceState.projects.find((project) => project.repo.repoId === member.repoId) : undefined;
+    if (!member || !record || !file.submodule?.old || !file.submodule.new) {
+      setGroupToast({ id: ++syncToastSeq, kind: "fetch", status: "failed", title: `${file.path} 不是可打开的工作区成员`, detail: member ? "该子模块未初始化或目录缺失" : "只有工作区中的子模块可以跳转", actions: [] });
+      return;
+    }
+    setHistoryCompare({ repoId: record.repo.repoId, nonce: Date.now(), left: file.submodule.old, right: file.submodule.new, label: member.name });
+    setGitTab("log");
+    void switchProject(record);
+  };
   const historyFile = useMemo<FileChange | undefined>(() => historyReading ? { pathId: historyReading.file.pathId, displayPath: historyReading.file.path, oldPathId: historyReading.file.oldPathId, oldDisplayPath: historyReading.file.oldPath, status: historyStatus(historyReading.file.status), additions: null, deletions: null } : undefined, [historyReading]);
   const localSelectedFile = snapshot?.files.find((file) => file.pathId === selectedPathId);
   const selectedFile = historyFile ?? localSelectedFile;
@@ -1347,6 +1553,8 @@ export default function App() {
       // 专注 diff：Ctrl/Cmd+Shift+Enter 切换；Esc 退出（搜索面板打开时 Esc 先关闭搜索，由其捕获阶段处理）。
       if ((event.ctrlKey || event.metaKey) && event.shiftKey && !event.altKey && event.key === "Enter") { event.preventDefault(); setFocusMode((value) => !value); return; }
       if (event.key === "Escape" && focusMode && !document.querySelector("[role=dialog], [role=alertdialog]")) { setFocusMode(false); return; }
+      // 工作区仓库选择器：Ctrl+E / ⌘E（V2-D85，Ctrl+1–9 已用于切换项目）。
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "e" && activeRoot && !document.querySelector(".dialog-overlay")) { event.preventDefault(); setPickerOpen((value) => !value); return; }
       if (!settingsOpen && !aiOpen && matchesAiShortcut(event, aiShortcut)) {
         event.preventDefault(); setAiOpen(true); return;
       }
@@ -1358,8 +1566,8 @@ export default function App() {
         event.preventDefault(); navigateFile(event.key === "ArrowUp" ? -1 : 1); return;
       }
       if ((event.ctrlKey || event.metaKey) && /^[1-9]$/.test(event.key)) {
-        const project = workspaceState.projects[Number(event.key) - 1];
-        if (project) { event.preventDefault(); void switchProject(project); }
+        const project = tabProjects(workspaceState)[Number(event.key) - 1];
+        if (project) { event.preventDefault(); void switchProject(project.group ? groupEntry(workspaceState, project) : project); }
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -1488,20 +1696,30 @@ export default function App() {
   const ignoredWhitespace = diffDocument?.whitespace === "ignore" ? diffDocument.ignoredWhitespace ?? 0 : null;
 
   return <main className={`app${focusMode ? " focus-mode" : ""}`}>
-    <header className="titlebar"><span className="logo">O</span><strong>{activeProject ? projectName(activeProject) : "Oris"}</strong>{snapshot && <span className="branch-anchor"><button type="button" className="branch branch-button" aria-expanded={branchOpen} title="分支：搜索、切换、新建与管理" onClick={() => setBranchOpen((value) => !value)}>⑂ {snapshot.repo.branch} ▾</button>{branchOpen && activeRepoId && <BranchPopover repoId={activeRepoId} refsVersion={refsVersion} blocked={writeBlocked} actions={branchActions} onClose={() => setBranchOpen(false)}/>}</span>}{snapshot && activeRepoId && <SyncToolbar repoId={activeRepoId} branch={{ head: snapshot.branchInfo?.head ?? null, upstream: snapshot.branchInfo?.upstream ?? null, ahead: snapshot.branchInfo?.ahead ?? null, behind: snapshot.branchInfo?.behind ?? null }}
+    <header className="titlebar"><span className="logo">O</span>{activeRoot && activeProject ? <span className="repo-picker-anchor"><button type="button" className="repo-picker-button" aria-haspopup="dialog" aria-expanded={pickerOpen} title="切换仓库（Ctrl+E / ⌘E）" onClick={() => setPickerOpen((value) => !value)}>{projectName(activeProject)}<span className="caret">▾</span></button>{pickerOpen && <RepoPicker rootName={projectName(activeRoot)} members={activeGroup?.members ?? []} loading={!activeGroup} currentRepoId={activeRepoId} badges={pickerBadges} ignored={activeGroup?.ignored ?? []}
+      onSelect={(member) => { setPickerOpen(false); const record = workspaceState.projects.find((project) => project.repo.repoId === member.repoId); if (record) void switchProject(record); }}
+      onRescan={() => { setMemberBadges({}); void refreshGroup(activeRoot.repo.repoId).then((discovery) => { if (discovery) scanMembers(discovery, true); }); }}
+      onRemoveManual={(member) => void changeManual(member.worktreePath, false)}
+      onClose={() => setPickerOpen(false)}/>}</span> : <strong>{activeProject ? projectName(activeProject) : "Oris"}</strong>}{snapshot && <span className="branch-anchor"><button type="button" className="branch branch-button" aria-expanded={branchOpen} title="分支：搜索、切换、新建与管理" onClick={() => setBranchOpen((value) => !value)}>⑂ {snapshot.repo.branch} ▾</button>{branchOpen && activeRepoId && <BranchPopover repoId={activeRepoId} refsVersion={refsVersion} blocked={writeBlocked} actions={branchActions} onClose={() => setBranchOpen(false)}/>}</span>}{snapshot && activeRepoId && <SyncToolbar repoId={activeRepoId} branch={{ head: snapshot.branchInfo?.head ?? null, upstream: snapshot.branchInfo?.upstream ?? null, ahead: snapshot.branchInfo?.ahead ?? null, behind: snapshot.branchInfo?.behind ?? null }}
         blocked={writeBlocked} running={syncRunning} fetchAge={fetchAge} fetchTitle={fetchText} pullMode={pullMode} menu={syncMenu} onMenu={setSyncMenu}
         onFetch={(remote) => void runFetch(remote)} onPull={() => void runPull()} onPush={() => void runPush()} onCancel={() => void cancelOperation(activeRepoId)} onPullMode={choosePullMode} onChangeUpstream={changeUpstream} onRemotes={(view) => setRemotesFetchHeadAt(view.fetchHeadAt)}/>}{stale && <span className="stale-badge">旧快照</span>}{runtime?.verifying && <span className="stale-badge verifying" title="显示上次保存的快照，正在后台校验；校验完成前写操作不可用">校验中</span>}<span className="spacer"/><UpdateButton autoCheck={autoCheckUpdates} busyReason={busyOperation}/><button className="commit-entry" onClick={() => setAiOpen(true)} title="AI（Ctrl+P / ⌘P）">✦ AI</button><button className="settings-button" onClick={() => setSettingsOpen(true)} aria-label="设置" title="设置（Ctrl+,）">⚙ 设置</button></header>
-    <section className="projectbar" aria-label="项目切换"><button className="primary" onClick={chooseRepository}>添加项目</button><input value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)} placeholder="搜索项目或完整路径" aria-label="搜索项目"/><div className="project-tabs">{visibleProjects.map(project => <ProjectTab key={project.repo.repoId} project={project} active={project.repo.repoId === activeRepoId}
-      onSelect={() => void switchProject(project)}
+    <section className="projectbar" aria-label="项目切换"><button className="primary" onClick={chooseRepository}>添加项目</button><input value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)} placeholder="搜索项目或完整路径" aria-label="搜索项目"/><div className="project-tabs">{visibleProjects.map(project => <ProjectTab key={project.repo.repoId} project={project} active={project.repo.repoId === activeTab}
+      workspaceMembers={project.group ? groups[project.repo.repoId]?.members.filter((member) => member.kind === "submodule").length ?? null : undefined}
+      onSelect={() => void switchProject(project.group ? groupEntry(workspaceState, project) : project)}
       onRename={customName => setWorkspaceState(current => ({ ...current, projects: current.projects.map(p => p.repo.repoId === project.repo.repoId ? { ...p, customName } : p) }))}
       onRemove={() => void deleteProject(project.repo.repoId)}
       onReorder={target => setWorkspaceState(current => moveProject(current, project.repo.repoId, target))}/>)}{!visibleProjects.length && <span className="project-empty">{workspaceState.projects.length ? "没有匹配项目" : "尚未添加项目"}</span>}</div></section>
     <section className="openbar"><input value={path} onChange={(event) => setPath(event.target.value)} placeholder="仓库绝对路径" aria-label="仓库路径"/><button onClick={() => void addRepository(path)} disabled={loading || !path.trim()}>载入/添加</button>{snapshot && <button onClick={() => void refreshActive()} disabled={manualRefreshing}>↻ 本地刷新</button>}{snapshot && <span className="restore-status">{projectMessages[snapshot.repo.repoId] ?? "已同步"} · {new Date(snapshot.scannedAt).toLocaleTimeString()}</span>}</section>
     <section className="workspace" ref={workspace} style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}>
-      <aside className="sidebar"><div className="panel-title"><strong>变更</strong><span>{scopeLabels[scope].endpoints[0]} → {scopeLabels[scope].endpoints[1]}</span></div><div className="scope-row">{(["unstaged", "staged", "all"] as CompareScope[]).map((value) => <button key={value} className={`scope ${scope === value ? "selected" : ""}`} onClick={() => void setCompareScope(value)}>{scopeLabels[value].short}</button>)}<select className="file-view-select" aria-label="文件显示方式" title={fileView === "flat" ? "平铺显示相对路径" : "树状显示目录"} value={fileView} onChange={(event) => { const value = event.target.value as "flat" | "tree"; setFileView(value); updateAnchor({ fileView: value }); }}><option value="flat">☷</option><option value="tree">⑂</option></select></div><input className="filter" aria-label="按完整相对路径筛选" value={filter} onChange={(event) => { setFilter(event.target.value); updateAnchor({ filter: event.target.value }); }} placeholder="按完整相对路径筛选"/><div className="files" role="listbox" aria-label={`${scopeLabels[scope].short}变更`}>{snapshot && <FileTree files={visibleFiles} selectedPathId={historyReading ? null : selectedPathId} mode={fileView} statsPending={pendingStats} onSelect={userSelect} actions={fileActions}/>} {snapshot && !visibleFiles.length && <div className="empty">{filter ? "筛选无匹配文件" : "当前比较范围没有变化"}</div>}{!snapshot && <div className="empty">添加或选择一个真实 Git 仓库</div>}</div><footer>{selectedCount > 1 ? <div className="batch-bar"><span>已选 {selectedCount} 个 · 右键批量操作</span><button type="button" className="quiet" onClick={() => setMultiSelection(new Set())}>清除</button></div>
+      <aside className="sidebar"><div className="panel-title"><strong>变更</strong><span>{scopeLabels[scope].endpoints[0]} → {scopeLabels[scope].endpoints[1]}</span></div><div className="scope-row">{(["unstaged", "staged", "all"] as CompareScope[]).map((value) => <button key={value} className={`scope ${scope === value ? "selected" : ""}`} onClick={() => void setCompareScope(value)}>{scopeLabels[value].short}</button>)}<select className="file-view-select" aria-label="文件显示方式" title={fileView === "flat" ? "平铺显示相对路径" : "树状显示目录"} value={fileView} onChange={(event) => { const value = event.target.value as "flat" | "tree"; setFileView(value); updateAnchor({ fileView: value }); }}><option value="flat">☷</option><option value="tree">⑂</option></select></div><div className="filter-row"><input className="filter" aria-label="按完整相对路径筛选" value={filter} onChange={(event) => { setFilter(event.target.value); updateAnchor({ filter: event.target.value }); }} placeholder="按完整相对路径筛选"/>{snapshot?.hasSubmodules && activeProject && <button type="button" role="switch" className="pointer-switch" aria-checked={!!activeProject.showSubmodulePointers} title="显示子模块指针变化（按仓库保存，默认关闭）。关闭时不显示任何子模块条目；打开时只显示提交指针变化，子模块内部的改动到子仓库中查看。" onClick={() => void toggleSubmodulePointers()}><span className="track" aria-hidden="true"/>子模块指针</button>}</div><div className="files" role="listbox" aria-label={`${scopeLabels[scope].short}变更`}>{snapshot && <FileTree files={visibleFiles} selectedPathId={historyReading ? null : selectedPathId} mode={fileView} statsPending={pendingStats} onSelect={userSelect} actions={fileActions}/>} {snapshot && !visibleFiles.length && <div className="empty">{filter ? "筛选无匹配文件" : "当前比较范围没有变化"}</div>}{!snapshot && <div className="empty">添加或选择一个真实 Git 仓库</div>}</div>{nestedRepos.length > 0 && <details className="nested-repos"><summary>{nestedRepos.length} 个嵌套仓库未显示</summary>{nestedRepos.map((relative) => {
+        const member = nestedMember(relative);
+        const record = member?.repoId ? workspaceState.projects.find((project) => project.repo.repoId === member.repoId) : undefined;
+        return <div key={relative} className="nested-repo"><code>{relative}/</code><span>{member ? member.kind === "worktree" ? `${activeGroup?.members.find((owner) => owner.repoId === member.parentRepoId)?.name ?? "仓库"} 的 worktree` : "工作区成员" : activeRoot ? "独立仓库，未加入工作区" : "独立的 Git 仓库"}</span>
+          {record ? <button type="button" className="quiet" onClick={() => void switchProject(record)}>切换</button> : activeRoot && !member && <button type="button" className="quiet" onClick={() => void changeManual(joinPath(snapshot!.repo.worktreePath, relative), true)}>加入工作区</button>}</div>;
+      })}<p>这些目录是独立的 Git 仓库，不作为未跟踪文件显示。不需要这条说明时，可以把它们写入 .gitignore。</p></details>}<footer>{selectedCount > 1 ? <div className="batch-bar"><span>已选 {selectedCount} 个 · 右键批量操作</span><button type="button" className="quiet" onClick={() => setMultiSelection(new Set())}>清除</button></div>
         : snapshot ? `${visibleFiles.length} / ${snapshot.files.length} 个文件 · ${scopeLabels[scope].short}` : error ? "项目读取失败" : loading ? "正在读取项目状态" : "未知项目状态"}</footer></aside>
       <div className="workspace-resizer" role="separator" aria-label="调整文件侧栏宽度" aria-orientation="vertical" aria-valuemin={SIDEBAR_MIN_WIDTH} aria-valuenow={sidebarWidth} tabIndex={0} onPointerDown={beginSidebarResize} onPointerMove={moveSidebarResize} onPointerUp={endSidebarResize} onPointerCancel={endSidebarResize} onKeyDown={(event) => { if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return; event.preventDefault(); setSidebarWidth((width) => clampSidebarWidth(width + (event.key === "ArrowLeft" ? -16 : 16))); }}/>
-      <section className="editor">{inProgressNotice && <div className="op-banner" role="status">{inProgressNotice}</div>}{mergeInProgress && <div className="op-banner merge-banner" role="status"><strong>合并进行中 · {mergeConflicts} 个冲突</strong><span>{mergeConflicts ? "冲突只读查看；在外部工具中解决后，在文件列表中“标记已解决”" : "冲突已全部标记解决，可以完成合并"}</span><span className="spacer"/>{mergeConflicts > 0 && <button type="button" onClick={() => void viewConflicts()}>查看冲突</button>}{mergeConflicts === 0 && <button type="button" className="primary" disabled={!!writeBlocked} title={writeBlocked ?? undefined} onClick={() => setMergeCommitOpen(true)}>完成合并…</button>}<button type="button" className="danger" disabled={!!writeBlocked} title={writeBlocked ?? undefined} onClick={() => void abortMerge()}>中止合并…</button></div>}{detachedOid && <div className="op-banner detached-banner" role="status"><span>分离 HEAD：当前检出提交 {detachedOid.slice(0, 8)}，不在任何分支上；在此提交会不属于任何分支。</span><button type="button" disabled={!!writeBlocked} title={writeBlocked ?? undefined} onClick={() => { loadRefsView(); setNewBranch({ initial: { ref: "HEAD", label: `当前 HEAD ${detachedOid.slice(0, 8)}` } }); }}>从这里新建分支…</button></div>}<div className="tabbar">{selectedFile ? <strong className="tab-path"><PathText path={selectedFile.displayPath}/></strong> : <strong>Diff</strong>}{selectedFile?.oldDisplayPath && <PathText path={selectedFile.oldDisplayPath} prefix="← " className="rename-path"/>}{historyReading && <span className="history-badge" title="主阅读器正在显示历史版本：两端为固定的提交 OID，只读">历史 · {historyReading.source}</span>}<span className="spacer"/>{historyReading ? <button type="button" onClick={returnToLocal} title="回到进入历史之前的本地文件与阅读位置">← 返回本地变化</button> : localSelectedFile && localSelectedFile.status !== "untracked" && <button type="button" className="quiet" onClick={() => openFileHistory(localSelectedFile)} title="在底部“历史”页查看该文件的提交历史（从 HEAD 开始）">文件历史</button>}{selectedFile?.contentUnchanged && <span className="unchanged-note" title={contentUnchangedLabels[selectedFile.contentUnchanged].detail}>{contentUnchangedLabels[selectedFile.contentUnchanged].short}：Git 规范化后内容一致</span>}{loading && contentPending.current && <button onClick={() => { const cancelled = newRequestId(); contentGate.current.activate(cancelled); contentGate.current.finish(cancelled); contentPending.current = false; setLoading(false); setPair(null); setDiffDocument(null); void cancelContentRead().catch(() => {}); }}>取消读取</button>}{diffDocument && <span>{diffDocument.hunks.length} 处差异 · Worker {diffDocument.elapsedMs.toFixed(1)} ms</span>}</div>{viewTexts && <div className="toolbar"><button onClick={() => viewer.current?.navigate(-1)} disabled={!position.total} aria-label="上一处差异" title="上一处差异（Shift+F7）">↑</button><button onClick={() => viewer.current?.navigate(1)} disabled={!position.total} aria-label="下一处差异" title="下一处差异（F7）">↓</button><span className="diff-position" aria-live="polite">{position.current} / {position.total}</span><select value={singleFile ? "single" : mode} disabled={singleFile} onChange={(event) => { const value = event.target.value; if (value === "split" || value === "unified") setMode(value); }} aria-label="Diff 布局">{diffModes.includes("single") && <option value="single">单文件视图</option>}{diffModes.includes("split") && <option value="split">并排视图</option>}{diffModes.includes("unified") && <option value="unified">统一视图</option>}</select><select value={highlight} disabled={singleFile} onChange={(event) => setHighlight(event.target.value as "words" | "lines")} aria-label="高亮粒度"><option value="words">按词高亮</option><option value="lines">按行高亮</option></select><ToggleButton label="折叠上下文" pressed={collapsed} disabled={singleFile} onClick={() => setCollapsed((value) => !value)}/><ToggleButton label="自动换行" pressed={wrap} onClick={() => setWrap((value) => !value)}/><ToggleButton label="对齐变化" pressed={alignChanges} disabled={singleFile} onClick={() => setAlignChanges((value) => !value)}/><select value={whitespace} disabled={singleFile} onChange={(event) => setWhitespace(event.target.value as WhitespaceMode)} aria-label="空白规则" title="空白规则只影响显示，不修改仓库"><option value="keep">保留空白</option><option value="ignore">忽略空白</option></select>{collapsed && !singleFile && <button type="button" onClick={() => viewer.current?.expandAll()} title="展开当前文件中全部折叠的未变化内容">全部展开</button>}<ToggleButton label="专注" pressed={focusMode} title={`专注 diff：只保留阅读器（${shortcut("Ctrl+Shift+Enter")} 切换，Esc 退出）`} onClick={() => setFocusMode((value) => !value)}/>{latin1Active && <button type="button" onClick={() => setLatin1Keys((current) => { const next = new Set(current); next.delete(latin1Key); return next; })}>退出单字节显示</button>}{ignoredWhitespace !== null && <span className="filter-badge" role="status" title="只影响显示；差异计数、高亮与导航按同一规则计算">已忽略空白 · 略去 {ignoredWhitespace} 处</span>}</div>}
+      <section className="editor">{inProgressNotice && <div className="op-banner" role="status">{inProgressNotice}</div>}{mergeInProgress && <div className="op-banner merge-banner" role="status"><strong>合并进行中 · {mergeConflicts} 个冲突</strong><span>{mergeConflicts ? "冲突只读查看；在外部工具中解决后，在文件列表中“标记已解决”" : "冲突已全部标记解决，可以完成合并"}</span><span className="spacer"/>{mergeConflicts > 0 && <button type="button" onClick={() => void viewConflicts()}>查看冲突</button>}{mergeConflicts === 0 && <button type="button" className="primary" disabled={!!writeBlocked} title={writeBlocked ?? undefined} onClick={() => setMergeCommitOpen(true)}>完成合并…</button>}<button type="button" className="danger" disabled={!!writeBlocked} title={writeBlocked ?? undefined} onClick={() => void abortMerge()}>中止合并…</button></div>}{detachedOid && <div className="op-banner detached-banner" role="status"><span>分离 HEAD：当前检出提交 {detachedOid.slice(0, 8)}，不在任何分支上；在此提交会不属于任何分支。</span><button type="button" disabled={!!writeBlocked} title={writeBlocked ?? undefined} onClick={() => { loadRefsView(); setNewBranch({ initial: { ref: "HEAD", label: `当前 HEAD ${detachedOid.slice(0, 8)}` } }); }}>从这里新建分支…</button></div>}<div className="tabbar">{selectedFile ? <strong className="tab-path"><PathText path={selectedFile.displayPath}/></strong> : <strong>Diff</strong>}{selectedFile?.oldDisplayPath && <PathText path={selectedFile.oldDisplayPath} prefix="← " className="rename-path"/>}{!historyReading && localSelectedFile?.gitlink && (() => { const member = submoduleMember(localSelectedFile.displayPath); const record = member?.repoId ? workspaceState.projects.find((project) => project.repo.repoId === member.repoId) : undefined; return record ? <button type="button" className="quiet" title={`切换到子仓库 ${member!.name}`} onClick={() => void switchProject(record)}>切换到该仓库</button> : null; })()}{historyReading && <span className="history-badge" title="主阅读器正在显示历史版本：两端为固定的提交 OID，只读">历史 · {historyReading.source}</span>}<span className="spacer"/>{historyReading ? <button type="button" onClick={returnToLocal} title="回到进入历史之前的本地文件与阅读位置">← 返回本地变化</button> : localSelectedFile && localSelectedFile.status !== "untracked" && <button type="button" className="quiet" onClick={() => openFileHistory(localSelectedFile)} title="在底部“历史”页查看该文件的提交历史（从 HEAD 开始）">文件历史</button>}{selectedFile?.contentUnchanged && <span className="unchanged-note" title={contentUnchangedLabels[selectedFile.contentUnchanged].detail}>{contentUnchangedLabels[selectedFile.contentUnchanged].short}：Git 规范化后内容一致</span>}{loading && contentPending.current && <button onClick={() => { const cancelled = newRequestId(); contentGate.current.activate(cancelled); contentGate.current.finish(cancelled); contentPending.current = false; setLoading(false); setPair(null); setDiffDocument(null); void cancelContentRead().catch(() => {}); }}>取消读取</button>}{diffDocument && <span>{diffDocument.hunks.length} 处差异 · Worker {diffDocument.elapsedMs.toFixed(1)} ms</span>}</div>{viewTexts && <div className="toolbar"><button onClick={() => viewer.current?.navigate(-1)} disabled={!position.total} aria-label="上一处差异" title="上一处差异（Shift+F7）">↑</button><button onClick={() => viewer.current?.navigate(1)} disabled={!position.total} aria-label="下一处差异" title="下一处差异（F7）">↓</button><span className="diff-position" aria-live="polite">{position.current} / {position.total}</span><select value={singleFile ? "single" : mode} disabled={singleFile} onChange={(event) => { const value = event.target.value; if (value === "split" || value === "unified") setMode(value); }} aria-label="Diff 布局">{diffModes.includes("single") && <option value="single">单文件视图</option>}{diffModes.includes("split") && <option value="split">并排视图</option>}{diffModes.includes("unified") && <option value="unified">统一视图</option>}</select><select value={highlight} disabled={singleFile} onChange={(event) => setHighlight(event.target.value as "words" | "lines")} aria-label="高亮粒度"><option value="words">按词高亮</option><option value="lines">按行高亮</option></select><ToggleButton label="折叠上下文" pressed={collapsed} disabled={singleFile} onClick={() => setCollapsed((value) => !value)}/><ToggleButton label="自动换行" pressed={wrap} onClick={() => setWrap((value) => !value)}/><ToggleButton label="对齐变化" pressed={alignChanges} disabled={singleFile} onClick={() => setAlignChanges((value) => !value)}/><select value={whitespace} disabled={singleFile} onChange={(event) => setWhitespace(event.target.value as WhitespaceMode)} aria-label="空白规则" title="空白规则只影响显示，不修改仓库"><option value="keep">保留空白</option><option value="ignore">忽略空白</option></select>{collapsed && !singleFile && <button type="button" onClick={() => viewer.current?.expandAll()} title="展开当前文件中全部折叠的未变化内容">全部展开</button>}<ToggleButton label="专注" pressed={focusMode} title={`专注 diff：只保留阅读器（${shortcut("Ctrl+Shift+Enter")} 切换，Esc 退出）`} onClick={() => setFocusMode((value) => !value)}/>{latin1Active && <button type="button" onClick={() => setLatin1Keys((current) => { const next = new Set(current); next.delete(latin1Key); return next; })}>退出单字节显示</button>}{ignoredWhitespace !== null && <span className="filter-badge" role="status" title="只影响显示；差异计数、高亮与导航按同一规则计算">已忽略空白 · 略去 {ignoredWhitespace} 处</span>}</div>}
         {selectedFile?.status === "conflicted" && <div className="conflict-toolbar"><strong>未合并 index · 只读版本查看（替代普通范围比较）</strong>{versions.map((value, index) => <select key={index} aria-label={index === 0 ? "冲突左版本" : "冲突右版本"} value={value} onChange={event => { const next: [ConflictVersion, ConflictVersion] = [...versions]; next[index] = event.target.value as ConflictVersion; if (snapshot) void selectFile(snapshot, selectedFile, activeProject?.gitExecutable ?? "", 0, false, next); }}>{Object.entries(versionLabels).map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select>)}{pair && <div className="conflict-identities">{[pair.left, pair.right].map((side,index) => <div key={index}>{endpoints[index]} · {side.encoding === "missing" ? "缺失 / 删除" : side.details?.sizeKnown === false ? "字节数未知" : `${side.byteLength} 字节`} · mode {side.details?.mode ?? "—"} · OID {side.details?.oid ?? "—"}{side.details?.reason && <p>{side.details.reason}</p>}</div>)}</div>}</div>}
         {selectedFile && <div className={singleFile ? "endpoints single" : mode === "split" ? "endpoints split" : "endpoints"} style={{ "--diff-header-left-width": `${splitLayout.leftWidth}px` } as CSSProperties}>{singleFile ? <span className="single-endpoint"><span>▣ {singleEndpointLabel}</span>{singleTextSide && <span className="encoding">{sideLabel(singleTextSide)}</span>}</span> : <><span className="left-endpoint"><span>▣ {pair?.left.endpoint === "emptyTree" ? "空树" : endpoints[0]}</span>{pair && !imageDisplay && <span className="encoding">{sideLabel(pair.left)}</span>}</span>{mode === "split" && <span className="endpoint-gutter" aria-hidden="true"/>}<span className="right-endpoint"><span>▣ {endpoints[1]}</span>{pair && !imageDisplay && <span className="encoding">{sideLabel(pair.right)}</span>}</span></>}</div>}
         <div className="content">{notice && <SelectionNotice message={notice} onDismiss={() => setNotice(null)}/>}{loading && !diffDocument && <div className="state">正在读取真实仓库…</div>}{error && <div className="state error"><strong>无法显示差异</strong><p>{error}</p></div>}{!loading && !error && pair?.left.encoding === "missing" && pair.right.encoding === "missing" && <div className="state">所选两端均缺失，没有可比较内容。</div>}{!loading && !error && pair?.degradation && !special && !latin1Active && <div className="state warning"><strong>内容已降级</strong><p>{pair.degradation}</p></div>}{!loading && !error && special && <SpecialFileView description={special} compact={!!availableText} action={latin1Available ? { label: "按单字节（Latin-1）显示", onClick: () => setLatin1Keys((current) => new Set([...current, latin1Key])) } : undefined}/>}{!loading && !error && readingNotices.length > 0 && <div className="reading-notice" role="status">{readingNotices.map((text, index) => <p key={index}>{text}</p>)}</div>}{!loading && !error && pair && (pair.left.details?.image || pair.right.details?.image || /\.(png|jpe?g|webp)$/i.test(pair.displayPath)) && <ImageViewer key={`${pair.repoId}:${pair.pathId}:${pair.left.contentId}:${pair.right.contentId}`} left={pair.left} right={pair.right} labels={endpoints}/>} {!loading && !error && availableText && pair && !latin1Active && <><div className="partial-notice">仅显示可用文本端；另一侧不可用，跨侧差异计数与导航不可计算。{special ? "" : pair.degradation}</div><DiffViewer readingKey={`${pair.repoId}:${pair.pathId}:${availableText.endpoint}`} presentation={{kind:"compare"}} left={editorText(availableText.text!)} right={editorText(availableText.text!)} document={{requestId:pair.requestId,contentIds:[availableText.contentId,availableText.contentId],changes:[],hunks:[],elapsedMs:0}} mode="unified" highlight={highlight} collapsed={false} wrap={wrap} alignChanges={false} onPositionChange={() => {}} onSplitLayoutChange={() => {}}/></>} {!error && viewTexts && pair && viewDocument && <DiffViewer readingKey={historyReading ? `${pair.repoId}:history:${historyReading.key}` : `${pair.repoId}:${scope}:${pair.pathId}`} presentation={presentation} ref={viewer} left={viewTexts[0]} right={viewTexts[1]} document={viewDocument} hunkHeaders={hunkHeaders} mode={mode} highlight={highlight} collapsed={collapsed} wrap={wrap} alignChanges={alignChanges} onPositionChange={handlePositionChange} onSplitLayoutChange={handleSplitLayoutChange}/>} {!loading && !error && !pair && <div className="state">选择一个变化文件开始阅读</div>}</div><footer className="diff-footer"><span>蓝：修改　绿：新增　灰：删除</span><span className="spacer"/>{snapshot && <span>Git {snapshot.git.version} · revision {snapshot.revision.slice(0, 8)}</span>}</footer></section>
@@ -1509,13 +1727,14 @@ export default function App() {
     <GitPanel repoId={activeRepoId} tab={gitTab} onTab={setGitTab} stagedCount={stagedCount} headOid={runtime?.snapshot?.branchInfo?.oid ?? null} headKey={`${snapshot?.branchInfo?.oid ?? ""}:${snapshot?.branchInfo?.upstream ?? ""}:${snapshot?.branchInfo?.ahead ?? ""}:${snapshot?.branchInfo?.behind ?? ""}`}
       mergeInProgress={!!snapshot?.inProgress?.merge} blockedReason={writeBlocked && !repoOps?.running ? writeBlocked : null} running={repoOps?.running ?? null} lines={repoOps?.lines ?? []} last={repoOps?.last ?? null} lastCommit={repoOps?.lastCommit ?? null} backups={repoOps?.backups ?? []}
       onCommit={commit} onGenerateMessage={aiMessage} onUndoCommit={(head) => void undoCommit(head)} onUndoDiscard={(id) => void undoDiscard(id)} onCancel={() => { if (activeRepoId) void cancelOperation(activeRepoId); }}
-      logContent={activeRepoId && logMounted === activeRepoId ? <HistoryPanel key={activeRepoId} repoId={activeRepoId} refsVersion={refsVersion} hidden={gitTab !== "log"} fileHistoryRequest={fileHistoryRequest} activeKey={historyReading?.key ?? null} onOpenFile={(open) => void openHistoryFile(open)} onRefs={setRefsView}
+      logContent={activeRepoId && logMounted === activeRepoId ? <HistoryPanel key={activeRepoId} repoId={activeRepoId} compareRequest={historyCompare} onSubmoduleCompare={activeGroup ? compareInSubmodule : undefined} refsVersion={refsVersion} hidden={gitTab !== "log"} fileHistoryRequest={fileHistoryRequest} activeKey={historyReading?.key ?? null} onOpenFile={(open) => void openHistoryFile(open)} onRefs={setRefsView}
         writeBlocked={writeBlocked} onCheckout={(oid) => void runSwitch({ kind: "checkout", commit: oid })} onNewBranch={(start) => { loadRefsView(); setNewBranch({ initial: start }); }} onMerge={detachedOid ? undefined : startMerge}
         onSwitch={branchActions.onSwitch} onTrack={branchActions.onTrack} onDeleteBranch={(branch) => void deleteBranch(branch)} onPruneGone={() => void pruneGoneBranches()} stashVersion={stashVersion} selectedFiles={stashSelection}
         onStashPush={stashPush} onStashApply={(entry, pop) => void runOp({ kind: "stashApply", index: entry.index, oid: entry.oid, pop })} onStashDrop={(entry) => void stashDrop(entry)}/> : null}/>
     {remoteChoice && remoteChoice.repoId === activeRepoId && <RemoteChoiceDialog kind={remoteChoice.kind} remotes={remoteChoice.remotes} message={remoteChoice.message} onCancel={() => setRemoteChoice(null)}
       onConfirm={(remote) => { const choice = remoteChoice; setRemoteChoice(null); if (choice.repoId === currentRead.current.repo) void (choice.kind === "fetch" ? runFetch(remote) : runPush(remote)); }}/>}
     {syncToast && <SyncToast key={syncToast.id} toast={syncToast} onDismiss={() => setSyncToast(null)}/>}
+    {!syncToast && groupToast && <SyncToast key={groupToast.id} toast={groupToast} onDismiss={() => setGroupToast(null)}/>}
     {mergeTarget && snapshot && <MergeDialog target={mergeTarget} current={snapshot.repo.branch} mergeFf={refsView?.mergeFf ?? null} blocked={writeBlocked ?? (mergeInProgress ? "已有合并在进行中" : null)} onConfirm={runMerge} onCancel={() => setMergeTarget(null)}/>}
     {mergeCommitOpen && activeRepoId && <MergeCommitDialog repoId={activeRepoId} blocked={writeBlocked} onConfirm={(message) => { setMergeCommitOpen(false); void runOp({ kind: "mergeCommit", message }); }} onCancel={() => setMergeCommitOpen(false)}/>}
     {newBranch && activeRepoId && <NewBranchDialog repoId={activeRepoId} refs={refsView} initial={newBranch.initial} blocked={writeBlocked} onConfirm={createBranch} onCancel={() => setNewBranch(null)}/>}

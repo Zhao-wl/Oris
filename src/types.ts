@@ -72,6 +72,10 @@ export interface RepositorySnapshot {
   statsReady?: boolean;
   branchInfo?: BranchSummary | null;
   inProgress?: InProgressSummary | null;
+  /** 未跟踪的嵌套仓库目录（工作区相对路径），不在文件列表中（V2-D80）。 */
+  nestedRepos?: string[];
+  /** 仓库顶层有 `.gitmodules`：提供子模块指针开关（V2-D79）。 */
+  hasSubmodules?: boolean;
 }
 
 /** 后台补齐的次要信息（按 revision 缓存）。 */
@@ -160,4 +164,32 @@ export interface DiffDocument {
   changes: DiffHunk[];
   hunks: DiffHunk[];
   elapsedMs: number;
+}
+
+/** 工作区成员（任务 V2-07，后端 `git::group`）。 */
+export type GroupMemberKind = "superproject" | "submodule" | "worktree" | "manual";
+export type GroupMemberState = "ready" | "uninitialized" | "missing" | "invalid";
+export interface GroupMember {
+  /** 就绪成员的 repoId；未初始化、目录缺失、无效的成员为 null。 */
+  repoId: string | null;
+  kind: GroupMemberKind;
+  name: string;
+  worktreePath: string;
+  /** 相对父仓库根的路径（`/` 分隔）。 */
+  relativePath: string;
+  parentRepoId: string | null;
+  state: GroupMemberState;
+  gitDir: string | null;
+  commonDir: string | null;
+  branch: string | null;
+  headOid: string | null;
+  /** 父仓库 index 中记录的子模块提交。 */
+  recordedOid: string | null;
+}
+export interface GroupDiscovery {
+  isGroup: boolean;
+  /** 父仓库在第一位。 */
+  members: GroupMember[];
+  selectedRepoId: string | null;
+  ignored: string[];
 }

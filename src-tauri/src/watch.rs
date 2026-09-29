@@ -21,6 +21,8 @@ pub enum ChangeKind {
     Refs,
     Stash,
     InProgress,
+    /// worktree / 子模块 Git 目录的登记发生变化（新增、删除）：工作区需要重新读取成员列表（V2-D81）。
+    Members,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
@@ -254,6 +256,8 @@ pub fn classify(
                 (!echo(path, None)).then_some(ChangeKind::Stash)
             } else if text == "HEAD" || text == "packed-refs" || first == "refs" {
                 (!echo(path, None)).then_some(ChangeKind::Refs)
+            } else if matches!(first, "worktrees" | "modules") && text.split('/').filter(|part| !part.is_empty()).count() <= 2 {
+                Some(ChangeKind::Members)
             } else if matches!(first, "MERGE_HEAD" | "CHERRY_PICK_HEAD" | "REVERT_HEAD" | "BISECT_LOG" | "rebase-merge" | "rebase-apply") {
                 Some(ChangeKind::InProgress)
             } else if text.is_empty() {
@@ -326,8 +330,18 @@ pub struct RepoWatcher {
     // 不使用文件 ID 缓存：Windows 上默认的 FileIdMap 会在 watch() 时遍历整棵目录树并为每个文件保存 ID，
     // 大仓库打开会慢上秒级并常驻内存；我们不需要跨事件的 rename 缝合。
     _debouncer: Debouncer<notify::RecommendedWatcher, NoCache>,
+    /// 每个成员仓库自己的屏蔽窗口（单仓库 watcher 只有一项）。
+    suppressions: HashMap<String, Arc<Suppression>>,
+}
+
+impl RepoWatcher {
     #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
-    pub suppression: Arc<Suppression>,
+    pub fn suppression(&self, repo_id: &str) -> Option<Arc<Suppression>> {
+        self.suppressions.get(repo_id).cloned()
+    }
+    pub fn covers(&self, repo_id: &str) -> bool {
+        self.suppressions.contains_key(repo_id)
+    }
 }
 
 pub struct WatchTarget {
@@ -339,21 +353,97 @@ pub struct WatchTarget {
     pub tracked_ignored: Box<dyn FnOnce() -> HashSet<String> + Send>,
 }
 
+/// 分派用的成员信息（工作区共用一个 watcher，技术方案 §10.5）。
+struct Member {
+    repo_id: String,
+    worktree: PathBuf,
+    git_dirs: Vec<PathBuf>,
+    rules: Arc<IgnoreRules>,
+    suppression: Arc<Suppression>,
+}
+
+impl Member {
+    /// 路径属于该成员时返回匹配前缀的深度（工作区根或 Git 目录中最长的一个）。
+    fn prefix_depth(&self, path: &Path) -> Option<usize> {
+        std::iter::once(&self.worktree)
+            .chain(self.git_dirs.iter())
+            .filter(|prefix| path.starts_with(prefix))
+            .map(|prefix| prefix.components().count())
+            .max()
+    }
+}
+
+/// 按“最长路径前缀”把一批事件路径分给所属成员：子仓库目录与 `.git/modules/<名称>` 归子仓库，
+/// 共享的 common dir（linked worktree 与主仓库共用的 refs）同时分给共用它的成员；空路径（需要重扫）分给全部成员；
+/// 不属于任何成员的路径交给第一个成员（按工作区外路径做全局刷新）。
+fn dispatch(members: &[Member], paths: &[PathBuf]) -> Vec<Vec<PathBuf>> {
+    let mut batches = vec![Vec::new(); members.len()];
+    for path in paths {
+        if path.as_os_str().is_empty() {
+            for batch in &mut batches {
+                batch.push(path.clone());
+            }
+            continue;
+        }
+        let depths: Vec<Option<usize>> = members.iter().map(|m| m.prefix_depth(path)).collect();
+        match depths.iter().flatten().max().copied() {
+            Some(best) => {
+                for (index, depth) in depths.iter().enumerate() {
+                    if *depth == Some(best) {
+                        batches[index].push(path.clone());
+                    }
+                }
+            }
+            None => batches[0].push(path.clone()),
+        }
+    }
+    batches
+}
+
 /// 启动一个仓库 watcher；`emit` 在后台线程上以合并后的分类结果调用。
+#[cfg_attr(not(feature = "desktop"), allow(dead_code))]
 pub fn watch(
     target: WatchTarget,
     debounce: Duration,
     emit: impl Fn(Invalidation) + Send + 'static,
 ) -> Result<RepoWatcher, String> {
-    let suppression = Arc::new(Suppression::default());
-    let handler_rules = Arc::new(IgnoreRules::new(&target.worktree, &target.git_dir, HashSet::new()));
-    let pending_rules = handler_rules.clone();
-    let tracked_ignored = target.tracked_ignored;
-    std::thread::spawn(move || pending_rules.set_tracked_ignored(tracked_ignored()));
-    let git_dirs = vec![target.git_dir.clone(), target.common_dir.clone()];
-    let handler_suppression = suppression.clone();
-    let repo_id = target.repo_id.clone();
-    let worktree = target.worktree.clone();
+    watch_group(vec![target], debounce, emit)
+}
+
+/// 启动一个覆盖多个仓库的 watcher（工作区，V2-D81）：只为不在其他目标之内的根目录建立递归监听，
+/// 事件按最长前缀分派后，由各成员自己的忽略规则与屏蔽窗口分类。第一个目标是工作区的父仓库。
+pub fn watch_group(
+    targets: Vec<WatchTarget>,
+    debounce: Duration,
+    emit: impl Fn(Invalidation) + Send + 'static,
+) -> Result<RepoWatcher, String> {
+    if targets.is_empty() {
+        return Err("没有要监听的仓库".into());
+    }
+    let mut roots: Vec<PathBuf> = Vec::new();
+    let mut members = Vec::new();
+    let mut suppressions = HashMap::new();
+    for target in targets {
+        let suppression = Arc::new(Suppression::default());
+        let rules = Arc::new(IgnoreRules::new(&target.worktree, &target.git_dir, HashSet::new()));
+        let pending_rules = rules.clone();
+        let tracked_ignored = target.tracked_ignored;
+        std::thread::spawn(move || pending_rules.set_tracked_ignored(tracked_ignored()));
+        for root in [&target.worktree, &target.git_dir, &target.common_dir] {
+            if !roots.iter().any(|existing| root.starts_with(existing)) {
+                roots.retain(|existing| !existing.starts_with(root));
+                roots.push(root.clone());
+            }
+        }
+        suppressions.insert(target.repo_id.clone(), suppression.clone());
+        members.push(Member {
+            repo_id: target.repo_id,
+            worktree: target.worktree,
+            git_dirs: vec![target.git_dir, target.common_dir],
+            rules,
+            suppression,
+        });
+    }
     let mut debouncer = new_debouncer_opt::<_, notify::RecommendedWatcher, NoCache>(debounce, None, move |result: DebounceEventResult| {
         let paths: Vec<PathBuf> = match result {
             Ok(events) => events
@@ -372,27 +462,26 @@ pub fn watch(
         if paths.is_empty() {
             return;
         }
-        if let Some(invalidation) = classify(&repo_id, &worktree, &git_dirs, &handler_rules, &handler_suppression, &paths) {
-            emit(invalidation);
+        for (member, batch) in members.iter().zip(dispatch(&members, &paths)) {
+            if batch.is_empty() {
+                continue;
+            }
+            if let Some(invalidation) = classify(&member.repo_id, &member.worktree, &member.git_dirs, &member.rules, &member.suppression, &batch) {
+                emit(invalidation);
+            }
         }
     }, NoCache, notify::Config::default())
     .map_err(|error| format!("无法启动文件监听：{error}"))?;
-    let mut roots = vec![target.worktree.clone()];
-    if !target.git_dir.starts_with(&target.worktree) {
-        roots.push(target.git_dir.clone());
-    }
-    if target.common_dir != target.git_dir && !target.common_dir.starts_with(&target.worktree) {
-        roots.push(target.common_dir.clone());
-    }
     for root in roots {
         debouncer
             .watch(&root, RecursiveMode::Recursive)
             .map_err(|error| format!("无法监听 {}：{error}", root.display()))?;
     }
-    Ok(RepoWatcher { _debouncer: debouncer, suppression })
+    Ok(RepoWatcher { _debouncer: debouncer, suppressions })
 }
 
 /// watcher 的 LRU 登记：最多保留 [`MAX_WATCHED`] 个，超出时关闭最久未使用的项目。
+/// 键为项目（普通仓库为自身 repoId，工作区为父仓库 repoId）；一个工作区的 watcher 覆盖全部成员，只占一个名额。
 #[derive(Default)]
 pub struct WatchLru {
     order: Vec<String>,
@@ -400,16 +489,28 @@ pub struct WatchLru {
 }
 
 impl WatchLru {
-    /// 标记项目为最近使用；返回该项目当前是否仍有 watcher。
-    pub fn touch(&mut self, repo_id: &str) -> bool {
-        self.order.retain(|id| id != repo_id);
-        self.order.push(repo_id.to_owned());
-        self.watchers.contains_key(repo_id)
+    /// 覆盖该仓库的 watcher 的键（自身，或所属工作区）。
+    fn key_for(&self, repo_id: &str) -> Option<String> {
+        if self.watchers.contains_key(repo_id) {
+            return Some(repo_id.to_owned());
+        }
+        self.watchers.iter().find(|(_, watcher)| watcher.covers(repo_id)).map(|(key, _)| key.clone())
     }
-    /// 登记 watcher，返回因超过上限而被关闭 watcher 的项目。
-    pub fn insert(&mut self, repo_id: &str, watcher: RepoWatcher) -> Vec<String> {
-        self.touch(repo_id);
-        self.watchers.insert(repo_id.to_owned(), watcher);
+    /// 标记项目为最近使用；返回该项目当前是否仍有 watcher（含所属工作区的 watcher）。
+    pub fn touch(&mut self, repo_id: &str) -> bool {
+        let key = self.key_for(repo_id).unwrap_or_else(|| repo_id.to_owned());
+        self.order.retain(|id| *id != key);
+        self.order.push(key.clone());
+        self.watchers.contains_key(&key)
+    }
+    /// 登记 watcher，返回因超过上限而被关闭 watcher 的项目。工作区 watcher 会替换其成员各自的 watcher。
+    pub fn insert(&mut self, key: &str, watcher: RepoWatcher) -> Vec<String> {
+        let covered: Vec<String> = self.watchers.keys().filter(|id| *id != key && watcher.covers(id)).cloned().collect();
+        for id in covered {
+            self.remove(&id);
+        }
+        self.touch(key);
+        self.watchers.insert(key.to_owned(), watcher);
         let mut evicted = Vec::new();
         while self.watchers.len() > MAX_WATCHED {
             let Some(oldest) = self.order.iter().find(|id| self.watchers.contains_key(*id)).cloned() else { break };
@@ -418,14 +519,21 @@ impl WatchLru {
         }
         evicted
     }
+    /// 移除以该仓库为键的 watcher；成员仓库属于某个工作区 watcher 时不影响工作区。
     #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
     pub fn remove(&mut self, repo_id: &str) {
         self.order.retain(|id| id != repo_id);
         self.watchers.remove(repo_id);
     }
+    /// 覆盖该仓库的 watcher。
     #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
     pub fn get(&self, repo_id: &str) -> Option<&RepoWatcher> {
-        self.watchers.get(repo_id)
+        self.key_for(repo_id).and_then(|key| self.watchers.get(&key))
+    }
+    /// 该仓库由某个工作区 watcher 覆盖（键不是它自己）。
+    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+    pub fn in_group(&self, repo_id: &str) -> bool {
+        self.key_for(repo_id).is_some_and(|key| key != repo_id || self.watchers.get(&key).is_some_and(|w| w.suppressions.len() > 1))
     }
     #[cfg(test)]
     pub fn len(&self) -> usize {
@@ -701,5 +809,95 @@ mod tests {
         assert!(!received.is_empty());
         assert!(received.len() <= 10, "事件应被合并，实际 {} 次", received.len());
         assert!(received.iter().all(|c| c.kinds == vec![ChangeKind::Worktree]));
+    }
+
+    fn member(repo_id: &str, worktree: &Path, git_dir: &Path, common_dir: &Path) -> Member {
+        Member {
+            repo_id: repo_id.into(),
+            worktree: worktree.to_path_buf(),
+            git_dirs: vec![git_dir.to_path_buf(), common_dir.to_path_buf()],
+            rules: Arc::new(IgnoreRules::new(worktree, git_dir, HashSet::new())),
+            suppression: Arc::default(),
+        }
+    }
+
+    /// 技术方案 §10.5：事件按最长前缀归属；子模块的 Git 目录在父仓库 `.git/modules` 下，归子模块；
+    /// 共享的 common dir 同时分给主仓库与它的 linked worktree；需要重扫的空路径分给全部成员。
+    #[test]
+    fn group_dispatch_routes_paths_to_the_longest_prefix() {
+        let root = PathBuf::from(if cfg!(windows) { r"C:\ws" } else { "/ws" });
+        let modules = root.join(".git").join("modules");
+        let members = vec![
+            member("root", &root, &root.join(".git"), &root.join(".git")),
+            member("battle", &root.join("battle"), &modules.join("battle"), &modules.join("battle")),
+            member("r2", &root.join("battle-r2"), &modules.join("battle").join("worktrees").join("battle-r2"), &modules.join("battle")),
+        ];
+        let paths = vec![
+            root.join("AGENTS.md"),
+            root.join("battle").join("src").join("a.rs"),
+            root.join("battle-r2").join("b.rs"),
+            modules.join("battle").join("index"),
+            modules.join("battle").join("refs").join("heads").join("main"),
+            modules.join("battle").join("worktrees").join("battle-r2").join("HEAD"),
+            root.join(".git").join("index"),
+            PathBuf::new(),
+        ];
+        let batches = dispatch(&members, &paths);
+        let names = |batch: &Vec<PathBuf>| batch.iter().map(|p| p.strip_prefix(&root).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default()).collect::<Vec<_>>();
+        assert_eq!(names(&batches[0]), vec!["AGENTS.md", ".git/index", ""]);
+        assert_eq!(names(&batches[1]), vec!["battle/src/a.rs", ".git/modules/battle/index", ".git/modules/battle/refs/heads/main", ""]);
+        // linked worktree 与主仓库共用 common dir：其中的事件两者都收到（与单仓库 watcher 同时监听 git dir 与 common dir 的行为一致）。
+        assert_eq!(names(&batches[2]), vec!["battle-r2/b.rs", ".git/modules/battle/index", ".git/modules/battle/refs/heads/main", ".git/modules/battle/worktrees/battle-r2/HEAD", ""]);
+    }
+
+    /// V2-D81：父仓库不因子仓库目录中的写入（含被子仓库忽略的大量写入）收到通知；一个 watcher 在 LRU 中只占一个名额。
+    #[test]
+    fn group_watcher_keeps_parent_quiet_for_child_writes() {
+        let dir = repo();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        let child = root.join("child");
+        fs::create_dir_all(&child).unwrap();
+        git(&child, &["init", "-q"]);
+        fs::write(child.join(".gitignore"), "Library/\n").unwrap();
+        fs::create_dir_all(child.join("Library")).unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let targets = vec![
+            WatchTarget { repo_id: "root".into(), worktree: root.clone(), git_dir: root.join(".git"), common_dir: root.join(".git"), tracked_ignored: Box::new(HashSet::new) },
+            WatchTarget { repo_id: "child".into(), worktree: child.clone(), git_dir: child.join(".git"), common_dir: child.join(".git"), tracked_ignored: Box::new(HashSet::new) },
+        ];
+        let watcher = watch_group(targets, DEBOUNCE, move |change| {
+            let _ = sender.send(change);
+        })
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        let _ = receiver.try_iter().count();
+        for i in 0..2_000 {
+            fs::write(child.join("Library").join(format!("cache-{i}.bin")), b"x").unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(1200));
+        let ignored: Vec<_> = receiver.try_iter().collect();
+        assert!(ignored.iter().all(|c| c.repo_id != "root"), "父仓库收到了子仓库的事件：{ignored:?}");
+        fs::write(child.join("real.txt"), b"y").unwrap();
+        let mut seen = Vec::new();
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_secs(3) {
+            if let Ok(change) = receiver.recv_timeout(Duration::from_millis(100)) {
+                seen.push(change);
+            } else if !seen.is_empty() {
+                break;
+            }
+        }
+        assert!(seen.iter().any(|c| c.repo_id == "child" && c.paths == vec!["real.txt".to_owned()]), "{seen:?}");
+        assert!(seen.iter().all(|c| c.repo_id != "root"), "{seen:?}");
+        fs::write(root.join("top.txt"), b"z").unwrap();
+        let top = receiver.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert_eq!((top.repo_id.as_str(), top.paths.clone()), ("root", vec!["top.txt".to_owned()]));
+        let mut lru = WatchLru::default();
+        lru.insert("root", watcher);
+        assert_eq!(lru.len(), 1);
+        assert!(lru.touch("child") && lru.in_group("child") && lru.in_group("root"));
+        assert!(lru.get("child").and_then(|w| w.suppression("child")).is_some());
+        lru.remove("child");
+        assert_eq!(lru.len(), 1, "移除成员自身的键不影响工作区 watcher");
     }
 }

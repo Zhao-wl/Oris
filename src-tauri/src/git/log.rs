@@ -106,6 +106,17 @@ pub struct ChangedFile {
     pub path_id: String,
     pub old_path_id: Option<String>,
     pub status: ChangeStatus,
+    /// 子模块条目（gitlink，mode 160000）的前后提交指针（R-WORKSPACE，V2-D84）；普通文件为 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submodule: Option<SubmodulePointer>,
+}
+
+/// gitlink 前后指向的子仓库提交；新增时 `old` 为 None，删除时 `new` 为 None。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubmodulePointer {
+    pub old: Option<String>,
+    pub new: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -291,9 +302,9 @@ fn parse_name_status(tokens: &[&[u8]]) -> Result<Vec<ChangedFile>, GitError> {
         let path_at = |j: usize| String::from_utf8_lossy(tokens[j]).into_owned();
         let id_at = |j: usize| URL_SAFE_NO_PAD.encode(tokens[j]);
         if paired {
-            files.push(ChangedFile { old_path: Some(path_at(i + 1)), path: path_at(i + 2), old_path_id: Some(id_at(i + 1)), path_id: id_at(i + 2), status });
+            files.push(ChangedFile { old_path: Some(path_at(i + 1)), path: path_at(i + 2), old_path_id: Some(id_at(i + 1)), path_id: id_at(i + 2), status, submodule: None });
         } else {
-            files.push(ChangedFile { old_path: None, path: path_at(i + 1), old_path_id: None, path_id: id_at(i + 1), status });
+            files.push(ChangedFile { old_path: None, path: path_at(i + 1), old_path_id: None, path_id: id_at(i + 1), status, submodule: None });
         }
         i += needed + 1;
     }
@@ -360,11 +371,53 @@ pub fn read_log(git: &Path, worktree: &Path, query: &LogQuery, cursor: Option<&L
 }
 
 pub(super) fn diff_tree(git: &Path, worktree: &Path, args: &[&str]) -> Result<Vec<ChangedFile>, GitError> {
-    let mut all = vec!["diff-tree", "-r", "-z", "--no-commit-id", "--no-ext-diff", "--no-textconv", "--name-status", "-M"];
+    // `--raw` 在名称状态之外给出两侧 mode 与 OID，用来识别子模块指针变化（V2-D84）；文件集合与 `--name-status` 相同。
+    let mut all = vec!["diff-tree", "-r", "-z", "--no-commit-id", "--no-ext-diff", "--no-textconv", "--raw", "--no-abbrev", "-M"];
     all.extend_from_slice(args);
     let raw = run_required(git, worktree, &all)?.stdout;
-    let tokens: Vec<&[u8]> = raw.split(|b| *b == 0).collect();
-    parse_name_status(&tokens)
+    parse_raw(&raw)
+}
+
+/// 解析 `diff-tree --raw -z`：`:<mode> <mode> <oid> <oid> <状态>` NUL 路径 NUL（rename / copy 为两个路径）。
+pub(super) fn parse_raw(raw: &[u8]) -> Result<Vec<ChangedFile>, GitError> {
+    const GITLINK: &[u8] = b"160000";
+    let tokens: Vec<&[u8]> = raw.split(|b| *b == 0).filter(|t| !t.is_empty()).collect();
+    let mut files = Vec::new();
+    let mut i = 0;
+    while i < tokens.len() {
+        let header = tokens[i];
+        let header = header.strip_prefix(b"\n").unwrap_or(header);
+        let Some(header) = header.strip_prefix(b":") else {
+            return Err(GitError::CommandFailed("无法解析变化文件列表".into()));
+        };
+        let fields: Vec<&[u8]> = header.split(|b| *b == b' ').collect();
+        if fields.len() != 5 {
+            return Err(GitError::CommandFailed("无法解析变化文件列表".into()));
+        }
+        let Some(status) = status_of(fields[4]) else {
+            return Err(GitError::CommandFailed("无法解析变化文件列表".into()));
+        };
+        let paired = matches!(status, ChangeStatus::Renamed | ChangeStatus::Copied);
+        let needed = if paired { 2 } else { 1 };
+        if i + needed >= tokens.len() {
+            return Err(GitError::CommandFailed("变化文件列表截断".into()));
+        }
+        let oid = |mode: &[u8], value: &[u8]| {
+            let text = String::from_utf8_lossy(value).into_owned();
+            (mode == GITLINK && !text.bytes().all(|b| b == b'0')).then_some(text)
+        };
+        let submodule = (fields[0] == GITLINK || fields[1] == GITLINK)
+            .then(|| SubmodulePointer { old: oid(fields[0], fields[2]), new: oid(fields[1], fields[3]) });
+        let path_at = |j: usize| String::from_utf8_lossy(tokens[j]).into_owned();
+        let id_at = |j: usize| URL_SAFE_NO_PAD.encode(tokens[j]);
+        if paired {
+            files.push(ChangedFile { old_path: Some(path_at(i + 1)), path: path_at(i + 2), old_path_id: Some(id_at(i + 1)), path_id: id_at(i + 2), status, submodule });
+        } else {
+            files.push(ChangedFile { old_path: None, path: path_at(i + 1), old_path_id: None, path_id: id_at(i + 1), status, submodule });
+        }
+        i += needed + 1;
+    }
+    Ok(files)
 }
 
 /// 提交的变化文件：根提交相对空树；合并提交需要选择父节点（默认第一个父节点，调用方可指定任一父节点）。
