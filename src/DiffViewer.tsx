@@ -4,6 +4,8 @@ import {
   Decoration,
   type DecorationSet,
   EditorView,
+  ViewPlugin,
+  type ViewUpdate,
   WidgetType,
   drawSelection,
   highlightActiveLine,
@@ -248,6 +250,28 @@ class HunkHeaderWidget extends WidgetType {
     return true;
   }
 }
+
+/** 行号栏宽度写入 --oris-gutter-width：块标签横向滚动时贴在行号栏右侧（行号栏本身 sticky 且盖在内容上方）。 */
+const gutterWidthVar = ViewPlugin.fromClass(class {
+  width = -1;
+  constructor(readonly view: EditorView) {
+    this.measure();
+  }
+  update(update: ViewUpdate) {
+    if (update.geometryChanged) this.measure();
+  }
+  measure() {
+    this.view.requestMeasure({
+      key: this,
+      read: (view) => view.dom.querySelector<HTMLElement>(".cm-gutters")?.offsetWidth ?? 0,
+      write: (width, view) => {
+        if (width === this.width) return;
+        this.width = width;
+        view.dom.style.setProperty("--oris-gutter-width", `${width}px`);
+      }
+    });
+  }
+});
 
 const setHunkHeaders = StateEffect.define<DecorationSet>();
 const hunkHeaderField = StateField.define<DecorationSet>({
@@ -1901,6 +1925,7 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
       EditorState.phrases.of({ "$ unchanged lines": "展开 $ 行未变化内容" }),
       alignmentSpacers,
       hunkHeaderField,
+      gutterWidthVar,
       collapsedRanges,
       searchHighlights,
       selectionHighlights,
