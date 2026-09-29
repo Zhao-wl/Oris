@@ -1,7 +1,8 @@
 // V2-06 界面验收（B19–B22 与 §3 配色 / 设置时延）。
 // 只经 CDP 操作本轮启动并核验过的 Oris 实例（PID + 完整路径 + 主窗口句柄 + 端口归属），不调用任何窗口激活 API；
 // 鼠标 / 键盘为 CDP 注入的页面事件，“跟随系统”为 CDP 媒体特性模拟，都不是真实系统焦点或真实系统主题切换。
-// 用法：node scripts/perf/v2-06-acceptance.mjs --exe <oris.exe> [--port 9771]
+// 用法：node scripts/perf/v2-06-acceptance.mjs --exe <oris.exe> [--port 9771] [--skip-timing]
+//   --skip-timing：照常记录 §3 时延，但不据此判定通过 / 失败（负载不适合做性能结论时使用，报告中注明“未作结论”）。
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +13,7 @@ const args = process.argv.slice(2);
 const option = (name, fallback) => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : fallback; };
 const exe = option("exe");
 let port = Number(option("port", 9771));
+const skipTiming = args.includes("--skip-timing");
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const outDir = path.join(projectRoot, "artifacts", "gui-probe", "v2-06-acceptance");
 const shotDir = path.join(outDir, "shots");
@@ -76,6 +78,20 @@ const CLOSE_SETTINGS = `document.querySelector('button[aria-label="关闭设置"
 const optionFor = (id) => { const name = schemeIndex.find((s) => s.id === id).name; return `[...document.querySelectorAll('[role=option]')].find((n) => n.querySelector('.scheme-name')?.textContent === ${q(name)})`; };
 const modeButton = (label) => `[...document.querySelectorAll('.segmented button')].find((n) => n.textContent === ${q(label)})`;
 const isDark = (type) => type === "dark" || type === "hcDark";
+// 概览栏（7adb1f4）：色块半透明；视口框层级高于色块，与色块重叠处命中的是视口框。
+const OVERVIEW_PROBE = `(() => {
+  const rail = document.querySelector('.diff-overview-rail');
+  const band = rail?.querySelector('.diff-overview-viewport');
+  const markers = rail ? [...rail.querySelectorAll('.diff-overview-marker')] : [];
+  if (!rail || !band || !markers.length) return { ok: false, reason: 'no-rail', markers: markers.length };
+  const b = band.getBoundingClientRect();
+  const hit = markers.map((m) => ({ m, r: m.getBoundingClientRect() })).find(({ r }) => r.height > 0 && r.bottom > b.top + 1 && r.top < b.bottom - 1);
+  const ms = getComputedStyle(markers[0]), bs = getComputedStyle(band);
+  let top = null;
+  if (hit) { const y = Math.max(hit.r.top, b.top) + Math.min(hit.r.bottom - Math.max(hit.r.top, b.top), b.bottom - Math.max(hit.r.top, b.top)) / 2; const el = document.elementFromPoint(hit.r.left + hit.r.width / 2, y); top = el === band ? 'viewport' : el?.className ?? null; }
+  const opacity = Number(ms.opacity), markerZ = Number(ms.zIndex), bandZ = Number(bs.zIndex);
+  return { ok: opacity < 1 && bandZ > markerZ && top === 'viewport', opacity, markerZ, bandZ, top, overlapping: !!hit, markers: markers.length };
+})()`;
 
 let s = await start("profile");
 try {
@@ -134,9 +150,10 @@ try {
     await sleep(200);
     const applied = await evaluate(`(() => { const cs = getComputedStyle(document.documentElement); const want = ${q(data.variables)}; const bad = []; for (const [k, v] of Object.entries(want)) { if (v == null) continue; const got = cs.getPropertyValue(k).trim(); if (got.toLowerCase() !== String(v).toLowerCase()) bad.push([k, v, got]); } return { bad, hc: document.documentElement.classList.contains('theme-high-contrast'), selectedOutline: getComputedStyle(document.querySelector('.file.selected')).outlineStyle, editorBg: getComputedStyle(document.querySelector('.cm-editor')).backgroundColor, appBg: getComputedStyle(document.querySelector('.app')).backgroundColor }; })()`);
     const state = await readingState();
+    const overview = await evaluate(OVERVIEW_PROBE);
     const hc = entry.type.startsWith("hc");
     const textShot = await shot(`${entry.id}-text`);
-    const row = { id: entry.id, type: entry.type, switchMs: Math.round(sw.ms), openMs: Math.round(open.ms), variablesMismatched: applied.bad, hcClass: applied.hc, selectedOutline: applied.selectedOutline, editorBg: applied.editorBg, appBg: applied.appBg, state, shots: [textShot, dialogShot] };
+    const row = { id: entry.id, type: entry.type, overview, switchMs: Math.round(sw.ms), openMs: Math.round(open.ms), variablesMismatched: applied.bad, hcClass: applied.hc, selectedOutline: applied.selectedOutline, editorBg: applied.editorBg, appBg: applied.appBg, state, shots: [textShot, dialogShot] };
     report.schemes.push(row);
     if (applied.bad.length) fail(`${entry.id} 变量未生效 ${q(applied.bad.slice(0, 3))}`);
     if (hc !== applied.hc) fail(`${entry.id} 高对比类名不符`);
@@ -144,6 +161,11 @@ try {
     const same = JSON.stringify(state.marks) === JSON.stringify(before.marks) && JSON.stringify(state.scroll) === JSON.stringify(before.scroll) && state.selection === before.selection && state.searchVisible && state.query === before.query && state.hits === before.hits;
     if (!same) fail(`${entry.id} 切换后阅读状态变化 ${q(state)}`);
     log(`${entry.id}：切换 ${Math.round(sw.ms)} ms，打开设置 ${Math.round(open.ms)} ms，变量不符 ${applied.bad.length}，阅读状态${same ? "保持" : "变化"}`);
+  }
+
+  {
+    const rows = report.schemes.map((r) => ({ id: r.id, dark: isDark(r.type), ...r.overview }));
+    check("概览栏（7adb1f4）：色块半透明，视口框层级高于色块、重叠处命中视口框；深色与浅色方案都覆盖，全部方案一致", rows.every((r) => r.ok) && rows.some((r) => r.dark) && rows.some((r) => !r.dark), rows.filter((r) => !r.ok).slice(0, 5));
   }
 
   // 字号：快捷键与设置同步、不重建编辑器
@@ -213,10 +235,13 @@ try {
   report.timings = {
     switchScheme: summarize(switchTimes), openSettings: summarize(openTimes), switchMode: summarize(modeTimes), fontShortcut: summarize(fontTimes)
   };
-  check("§3 切换配色 P95 ≤ 100 ms", report.timings.switchScheme.p95 <= 100, report.timings.switchScheme);
-  check("§3 切换主题模式 P95 ≤ 100 ms", report.timings.switchMode.p95 <= 100, report.timings.switchMode);
-  check("§3 字号 P95 ≤ 100 ms", report.timings.fontShortcut.p95 <= 100, report.timings.fontShortcut);
-  check("§3 打开设置窗口 P95 ≤ 100 ms", report.timings.openSettings.p95 <= 100, report.timings.openSettings);
+  if (skipTiming) report.timingNote = "--skip-timing：§3 时延只记录、未作结论";
+  else {
+    check("§3 切换配色 P95 ≤ 100 ms", report.timings.switchScheme.p95 <= 100, report.timings.switchScheme);
+    check("§3 切换主题模式 P95 ≤ 100 ms", report.timings.switchMode.p95 <= 100, report.timings.switchMode);
+    check("§3 字号 P95 ≤ 100 ms", report.timings.fontShortcut.p95 <= 100, report.timings.fontShortcut);
+    check("§3 打开设置窗口 P95 ≤ 100 ms", report.timings.openSettings.p95 <= 100, report.timings.openSettings);
+  }
 
   // B19 / B21：设置在重启后保留、首屏无闪烁
   await click(SETTINGS_BUTTON);
