@@ -1033,22 +1033,29 @@ function renderRailMarkers(
   toneOverride?: Exclude<AlignmentTone, "neutral">
 ) {
   const markers = rail.querySelector<HTMLElement>(".diff-overview-markers")!;
+  const doc = view.state.doc;
+  // 只读一次高度：循环中读取会在每次追加标记后强制同步布局（块数多时为 O(n²)，V2-D75）
+  const railHeight = rail.clientHeight;
+  const deviceMinimum = Math.max(1, 1 / Math.max(1, window.devicePixelRatio));
+  // 标记只取决于块、文档与轨道高度；测量随滚动频繁触发，没有变化时不重建
+  const previous = renderedRailMarkers.get(rail);
+  if (previous && previous.chunks === chunks && previous.doc === doc && previous.height === railHeight && previous.deviceMinimum === deviceMinimum && previous.tone === toneOverride) return;
+  renderedRailMarkers.set(rail, { chunks, doc, height: railHeight, deviceMinimum, tone: toneOverride });
   // Keep the viewport band attached: detaching it would drop an active drag's pointer capture.
   markers.querySelectorAll(".diff-overview-marker").forEach((node) => node.remove());
-  const doc = view.state.doc;
-  const deviceMinimum = Math.max(1, 1 / Math.max(1, window.devicePixelRatio));
-  const occupied = new Map<string, { node: HTMLButtonElement; bottom: number }>();
+  const fragment = document.createDocumentFragment();
+  const occupied = new Map<string, { node: HTMLButtonElement; top: number; bottom: number }>();
   chunks.forEach((chunk, index) => {
     const from = side === "a" ? chunk.fromA : chunk.fromB;
     const to = side === "a" ? chunk.toA : chunk.toB;
     const tone = toneOverride ?? alignmentTone(chunk);
-    const marker = diffMarkerGeometry(rail.clientHeight, lineBoundary(doc, from), lineBoundary(doc, to), doc.lines, deviceMinimum);
+    const marker = diffMarkerGeometry(railHeight, lineBoundary(doc, from), lineBoundary(doc, to), doc.lines, deviceMinimum);
     const bucket = `${tone}:${Math.round(marker.top)}`;
     const existing = occupied.get(bucket);
     if (existing) {
       const bottom = Math.max(existing.bottom, marker.top + marker.height);
       existing.bottom = bottom;
-      existing.node.style.height = `${Math.max(deviceMinimum, bottom - Number.parseFloat(existing.node.style.top))}px`;
+      existing.node.style.height = `${Math.max(deviceMinimum, bottom - existing.top)}px`;
       return;
     }
     const node = document.createElement("button");
@@ -1062,10 +1069,13 @@ function renderRailMarkers(
       event.stopPropagation();
       navigate(index);
     });
-    markers.append(node);
-    occupied.set(bucket, { node, bottom: marker.top + marker.height });
+    fragment.append(node);
+    occupied.set(bucket, { node, top: marker.top, bottom: marker.top + marker.height });
   });
+  markers.append(fragment);
 }
+
+const renderedRailMarkers = new WeakMap<HTMLElement, { chunks: readonly Change[]; doc: Text; height: number; deviceMinimum: number; tone: string | undefined }>();
 
 function installSplitVisuals(split: SplitView, navigate: (index: number) => void) {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
