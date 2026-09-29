@@ -131,3 +131,24 @@ export function fontChangeScroll(scroll: { scrollTop: number; scrollHeight: numb
   const atBottom = scroll.scrollTop > Math.max(1, scroll.scrollHeight - scroll.clientHeight - 4);
   return atTop || atBottom || scroll.lineWrapping ? "measure" : "snapshot";
 }
+
+/** 一个块在两侧的行范围（1 起）：first 为块的第一行（空的一侧为插入点之后的那一行），next 为块之后的第一行。 */
+export interface ChunkLines { firstA: number; firstB: number; nextA: number; nextB: number }
+
+/**
+ * 对齐锚点：主控侧第 line 行落在两块之间的上下文（区域 k：块 k-1 之后、块 k 之前；k = 0 为第一个块之前）中、且不是该区域的第一行时，
+ * 返回区域序号与两侧对应的行（上下文两侧行数相同，按行序对应）；在块内、正好是区域第一行或超出文档时返回 null。
+ */
+export function contextAnchor(master: DiffSide, line: number, chunks: readonly ChunkLines[], lines: { a: number; b: number }) {
+  let region = 0;
+  while (region < chunks.length && line >= (master === "a" ? chunks[region].firstA : chunks[region].firstB)) region += 1;
+  const previous = region > 0 ? chunks[region - 1] : null;
+  const startA = previous ? previous.nextA : 1;
+  const startB = previous ? previous.nextB : 1;
+  const offset = line - (master === "a" ? startA : startB);
+  if (offset <= 0) return null;
+  const lineA = startA + offset;
+  const lineB = startB + offset;
+  if (lineA > lines.a || lineB > lines.b) return null;
+  return { region, lineA, lineB };
+}
