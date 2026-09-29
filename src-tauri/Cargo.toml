@@ -1,6 +1,6 @@
 [package]
 name = "oris"
-version = "0.4.0"
+version = "0.4.1"
 description = "Read-only Git change viewer"
 authors = ["Oris contributors"]
 edition = "2021"
