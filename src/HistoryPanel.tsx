@@ -244,6 +244,14 @@ export default function HistoryPanel(props: Props) {
   const [headNote, setHeadNote] = useState<string | null>(null);
   const jumpFilter = useRef<string | null>(null);
   useEffect(() => { if (filter !== jumpFilter.current) setHeadNote(null); }, [filter]);
+  // 正在浏览的分支 / 标签已被删除（右键删除、“清理…”或外部终端）：回到全部分支并说明，不停留在“无法解析引用”。
+  useEffect(() => {
+    if (!refs || !filter || filter === "HEAD") return;
+    if ([...refs.local, ...refs.remote, ...(refs.tags ?? [])].some((ref) => ref.fullName === filter)) return;
+    jumpFilter.current = null;
+    setFilter(null);
+    setHeadNote(`${shortRef(filter)} 已不存在，已改为浏览全部分支`);
+  }, [refs]);
   const jumpHead = () => {
     const head = viewRefs?.head.oid;
     if (!viewRefs || !head) return;

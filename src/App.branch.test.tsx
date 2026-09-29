@@ -319,6 +319,24 @@ describe("history sidebar: branches, tags, remotes and stash (B09 / B10)", () =>
     expect(requests()).toEqual([{ kind: "branchDelete", name: "refs/heads/feature" }]);
   });
 
+  it("deleting the branch being browsed goes back to all branches with a note instead of staying on an unresolvable ref", async () => {
+    let deleted = false;
+    bridge.refs.mockImplementation(async () => deleted ? { ...refsView, local: [refsView.local[0]] } : refsView);
+    bridge.operation.mockImplementation(async (_repo: string, _scope: string, _op: string, request: OperationRequest) => { if (request.kind === "branchDelete") deleted = true; return outcome(request.kind); });
+    await mount();
+    await openHistory();
+    await click(sideRow("local", "feature"));
+    expect(bridge.log).toHaveBeenLastCalledWith("a", expect.objectContaining({ refs: ["refs/heads/feature"] }), null);
+    await act(async () => { sideRow("local", "feature").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 })); }); await flush();
+    await click(button("删除分支…"));
+    await click(button("删除", q(".confirm-dialog")!));
+    await flush();
+    expect(all("[data-group='local'] .log-branch").map((row) => row.getAttribute("data-ref"))).toEqual(["refs/heads/main"]);
+    expect(bridge.log).toHaveBeenLastCalledWith("a", expect.objectContaining({ refs: [] }), null);
+    expect(q(".log-count")?.textContent).not.toContain("浏览");
+    expect(q(".log-jump-note")?.textContent).toBe("feature 已不存在，已改为浏览全部分支");
+  });
+
   it("cleans up: fetch --prune first, then deletes branches whose upstream is gone, strongly confirming the unmerged ones", async () => {
     const tracked = (name: string, oid: string, gone: boolean) => ({ fullName: `refs/heads/${name}`, name, kind: "local" as const, oid: O(oid), current: false, remote: "origin",
       tracking: gone ? { state: "gone" as const, upstream: `refs/remotes/origin/${name}` } : { state: "known" as const, upstream: `refs/remotes/origin/${name}`, ahead: 0, behind: 0 } });

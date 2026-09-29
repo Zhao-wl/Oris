@@ -132,6 +132,9 @@ const H = String.raw`
     logRows() { return qa('.log-row').map((r) => ({ oid: r.dataset.oid, selected: r.classList.contains('selected') || r.getAttribute('aria-selected') === 'true' })); },
     browsing() { return document.querySelector('.log-branch.browsing')?.dataset.ref ?? null; },
     jumpNote() { return document.querySelector('.log-jump-note')?.textContent ?? null; },
+    /** 从现在起记录状态栏出现过的文字（MutationObserver），用于区分点击之后的新结果与上一步留下的旧文字。 */
+    watchStatus() { window.__p.seen = []; window.__p.observer?.disconnect(); const push = () => { const t = document.querySelector('.op-status')?.textContent ?? ''; if (t && window.__p.seen[window.__p.seen.length - 1] !== t) window.__p.seen.push(t); }; window.__p.observer = new MutationObserver(push); window.__p.observer.observe(document.body, { subtree: true, childList: true, characterData: true }); },
+    seenStatus(fragment) { return (window.__p.seen ?? []).some((t) => t.includes(fragment)); },
     logError() { return document.querySelector('.log-commits-pane .error, .log-commits-pane .log-note.error')?.textContent ?? null; }
   };
   return true;
@@ -158,8 +161,8 @@ async function start(profile, extraEnv = {}) {
   };
   const openHistory = async () => { if (!(await evaluate(`window.__p.gitTab('历史')?.classList.contains('active')`))) await click(`window.__p.gitTab('历史')`); await waitUntil(`window.__p.localNames().length > 0`); await sleep(300); };
   const confirmDialog = async (label) => { await waitUntil(`!!document.querySelector('.confirm-dialog')`); await click(`window.__p.button(${q(label)}, document.querySelector('.confirm-dialog'))`); };
-  /** 点“清理…”并等到出现确认框或操作结束（没有可清理的分支时不弹框）。 */
-  const prune = async (timeout = 120000) => { await click(`window.__p.pruneButton()`); await waitUntil(`!!document.querySelector('.confirm-dialog') || (!window.__p.running() && !window.__op.loading() && !!window.__p.opStatus() && /获取|清理/.test(window.__p.opStatus().text))`, timeout); await sleep(300); };
+  /** 点“清理…”并等到出现确认框，或出现“没有需要清理的本地分支”（此时不弹框）。获取刚结束时状态栏先显示“已获取…”，不能当作清理结束。 */
+  const prune = async (timeout = 120000) => { await evaluate(`window.__p.watchStatus()`); await click(`window.__p.pruneButton()`); await waitUntil(`!!document.querySelector('.confirm-dialog') || (!window.__p.running() && window.__p.seenStatus('没有需要清理的本地分支'))`, timeout); await sleep(300); };
   return { app, evaluate, waitUntil, shot, click, settle, addProject, openHistory, confirmDialog, prune };
 }
 async function stop(ctx) {
@@ -292,8 +295,13 @@ async function localSuite() {
     await ctx.confirmDialog("删除"); await ctx.settle(); await sleep(800);
     const strongAsked = await ctx.evaluate(`!!window.__p.confirm()`);
     e = evidence("右键删除已合并分支 solo", work, before, ["head", "refs"], ["refs/heads/solo"]);
+    // 删除的正是当前筛选的分支：记录历史列表恢复（筛选回到全部分支、重新列出提交）所需时间与期间的提示。
+    const recoverStart = Date.now();
+    const recovered = await ctx.evaluate(`window.__op.waitUntil(() => window.__p.logRows().length > 0, 15000)`, 20000);
+    report.filteredDeleteRecoveryMs = Date.now() - recoverStart;
+    report.filteredDeletePane = await ctx.evaluate(`document.querySelector('.log-commits-pane')?.textContent.slice(0, 200) ?? null`);
     const afterSolo = await ctx.evaluate(`({ local: window.__p.localNames(), browsing: window.__p.browsing(), rows: window.__p.logRows().length, error: window.__p.logError() })`);
-    check("B30 右键删除已合并分支：一次确认后删除，只删除 refs/heads/solo；侧栏不再列出，历史列表可用", filteredBefore === "refs/heads/solo" && plainDialog?.text.includes("远端分支不受影响") && !strongAsked && e.ok && !afterSolo.local.includes("solo") && afterSolo.rows > 0 && !afterSolo.error, { filteredBefore, plainDialog, afterSolo, e });
+    check("B30 右键删除已合并分支：一次确认后删除，只删除 refs/heads/solo；侧栏不再列出，历史列表可用", filteredBefore === "refs/heads/solo" && plainDialog?.text.includes("远端分支不受影响") && !strongAsked && e.ok && !afterSolo.local.includes("solo") && recovered.ok && afterSolo.rows > 0 && !afterSolo.error, { filteredBefore, plainDialog, afterSolo, recoveryMs: report.filteredDeleteRecoveryMs, pane: report.filteredDeletePane, e });
     if (strongAsked) await ctx.confirmDialog("取消");
     // 未合并的 side：强确认后删除。
     before = snapshot(work);
