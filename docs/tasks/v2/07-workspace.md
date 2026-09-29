@@ -1,6 +1,6 @@
 # V2-07 — 工作区（父仓库 + 子仓库）
 
-状态：Pending（规划完成、效果图已确认，2026-09-29；未授权开发）。依赖：V2-01（数据层、watcher）、V2-06（颜色变量）、V1 04（历史与版本比较）；均已完成（Windows）。决策：V2-D75–V2-D85。
+状态：Awaiting acceptance（Windows，2026-09-29，[结果](../../validation/v2-07-results.md)）：B31–B36 自动化与界面验收通过，真实工作区只读冒烟通过；验收中修复 6 个问题。未验证：macOS、真实焦点、§3 / §4 预算的正式复测。依赖：V2-01（数据层、watcher）、V2-06（颜色变量）、V1 04（历史与版本比较）；均已完成（Windows）。决策：V2-D75–V2-D85。
 
 ## 用户闭环
 
@@ -22,10 +22,10 @@
 ## 验收
 
 - [x] 效果图经用户确认（2026-09-29，[工作区效果图](../../design/07-workspace-ui.md)）。
-- [ ] B31–B36（[V2 验收计划](../../validation/v2-acceptance.md)）。
-- [ ] B16、B17 在父仓库和至少一个子仓库上分别通过；B17 额外断言：打开工作区、切换成员、打开选择器、读取徽标前后，所有成员的工作区、index、refs、config 都没有变化，也没有执行任何 `git submodule` 子命令（trace）。
-- [ ] 真实工作区只读冒烟：用 `E:\Tap4fun\X20_2\game-workspace`（7 个子模块，其中 audio 未初始化；battle 有两个 linked worktree，其中 `battle-r2` 放在父仓库目录中；`client/.gdconfig_tmp` 是独立嵌套仓库）只做打开、切换、浏览，前后记录所有成员的指纹，不做任何写操作。
-- [ ] R-FLOW 与 §4 内存预算不退步：普通项目的首次打开、热切换、外部变化三项与 V2-01 结果对比。
+- [x] B31–B36（[V2 验收计划](../../validation/v2-acceptance.md)），Windows。
+- [x] B16、B17 在父仓库和至少一个子仓库上分别通过；B17 额外断言：打开工作区、切换成员、打开选择器、读取徽标前后，所有成员的工作区、index、refs、config 都没有变化，也没有执行任何 `git submodule` 子命令（trace）。
+- [x] 真实工作区只读冒烟：用 `E:\Tap4fun\X20_2\game-workspace`（7 个子模块，其中 audio 未初始化；battle 有两个 linked worktree，其中 `battle-r2` 放在父仓库目录中；`client/.gdconfig_tmp` 是独立嵌套仓库）只做打开、切换、浏览，前后记录所有成员的指纹，不做任何写操作。
+- [ ] R-FLOW 与 §4 内存预算不退步：普通项目的首次打开、热切换、外部变化三项与 V2-01 结果对比。（未做：本机只有参照时延，见结果文档）
 
 ## 交付与排除
 
