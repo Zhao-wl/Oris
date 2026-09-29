@@ -3,6 +3,7 @@ import type { CompareScope, ContentUnchanged, FileChange } from "./types";
 import { rowActions } from "./operations-model";
 import PathText from "./PathText";
 import VirtualRows, { VIRTUAL_THRESHOLD } from "./VirtualRows";
+import { useMenuPosition } from "./menu-position";
 
 export type FileAction = "stage" | "unstage" | "markResolved" | "discard";
 
@@ -128,6 +129,7 @@ function FileButton({ file, selectedPathId, onSelect, depth = 0, showPath = fals
 function FileMenu({ menu, files, onClose }: { menu: { file: FileChange; x: number; y: number; targets: string[] }; files: FileChange[]; onClose(): void }) {
   const actions = useContext(ActionsContext)!;
   const host = useRef<HTMLDivElement>(null);
+  const position = useMenuPosition(host, menu.x, menu.y);
   const picked = files.filter((file) => menu.targets.includes(file.pathId));
   const targets = picked.length ? picked : [menu.file];
   const regular = targets.filter((file) => file.status !== "conflicted");
@@ -147,7 +149,7 @@ function FileMenu({ menu, files, onClose }: { menu: { file: FileChange; x: numbe
   const count = (list: FileChange[]) => (targets.length > 1 ? `（${list.length} 个文件）` : "");
   const stagingLabel = actions.scope === "staged" ? "取消暂存" : "暂存";
   const stagingReason = actions.scope === "all" ? "“全部”范围不区分暂存区，请在“未暂存”范围暂存" : !regular.length ? "所选都是冲突文件，请使用“标记已解决”" : null;
-  return <div ref={host} className="file-menu" role="menu" style={{ left: menu.x, top: menu.y }} aria-label="文件操作">
+  return <div ref={host} className="file-menu" role="menu" style={position} aria-label="文件操作">
     {targets.length > 1 && <span className="file-menu-note">已选中 {targets.length} 个文件</span>}
     <button type="button" role="menuitem" disabled={!!disabled || !!stagingReason} title={disabled ?? stagingReason ?? undefined} onClick={() => act(actions.scope === "staged" ? "unstage" : "stage", regular)}>{stagingLabel}{count(regular)}</button>
     {conflicts.length > 0 && <button type="button" role="menuitem" disabled={!!disabled} title={disabled ?? undefined} onClick={() => act("markResolved", conflicts)}>标记已解决{count(conflicts)}</button>}

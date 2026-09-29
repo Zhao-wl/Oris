@@ -5,6 +5,7 @@ import { ROW_HEIGHT, deferVersions, initialDeferred, isStale, movedEndpoint, nod
 import { errorText } from "./error-message";
 import HistorySidebar from "./HistorySidebar";
 import PathText from "./PathText";
+import { useMenuPosition } from "./menu-position";
 import FileList from "./ChangedFileList";
 import { StashDetail, StashForm, useStashList, type StashPushOptions } from "./StashPanel";
 import type { FileChange } from "./types";
@@ -488,6 +489,7 @@ function FileHistoryDetail({ mode }: { mode: Extract<Mode, { kind: "file" }> }) 
 
 function EndpointMenu({ menu, hasStart, blocked, onClose, onStart, onCompare, onCheckout, onNewBranch, onMerge, deleteBranch }: { menu: Menu; hasStart: boolean; blocked: string | null; onClose(): void; onStart(): void; onCompare(): void; onCheckout?(): void; onNewBranch?(): void; onMerge?(): void; deleteBranch?: { current: boolean; run(): void } }) {
   const host = useRef<HTMLDivElement>(null);
+  const position = useMenuPosition(host, menu.x, menu.y);
   useEffect(() => {
     host.current?.querySelector<HTMLButtonElement>("button")?.focus();
     const close = (event: Event) => { if (!host.current?.contains(event.target as Node)) onClose(); };
@@ -496,7 +498,7 @@ function EndpointMenu({ menu, hasStart, blocked, onClose, onStart, onCompare, on
     window.addEventListener("keydown", key, true);
     return () => { window.removeEventListener("pointerdown", close, true); window.removeEventListener("keydown", key, true); };
   }, [onClose]);
-  return <div ref={host} className="file-menu log-menu" role="menu" style={{ left: menu.x, top: menu.y }} aria-label="比较">
+  return <div ref={host} className="file-menu log-menu" role="menu" style={position} aria-label="比较">
     <span className="file-menu-note">{shortRef(menu.endpoint.label)} @ {shortOid(menu.endpoint.oid)}</span>
     <button type="button" role="menuitem" onClick={onStart}>设为比较起点（A）</button>
     <button type="button" role="menuitem" disabled={!hasStart} title={hasStart ? undefined : "先把另一个提交或分支设为比较起点"} onClick={onCompare}>与比较起点比较（A → 此处）</button>
