@@ -47,9 +47,9 @@
 
 ## 未验证项
 
-- 真实远端上的“清理…”（`branch-prune-acceptance --only real`）：未运行（权限拦截）。用户可在自己的终端执行：
-  `node D:/Projects/Research/Oris-lc4/scripts/perf/branch-prune-acceptance.mjs --exe D:/Projects/Research/Oris-builds/lc4/stage2/target/release/oris.exe --only real --run-id lc4-20260929`
-  （会在 AgentHub 推送 `oris-test/lc4-20260929/prune-a`、`prune-b` 后从远端删除，再在 Oris 中执行“清理…”；结束时脚本核对远端引用与开工时一致。）
+- 真实远端上的“清理…”（`branch-prune-acceptance --only real`）：未运行（权限拦截）。用户可在自己的终端执行：主工作树 `D:\Projects\Research\Oris` 快进到最新 main（`git pull --ff-only`）后，使用保留的最终构建运行
+  `node scripts/perf/branch-prune-acceptance.mjs --exe D:/Projects/Research/Oris-builds/final-main-lc4/target/release/oris.exe --only real --run-id lc4-20260929-user`
+  （会在 AgentHub 推送 `oris-test/lc4-20260929-user/prune-a`、`prune-b` 后从远端删除，再在 Oris 中执行“清理…”；结束时脚本核对远端引用与开工时一致。）
 - 性能：未测（本轮不做性能测试）。
 - macOS：未验证。
 - 真实鼠标、键盘与 Windows 焦点：未验证（CDP 页面事件）。
