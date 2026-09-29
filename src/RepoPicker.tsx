@@ -67,6 +67,15 @@ export default function RepoPicker({ rootName, members, loading, currentRepoId, 
     else if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); onClose(); }
   };
   const submodules = members.filter((member) => member.kind === "submodule").length;
+  // 同一仓库有多个不可用的 worktree（常见于其他工具留下的已删除目录）时合并成一行说明，不逐条占用列表；搜索时照常逐条显示。
+  const collapsed = new Map<string, GroupMember[]>();
+  if (!needle) {
+    for (const member of visible) {
+      if (member.kind !== "worktree" || member.state === "ready" || !member.parentRepoId) continue;
+      collapsed.set(member.parentRepoId, [...(collapsed.get(member.parentRepoId) ?? []), member]);
+    }
+    for (const [owner, list] of collapsed) if (list.length < 2) collapsed.delete(owner);
+  }
   let lastGroup = "";
   return <div ref={host} className="repo-picker" role="dialog" aria-label="选择仓库" onKeyDown={onKeyDown}>
     <div className="repo-picker-head">工作区 {rootName} · {submodules} 个子模块</div>
@@ -77,6 +86,17 @@ export default function RepoPicker({ rootName, members, loading, currentRepoId, 
         const label = groupLabel(member, members[0]?.repoId ?? null);
         const head = label !== lastGroup ? <div className="log-group" key={`g-${label}`}>{label}</div> : null;
         lastGroup = label;
+        const group = member.parentRepoId ? collapsed.get(member.parentRepoId) : undefined;
+        if (group?.includes(member)) {
+          if (group[0] !== member) return null;
+          const owner = members.find((entry) => entry.repoId === member.parentRepoId);
+          return [head, <div key={`unavailable:${member.parentRepoId}`} role="option" aria-disabled="true" aria-selected={false} className="repo-row worktree disabled" title={group.map((entry) => entry.worktreePath).join("\n")}>
+            <span className="repo-row-icon" aria-hidden="true">⤷</span>
+            <span className="repo-row-name">{`${group.length} 个 worktree 不可用`}<small>{owner?.name ?? ""} 的 worktree，目录已缺失或尚未就绪</small></span>
+            <span className="repo-badges"><span className="repo-badge">不可用</span></span>
+            <span className="repo-row-hint">悬停查看路径。可在命令行执行 <code>{owner?.relativePath ? `git -C ${owner.relativePath} worktree prune` : "git worktree prune"}</code>（被锁定的需先 unlock）</span>
+          </div>];
+        }
         const badge = member.repoId ? badges[member.repoId] : undefined;
         const disabled = !openable(member);
         const current = member.repoId === currentRepoId;

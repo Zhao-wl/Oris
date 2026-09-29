@@ -136,6 +136,28 @@ fn b31_discovers_members_worktrees_and_ignores_unsafe_entries() {
     assert!(!fx.outside.exists());
 }
 
+/// 真实工作区中见到的情况：工具在别处创建、与所属仓库同名的 worktree；目录还在但不是完整 worktree（`.git` 缺失，
+/// 相当于停在 `locked initializing`）时 Git 会向上找到别的仓库，不能把它当成就绪成员，所属仓库也不能被重复列出。
+#[test]
+fn b31_incomplete_or_same_named_worktrees_are_not_duplicated() {
+    let fx = fixture();
+    let base = fx.root.parent().unwrap().to_path_buf();
+    let named = base.join("tool-a").join("battle");
+    git_in(&fx.root.join("battle"), &["worktree", "add", "-q", "--detach", &named.to_string_lossy()]);
+    let broken = fx.root.join("battle-broken");
+    git_in(&fx.root.join("battle"), &["worktree", "add", "-q", "--detach", &broken.to_string_lossy()]);
+    fs::remove_file(broken.join(".git")).unwrap();
+    let found = group::discover(gp(), &fx.root, &[]).unwrap();
+    let battle_path = canon(&fx.root.join("battle")).to_string_lossy().into_owned();
+    let ready_battles = found.members.iter().filter(|m| m.state == MemberState::Ready && m.worktree_path == battle_path).count();
+    assert_eq!(ready_battles, 1, "{:?}", found.members.iter().map(|m| (&m.name, &m.worktree_path, m.state)).collect::<Vec<_>>());
+    let same_named = found.members.iter().find(|m| m.name == "tool-a/battle").expect("同名 worktree 带上级目录");
+    assert_eq!((same_named.kind, same_named.state), (MemberKind::Worktree, MemberState::Ready));
+    let incomplete = found.members.iter().find(|m| m.name == "battle-broken").unwrap();
+    assert_eq!(incomplete.state, MemberState::Missing);
+    assert!(incomplete.repo_id.is_none());
+}
+
 #[test]
 fn b31_member_directories_resolve_to_the_owning_workspace() {
     let fx = fixture();

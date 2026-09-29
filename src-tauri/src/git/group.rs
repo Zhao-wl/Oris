@@ -257,14 +257,27 @@ fn unavailable(kind: MemberKind, name: String, root: &Path, path: &Path, parent:
 }
 
 /// 一个仓库（父仓库或子模块）的 linked worktree 成员。
+/// 只有解析出的工作区根正好是登记的路径才算就绪：目录还在但不是完整 worktree（例如停在 `locked initializing`）时，
+/// Git 会向上找到别的仓库，不能把它当成这个 worktree（否则所属仓库会被重复列出）。
 fn worktree_members(git: &Path, root: &Path, owner: &RepoPaths) -> Vec<GroupMember> {
     let owner_id = repo_id_of(&owner.worktree);
+    let owner_name = owner.worktree.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     linked_worktrees(git, &owner.worktree)
         .into_iter()
         .map(|linked| {
-            let name = linked.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let base = linked.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            // 与所属仓库同名（常见于工具在别处创建的 worktree）时带上上级目录，便于区分。
+            let name = match linked.path.parent().and_then(|p| p.file_name()) {
+                Some(parent) if base == owner_name => format!("{}/{base}", parent.to_string_lossy()),
+                _ => base,
+            };
             let exists = !linked.prunable && linked.path.is_dir();
-            match exists.then(|| repo_paths(git, &linked.path).ok()).flatten() {
+            let canonical = dunce::canonicalize(&linked.path).ok();
+            let resolved = exists
+                .then(|| repo_paths(git, &linked.path).ok())
+                .flatten()
+                .filter(|paths| canonical.as_ref() == Some(&paths.worktree) && paths.worktree != owner.worktree);
+            match resolved {
                 Some(paths) => {
                     let mut member = ready_member(git, MemberKind::Worktree, name, root, &paths, Some(owner_id.clone()), None);
                     if member.branch.is_none() {
