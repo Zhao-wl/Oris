@@ -133,8 +133,8 @@ const H = String.raw`
     browsing() { return document.querySelector('.log-branch.browsing')?.dataset.ref ?? null; },
     jumpNote() { return document.querySelector('.log-jump-note')?.textContent ?? null; },
     /** 从现在起记录状态栏出现过的文字（MutationObserver），用于区分点击之后的新结果与上一步留下的旧文字。 */
-    watchStatus() { window.__p.seen = []; window.__p.observer?.disconnect(); const push = () => { const t = document.querySelector('.op-status')?.textContent ?? ''; if (t && window.__p.seen[window.__p.seen.length - 1] !== t) window.__p.seen.push(t); }; window.__p.observer = new MutationObserver(push); window.__p.observer.observe(document.body, { subtree: true, childList: true, characterData: true }); },
-    seenStatus(fragment) { return (window.__p.seen ?? []).some((t) => t.includes(fragment)); },
+    watchStatus() { window.__p.seen = [document.querySelector('.op-status')?.textContent ?? '']; window.__p.observer?.disconnect(); const push = () => { const t = document.querySelector('.op-status')?.textContent ?? ''; if (t && window.__p.seen[window.__p.seen.length - 1] !== t) window.__p.seen.push(t); }; window.__p.observer = new MutationObserver(push); window.__p.observer.observe(document.body, { subtree: true, childList: true, characterData: true }); },
+    seenStatus(fragment) { return (window.__p.seen ?? []).slice(1).some((t) => t.includes(fragment)); },
     logError() { return document.querySelector('.log-commits-pane .error, .log-commits-pane .log-note.error')?.textContent ?? null; }
   };
   return true;
@@ -265,7 +265,8 @@ async function localSuite() {
     git(work, ["branch", "-q", "gone-d", "main"]);
     git(work, ["config", "branch.gone-d.remote", "origin"]); git(work, ["config", "branch.gone-d.merge", "refs/heads/gone-d"]);
     const originUrl = git(work, ["remote", "get-url", "origin"]);
-    git(work, ["remote", "set-url", "origin", path.join(runDir, "missing.git")]);
+    // 用 file:// URL：Windows 上带盘符的普通路径不存在时，Git 可能把它当成 ssh 的“主机:路径”去连接，而不是立即失败。
+    git(work, ["remote", "set-url", "origin", "file:///" + path.join(runDir, "missing.git").replaceAll("\\", "/")]);
     await sleep(1500);
     before = snapshot(work);
     await ctx.prune();
