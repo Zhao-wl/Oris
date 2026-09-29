@@ -49,6 +49,13 @@ git fetch origin -q; "origin/main: $(git rev-parse --short origin/main)  HEAD: $
 powershell -NoProfile -File scripts\publish-release.ps1 -Version <版本> -NotesFile "$env:TEMP\oris-<版本>-notes.md"
 ```
 
+自动模式的权限分类器可能拦下这一步。用户放行后，用 Bash 工具单独执行一次（不和其他命令串联）；仍被拦就停下，把命令交给用户在自己的 PowerShell 终端里运行，不要改用其他方式绕过。之后推送、`gh release create` 等对外操作被拦时也这样处理。
+
+交给用户执行的命令要写成**能直接粘贴到 PowerShell 里运行**的形式：
+- 就用上面那几行，每行单独放一个代码块，并说明哪一行的输出要先核对。
+- 不要在外面再包一层 `powershell -Command "..."`。在 PowerShell 里，`\"` 不算转义，外层的引号会被截断，报「字符串缺少终止符」，脚本根本没开始跑。
+- 用 PowerShell 的写法：`$env:TEMP`、用 `;` 连接命令、`$(...)` 插值。不要用 `&&` 或 Bash 的变量写法（Windows PowerShell 5.1 不支持 `&&`）。
+
 脚本依次执行：检查 gh 登录 → 修改 4 个文件中的版本号 → 按文件顺序运行全量测试 → 签名构建 NSIS 安装包 → 生成 `latest.json` → 提交 `chore(release): v<版本>` 并打 tag → 用 `--atomic` 推送到远端 `main` → `gh release create`。
 
 过滤输出时注意，`thiserror` 之类的 crate 名也会匹配到「rror」，不代表出错。
