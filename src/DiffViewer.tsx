@@ -377,6 +377,28 @@ function spacerDecorations(specs: AlignmentSpacerSpec[]) {
   }).range(spec.pos)), true);
 }
 
+/** 间隔规格按位置与“块:角色”建立的索引。规格数组每次调整都整体替换，按数组缓存；块数多时避免每次查询都线性扫描（V2-D75 后块数可达上千）。 */
+const specIndexes = new WeakMap<readonly AlignmentSpacerSpec[], { byPos: Map<number, AlignmentSpacerSpec[]>; byRole: Map<string, number> }>();
+function specIndex(specs: readonly AlignmentSpacerSpec[]) {
+  let index = specIndexes.get(specs);
+  if (!index) {
+    index = { byPos: new Map(), byRole: new Map() };
+    for (const spec of specs) {
+      const atPos = index.byPos.get(spec.pos);
+      if (atPos) atPos.push(spec);
+      else index.byPos.set(spec.pos, [spec]);
+      const key = `${spec.chunkIndex}:${spec.role}`;
+      if (!index.byRole.has(key)) index.byRole.set(key, spec.height);
+    }
+    specIndexes.set(specs, index);
+  }
+  return index;
+}
+
+function specHeight(specs: readonly AlignmentSpacerSpec[], chunkIndex: number, role: AlignmentSpacerSpec["role"]) {
+  return specIndex(specs).byRole.get(`${chunkIndex}:${role}`) ?? 0;
+}
+
 function alignedBoundary(
   split: SplitView,
   side: DiffSide,
@@ -386,7 +408,7 @@ function alignedBoundary(
 ) {
   const view = side === "a" ? split.a : split.b;
   const specs = alignmentLayouts.get(split)?.[side] ?? [];
-  const samePositionOffset = specs.reduce((height, spec) => {
+  const samePositionOffset = (specIndex(specs).byPos.get(pos) ?? []).reduce((height, spec) => {
     if (spec.pos !== pos || spec.role === "anchor") return height;
     if (spec.chunkIndex < chunkIndex) return height + spec.height;
     if (spec.chunkIndex > chunkIndex) return height;
@@ -428,27 +450,7 @@ function installChangeAlignment(split: SplitView, onGeometryChange: () => void) 
     if (changedA || changedB) onGeometryChange();
   };
 
-  const roleHeight = (specs: AlignmentSpacerSpec[], chunkIndex: number, role: AlignmentSpacerSpec["role"]) =>
-    specs.find((spec) => spec.chunkIndex === chunkIndex && spec.role === role)?.height ?? 0;
-  const withRole = (
-    specs: AlignmentSpacerSpec[], chunk: Change, chunkIndex: number, sideName: DiffSide,
-    role: AlignmentSpacerSpec["role"], height: number
-  ) => {
-    const next = specs.filter((spec) => spec.chunkIndex !== chunkIndex || spec.role !== role);
-    if (height > 0.5) {
-      next.push({
-        pos: role === "prefix"
-          ? sideName === "a" ? chunk.fromA : chunk.fromB
-          : sideName === "a" ? chunk.toA : chunk.toB,
-        height,
-        side: role === "prefix" ? -2 : -1,
-        tone: role === "prefix" ? "neutral" : alignmentTone(chunk),
-        role,
-        chunkIndex
-      });
-    }
-    return next;
-  };
+  const roleHeight = specHeight;
   const normalizedHeights = (oldA: number, oldB: number, deltaAminusB: number) => {
     const nextDifference = oldA - oldB - deltaAminusB;
     if (nextDifference > 0.05) return [nextDifference, 0] as const;
@@ -541,65 +543,79 @@ function installChangeAlignment(split: SplitView, onGeometryChange: () => void) 
       if (needsRefine()) scheduleRefine();
     };
     const anchorDelta = () => anchorDeltaFor(anchor);
-    const withAnchor = (specs: AlignmentSpacerSpec[], pos: number, height: number) => {
-      const next = specs.filter((spec) => spec.role !== "anchor");
-      if (anchor && height > 0.5) next.push({ pos, height, side: -2, tone: "neutral", role: "anchor", chunkIndex: anchor.region });
-      return next;
-    };
-    const alignAnchor = (next: () => void) => {
-      if (!anchor) { next(); return; }
-      const [heightA, heightB] = normalizedHeights(
-        roleHeight(currentA, anchor.region, "anchor"), roleHeight(currentB, anchor.region, "anchor"), anchorDelta()
-      );
-      applySpecs(
-        withAnchor(currentA, split.a.state.doc.line(anchor.lineA).from, heightA),
-        withAnchor(currentB, split.b.state.doc.line(anchor.lineB).from, heightB)
-      );
-      afterEditorMeasure(expectedGeneration, next);
-    };
     const maximumAlignmentError = () => Math.max(Math.abs(anchorDelta()), boundaryError());
     const endRound = (round: number) => {
-      if (round < 8 && maximumAlignmentError() > 0.5) alignChunk(0, round + 1);
+      if (expectedGeneration !== generation) return;
+      if (round < 8 && maximumAlignmentError() > 0.5) alignPass(round + 1);
       else finish();
     };
-    // 区域 k 的锚点在块 k-1 的下边之后、块 k 的上边之前对齐：块 k 的上边再吸收视口以下的剩余偏差。
-    const alignChunk = (chunkIndex: number, round: number) => {
+    /**
+     * 一轮对齐：按文档顺序一次算出全部锚点、前缀与下边间隔，只派发一次、等一次编辑器测量，再按实测误差决定是否进入下一轮。
+     * 某个间隔的高度变化 δ 会让其后的所有边界平移 δ（间隔的 estimatedHeight 就是其高度），因此“旧布局下的边界 + 前面已累计的变化”
+     * 就是逐块调整并等待测量后看到的值。原先逐块等待两次测量，块数多时一轮要上千帧（V2-D75 后的已知限制，研究 10 §7.4）。
+     */
+    const alignPass = (round: number) => {
       if (expectedGeneration !== generation) return;
-      const next = () => chunkIndex < split.chunks.length ? alignBoundaries(chunkIndex, round) : endRound(round);
-      if (anchor?.region === chunkIndex) alignAnchor(next);
-      else next();
-    };
-    const alignBoundaries = (chunkIndex: number, round: number) => {
-      const chunk = split.chunks[chunkIndex];
-      const topA = alignedBoundary(split, "a", chunk.fromA, chunkIndex, "top");
-      const topB = alignedBoundary(split, "b", chunk.fromB, chunkIndex, "top");
-      const [prefixA, prefixB] = normalizedHeights(
-        roleHeight(currentA, chunkIndex, "prefix"), roleHeight(currentB, chunkIndex, "prefix"), topA - topB
-      );
-      applySpecs(
-        withRole(currentA, chunk, chunkIndex, "a", "prefix", prefixA),
-        withRole(currentB, chunk, chunkIndex, "b", "prefix", prefixB)
-      );
-      afterEditorMeasure(expectedGeneration, () => {
-        const alignedTopA = alignedBoundary(split, "a", chunk.fromA, chunkIndex, "top");
-        const alignedTopB = alignedBoundary(split, "b", chunk.fromB, chunkIndex, "top");
+      const heights = { a: new Map<string, number>(), b: new Map<string, number>() };
+      let shiftA = 0;
+      let shiftB = 0;
+      const set = (chunkIndex: number, role: AlignmentSpacerSpec["role"], [nextA, nextB]: readonly [number, number]) => {
+        const oldA = roleHeight(currentA, chunkIndex, role);
+        const oldB = roleHeight(currentB, chunkIndex, role);
+        // 与生成间隔时的阈值一致：不超过 0.5 px 的间隔不插入
+        const a = nextA > 0.5 ? nextA : 0;
+        const b = nextB > 0.5 ? nextB : 0;
+        heights.a.set(`${chunkIndex}:${role}`, a);
+        heights.b.set(`${chunkIndex}:${role}`, b);
+        shiftA += a - oldA;
+        shiftB += b - oldB;
+        return [a, b] as const;
+      };
+      // 区域 k（块 k-1 与块 k 之间）：有锚点时只保留当前锚点；本轮没有锚点时保留已有锚点，与先前一致。
+      const alignRegion = (region: number) => {
+        const oldA = roleHeight(currentA, region, "anchor");
+        const oldB = roleHeight(currentB, region, "anchor");
+        if (anchor?.region === region) set(region, "anchor", normalizedHeights(oldA, oldB, anchorDelta() + shiftA - shiftB));
+        else if (anchor) set(region, "anchor", [0, 0]);
+        else set(region, "anchor", [oldA, oldB]);
+      };
+      split.chunks.forEach((chunk, chunkIndex) => {
+        alignRegion(chunkIndex);
+        const topA = alignedBoundary(split, "a", chunk.fromA, chunkIndex, "top") + shiftA;
+        const topB = alignedBoundary(split, "b", chunk.fromB, chunkIndex, "top") + shiftB;
+        const oldPrefixA = roleHeight(currentA, chunkIndex, "prefix");
+        const oldPrefixB = roleHeight(currentB, chunkIndex, "prefix");
+        const [prefixA, prefixB] = set(chunkIndex, "prefix", normalizedHeights(oldPrefixA, oldPrefixB, topA - topB));
         const bottomA = chunk.fromA === chunk.toA
-          ? alignedTopA + roleHeight(currentA, chunkIndex, "body")
-          : alignedBoundary(split, "a", chunk.toA, chunkIndex, "bottom");
+          ? topA + prefixA - oldPrefixA + roleHeight(currentA, chunkIndex, "body")
+          : alignedBoundary(split, "a", chunk.toA, chunkIndex, "bottom") + shiftA;
         const bottomB = chunk.fromB === chunk.toB
-          ? alignedTopB + roleHeight(currentB, chunkIndex, "body")
-          : alignedBoundary(split, "b", chunk.toB, chunkIndex, "bottom");
-        const [bodyA, bodyB] = normalizedHeights(
-          roleHeight(currentA, chunkIndex, "body"), roleHeight(currentB, chunkIndex, "body"), bottomA - bottomB
-        );
-        applySpecs(
-          withRole(currentA, chunk, chunkIndex, "a", "body", bodyA),
-          withRole(currentB, chunk, chunkIndex, "b", "body", bodyB)
-        );
-        afterEditorMeasure(expectedGeneration, () => alignChunk(chunkIndex + 1, round));
+          ? topB + prefixB - oldPrefixB + roleHeight(currentB, chunkIndex, "body")
+          : alignedBoundary(split, "b", chunk.toB, chunkIndex, "bottom") + shiftB;
+        set(chunkIndex, "body", normalizedHeights(roleHeight(currentA, chunkIndex, "body"), roleHeight(currentB, chunkIndex, "body"), bottomA - bottomB));
       });
+      alignRegion(split.chunks.length);
+      const build = (sideName: DiffSide, sideHeights: Map<string, number>, current: AlignmentSpacerSpec[]) => {
+        const next: AlignmentSpacerSpec[] = [];
+        split.chunks.forEach((chunk, chunkIndex) => {
+          const prefix = sideHeights.get(`${chunkIndex}:prefix`) ?? 0;
+          const body = sideHeights.get(`${chunkIndex}:body`) ?? 0;
+          if (prefix) next.push({ pos: sideName === "a" ? chunk.fromA : chunk.fromB, height: prefix, side: -2, tone: "neutral", role: "prefix", chunkIndex });
+          if (body) next.push({ pos: sideName === "a" ? chunk.toA : chunk.toB, height: body, side: -1, tone: alignmentTone(chunk), role: "body", chunkIndex });
+        });
+        if (anchor) {
+          const height = sideHeights.get(`${anchor.region}:anchor`) ?? 0;
+          const view = sideName === "a" ? split.a : split.b;
+          if (height) next.push({ pos: view.state.doc.line(sideName === "a" ? anchor.lineA : anchor.lineB).from, height, side: -2, tone: "neutral", role: "anchor", chunkIndex: anchor.region });
+        } else {
+          next.push(...current.filter((spec) => spec.role === "anchor"));
+        }
+        return next;
+      };
+      applySpecs(build("a", heights.a, currentA), build("b", heights.b, currentB));
+      afterEditorMeasure(expectedGeneration, () => endRound(round));
     };
-    alignChunk(0, 1);
+    alignPass(1);
   };
   const resetAndMeasure = (expectedGeneration: number) => {
     if (currentA.length) split.a.dispatch({ effects: setAlignmentSpacers.of(Decoration.none) });
@@ -1336,9 +1352,8 @@ function installSplitVisuals(split: SplitView, navigate: (index: number) => void
       const aBottom = chunk.fromA === chunk.toA ? aTop : alignedBoundary(split, "a", chunk.toA, index, "bottom");
       const bBottom = chunk.fromB === chunk.toB ? bTop : alignedBoundary(split, "b", chunk.toB, index, "bottom");
       const layouts = alignmentLayouts.get(split);
-      const bodyHeight = (side: DiffSide) => layouts?.[side]
-        .filter((spec) => spec.chunkIndex === index && spec.role === "body")
-        .reduce((height, spec) => height + spec.height, 0) ?? 0;
+      // 每块最多一个下边间隔
+      const bodyHeight = (side: DiffSide) => layouts ? specHeight(layouts[side], index, "body") : 0;
       return {
         index,
         chunk,
