@@ -16,7 +16,7 @@ import { javascript } from "@codemirror/lang-javascript";
 import { Change, getChunks, uncollapseUnchanged, unifiedMergeView } from "@codemirror/merge";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { appearanceExtensions, createAppearanceCompartments, reconfigureAppearance, type AppearanceCompartments, type Scheme } from "./themes/runtime";
-import { chainedWheelDelta, diffMarkerGeometry, fontChangeScroll, mapDiffPosition, railViewportStartLine, type DiffBoundaryPair, type DiffSide } from "./diff-scroll";
+import { chainedWheelDelta, contextAnchor, diffMarkerGeometry, fontChangeScroll, mapDiffPosition, railViewportStartLine, type DiffBoundaryPair, type DiffSide } from "./diff-scroll";
 import type { DiffPresentation } from "./diff-presentation";
 import { activeScheme, settings } from "./appearance";
 import { useSettings } from "./settings";
@@ -36,7 +36,8 @@ interface AlignmentSpacerSpec {
   height: number;
   side: number;
   tone: AlignmentTone;
-  role: "prefix" | "body";
+  /** prefix / body：对齐块的上边与下边；anchor：视口顶部所在上下文中的锚定间隔（chunkIndex 为上下文区域序号，见 findAnchor）。 */
+  role: "prefix" | "body" | "anchor";
   chunkIndex: number;
 }
 
@@ -111,6 +112,8 @@ function remeasureWhenVisible(view: EditorView) {
 }
 
 const alignmentLayouts = new WeakMap<SplitView, { a: AlignmentSpacerSpec[]; b: AlignmentSpacerSpec[] }>();
+/** 对齐锚点与视口顶部的距离（px），见 installChangeAlignment 的 findAnchor。 */
+const ANCHOR_MARGIN = 300;
 
 class AlignmentSpacer extends WidgetType {
   constructor(
@@ -360,7 +363,7 @@ function alignedBoundary(
   const view = side === "a" ? split.a : split.b;
   const specs = alignmentLayouts.get(split)?.[side] ?? [];
   const samePositionOffset = specs.reduce((height, spec) => {
-    if (spec.pos !== pos) return height;
+    if (spec.pos !== pos || spec.role === "anchor") return height;
     if (spec.chunkIndex < chunkIndex) return height + spec.height;
     if (spec.chunkIndex > chunkIndex) return height;
     return height + (edge === "top"
@@ -377,6 +380,10 @@ function installChangeAlignment(split: SplitView, onGeometryChange: () => void) 
   let generation = 0;
   let completion: (() => void) | undefined;
   const frames = new Set<number>();
+  let settled: { a: number; b: number } | null = null;
+  let settledAt = 0;
+  let refines = 0;
+  let refineTimer = 0;
 
   const applySpecs = (nextA: AlignmentSpacerSpec[], nextB: AlignmentSpacerSpec[]) => {
     const order = (left: AlignmentSpacerSpec, right: AlignmentSpacerSpec) =>
@@ -442,32 +449,103 @@ function installChangeAlignment(split: SplitView, onGeometryChange: () => void) 
     split.a.requestMeasure({ read: () => undefined, write: complete });
     split.b.requestMeasure({ read: () => undefined, write: complete });
   };
+  /**
+   * 视口顶部落在某段上下文（区域 k：块 k-1 与块 k 之间；k = 0 为第一个块之前，k = 块数为最后一个块之后）的中间时，
+   * 返回视口顶部那一行及另一侧对应的行（上下文两侧行数相同，按行序对应）。视口顶部在块内或正好是区域第一行时返回 null。
+   * 视口外的行高度是 CodeMirror 的估算值，两侧的估算在同一段上下文里也不相同（各自按内容宽度估算折行），
+   * 只在块边界补偿时，这段上下文里的偏差要到下一个块顶才被吸收，视口正好在上下文中时两侧就会错开。
+   */
+  const findAnchor = () => {
+    const master: DiffSide = split.dom.dataset.masterSide === "a" ? "a" : "b";
+    const view = master === "a" ? split.a : split.b;
+    // 锚点取视口顶部以上 ANCHOR_MARGIN 处的行：锚定间隔离视口足够远，对齐过程中内容移动也不会露出来；
+    // 这段距离在 CodeMirror 实际渲染的范围内（视口上下各约 1000 px），两侧都是测量值，不再有估算偏差。
+    const height = view.scrollDOM.scrollTop - view.documentPadding.top - ANCHOR_MARGIN;
+    if (height <= 0 || !split.chunks.length) return null;
+    const line = view.state.doc.lineAt(view.lineBlockAtHeight(height).from).number;
+    const firstLine = (side: DiffSide, pos: number) => lineBoundary((side === "a" ? split.a : split.b).state.doc, pos) + 1;
+    const chunkLines = split.chunks.map((chunk) => ({ firstA: firstLine("a", chunk.fromA), firstB: firstLine("b", chunk.fromB), nextA: firstLine("a", chunk.toA), nextB: firstLine("b", chunk.toB) }));
+    return contextAnchor(master, line, chunkLines, { a: split.a.state.doc.lines, b: split.b.state.doc.lines });
+  };
+  type Anchor = NonNullable<ReturnType<typeof findAnchor>>;
+  /** 锚点行两侧文字顶部之差（A − B）：锚定间隔在行的上方，boundaryY 取的是含间隔的块顶，所以加上该区域锚定间隔的高度。 */
+  const anchorDeltaFor = (anchor: Anchor | null) => {
+    if (!anchor) return 0;
+    const posA = split.a.state.doc.line(anchor.lineA).from;
+    const posB = split.b.state.doc.line(anchor.lineB).from;
+    return boundaryY(split.a, posA) + roleHeight(currentA, anchor.region, "anchor") -
+      (boundaryY(split.b, posB) + roleHeight(currentB, anchor.region, "anchor"));
+  };
+  /** 块边界两侧之差的最大值；给出 near 时只看主控侧位于 [from, to] 内的边界。 */
+  const boundaryError = (near?: { from: number; to: number }) => split.chunks.reduce((maximum, chunk, chunkIndex) => {
+    const topA = alignedBoundary(split, "a", chunk.fromA, chunkIndex, "top");
+    const topB = alignedBoundary(split, "b", chunk.fromB, chunkIndex, "top");
+    const bottomA = chunk.fromA === chunk.toA
+      ? topA + roleHeight(currentA, chunkIndex, "body")
+      : alignedBoundary(split, "a", chunk.toA, chunkIndex, "bottom");
+    const bottomB = chunk.fromB === chunk.toB
+      ? topB + roleHeight(currentB, chunkIndex, "body")
+      : alignedBoundary(split, "b", chunk.toB, chunkIndex, "bottom");
+    const inside = (a: number, b: number) => !near || Math.max(a, b) >= near.from && Math.min(a, b) <= near.to;
+    return Math.max(maximum, inside(topA, topB) ? Math.abs(topA - topB) : 0, inside(bottomA, bottomB) ? Math.abs(bottomA - bottomB) : 0);
+  }, 0);
+  /**
+   * 当前视口下是否需要增量重新对齐：视口附近（上方 2 屏、下方 3 屏以内）的块边界未对齐（对齐后行高被重新测量），
+   * 或视口已移到另一段上下文而新锚点两侧未对齐。远处边界的估算误差看不到，滚动到附近时再处理，避免反复对齐整份文件。
+   */
+  const needsRefine = () => {
+    const view = split.dom.dataset.masterSide === "a" ? split.a : split.b;
+    const { scrollTop, clientHeight } = view.scrollDOM;
+    return boundaryError({ from: scrollTop - 2 * clientHeight, to: scrollTop + 3 * clientHeight }) > 0.5 ||
+      Math.abs(anchorDeltaFor(findAnchor())) > 0.5;
+  };
   const measure = () => {
     const expectedGeneration = generation;
+    const anchor = findAnchor();
+    split.dom.dataset.alignmentAnchor = anchor ? `${anchor.region}:${anchor.lineA}:${anchor.lineB}` : "";
     const finish = () => {
       split.dom.dataset.alignmentReady = "true";
       onGeometryChange();
       const callback = completion;
       completion = undefined;
       callback?.();
+      // 记下这次对齐所依据的两侧内容高度（最后一次调整间隔后已等过一轮编辑器测量）：之后高度再变（新进入视口的行被测量、
+      // 字号切换后的测量）时增量重新对齐（refine）。不能推迟到下一帧再记，否则那一帧里的测量会被当成已对齐的高度。
+      settled = { a: split.a.contentHeight, b: split.b.contentHeight };
+      settledAt = performance.now();
+      // 对齐期间视口可能已经移动（滚动、滚动锚定）：按当前视口再核对一次。
+      if (needsRefine()) scheduleRefine();
     };
-    const maximumAlignmentError = () => split.chunks.reduce((maximum, chunk, chunkIndex) => {
-      const topA = alignedBoundary(split, "a", chunk.fromA, chunkIndex, "top");
-      const topB = alignedBoundary(split, "b", chunk.fromB, chunkIndex, "top");
-      const bottomA = chunk.fromA === chunk.toA
-        ? topA + roleHeight(currentA, chunkIndex, "body")
-        : alignedBoundary(split, "a", chunk.toA, chunkIndex, "bottom");
-      const bottomB = chunk.fromB === chunk.toB
-        ? topB + roleHeight(currentB, chunkIndex, "body")
-        : alignedBoundary(split, "b", chunk.toB, chunkIndex, "bottom");
-      return Math.max(maximum, Math.abs(topA - topB), Math.abs(bottomA - bottomB));
-    }, 0);
+    const anchorDelta = () => anchorDeltaFor(anchor);
+    const withAnchor = (specs: AlignmentSpacerSpec[], pos: number, height: number) => {
+      const next = specs.filter((spec) => spec.role !== "anchor");
+      if (anchor && height > 0.5) next.push({ pos, height, side: -2, tone: "neutral", role: "anchor", chunkIndex: anchor.region });
+      return next;
+    };
+    const alignAnchor = (next: () => void) => {
+      if (!anchor) { next(); return; }
+      const [heightA, heightB] = normalizedHeights(
+        roleHeight(currentA, anchor.region, "anchor"), roleHeight(currentB, anchor.region, "anchor"), anchorDelta()
+      );
+      applySpecs(
+        withAnchor(currentA, split.a.state.doc.line(anchor.lineA).from, heightA),
+        withAnchor(currentB, split.b.state.doc.line(anchor.lineB).from, heightB)
+      );
+      afterEditorMeasure(expectedGeneration, next);
+    };
+    const maximumAlignmentError = () => Math.max(Math.abs(anchorDelta()), boundaryError());
+    const endRound = (round: number) => {
+      if (round < 8 && maximumAlignmentError() > 0.5) alignChunk(0, round + 1);
+      else finish();
+    };
+    // 区域 k 的锚点在块 k-1 的下边之后、块 k 的上边之前对齐：块 k 的上边再吸收视口以下的剩余偏差。
     const alignChunk = (chunkIndex: number, round: number) => {
       if (expectedGeneration !== generation) return;
-      if (chunkIndex >= split.chunks.length) {
-        finish();
-        return;
-      }
+      const next = () => chunkIndex < split.chunks.length ? alignBoundaries(chunkIndex, round) : endRound(round);
+      if (anchor?.region === chunkIndex) alignAnchor(next);
+      else next();
+    };
+    const alignBoundaries = (chunkIndex: number, round: number) => {
       const chunk = split.chunks[chunkIndex];
       const topA = alignedBoundary(split, "a", chunk.fromA, chunkIndex, "top");
       const topB = alignedBoundary(split, "b", chunk.fromB, chunkIndex, "top");
@@ -494,11 +572,7 @@ function installChangeAlignment(split: SplitView, onGeometryChange: () => void) 
           withRole(currentA, chunk, chunkIndex, "a", "body", bodyA),
           withRole(currentB, chunk, chunkIndex, "b", "body", bodyB)
         );
-        afterEditorMeasure(expectedGeneration, () => {
-          if (chunkIndex + 1 < split.chunks.length) alignChunk(chunkIndex + 1, round);
-          else if (round < 8 && maximumAlignmentError() > 0.5) alignChunk(0, round + 1);
-          else finish();
-        });
+        afterEditorMeasure(expectedGeneration, () => alignChunk(chunkIndex + 1, round));
       });
     };
     alignChunk(0, 1);
@@ -516,6 +590,9 @@ function installChangeAlignment(split: SplitView, onGeometryChange: () => void) 
   const schedule = (onComplete?: () => void) => {
     generation += 1;
     completion = onComplete;
+    settled = null;
+    refines = 0;
+    if (refineTimer) { window.clearTimeout(refineTimer); refineTimer = 0; }
     split.dom.dataset.alignmentGeneration = String(generation);
     split.dom.dataset.alignmentReady = "false";
     const expectedGeneration = generation;
@@ -525,6 +602,49 @@ function installChangeAlignment(split: SplitView, onGeometryChange: () => void) 
       resetAndMeasure(expectedGeneration);
     }, 60);
   };
+  // 增量重新对齐：不清空已有间隔，在当前间隔上按新测得的高度调整，并按当前视口重新选锚点（没有 schedule 的整页重排与闪动）。
+  // 触发：对齐后内容高度又变（行被重新测量）、滚动停下后视口移到另一段上下文、对齐结束时视口已移动。
+  // 同一位置连续触发（上一次完成后 1 s 内）最多 4 次，避免测量与对齐互相触发时反复运行；滚动到新位置时重新计数。
+  const refine = () => {
+    refineTimer = 0;
+    // 高度变化只是信号：视口附近仍对齐时不做任何事。
+    if (!needsRefine()) return;
+    const count = (key: "alignmentRefines" | "alignmentRefinesSkipped") => { split.dom.dataset[key] = String(Number(split.dom.dataset[key] ?? 0) + 1); };
+    if (refines >= 4) { count("alignmentRefinesSkipped"); return; }
+    refines += 1;
+    count("alignmentRefines");
+    generation += 1;
+    settled = null;
+    split.dom.dataset.alignmentGeneration = String(generation);
+    split.dom.dataset.alignmentReady = "false";
+    afterFrames(1, generation, measure);
+  };
+  const scheduleRefine = (delay = 80) => {
+    if (refineTimer) window.clearTimeout(refineTimer);
+    refineTimer = window.setTimeout(refine, delay);
+  };
+  const heights = new ResizeObserver(() => {
+    if (!settled || timer) return;
+    if (Math.abs(split.a.contentHeight - settled.a) <= 0.5 && Math.abs(split.b.contentHeight - settled.b) <= 0.5) return;
+    if (performance.now() - settledAt > 1000) refines = 0;
+    scheduleRefine();
+  });
+  heights.observe(split.a.contentDOM);
+  heights.observe(split.b.contentDOM);
+  let scrollTimer = 0;
+  const scrollEnd = () => {
+    scrollTimer = 0;
+    if (!settled || timer || refineTimer) return;
+    if (!needsRefine()) return;
+    refines = 0;
+    scheduleRefine(0);
+  };
+  const onScroll = () => {
+    if (scrollTimer) window.clearTimeout(scrollTimer);
+    scrollTimer = window.setTimeout(scrollEnd, 120);
+  };
+  split.a.scrollDOM.addEventListener("scroll", onScroll, { passive: true });
+  split.b.scrollDOM.addEventListener("scroll", onScroll, { passive: true });
   const resize = new ResizeObserver(() => schedule());
   resize.observe(split.paneA);
   resize.observe(split.paneB);
@@ -535,11 +655,19 @@ function installChangeAlignment(split: SplitView, onGeometryChange: () => void) 
       generation += 1;
       completion = undefined;
       if (timer) window.clearTimeout(timer);
+      if (refineTimer) window.clearTimeout(refineTimer);
+      if (scrollTimer) window.clearTimeout(scrollTimer);
       for (const frame of frames) cancelAnimationFrame(frame);
+      split.a.scrollDOM.removeEventListener("scroll", onScroll);
+      split.b.scrollDOM.removeEventListener("scroll", onScroll);
+      heights.disconnect();
       resize.disconnect();
       alignmentLayouts.delete(split);
       delete split.dom.dataset.alignmentReady;
       delete split.dom.dataset.alignmentGeneration;
+      delete split.dom.dataset.alignmentAnchor;
+      delete split.dom.dataset.alignmentRefines;
+      delete split.dom.dataset.alignmentRefinesSkipped;
     }
   };
 }
