@@ -88,7 +88,7 @@ Oris 帮助用户快速回答：哪个项目变了、哪些文件变了、具体
 
 - 默认不联网；只有用户选择“获取远端状态”才执行 fetch，UI 说明会更新本地 Git 元数据，不修改工作区内容。
 - 默认目标为当前分支上游所属 remote；没有有效上游时让用户选择已有 remote，不自行配置 remote/upstream。
-- fetch 不 pull、不 push、不 checkout、不自动 prune、不递归更新子模块；不附带新的分支管理能力。
+- fetch 不 pull、不 push、不 checkout、不自动 prune、不递归更新子模块；不附带新的分支管理能力。（二期例外：历史页“本地分支”分组的“清理…”由用户显式点击，对上游所在 remote 执行 `fetch --prune`，从不 prune 标签，见 [V2-D74](../decisions/v2-decisions.md)；普通获取仍不 prune。）
 - 使用用户已有 Git 认证环境；失败/超时/取消明确结束。失败后保留已知快照但注明，不能宣称回滚所有已经写入的 Git 元数据。
 - 本次 Oris 成功获取可记录完成时间；外部工具 fetch 的确切成功时间未知时显示未知。
 

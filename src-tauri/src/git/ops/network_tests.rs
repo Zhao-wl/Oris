@@ -203,6 +203,27 @@ fn fetch_prune_removes_deleted_remote_branches_but_never_tags_or_local_branches(
 }
 
 #[test]
+fn b30_fetch_prune_only_touches_the_chosen_remote_and_keeps_tags_deleted_on_the_remote() {
+    let r = remote_setup();
+    // 第二个 remote 指向同一个 bare：两边都获取到 gone 分支与 v1 标签，之后远端删除它们。
+    git_in(&r.local, &["remote", "add", "mirror", r.bare.to_str().unwrap()]);
+    git_in(&r.other, &["push", "-q", "origin", "HEAD:refs/heads/gone"]);
+    git_in(&r.other, &["tag", "v1"]);
+    git_in(&r.other, &["push", "-q", "origin", "v1"]);
+    git_in(&r.local, &["fetch", "-q", "origin"]);
+    git_in(&r.local, &["fetch", "-q", "mirror"]);
+    git_in(&r.other, &["push", "-q", "origin", ":gone", ":refs/tags/v1"]);
+    let before = fingerprint(&r.local);
+    let outcome = Harness::new(&r.local).run(OperationRequest::Fetch { remote: Some("origin".into()), prune: true });
+    assert_eq!(outcome.status, OpStatus::Succeeded, "{}", outcome.message);
+    assert_eq!(text(&r.local, &["for-each-ref", "refs/remotes/origin/gone"]), "");
+    assert!(!text(&r.local, &["for-each-ref", "refs/remotes/mirror/gone"]).is_empty(), "其他 remote 的跟踪引用不受影响");
+    assert!(!text(&r.local, &["for-each-ref", "refs/tags/v1"]).is_empty(), "远端删除的标签也不 prune");
+    let kinds = changed(&before, &fingerprint(&r.local));
+    assert!(kinds.iter().all(|k| k == "remote-refs" || k == "git:FETCH_HEAD"), "{kinds:?}");
+}
+
+#[test]
 fn a10_fetch_does_not_recurse_into_submodules() {
     let r = remote_setup();
     let sub_seed = r.bare.parent().unwrap().join("sub-seed");

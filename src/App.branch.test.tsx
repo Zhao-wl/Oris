@@ -319,6 +319,24 @@ describe("history sidebar: branches, tags, remotes and stash (B09 / B10)", () =>
     expect(requests()).toEqual([{ kind: "branchDelete", name: "refs/heads/feature" }]);
   });
 
+  it("deleting the branch being browsed goes back to all branches with a note instead of staying on an unresolvable ref", async () => {
+    let deleted = false;
+    bridge.refs.mockImplementation(async () => deleted ? { ...refsView, local: [refsView.local[0]] } : refsView);
+    bridge.operation.mockImplementation(async (_repo: string, _scope: string, _op: string, request: OperationRequest) => { if (request.kind === "branchDelete") deleted = true; return outcome(request.kind); });
+    await mount();
+    await openHistory();
+    await click(sideRow("local", "feature"));
+    expect(bridge.log).toHaveBeenLastCalledWith("a", expect.objectContaining({ refs: ["refs/heads/feature"] }), null);
+    await act(async () => { sideRow("local", "feature").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 })); }); await flush();
+    await click(button("删除分支…"));
+    await click(button("删除", q(".confirm-dialog")!));
+    await flush();
+    expect(all("[data-group='local'] .log-branch").map((row) => row.getAttribute("data-ref"))).toEqual(["refs/heads/main"]);
+    expect(bridge.log).toHaveBeenLastCalledWith("a", expect.objectContaining({ refs: [] }), null);
+    expect(q(".log-count")?.textContent).not.toContain("浏览");
+    expect(q(".log-jump-note")?.textContent).toBe("feature 已不存在，已改为浏览全部分支");
+  });
+
   it("cleans up: fetch --prune first, then deletes branches whose upstream is gone, strongly confirming the unmerged ones", async () => {
     const tracked = (name: string, oid: string, gone: boolean) => ({ fullName: `refs/heads/${name}`, name, kind: "local" as const, oid: O(oid), current: false, remote: "origin",
       tracking: gone ? { state: "gone" as const, upstream: `refs/remotes/origin/${name}` } : { state: "known" as const, upstream: `refs/remotes/origin/${name}`, ahead: 0, behind: 0 } });
@@ -342,6 +360,43 @@ describe("history sidebar: branches, tags, remotes and stash (B09 / B10)", () =>
     await click(button("仍然删除", q(".confirm-dialog")!));
     expect(requests()[3]).toEqual({ kind: "branchDelete", name: "refs/heads/old-b", force: true });
     expect(host.textContent).toContain("已删除 2 个分支：old-a、old-b");
+  });
+
+  it("cleanup lists only non-current branches whose upstream is gone, fetches each upstream remote once, and deletes nothing when cancelled", async () => {
+    const branch = (name: string, remote: string | null, state: "gone" | "known" | "noUpstream", current = false) => ({ fullName: `refs/heads/${name}`, name, kind: "local" as const, oid: O("5"), current, remote,
+      tracking: state === "noUpstream" ? { state } : state === "gone" ? { state, upstream: `refs/remotes/${remote}/${name}` } : { state, upstream: `refs/remotes/${remote}/${name}`, ahead: 0, behind: 0 } });
+    bridge.refs.mockResolvedValue({ ...refsView, head: { ...refsView.head, branch: "refs/heads/cur" }, remotes: ["origin", "upstream", "mirror"],
+      local: [branch("cur", "origin", "gone", true), branch("gone-o", "origin", "gone"), branch("gone-u", "upstream", "gone"), branch("alive", "origin", "known"), branch("solo", null, "noUpstream")] });
+    await mount();
+    await openHistory();
+    await click(button("清理…"));
+    // mirror 没有被任何本地分支跟踪：不获取、不 prune。
+    expect(requests()).toEqual([{ kind: "fetch", remote: "origin", prune: true }, { kind: "fetch", remote: "upstream", prune: true }]);
+    expect(q(".confirm-items")?.textContent).toBe("gone-ogone-u");
+    expect(q(".confirm-warning")).toBeNull();
+    await click(button("取消", q(".confirm-dialog")!));
+    expect(q(".confirm-dialog")).toBeNull();
+    expect(requests().filter((r) => r.kind === "branchDelete")).toEqual([]);
+  });
+
+  it("cleanup after a failed fetch still asks first, says the list is based on known state, and keeps declined unmerged branches", async () => {
+    const gone = (name: string) => ({ fullName: `refs/heads/${name}`, name, kind: "local" as const, oid: O("6"), current: false, remote: "origin", tracking: { state: "gone" as const, upstream: `refs/remotes/origin/${name}` } });
+    bridge.refs.mockResolvedValue({ ...refsView, local: [...refsView.local, gone("old-a"), gone("old-b")] });
+    bridge.operation.mockImplementation(async (_repo: string, _scope: string, _op: string, request: OperationRequest) => {
+      if (request.kind === "fetch") return outcome("fetch", { status: "failed", message: "认证失败" });
+      return request.kind === "branchDelete" && request.name === "refs/heads/old-b" && !request.force
+        ? outcome("branchDelete", { status: "needsConfirmation", snapshot: null, confirmation: { reason: "unmerged", message: "未合并", paths: ["old-b"] } }) : outcome(request.kind);
+    });
+    await mount();
+    await openHistory();
+    await click(button("清理…"));
+    expect(requests()).toEqual([{ kind: "fetch", remote: "origin", prune: true }]);
+    expect(q(".confirm-warning")?.textContent).toBe("获取 origin 失败，以下结果基于本地已知的远端状态");
+    await click(button("删除", q(".confirm-dialog")!));
+    expect(q(".confirm-items")?.textContent).toBe("old-b");
+    await click(button("取消", q(".confirm-dialog")!));
+    expect(requests().slice(1)).toEqual([{ kind: "branchDelete", name: "refs/heads/old-a" }, { kind: "branchDelete", name: "refs/heads/old-b" }]);
+    expect(host.textContent).toContain("已删除 1 个分支：old-a；未删除：old-b（未合并，已保留）");
   });
 
   it("reports when nothing needs cleaning, and offers no cleanup without tracked branches", async () => {
