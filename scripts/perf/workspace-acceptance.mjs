@@ -165,7 +165,13 @@ async function localSuite() {
   const fx = fixture();
   report.fixtures = fx;
   const repos = [fx.root, fx.battle, fx.client, fx.r2, fx.nested];
-  const fingerprints = () => Object.fromEntries(repos.map((r) => [r, repositoryFingerprint(r)]));
+  // 写操作刚结束时 Git 的 index.lock 可能在遍历途中被删除：遍历失败时稍等重试。
+  const fingerprintOf = (repo) => {
+    for (let attempt = 0; ; attempt++) {
+      try { return repositoryFingerprint(repo); } catch (error) { if (attempt >= 5 || error.code !== "ENOENT") throw error; spawnSync("cmd", ["/c", "ping", "-n", "2", "127.0.0.1"], { stdio: "ignore" }); }
+    }
+  };
+  const fingerprints = () => Object.fromEntries(repos.map((r) => [r, fingerprintOf(r)]));
   const segment = (name, before, allowed = {}) => {
     const after = fingerprints();
     const changes = Object.fromEntries(repos.map((r) => [path.relative(runDir, r), diffFingerprints(before[r], after[r])]).filter(([, c]) => c.length));

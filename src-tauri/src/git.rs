@@ -486,6 +486,10 @@ impl GitAdapter {
         let mut lists = state.lists.clone();
         if let Some(details) = details {
             lists.all = details.all.clone();
+            // 修正后的“全部”列表来自 diff 命令，不含子模块两侧提交：按 pathId 从扫描结果带过来（V2-D79）。
+            for file in lists.all.iter_mut().filter(|f| f.gitlink) {
+                file.submodule = state.lists.all.iter().find(|s| s.path_id == file.path_id).and_then(|s| s.submodule.clone());
+            }
             let apply = |list: &mut Vec<FileChange>, stats: &[(String, Option<u64>, Option<u64>)]| {
                 let map: HashMap<&str, (Option<u64>, Option<u64>)> =
                     stats.iter().map(|(id, a, d)| (id.as_str(), (*a, *d))).collect();

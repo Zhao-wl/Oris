@@ -233,6 +233,12 @@ fn b33_pointer_switch_controls_gitlink_rows_and_never_scans_submodule_content() 
     assert_eq!(pointer.old.as_deref(), Some(git_in(&fx.root, &["rev-parse", "HEAD:battle"]).as_str()));
     assert_eq!(pointer.new.as_deref(), Some(git_in(&battle, &["rev-parse", "HEAD"]).as_str()));
     assert!(on.files.iter().filter(|f| !f.gitlink).all(|f| f.submodule.is_none()));
+    // “全部”范围补齐统计后列表换成修正后的版本，指针仍在（HEAD 记录的提交 → 子模块当前 HEAD）。
+    let details = adapter.details(&on.revision).unwrap();
+    let with_details = adapter.build_snapshot("all".into(), CompareScope::All, &adapter.scan_state(&on.revision).unwrap(), Some(&details));
+    let all_pointer = with_details.files.iter().find(|f| f.display_path == "battle").unwrap().submodule.clone().unwrap();
+    assert_eq!(all_pointer.old.as_deref(), Some(git_in(&fx.root, &["rev-parse", "HEAD:battle"]).as_str()));
+    assert_eq!(all_pointer.new, pointer.new);
     assert_eq!(group::change_count(gp(), &fx.root, false).unwrap(), 2);
     assert_eq!(group::change_count(gp(), &fx.root, true).unwrap(), 3);
     assert_eq!(group::change_count(gp(), &battle, false).unwrap(), 1);
