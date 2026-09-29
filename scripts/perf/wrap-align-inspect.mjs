@@ -78,6 +78,14 @@ try {
     await evaluate(`(() => { const sc = document.querySelector('.oris-split-pane.${paneSide} .cm-scroller'); sc.scrollTop = ${fraction === "bottom" ? "sc.scrollHeight" : `sc.scrollHeight * ${fraction}`}; })()`);
     await settle();
     result.outputs.push({ at: fraction, value: await evaluate(snippet) });
+    if (args.includes("--nudge")) {
+      // 窗口宽度 +1 px 再恢复：触发一次完整的重新对齐（与滚轮滚动停下后的行为相同）。
+      await call("Emulation.setDeviceMetricsOverride", { width: 1441, height: 900, deviceScaleFactor: 1, mobile: false });
+      await sleep(300);
+      await call("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
+      await settle();
+      result.outputs.push({ at: `${fraction}（完整重新对齐后）`, value: await evaluate(snippet) });
+    }
   }
 } catch (error) { result.error = String(error.stack ?? error); log("失败", error); }
 finally {
