@@ -1,8 +1,8 @@
 # V2 实施任务
 
-状态：V2-01、V2-06、V2-03、V2-04、V2-05 已完成（Windows，见下表）；V2-02 功能完成并已合入、性能复测交给发布性能测试。发布已知问题 V2-D60（写操作后历史页后台重读）已修复（2026-09-28，[结果](../../validation/v2-d60-history-reread-results.md)）；V2-D58（长文件滚动状态下切换字号超预算）已修复（2026-09-28，[结果](../../validation/v2-d58-font-size-results.md)）。PR #12 先行合入的本地分支右键删除与“清理…”（fetch --prune）已补登记为 V2-D74 并通过验收 B30（2026-09-29，[结果](../../validation/branch-prune-results.md)），其间修复了“正在浏览的分支被删除后历史列表停在错误状态”。共同输入：[V2 产品规格](../../specs/v2-product.md)、[V2 技术方案](../../architecture/v2-architecture.md)、[V2 验收计划](../../validation/v2-acceptance.md)、[V2 决策登记](../../decisions/v2-decisions.md)。V1 任务总表见 [../README.md](../README.md)；V1 文档中“明确不支持”的列表只约束 V1 范围。
+状态：V2-01、V2-06、V2-03、V2-04、V2-05 已完成（Windows，见下表）；V2-02 功能完成并已合入、性能复测交给发布性能测试。发布已知问题 V2-D60（写操作后历史页后台重读）已修复（2026-09-28，[结果](../../validation/v2-d60-history-reread-results.md)）；V2-D58（长文件滚动状态下切换字号超预算）已修复（2026-09-28，[结果](../../validation/v2-d58-font-size-results.md)）。PR #12 先行合入的本地分支右键删除与“清理…”（fetch --prune）已补登记为 V2-D74 并通过验收 B30（2026-09-29，[结果](../../validation/branch-prune-results.md)），其间修复了“正在浏览的分支被删除后历史列表停在错误状态”。新增 V2-07 工作区（2026-09-29 规划，Pending），不属于一二期合并发布（V2-D19）的必要范围。共同输入：[V2 产品规格](../../specs/v2-product.md)、[V2 技术方案](../../architecture/v2-architecture.md)、[V2 验收计划](../../validation/v2-acceptance.md)、[V2 决策登记](../../decisions/v2-decisions.md)。V1 任务总表见 [../README.md](../README.md)；V1 文档中“明确不支持”的列表只约束 V1 范围。
 
-## 五条纵向任务
+## 纵向任务
 
 | 任务 | 交付闭环 | 依赖 | 当前状态 |
 | --- | --- | --- | --- |
@@ -12,6 +12,7 @@
 | [V2-04 远端同步与合并](04-sync-merge.md) | pull / push（进度、取消）→ merge → 冲突只读查看 → 标记已解决 → 完成或中止 | V2-02、V1 03、V1 04 | Done（Windows）：B11–B14、B16–B18 通过，AgentHub SSH / HTTPS 通过；macOS 与性能未测（[结果](../../validation/v2-04-results.md)） |
 | [V2-05 hunk 级暂存与丢弃](05-hunk-operations.md) | 在 diff 中逐 hunk 暂存 / 取消暂存 / 丢弃 | V2-02；默认在 V1 05 之后 | Done（Windows）：B15–B17 通过，块丢弃在 autocrlf 下不改写其他字节；块操作 Git 确认 P95 约 750 ms（只作参照）；macOS 未验证（[结果](../../validation/v2-05-results.md)） |
 | [V2-06 设置与外观](06-settings-appearance.md) | 设置框架与分类 → Git / 字号 / 浅深色迁入 → 颜色变量化 → VS Code 配色方案移植 | V2-01 | Done（Windows）：B19–B22 与配色 / 设置时延通过，V2-01 预算未退步；macOS 与真实系统主题切换未验证（[结果](../../validation/v2-06-results.md)） |
+| [V2-07 工作区](07-workspace.md) | 添加父仓库识别为工作区 → 标题栏切换当前仓库 → 各视图与操作只针对当前仓库 → 父仓库排除子仓库（指针开关、嵌套仓库说明） | V2-01、V2-06、V1 04 | Pending：规划完成（2026-09-29，V2-D75–V2-D85），先出效果图；未授权开发 |
 
 ## 执行顺序（V2-D17，经 V2-D26 修订，用户已确认）
 
