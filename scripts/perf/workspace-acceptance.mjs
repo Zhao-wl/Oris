@@ -180,13 +180,14 @@ async function localSuite() {
     trace.take();
     // ---------- B31 添加即识别 ----------
     const t0 = await ctx.addProject(fx.root);
-    await ctx.waitUntil(`window.__w.picker() === 'game-workspace' && window.__op.files().includes('AGENTS.md')`, 30000);
+    await ctx.waitUntil(`window.__w.picker() === 'game-workspace' && window.__op.rows().includes('AGENTS.md')`, 30000);
     report.timings.addWorkspaceMs = Date.now() - t0;
     const tabs = await ctx.evaluate(`window.__w.tabs()`);
     check("B31 工作区只占一个标签，带工作区标识", tabs.length === 1 && tabs[0].workspace && tabs[0].active && samePath(tabs[0].title, fx.root), tabs);
     await ctx.waitUntil(`/7 个子模块|3 个子模块/.test(window.__w.tabs()[0].text)`, 10000).catch(() => {});
-    check("B31 提示已作为工作区添加", (await ctx.evaluate(`window.__w.toast()`)).includes("已作为工作区添加 game-workspace"), await ctx.evaluate(`window.__w.toast()`));
-    const parentFiles = await ctx.evaluate(`window.__op.files()`);
+    const toastSeen = await ctx.waitUntil(`window.__w.toast().includes('已作为工作区添加 game-workspace')`, 5000).then(() => true, () => false);
+    check("B31 提示已作为工作区添加", toastSeen, await ctx.evaluate(`window.__w.toast()`));
+    const parentFiles = await ctx.evaluate(`window.__op.rows()`);
     check("B32 父仓库只列自身文件（不含子模块内部文件，指针开关默认关闭时无子模块条目）", q(parentFiles) === q(["AGENTS.md"]), parentFiles);
     check("B34 嵌套仓库折叠说明", (await ctx.evaluate(`window.__w.nested()`)) === "1 个嵌套仓库未显示", await ctx.evaluate(`window.__w.nestedRows()`));
     const opened = trace.take();
@@ -216,22 +217,24 @@ async function localSuite() {
     // ---------- 切换到 client ----------
     const ts = Date.now();
     await ctx.click(`window.__w.row('client')`);
-    await ctx.waitUntil(`window.__w.picker() === 'client' && window.__op.files().includes('Assets/Game.cs')`, 30000);
+    await ctx.waitUntil(`window.__w.picker() === 'client' && window.__op.rows().includes('Assets/Game.cs')`, 30000);
     report.timings.firstSwitchToClientMs = Date.now() - ts;
-    check("B32 切到 client：文件列表只有 client 的改动，标签仍是工作区", q(await ctx.evaluate(`window.__op.files()`)) === q(["Assets/Game.cs"]) && (await ctx.evaluate(`window.__w.tabs()[0].active`)), await ctx.evaluate(`window.__op.files()`));
+    check("B32 切到 client：文件列表只有 client 的改动，标签仍是工作区", q(await ctx.evaluate(`window.__op.rows()`)) === q(["Assets/Game.cs"]) && (await ctx.evaluate(`window.__w.tabs()[0].active`)), await ctx.evaluate(`window.__op.rows()`));
     check("B34 client 中的独立嵌套仓库可以加入工作区", (await ctx.evaluate(`window.__w.nestedRows()`))[0]?.button === "加入工作区", await ctx.evaluate(`window.__w.nestedRows()`));
     check("B33 没有子模块的仓库不显示指针开关", (await ctx.evaluate(`window.__w.pointer()`)) === null);
     fp = segment("打开、选择器、切换（只读）", fp);
     // 可逆写操作：只影响 client 的 index。
     await ctx.click(`window.__op.row('Assets/Game.cs').querySelector('.file-action')`);
     await ctx.waitUntil(`!window.__op.row('Assets/Game.cs')`, 15000);
-    fp = segment("在 client 中暂存", fp, { client: [/^\.git\/index$/] });
+    // client 的 Git 目录位于父仓库的 .git/modules/client 下：暂存只改它的 index（及新写入的 blob 对象）。
+    const clientIndex = { "game-workspace": [/^\.git\/modules\/client\/(index|objects\/)/] };
+    fp = segment("在 client 中暂存", fp, clientIndex);
     await ctx.click(`window.__op.scopeButton('已暂存')`);
     await ctx.waitUntil(`window.__op.row('Assets/Game.cs')`, 15000);
     await ctx.click(`window.__op.row('Assets/Game.cs').querySelector('.file-action')`);
     await ctx.waitUntil(`!window.__op.row('Assets/Game.cs')`, 15000);
     await ctx.click(`window.__op.scopeButton('未暂存')`);
-    fp = segment("在 client 中取消暂存", fp, { client: [/^\.git\/index$/] });
+    fp = segment("在 client 中取消暂存", fp, clientIndex);
     // 热切换回父仓库再回来。
     const hot = [];
     for (let i = 0; i < 5; i++) {
@@ -240,7 +243,7 @@ async function localSuite() {
         await ctx.waitUntil(`window.__w.row(${q(target)})`);
         const t = Date.now();
         await ctx.evaluate(`window.__w.row(${q(target)}).click()`);
-        await ctx.waitUntil(`window.__w.picker() === ${q(target)} && window.__op.files().length > 0`, 15000);
+        await ctx.waitUntil(`window.__w.picker() === ${q(target)} && window.__op.rows().length > 0`, 15000);
         hot.push(Date.now() - t);
       }
     }
@@ -258,7 +261,10 @@ async function localSuite() {
     check("B36 选中父仓库时子仓库的大量写入不触发父仓库或子仓库扫描", !afterWrites.some((e) => e.command.startsWith("status")), afterWrites.map((e) => `${e.cwd} ${e.command}`));
     await ctx.click(`document.querySelector('.repo-picker-button')`);
     await ctx.waitUntil(`window.__w.row('client')`);
-    check("B35 子仓库外部变化后显示“有变化”", (await ctx.evaluate(`window.__w.rows().find((r) => r.name === 'client').badges`)).includes("有变化"), await ctx.evaluate(`window.__w.rows().find((r) => r.name === 'client').badges`));
+    // 有变化的成员在打开选择器时重新读取（V2-D82）：“有变化”之后改动数更新为新值（Game.cs + 20 个新文件；Library/ 被忽略）。
+    await ctx.waitUntil(`!window.__w.scanning()`, 30000);
+    const clientBadges = await ctx.evaluate(`window.__w.rows().find((r) => r.name === 'client').badges`);
+    check("B35 子仓库外部变化后重新读取，改动数更新（被忽略的 Library/ 不计）", clientBadges.includes("21 个改动"), clientBadges);
     await ctx.key(`document.querySelector('.repo-picker')`, { key: "Escape" });
     // ---------- B33 指针开关 ----------
     const oldBattle = git(fx.battle, ["rev-parse", "HEAD"]);
@@ -267,10 +273,10 @@ async function localSuite() {
     await sleep(1500);
     fp = fingerprints();
     trace.take();
-    check("B33 开关关闭：父仓库不显示子模块条目", !(await ctx.evaluate(`window.__op.files()`)).includes("battle"), await ctx.evaluate(`window.__op.files()`));
+    check("B33 开关关闭：父仓库不显示子模块条目", !(await ctx.evaluate(`window.__op.rows()`)).includes("battle"), await ctx.evaluate(`window.__op.rows()`));
     await ctx.click(`document.querySelector('.pointer-switch')`);
-    await ctx.waitUntil(`window.__op.files().includes('battle')`, 15000);
-    check("B33 开关打开：只显示提交指针变化的 battle（client 只有内部改动，不显示）", q((await ctx.evaluate(`window.__op.files()`)).sort()) === q(["AGENTS.md", "battle"]), await ctx.evaluate(`window.__op.files()`));
+    await ctx.waitUntil(`window.__op.rows().includes('battle')`, 15000);
+    check("B33 开关打开：只显示提交指针变化的 battle（client 只有内部改动，不显示）", q((await ctx.evaluate(`window.__op.rows()`)).sort()) === q(["AGENTS.md", "battle"]), await ctx.evaluate(`window.__op.rows()`));
     const toggled = trace.take().filter((e) => e.command.startsWith("status") && e.cwd && samePath(e.cwd, fx.root));
     check("B33 开关打开后父仓库 status 带 --ignore-submodules=dirty", toggled.length > 0 && toggled.every((e) => e.command.includes("--ignore-submodules=dirty")), toggled.map((e) => e.command));
     report.shots.pointers = await ctx.shot("03-pointers");
@@ -323,7 +329,7 @@ async function realSuite() {
     const t0 = await ctx.addProject(realRoot);
     await ctx.waitUntil(`window.__w.picker() === 'game-workspace' && !window.__op.loading()`, 60000);
     report.timings.realAddMs = Date.now() - t0;
-    report.realParentFiles = await ctx.evaluate(`window.__op.files()`);
+    report.realParentFiles = await ctx.evaluate(`window.__op.rows()`);
     report.realNested = await ctx.evaluate(`window.__w.nestedRows()`);
     report.shots = { realParent: await ctx.shot("11-real-parent") };
     const tp = Date.now();

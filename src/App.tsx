@@ -196,6 +196,8 @@ export default function App() {
   const askConfirm = useCallback((request: ConfirmRequest) => new Promise<boolean>((resolve) => setConfirmState({ ...request, resolve })), []);
   const workspaceRef = useRef(workspaceState);
   workspaceRef.current = workspaceState;
+  /** 最近一次决定的当前仓库（同步更新，早于重新渲染）：自动刷新据此判断自己捕获的当前仓库是否已过期。 */
+  const activeIntent = useRef<string | null>(workspaceState.activeRepoId);
   // ---------- 工作区（V2-07）：发现结果按父仓库 repoId 缓存（不持久化）；成员徽标只在打开选择器时读取 ----------
   const [groups, setGroups] = useState<Record<string, GroupDiscovery>>({});
   const groupsRef = useRef(groups);
@@ -354,6 +356,7 @@ export default function App() {
       dirty: false
     }));
     loadDetails.current(result);
+    activeIntent.current = result.repo.repoId;
     setWorkspaceState((current) => {
       const latest = current.projects.find(entry => entry.repo.repoId === result.repo.repoId);
       // 工作区字段与指针开关以最新记录为准：调用方持有的 project 可能是切换前的旧副本（V2-07）。
@@ -425,7 +428,9 @@ export default function App() {
     setWorkspaceState((state) => {
       const next = applyDiscovery(state, discovery, git).state;
       // 当前成员已不在工作区中（例如 worktree 被删除）：退回父仓库。
-      return next.projects.some((project) => project.repo.repoId === next.activeRepoId) ? next : { ...next, activeRepoId: rootId };
+      if (next.projects.some((project) => project.repo.repoId === next.activeRepoId)) return next;
+      activeIntent.current = rootId;
+      return { ...next, activeRepoId: rootId };
     });
     setGroups((map) => ({ ...map, [rootId]: discovery }));
     startGroupWatch(discovery);
@@ -492,6 +497,8 @@ export default function App() {
     const automatic = reason !== "手动刷新";
     if (automatic && !isForeground()) { refreshPending.current = true; return; }
     if (!activeProject || !activeRepoId) return;
+    // 当前仓库刚刚改变、界面尚未重新渲染：本闭包捕获的是旧仓库，延后到下一次（否则旧仓库的刷新结果会把当前仓库切回去）。
+    if (activeIntent.current !== activeRepoId) { refreshPending.current = true; return; }
     if (loading || refreshBusy.current || repositoryGate.current.hasRequiredPending() || contentGate.current.hasRequiredPending()) {
       refreshPending.current = true;
       if (!automatic) { manualPending.current = activeRepoId; setManualRefreshing(true); }
@@ -510,7 +517,7 @@ export default function App() {
     setRefreshing(true); if (!contentReadFailed.current) setError(null); setProjectMessages((current) => ({ ...current, [activeRepoId]: `${reason}中` }));
     try {
       const result = await refreshRepository(activeRepoId, scope, requestId, !automatic);
-      if (!repositoryGate.current.accepts(requestId)) return;
+      if (!repositoryGate.current.accepts(requestId) || activeIntent.current !== activeRepoId) return;
       checkedAt.current.set(`${activeRepoId}:${scope}`, Date.now());
       const priorRevision = projects.get(activeRepoId)?.snapshot?.revision;
       // Manual refresh re-reads content, e.g. LFS objects fetched after a pointer was shown.
@@ -691,6 +698,7 @@ export default function App() {
     if (project.repo.repoId === activeRepoId && snapshot) return;
     const switchingId = newRequestId(); repositoryGate.current.activate(switchingId); contentGate.current.activate(switchingId);
     historyRef.current = null; setHistoryReading(null);
+    activeIntent.current = project.repo.repoId;
     setWorkspaceState((current) => ({ ...current, activeRepoId: project.repo.repoId })); setError(null); setNotice(null); setStale(false);
     setMemberBadges((map) => map[project.repo.repoId]?.dirty ? { ...map, [project.repo.repoId]: { ...map[project.repo.repoId], dirty: false, count: undefined } } : map);
     const stored = projects.get(project.repo.repoId);
@@ -871,7 +879,18 @@ export default function App() {
       return show ? { ...rest, showSubmodulePointers: true } : rest;
     }) }));
     try { await setSubmodulePointers(repoId, show); } catch (nextError) { setError(errorText(nextError)); return; }
-    await refreshLatest.current("切换子模块指针");
+    // 用户显式切换：立即重新扫描当前仓库（不走受前台状态约束的自动刷新；不回写 index stat 缓存）。
+    const project = workspaceRef.current.projects.find((entry) => entry.repo.repoId === repoId) ?? activeProject;
+    const requestId = newRequestId(); repositoryGate.current.activate(requestId);
+    setRefreshing(true);
+    try {
+      const result = await refreshRepository(repoId, scope, requestId, false);
+      if (!repositoryGate.current.accepts(requestId)) return;
+      checkedAt.current.set(`${repoId}:${scope}`, Date.now());
+      cache.current.clearRepo(repoId);
+      await acceptSnapshot(result, project, { ...project.anchor, selectedPathId: currentRead.current.selected }, requestId);
+    } catch (nextError) { if (repositoryGate.current.accepts(requestId)) setError(errorText(nextError)); }
+    finally { if (repositoryGate.current.accepts(requestId)) { setRefreshing(false); repositoryGate.current.finish(requestId); } }
   };
   const nestedRepos = snapshot?.nestedRepos ?? [];
   const nestedMember = (relative: string) => snapshot && activeGroup ? activeGroup.members.find((member) => samePath(member.worktreePath, joinPath(snapshot.repo.worktreePath, relative))) : undefined;
