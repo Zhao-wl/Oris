@@ -70,7 +70,7 @@ B16、B17：每个写操作的证据中，文件变化只在预期类别（`refs
 | 项 | 基线（main `d005630`） | 本阶段 |
 | --- | --- | --- |
 | 前端 vitest | 38 个文件 279 通过 | 38 个文件 282 通过（+3：清理列表范围与取消、获取失败说明与拒绝未合并、删除正在浏览的分支） |
-| 后端 `cargo test --no-default-features --lib` | 170 通过 / 5 忽略（其中 `b12_pull_times_out…` 首轮与单独重跑各失败 1 次，见下） | 171 通过 / 5 忽略（+1：prune 只影响所选 remote、不 prune 远端已删除的标签）；（desktop 特性）无警告 |
+| 后端 `cargo test --no-default-features --lib` | 170 通过 / 5 忽略（其中 `b12_pull_times_out…` 首轮与单独重跑各失败 1 次，见下） | 171 通过 / 5 忽略（+1：prune 只影响所选 remote、不 prune 远端已删除的标签）；`cargo check`（desktop 特性）无警告 |
 | `npx tsc -b` | 通过 | 通过 |
 
 后端基线中的 `sync_tests::b12_pull_times_out_without_output_and_push_can_be_cancelled_ending_the_process_tree` 在机器负载高时失败 2 次（一次是“5 s 内结束”的计时断言，一次是取消前读取 bare 仓库 `refs/heads/main` 偶发失败），随后单独连跑 3 次全部通过。该用例与相关代码在 RC 之后没有改动，记为“负载下偶发失败”，与本阶段无关。
