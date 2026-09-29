@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chainedWheelDelta, diffMarkerGeometry, fontChangeScroll, mapDiffPosition, railViewportStartLine } from "./diff-scroll";
+import { chainedWheelDelta, contextAnchor, diffMarkerGeometry, fontChangeScroll, mapDiffPosition, railViewportStartLine } from "./diff-scroll";
 
 describe("分段 Diff 滚动映射", () => {
   it("N:N 段内保持 1:1", () => {
@@ -105,5 +105,40 @@ describe("fontChangeScroll（V2-D58）", () => {
     expect(at(24000, true)).toBe("measure");
     // 内容不足一屏
     expect(fontChangeScroll({ scrollTop: 0, scrollHeight: 300, clientHeight: 600, lineWrapping: false })).toBe("measure");
+  });
+});
+
+describe("对齐锚点：视口顶部所在的上下文行（换行 + 对齐）", () => {
+  // A 20 行、B 22 行：块 0 修改 A5–6 / B5–7；块 1 在 A 第 12 行前插入 B12；其余为上下文（两侧行序对应）。
+  const chunks = [{ firstA: 5, firstB: 5, nextA: 7, nextB: 8 }, { firstA: 12, firstB: 13, nextA: 12, nextB: 14 }];
+  const lines = { a: 20, b: 22 };
+
+  it("第一个块之前的上下文：两侧同一行号，区域 0", () => {
+    expect(contextAnchor("b", 3, chunks, lines)).toEqual({ region: 0, lineA: 3, lineB: 3 });
+    expect(contextAnchor("a", 4, chunks, lines)).toEqual({ region: 0, lineA: 4, lineB: 4 });
+  });
+
+  it("两块之间的上下文按行序对应到另一侧（B 比 A 多出块 0 中的一行）", () => {
+    expect(contextAnchor("b", 10, chunks, lines)).toEqual({ region: 1, lineA: 9, lineB: 10 });
+    expect(contextAnchor("a", 9, chunks, lines)).toEqual({ region: 1, lineA: 9, lineB: 10 });
+  });
+
+  it("插入块之后：区域序号为块数，B 再多出插入的一行", () => {
+    expect(contextAnchor("a", 15, chunks, lines)).toEqual({ region: 2, lineA: 15, lineB: 17 });
+    expect(contextAnchor("b", 22, chunks, lines)).toEqual({ region: 2, lineA: 20, lineB: 22 });
+  });
+
+  it("在块内、正好是区域第一行或超出文档时不设锚点", () => {
+    expect(contextAnchor("b", 6, chunks, lines)).toBeNull();
+    expect(contextAnchor("b", 13, chunks, lines)).toBeNull();
+    expect(contextAnchor("b", 1, chunks, lines)).toBeNull();
+    expect(contextAnchor("b", 8, chunks, lines)).toBeNull();
+    expect(contextAnchor("a", 7, chunks, lines)).toBeNull();
+    expect(contextAnchor("a", 12, chunks, lines)).toBeNull();
+    expect(contextAnchor("a", 21, chunks, lines)).toBeNull();
+  });
+
+  it("没有块时整份文件都是区域 0", () => {
+    expect(contextAnchor("b", 7, [], { a: 10, b: 10 })).toEqual({ region: 0, lineA: 7, lineB: 7 });
   });
 });
