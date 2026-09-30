@@ -337,4 +337,22 @@ describe("V2-D60：写操作后的历史重读", () => {
     await act(async () => release(refsView())); await flush();
     expect(counts()).toEqual({ refs: before.refs + 1, log: before.log + 1, changes: before.changes });
   });
+
+  it("切到尚未打开的项目时，历史页等后端打开完成后才读取（不会得到 unknownRepository）", async () => {
+    const repoB = { ...repo, repoId: "b", displayName: "b", worktreePath: "C:/b", gitDir: "C:/b/.git", commonDir: "C:/b/.git" };
+    let openB: () => void = () => {};
+    bridge.open.mockImplementation((path: string) => path === "C:/b" ? new Promise((resolve) => { openB = () => resolve({ ...snap(), repo: repoB }); }) : Promise.resolve(snap()));
+    localStorage.setItem(WORKSPACE_KEY, JSON.stringify({ version: 2, activeRepoId: "a", projects: [repo, repoB].map((r) => ({ repo: r, gitExecutable: "", pinned: false, lastOpenedAt: 0, anchor: defaultAnchor() })) }));
+    await mount();
+    await openLog();
+    expect(bridge.refs).toHaveBeenCalledWith("a");
+    await click(q(".project-tab:nth-child(2) .project-switch"));
+    expect(bridge.refs).not.toHaveBeenCalledWith("b");
+    expect(bridge.log.mock.calls.some(([id]) => id === "b")).toBe(false);
+    expect(q(".log-current")).toBeNull();
+    await act(async () => openB()); await flush();
+    expect(bridge.refs).toHaveBeenCalledWith("b");
+    expect(bridge.log.mock.calls.some(([id]) => id === "b")).toBe(true);
+    expect(q(".log-current")?.textContent).toContain("● main");
+  });
 });

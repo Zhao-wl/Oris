@@ -92,7 +92,11 @@ try {
   // 双击别名
   await s.evaluate(`(() => { const span = [...document.querySelectorAll('.project-tab')].find((t) => t.title === ${q(sameB)}).querySelector('.project-switch span'); span.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); })()`);
   await s.waitUntil(`!!document.querySelector('input.project-rename')`);
-  await s.evaluate(`(() => { const f = document.querySelector('input.project-rename'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(f, '别名 B'); f.dispatchEvent(new Event('input', { bubbles: true })); f.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); f.blur(); })()`);
+  // 输入与回车分两次派发：真实输入时每个按键都是独立的事件，React 在两者之间已应用输入；同一个任务里连续派发时
+  // 回车读到的可能还是旧值（613a227 之后在最终构建上偶发，别名被提交为空），与真实操作不符（长链 lc4 阶段 4）。
+  await s.evaluate(`(() => { const f = document.querySelector('input.project-rename'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(f, '别名 B'); f.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await sleep(100);
+  await s.evaluate(`(() => { const f = document.querySelector('input.project-rename'); f.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); f.blur(); })()`);
   await sleep(400);
   tabs = await s.tabs();
   check("A02 双击页签名称设置别名，只改显示名", tabs.find((t) => t.path === sameB)?.name === "别名 B" && tabs.find((t) => t.path === sameA)?.name === "same", tabs);

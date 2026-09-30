@@ -130,6 +130,8 @@ export default function App() {
   const contentGate = useRef(new RequestGate());
   const restored = useRef(false);
   const opened = useRef(new Set<string>());
+  // 与 opened 同步的可渲染副本：历史 / 提交页签要等后端注册表里有该仓库后才挂载，否则切到尚未打开的项目时首批请求会得到 unknownRepository。
+  const [openedRepos, setOpenedRepos] = useState<ReadonlySet<string>>(() => new Set());
   const cache = useRef(new ContentCache());
   const diffCache = useRef(new DiffCache());
   const projects = useRef(new ProjectStore()).current;
@@ -338,7 +340,7 @@ export default function App() {
 
   const acceptSnapshot = useCallback(async (result: RepositorySnapshot, project: ProjectRecord, anchor: ReadingAnchor, requestId: string, automatic = false) => {
     if (!repositoryGate.current.accepts(requestId)) return;
-    opened.current.add(result.repo.repoId);
+    if (!opened.current.has(result.repo.repoId)) { opened.current.add(result.repo.repoId); setOpenedRepos(new Set(opened.current)); }
     if (scopeSnapshots.current.get(`${result.repo.repoId}:${result.scope}`) !== result) {
       scopeSnapshots.current.set(`${result.repo.repoId}:${result.scope}`, result);
       checkedAt.current.set(`${result.repo.repoId}:${result.scope}`, Date.now());
@@ -789,7 +791,7 @@ export default function App() {
     const nextProject = nextTab ? (nextTab.group ? groupEntry(workspaceState, nextTab) : nextTab) : null;
     const activeRemoved = !!activeRepoId && removedIds.includes(activeRepoId);
     for (const id of removedIds) {
-      cache.current.clearRepo(id); opened.current.delete(id);
+      cache.current.clearRepo(id); opened.current.delete(id); setOpenedRepos(new Set(opened.current));
       for (const key of scopeSnapshots.current.keys()) if (key.startsWith(`${id}:`)) scopeSnapshots.current.delete(key);
       const removedPath = projects.get(id)?.snapshot?.repo.worktreePath;
       projects.remove(id);
@@ -864,7 +866,7 @@ export default function App() {
     workspaceRef.current = next;
     setWorkspaceState(next);
     await refreshGroup(rootId);
-    if (removedMember?.repoId) { projects.remove(removedMember.repoId); opened.current.delete(removedMember.repoId); void closeRepository(removedMember.repoId).catch(() => {}); }
+    if (removedMember?.repoId) { projects.remove(removedMember.repoId); opened.current.delete(removedMember.repoId); setOpenedRepos(new Set(opened.current)); void closeRepository(removedMember.repoId).catch(() => {}); }
     const name = memberPath.split(/[\\/]/).filter(Boolean).pop() ?? memberPath;
     setGroupToast({ id: ++syncToastSeq, kind: "fetch", status: "succeeded", title: add ? `已把 ${name} 加入工作区` : `已把 ${name} 移出工作区`, detail: add ? "出现在仓库选择器的“手动加入”分组，可随时移出；不修改仓库" : "只移除 Oris 记录，不删除目录", actions: [] });
   };
@@ -937,10 +939,9 @@ export default function App() {
     return readable ? [editorText(pair.left.text ?? ""), editorText(pair.right.text ?? "")] : null;
   }, [pair, latin1Active, readable]);
   const viewDocument = latin1Active ? latin1Doc : diffDocument;
-  // 历史页只在当前仓库已在后端打开后挂载：首次切到的工作区成员（或尚在打开的项目）此前读取会报“仓库尚未打开”，
-  // 从父仓库历史跳来的比较请求也要等到这时再执行（V2-D85）。
-  const repoReady = !!activeRepoId && !!runtime?.snapshot && runtime.snapshot.repo.repoId === activeRepoId && opened.current.has(activeRepoId);
-  useEffect(() => { if (gitTab === "log" && activeRepoId && repoReady) setLogMounted(activeRepoId); }, [gitTab, activeRepoId, repoReady]);
+  // 历史页只在当前仓库已在后端打开后挂载；从父仓库历史跳来的比较请求也在这时执行（V2-D85）。
+  const backendRepoId = activeRepoId && openedRepos.has(activeRepoId) ? activeRepoId : null;
+  useEffect(() => { if (gitTab === "log" && activeRepoId) setLogMounted(activeRepoId); }, [gitTab, activeRepoId]);
   useEffect(() => { setRefsView(null); setFileHistoryRequest(null); setBranchOpen(false); setSyncMenu(null); setSyncToast(null); setRemotesFetchHeadAt(null); setRemoteChoice(null); }, [activeRepoId]);
   const detachedOid = snapshot?.branchInfo && !snapshot.branchInfo.head ? snapshot.branchInfo.oid : null;
   const worktreePath = snapshot?.repo.worktreePath ?? null;
@@ -1754,10 +1755,10 @@ export default function App() {
         {selectedFile && <div className={singleFile ? "endpoints single" : mode === "split" ? "endpoints split" : "endpoints"} style={{ "--diff-header-left-width": `${splitLayout.leftWidth}px` } as CSSProperties}>{singleFile ? <span className="single-endpoint"><span>▣ {singleEndpointLabel}</span>{singleTextSide && <span className="encoding">{sideLabel(singleTextSide)}</span>}</span> : <><span className="left-endpoint"><span>▣ {pair?.left.endpoint === "emptyTree" ? "空树" : endpoints[0]}</span>{pair && !imageDisplay && <span className="encoding">{sideLabel(pair.left)}</span>}</span>{mode === "split" && <span className="endpoint-gutter" aria-hidden="true"/>}<span className="right-endpoint"><span>▣ {endpoints[1]}</span>{pair && !imageDisplay && <span className="encoding">{sideLabel(pair.right)}</span>}</span></>}</div>}
         <div className="content">{notice && <SelectionNotice message={notice} onDismiss={() => setNotice(null)}/>}{loading && !diffDocument && <div className="state">正在读取真实仓库…</div>}{error && <div className="state error"><strong>无法显示差异</strong><p>{error}</p></div>}{!loading && !error && pair?.left.encoding === "missing" && pair.right.encoding === "missing" && <div className="state">所选两端均缺失，没有可比较内容。</div>}{!loading && !error && pair?.degradation && !special && !latin1Active && <div className="state warning"><strong>内容已降级</strong><p>{pair.degradation}</p></div>}{!loading && !error && special && <SpecialFileView description={special} compact={!!availableText} action={latin1Available ? { label: "按单字节（Latin-1）显示", onClick: () => setLatin1Keys((current) => new Set([...current, latin1Key])) } : undefined}/>}{!loading && !error && readingNotices.length > 0 && <div className="reading-notice" role="status">{readingNotices.map((text, index) => <p key={index}>{text}</p>)}</div>}{!loading && !error && pair && (pair.left.details?.image || pair.right.details?.image || /\.(png|jpe?g|webp)$/i.test(pair.displayPath)) && <ImageViewer key={`${pair.repoId}:${pair.pathId}:${pair.left.contentId}:${pair.right.contentId}`} left={pair.left} right={pair.right} labels={endpoints}/>} {!loading && !error && availableText && pair && !latin1Active && <><div className="partial-notice">仅显示可用文本端；另一侧不可用，跨侧差异计数与导航不可计算。{special ? "" : pair.degradation}</div><DiffViewer readingKey={`${pair.repoId}:${pair.pathId}:${availableText.endpoint}`} presentation={{kind:"compare"}} left={editorText(availableText.text!)} right={editorText(availableText.text!)} document={{requestId:pair.requestId,contentIds:[availableText.contentId,availableText.contentId],changes:[],hunks:[],elapsedMs:0}} mode="unified" highlight={highlight} collapsed={false} wrap={wrap} alignChanges={false} onPositionChange={() => {}} onSplitLayoutChange={() => {}}/></>} {!error && viewTexts && pair && viewDocument && <DiffViewer readingKey={historyReading ? `${pair.repoId}:history:${historyReading.key}` : `${pair.repoId}:${scope}:${pair.pathId}`} presentation={presentation} ref={viewer} left={viewTexts[0]} right={viewTexts[1]} document={viewDocument} hunkHeaders={hunkHeaders} mode={mode} highlight={highlight} collapsed={collapsed} wrap={wrap} alignChanges={alignChanges} onPositionChange={handlePositionChange} onSplitLayoutChange={handleSplitLayoutChange}/>} {!loading && !error && !pair && <div className="state">选择一个变化文件开始阅读</div>}</div><footer className="diff-footer"><span>蓝：修改　绿：新增　灰：删除</span><span className="spacer"/>{snapshot && <span>Git {snapshot.git.version} · revision {snapshot.revision.slice(0, 8)}</span>}</footer></section>
     </section>
-    <GitPanel repoId={activeRepoId} tab={gitTab} onTab={setGitTab} stagedCount={stagedCount} headOid={runtime?.snapshot?.branchInfo?.oid ?? null} headKey={`${snapshot?.branchInfo?.oid ?? ""}:${snapshot?.branchInfo?.upstream ?? ""}:${snapshot?.branchInfo?.ahead ?? ""}:${snapshot?.branchInfo?.behind ?? ""}`}
+    <GitPanel repoId={backendRepoId} tab={gitTab} onTab={setGitTab} stagedCount={stagedCount} headOid={runtime?.snapshot?.branchInfo?.oid ?? null} headKey={`${snapshot?.branchInfo?.oid ?? ""}:${snapshot?.branchInfo?.upstream ?? ""}:${snapshot?.branchInfo?.ahead ?? ""}:${snapshot?.branchInfo?.behind ?? ""}`}
       mergeInProgress={!!snapshot?.inProgress?.merge} blockedReason={writeBlocked && !repoOps?.running ? writeBlocked : null} running={repoOps?.running ?? null} lines={repoOps?.lines ?? []} last={repoOps?.last ?? null} lastCommit={repoOps?.lastCommit ?? null} backups={repoOps?.backups ?? []}
       onCommit={commit} onGenerateMessage={aiMessage} onUndoCommit={(head) => void undoCommit(head)} onUndoDiscard={(id) => void undoDiscard(id)} onCancel={() => { if (activeRepoId) void cancelOperation(activeRepoId); }}
-      logContent={activeRepoId && logMounted === activeRepoId ? <HistoryPanel key={activeRepoId} repoId={activeRepoId} compareRequest={historyCompare} onSubmoduleCompare={activeGroup ? compareInSubmodule : undefined} refsVersion={refsVersion} hidden={gitTab !== "log"} fileHistoryRequest={fileHistoryRequest} activeKey={historyReading?.key ?? null} onOpenFile={(open) => void openHistoryFile(open)} onRefs={setRefsView}
+      logContent={backendRepoId && logMounted === backendRepoId ? <HistoryPanel key={backendRepoId} repoId={backendRepoId} compareRequest={historyCompare} onSubmoduleCompare={activeGroup ? compareInSubmodule : undefined} refsVersion={refsVersion} hidden={gitTab !== "log"} fileHistoryRequest={fileHistoryRequest} activeKey={historyReading?.key ?? null} onOpenFile={(open) => void openHistoryFile(open)} onRefs={setRefsView}
         writeBlocked={writeBlocked} onCheckout={(oid) => void runSwitch({ kind: "checkout", commit: oid })} onNewBranch={(start) => { loadRefsView(); setNewBranch({ initial: start }); }} onMerge={detachedOid ? undefined : startMerge}
         onSwitch={branchActions.onSwitch} onTrack={branchActions.onTrack} onDeleteBranch={(branch) => void deleteBranch(branch)} onPruneGone={() => void pruneGoneBranches()} stashVersion={stashVersion} selectedFiles={stashSelection}
         onStashPush={stashPush} onStashApply={(entry, pop) => void runOp({ kind: "stashApply", index: entry.index, oid: entry.oid, pop })} onStashDrop={(entry) => void stashDrop(entry)}/> : null}/>
