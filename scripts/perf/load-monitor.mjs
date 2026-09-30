@@ -63,11 +63,13 @@ export function startLoadMonitor({ intervalSec = 5, threshold = 10, log = () => 
   const pidFile = path.join(dir, `pids-${stamp}.txt`);
   writeFileSync(pidFile, "");
   const env = { ...process.env, ORIS_MONITOR_NODE_PID: String(process.pid), ORIS_MONITOR_PID_FILE: pidFile, ORIS_MONITOR_INTERVAL: String(intervalSec) };
-  const child = spawn("powershell", ["-NoProfile", "-NonInteractive", "-Command", SCRIPT], { stdio: ["ignore", "pipe", "ignore"], windowsHide: true, env });
   const samples = [];
+  const stalls = [];
   let buffer = "";
-  child.stdout.setEncoding("utf8");
-  child.stdout.on("data", (chunk) => {
+  let child;
+  let lastOutput = Date.now();
+  const onData = (chunk) => {
+    lastOutput = Date.now();
     buffer += chunk;
     let index;
     while ((index = buffer.indexOf("\n")) >= 0) {
@@ -81,7 +83,24 @@ export function startLoadMonitor({ intervalSec = 5, threshold = 10, log = () => 
         if (sample.externalCpu > threshold) log(`负载：外部进程合计 ${sample.externalCpu}%（${sample.top.map((p) => `${p.name}:${p.cpu}`).join(", ")}）`);
       } catch { /* 忽略不完整的行 */ }
     }
-  });
+  };
+  const startChild = () => {
+    buffer = "";
+    child = spawn("powershell", ["-NoProfile", "-NonInteractive", "-Command", SCRIPT], { stdio: ["ignore", "pipe", "ignore"], windowsHide: true, env });
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", onData);
+  };
+  startChild();
+  // 看门狗（lc5）：监测子进程偶尔卡在 WMI 查询上、不再输出。超过 4 个采样周期没有输出就重启它，并记录漏采时段；
+  // 漏采时段内没有样本，disturbance() 按“无法判断”处理（视为受干扰），不能当作未受干扰。
+  const watchdog = setInterval(() => {
+    if (Date.now() - lastOutput < intervalSec * 4000) return;
+    stalls.push({ from: lastOutput, restartedAt: Date.now() });
+    log(`负载监测 ${Math.round((Date.now() - lastOutput) / 1000)} s 没有输出，重启监测进程`);
+    try { child.kill(); } catch { /* 已退出 */ }
+    lastOutput = Date.now();
+    startChild();
+  }, intervalSec * 1000);
   const pids = new Set();
   const writePids = () => writeFileSync(pidFile, [...pids].join("\n"));
   return {
@@ -90,8 +109,12 @@ export function startLoadMonitor({ intervalSec = 5, threshold = 10, log = () => 
     addOwnPid(pid) { pids.add(pid); writePids(); },
     removeOwnPid(pid) { pids.delete(pid); writePids(); },
     /** [from, to] 期间（毫秒时间戳）是否受外部负载干扰：连续两个采样超过阈值。 */
+    stalls,
     disturbance(from, to) {
       const within = samples.filter((s) => s.at >= from && s.at <= to + intervalSec * 1000);
+      // 段内有超过 3 个采样周期的空档（监测漏采）：无法判断是否受干扰，按受干扰处理（重测）。
+      const edges = [from, ...within.map((s) => s.at), to];
+      for (let i = 1; i < edges.length; i++) if (edges[i] - edges[i - 1] > intervalSec * 3000 + 2000) return { disturbed: true, noSamples: true, samples: within };
       for (let i = 1; i < within.length; i++) {
         if (within[i - 1].externalCpu > threshold && within[i].externalCpu > threshold) return { disturbed: true, samples: within };
       }
@@ -113,7 +136,7 @@ export function startLoadMonitor({ intervalSec = 5, threshold = 10, log = () => 
         minFreeMiB: within.length ? Math.min(...within.map((s) => s.freeMiB)) : null
       };
     },
-    stop() { try { child.kill(); } catch { /* 已退出 */ } try { rmSync(pidFile, { force: true }); } catch { /* 忽略 */ } }
+    stop() { clearInterval(watchdog); try { child.kill(); } catch { /* 已退出 */ } try { rmSync(pidFile, { force: true }); } catch { /* 忽略 */ } }
   };
 }
 
