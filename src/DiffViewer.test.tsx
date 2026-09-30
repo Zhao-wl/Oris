@@ -111,6 +111,23 @@ describe("DiffViewer 已缓存文件切换", () => {
     expect(editors()[1].state.selection.main.head).toBe(docA.hunks[1].fromB);
   });
 
+  it("反复切换文件时文档样式表不增长（固定主题只创建一次）", () => {
+    const ruleCount = () => {
+      let rules = 0;
+      for (const sheet of [...document.styleSheets, ...(document.adoptedStyleSheets ?? [])]) { try { rules += sheet.cssRules.length; } catch { /* 跨域样式表 */ } }
+      return rules;
+    };
+    render(fileA, docA, "repo:unstaged:a", null);
+    render(fileB, docB, "repo:unstaged:b", null);
+    const before = ruleCount();
+    expect(before).toBeGreaterThan(0);
+    for (let i = 0; i < 10; i++) {
+      render(fileA, docA, "repo:unstaged:a", null);
+      render(fileB, docB, "repo:unstaged:b", null);
+    }
+    expect(ruleCount()).toBe(before);
+  });
+
   it("概览轨道：标记整层重建、点击由标记层委托，跳到对应的块；切换文件后指向新文件的块", async () => {
     // jsdom 没有布局：给轨道一个高度，每块才有各自的标记
     const clientHeight = Object.getOwnPropertyDescriptor(Element.prototype, "clientHeight")!;

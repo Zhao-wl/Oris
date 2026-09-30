@@ -82,6 +82,16 @@ interface EditorPool {
   unified?: EditorView;
 }
 
+/**
+ * 阅读器的固定主题只创建一次（lc5）：EditorView.theme 每次调用都会生成新的作用域类名，并向文档样式表追加一组规则。
+ * 原先写在切换文件时重跑的 effect 里，每切换一次文件样式表就多 3 条规则、永不回收，长时间使用后每次样式重算都越来越慢。
+ */
+const DIFF_EDITOR_THEME = EditorView.theme({
+  "&": { height: "100%" },
+  ".cm-scroller": { fontFamily: "JetBrains Mono, Cascadia Code, SFMono-Regular, Consolas, monospace" },
+  ".cm-content": { caretColor: "transparent" }
+});
+
 /** 与 EditorState 默认的换行规则相同（`\r\n`、`\r`、`\n`），先得到 Text 以便在建状态之前算好装饰。 */
 function textOf(value: string) {
   return Text.of(value.split(/\r\n?|\n/));
@@ -2117,11 +2127,7 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
           return true;
         }
       }),
-      EditorView.theme({
-        "&": { height: "100%" },
-        ".cm-scroller": { fontFamily: "JetBrains Mono, Cascadia Code, SFMono-Regular, Consolas, monospace" },
-        ".cm-content": { caretColor: "transparent" }
-      }),
+      DIFF_EDITOR_THEME,
       ...(wrap ? [EditorView.lineWrapping] : []),
       // 字号由宿主元素上的 --diff-font-size 决定（见下方 useLayoutEffect），不放进编辑器主题。
       ...(appearance.current.scheme
