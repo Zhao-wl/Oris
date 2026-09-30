@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type JSX, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
+import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type JSX, type ReactNode, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
 import type { CompareScope, ContentUnchanged, FileChange } from "./types";
 import { rowActions } from "./operations-model";
 import PathText from "./PathText";
@@ -20,12 +20,31 @@ export interface FileActions {
   /** 选择变化；focus 为需要在 diff 中显示的文件（null 表示保持当前显示）。 */
   onSelection(pathIds: string[], focus: FileChange | null): void;
   onAction(action: FileAction, files: FileChange[]): void;
+  /** 在资源管理器中打开（`/` 分隔的仓库相对路径）；不提供时菜单不显示该项。只读，不受写入口状态限制。 */
+  onReveal?(relative: string): void;
 }
 
 interface ActionsContextValue extends FileActions {
   selectedPathId: string | null;
   clickRow(file: FileChange, modifiers: { toggle: boolean; range: boolean }): void;
   openMenu(file: FileChange, x: number, y: number): void;
+  openDirectoryMenu(path: string, x: number, y: number): void;
+}
+
+type MenuState = { file: FileChange; x: number; y: number; targets: string[] } | { directory: string; x: number; y: number };
+
+/** 目录行的右键 / 键盘菜单入口；只有提供了 onReveal 时才有菜单。 */
+function directoryMenuHandlers(actions: ActionsContextValue | null, path: string) {
+  if (!actions?.onReveal) return {};
+  return {
+    onContextMenu: (event: ReactMouseEvent) => { event.preventDefault(); actions.openDirectoryMenu(path, event.clientX, event.clientY); },
+    onKeyDown: (event: ReactKeyboardEvent<HTMLElement>) => {
+      if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+      event.preventDefault();
+      const rect = event.currentTarget.getBoundingClientRect();
+      actions.openDirectoryMenu(path, rect.left + 24, rect.bottom);
+    }
+  };
 }
 
 const ActionsContext = createContext<ActionsContextValue | null>(null);
@@ -126,17 +145,9 @@ function FileButton({ file, selectedPathId, onSelect, depth = 0, showPath = fals
  * 右键菜单（丢弃只在这里提供）：右键点在已选中的文件上时作用于全部选中项（批量）；点在未选中的文件上时先单选该文件。
  * 暂存 / 取消暂存作用于其中的普通文件，冲突文件另有“标记已解决”；有任一文件不能丢弃时“丢弃…”不可用并说明原因。
  */
-function FileMenu({ menu, files, onClose }: { menu: { file: FileChange; x: number; y: number; targets: string[] }; files: FileChange[]; onClose(): void }) {
-  const actions = useContext(ActionsContext)!;
+function MenuShell({ x, y, label, onClose, children }: { x: number; y: number; label: string; onClose(): void; children: ReactNode }) {
   const host = useRef<HTMLDivElement>(null);
-  const position = useMenuPosition(host, menu.x, menu.y);
-  const picked = files.filter((file) => menu.targets.includes(file.pathId));
-  const targets = picked.length ? picked : [menu.file];
-  const regular = targets.filter((file) => file.status !== "conflicted");
-  const conflicts = targets.filter((file) => file.status === "conflicted");
-  const blocked = targets.map((file) => rowActions(actions.scope, file)).find((a) => !a.discard)?.discardBlocked ?? null;
-  const pending = targets.some((file) => file.pending) ? "等待 Git 确认上一次操作" : null;
-  const disabled = actions.disabledReason ?? pending;
+  const position = useMenuPosition(host, x, y);
   useEffect(() => {
     host.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
     const close = (event: Event) => { if (!host.current?.contains(event.target as Node)) onClose(); };
@@ -145,17 +156,39 @@ function FileMenu({ menu, files, onClose }: { menu: { file: FileChange; x: numbe
     window.addEventListener("keydown", key, true);
     return () => { window.removeEventListener("pointerdown", close, true); window.removeEventListener("keydown", key, true); };
   }, [onClose]);
+  return <div ref={host} className="file-menu" role="menu" style={position} aria-label={label}>{children}</div>;
+}
+
+function RevealItem({ relative, onClose }: { relative: string; onClose(): void }) {
+  const actions = useContext(ActionsContext)!;
+  return <button type="button" role="menuitem" title={relative || undefined} onClick={() => { onClose(); actions.onReveal!(relative); }}>在资源管理器中打开</button>;
+}
+
+function DirectoryMenu({ menu, onClose }: { menu: { directory: string; x: number; y: number }; onClose(): void }) {
+  return <MenuShell x={menu.x} y={menu.y} label="目录操作" onClose={onClose}><RevealItem relative={menu.directory} onClose={onClose}/></MenuShell>;
+}
+
+function FileMenu({ menu, files, onClose }: { menu: { file: FileChange; x: number; y: number; targets: string[] }; files: FileChange[]; onClose(): void }) {
+  const actions = useContext(ActionsContext)!;
+  const picked = files.filter((file) => menu.targets.includes(file.pathId));
+  const targets = picked.length ? picked : [menu.file];
+  const regular = targets.filter((file) => file.status !== "conflicted");
+  const conflicts = targets.filter((file) => file.status === "conflicted");
+  const blocked = targets.map((file) => rowActions(actions.scope, file)).find((a) => !a.discard)?.discardBlocked ?? null;
+  const pending = targets.some((file) => file.pending) ? "等待 Git 确认上一次操作" : null;
+  const disabled = actions.disabledReason ?? pending;
   const act = (action: FileAction, list: FileChange[]) => { onClose(); actions.onAction(action, list); };
   const count = (list: FileChange[]) => (targets.length > 1 ? `（${list.length} 个文件）` : "");
   const stagingLabel = actions.scope === "staged" ? "取消暂存" : "暂存";
   const stagingReason = actions.scope === "all" ? "“全部”范围不区分暂存区，请在“未暂存”范围暂存" : !regular.length ? "所选都是冲突文件，请使用“标记已解决”" : null;
-  return <div ref={host} className="file-menu" role="menu" style={position} aria-label="文件操作">
+  return <MenuShell x={menu.x} y={menu.y} label="文件操作" onClose={onClose}>
     {targets.length > 1 && <span className="file-menu-note">已选中 {targets.length} 个文件</span>}
     <button type="button" role="menuitem" disabled={!!disabled || !!stagingReason} title={disabled ?? stagingReason ?? undefined} onClick={() => act(actions.scope === "staged" ? "unstage" : "stage", regular)}>{stagingLabel}{count(regular)}</button>
     {conflicts.length > 0 && <button type="button" role="menuitem" disabled={!!disabled} title={disabled ?? undefined} onClick={() => act("markResolved", conflicts)}>标记已解决{count(conflicts)}</button>}
     {actions.scope !== "staged" && <button type="button" role="menuitem" className="danger" disabled={!!disabled || !!blocked} title={disabled ?? blocked ?? "丢弃前会备份，可撤销"} onClick={() => act("discard", targets)}>丢弃…{count(targets)}</button>}
     {actions.scope === "staged" && <span className="file-menu-note">已暂存范围不提供丢弃，请先取消暂存</span>}
-  </div>;
+    {actions.onReveal && <><hr className="file-menu-separator"/><RevealItem relative={menu.file.displayPath} onClose={onClose}/></>}
+  </MenuShell>;
 }
 
 function buildTree(files: FileChange[]): DirectoryNode {
@@ -184,6 +217,7 @@ function Directory({ node, depth, selectedPathId, onSelect, statsPending = false
   onSelect(file: FileChange): void;
   statsPending?: boolean;
 }) {
+  const actions = useContext(ActionsContext);
   const directories = [...node.directories.values()].sort((a, b) => a.name.localeCompare(b.name));
   const files = [...node.files].sort(compareFiles);
   const content = (
@@ -206,7 +240,7 @@ function Directory({ node, depth, selectedPathId, onSelect, statsPending = false
   if (!node.name) return content;
   return (
     <details className="tree-directory" open>
-      <summary style={{ "--tree-depth": depth - 1 } as CSSProperties}>
+      <summary style={{ "--tree-depth": depth - 1 } as CSSProperties} {...directoryMenuHandlers(actions, node.path)}>
         <span className="directory-chevron">›</span>
         <span className="directory-icon">▱</span>
         <PathText path={node.name} title={node.path}/>
@@ -250,7 +284,7 @@ function UnchangedFold({ files, selectedPathId, mode, onSelect }: Omit<Props, "s
 export default function FileTree({ files, selectedPathId, mode, statsPending = false, onSelect, actions }: Props) {
   const changed = useMemo(() => files.filter((file) => !file.contentUnchanged), [files]);
   const unchanged = useMemo(() => files.filter((file) => file.contentUnchanged), [files]);
-  const [menu, setMenu] = useState<{ file: FileChange; x: number; y: number; targets: string[] } | null>(null);
+  const [menu, setMenu] = useState<MenuState | null>(null);
   const anchor = useRef<string | null>(null);
   // 最新的选择（含尚未重渲染的连续点击），每次渲染按 props 重置。
   const latest = useRef<string[]>([]);
@@ -298,7 +332,8 @@ export default function FileTree({ files, selectedPathId, mode, statsPending = f
       if (file.pathId !== focused.current || current.length > 1) clickRow(file, { toggle: false, range: false });
       setMenu({ file, x, y, targets: [file.pathId] });
     };
-    return { ...actions, selectedPathId, clickRow, openMenu };
+    const openDirectoryMenu = (directory: string, x: number, y: number) => setMenu({ directory, x, y });
+    return { ...actions, selectedPathId, clickRow, openMenu, openDirectoryMenu };
   }, [actions, files, order, selectedPathId]);
   const closeMenu = useMemo(() => () => setMenu(null), []);
   const list = !unchanged.length
@@ -307,10 +342,11 @@ export default function FileTree({ files, selectedPathId, mode, statsPending = f
       <FileList files={changed} selectedPathId={selectedPathId} mode={mode} statsPending={statsPending} onSelect={onSelect} />
       <UnchangedFold files={unchanged} selectedPathId={selectedPathId} mode={mode} onSelect={onSelect} />
     </>;
-  return <ActionsContext.Provider value={context}>{list}{menu && context && <FileMenu menu={menu} files={files} onClose={closeMenu}/>}</ActionsContext.Provider>;
+  return <ActionsContext.Provider value={context}>{list}{menu && context && ("directory" in menu ? <DirectoryMenu menu={menu} onClose={closeMenu}/> : <FileMenu menu={menu} files={files} onClose={closeMenu}/>)}</ActionsContext.Provider>;
 }
 
 function FileList({ files, selectedPathId, mode, statsPending = false, onSelect }: Props) {
+  const actions = useContext(ActionsContext);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const sorted = useMemo(() => [...files].sort(compareFiles), [files]);
   const virtual = files.length > VIRTUAL_THRESHOLD;
@@ -334,7 +370,7 @@ function FileList({ files, selectedPathId, mode, statsPending = false, onSelect 
       const row = treeRows[index];
       if (row.kind === "file") return <FileButton key={row.file.pathId} file={row.file} selectedPathId={selectedPathId} onSelect={onSelect} depth={row.depth + 1} statsPending={statsPending} style={style} />;
       const open = !collapsed.has(row.node.path);
-      return <div key={`dir:${row.node.path}`} role="treeitem" aria-expanded={open} className={`tree-row tree-directory-row${open ? " open" : ""}`} style={{ ...style, "--tree-depth": row.depth } as CSSProperties} onClick={() => toggle(row.node.path)}>
+      return <div key={`dir:${row.node.path}`} role="treeitem" aria-expanded={open} className={`tree-row tree-directory-row${open ? " open" : ""}`} style={{ ...style, "--tree-depth": row.depth } as CSSProperties} onClick={() => toggle(row.node.path)} {...directoryMenuHandlers(actions, row.node.path)}>
         <span className="directory-chevron">›</span><span className="directory-icon">▱</span><PathText path={row.node.name} title={row.node.path}/>
       </div>;
     }} />;

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, 
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { activateRepository, cancelContentRead, closeRepository, loadSnapshot, openRepository, readContentPair, refreshRepository, removeSnapshot, repositoryDetails, saveSnapshot } from "./api";
+import { activateRepository, cancelContentRead, closeRepository, loadSnapshot, openRepository, readContentPair, refreshRepository, removeSnapshot, repositoryDetails, revealInFileManager, saveSnapshot } from "./api";
 import { errorText } from "./error-message";
 import { calculateDiff } from "./diff";
 import { availableDiffModes, resolveDiffPresentation, type DiffPresentation } from "./diff-presentation";
@@ -1121,8 +1121,9 @@ export default function App() {
     disabledReason: writeBlocked,
     selection: multiSelection,
     onSelection: (pathIds, focus) => { setMultiSelection(pathIds.length > 1 ? new Set(pathIds) : new Set()); if (focus) userSelectRef.current(focus); },
-    onAction: (action, files) => onFileActionRef.current(action, files)
-  }), [scope, writeBlocked, multiSelection]);
+    onAction: (action, files) => onFileActionRef.current(action, files),
+    onReveal: backendRepoId ? (relative) => { revealInFileManager(backendRepoId, relative).catch((reason) => setNotice(`无法在资源管理器中打开：${errorText(reason)}`)); } : undefined
+  }), [scope, writeBlocked, multiSelection, backendRepoId]);
   const onFileActionRef = useRef(onFileAction);
   onFileActionRef.current = onFileAction;
   const selectedCount = multiSelection.size > 1 ? visibleFiles.filter((file) => multiSelection.has(file.pathId)).length : 0;

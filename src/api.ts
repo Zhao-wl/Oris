@@ -71,3 +71,6 @@ export interface GitValidation {
 }
 /** 设置窗口修改 Git 路径时校验（执行一次 `git --version`，不访问任何仓库）。null 表示自动发现。 */
 export const validateGit = (executable: string | null) => invoke<GitValidation>("validate_git", { executable });
+
+/** 在系统文件管理器中显示工作区内的文件（选中）或目录（打开）；relative 为 `/` 分隔的仓库相对路径，已删除时打开最近的上级目录。 */
+export const revealInFileManager = (repoId: string, relative: string) => invoke<void>("reveal_in_file_manager", { repoId, relative });

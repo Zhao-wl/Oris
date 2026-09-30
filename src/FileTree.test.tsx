@@ -91,3 +91,30 @@ it("shows a placeholder, never 0, while background stats are pending", async () 
   expect([...host.querySelectorAll(".line-stat")].map((node) => node.textContent)).toEqual(["+3 −0"]);
   await act(async () => root.unmount());
 });
+
+it("offers “在资源管理器中打开” on file and directory context menus, even while writes are blocked", async () => {
+  const root = createRoot(host);
+  const files = make(2);
+  const onReveal = vi.fn();
+  const actions = { scope: "unstaged" as const, disabledReason: "其他写操作进行中", selection: new Set<string>(), onSelection: () => {}, onAction: () => {}, onReveal };
+  const menuOn = async (element: Element) => { await act(async () => { element.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 10, clientY: 10 })); }); };
+  const reveal = () => [...host.querySelectorAll<HTMLButtonElement>(".file-menu button")].find((b) => b.textContent === "在资源管理器中打开");
+  await act(async () => root.render(<FileTree files={files} selectedPathId={null} mode="tree" onSelect={() => {}} actions={actions} />));
+  await menuOn(host.querySelector(`[aria-label="${files[0].displayPath}"]`)!);
+  expect(reveal()?.disabled).toBe(false);
+  await act(async () => reveal()!.click());
+  expect(onReveal).toHaveBeenLastCalledWith(files[0].displayPath);
+  expect(host.querySelector(".file-menu")).toBeNull();
+  await menuOn(host.querySelector(".tree-directory summary")!);
+  expect(host.querySelectorAll(".file-menu button").length).toBe(1);
+  await act(async () => reveal()!.click());
+  expect(onReveal).toHaveBeenLastCalledWith("dir0");
+  // 未提供 onReveal 时：文件菜单不含该项，目录没有菜单。
+  await act(async () => root.render(<FileTree files={files} selectedPathId={null} mode="tree" onSelect={() => {}} actions={{ ...actions, onReveal: undefined }} />));
+  await menuOn(host.querySelector(".tree-directory summary")!);
+  expect(host.querySelector(".file-menu")).toBeNull();
+  await menuOn(host.querySelector(`[aria-label="${files[0].displayPath}"]`)!);
+  expect(host.querySelector(".file-menu")).not.toBeNull();
+  expect(reveal()).toBeUndefined();
+  await act(async () => root.unmount());
+});

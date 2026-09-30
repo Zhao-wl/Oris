@@ -280,6 +280,7 @@ button:disabled { opacity:.45; cursor:default; }
 .file-menu button { border:0; background:transparent; text-align:left; padding:5px 10px; }
 .file-menu button:not(:disabled):hover, .file-menu button:focus-visible { background:var(--hover); }
 .file-menu-note { padding:5px 10px; color:var(--dim); font-size:11px; }
+.file-menu-separator { margin:4px 0; border:0; border-top:1px solid var(--border); }
 .file-menu button.danger:not(:disabled):hover { color:var(--error, #ff7b72); }
 
 .sidebar>footer { display:flex; align-items:center; gap:6px; min-height:33px; }
