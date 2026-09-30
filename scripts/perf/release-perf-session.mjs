@@ -15,6 +15,7 @@ const exe = path.resolve(option("exe"));
 const runId = option("run-id");
 if (!runId) throw new Error("缺少 --run-id");
 const pause = Number(option("pause", 30));
+const preCheck = Number(option("pre-check", 0));
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const probe = (file) => path.join(projectRoot, "scripts", "perf", file);
 const lRepo = () => { const r = option("l-repo"); if (!r) throw new Error("L 套件需要 --l-repo"); return path.resolve(r); };
@@ -76,6 +77,14 @@ try {
   for (const [index, suite] of suites.entries()) {
     const entry = { suite, attempts: [] };
     session.suites.push(entry);
+    // 套件开始前的负载检查（--pre-check 秒数，默认 0 不做）：只记录空载时段的外部负载，不阻塞。
+    if (preCheck > 0) {
+      const from = Date.now();
+      await new Promise((r) => setTimeout(r, preCheck * 1000));
+      entry.preCheck = monitor.summary(from, Date.now());
+      log(`${suite} 开始前 ${preCheck} s：外部 CPU P50 ${entry.preCheck.externalCpu.p50}% / P95 ${entry.preCheck.externalCpu.p95}%（${entry.preCheck.topExternal.slice(0, 4).map((p) => `${p.name} ${p.maxCpu}%`).join("，")}）`);
+      save();
+    }
     for (let attempt = 0; attempt <= 2; attempt++) {
       const l = label(suite, attempt);
       const def = SUITES[suite](l);
