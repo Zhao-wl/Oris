@@ -190,7 +190,6 @@ try {
       entry.trace.forced = [...forced].sort((x, y) => y[1].ms - x[1].ms).slice(0, 20).map(([key, t]) => ({ key, count: round(t.count / Math.max(1, traceWindows.length)), ms: perSwitch(t.ms) }));
       log("时间线", s.key, JSON.stringify(entry.trace.perSwitchMs.slice(0, 15)));
     }
-    if (cachedOnly) { result.cached[s.key] = entry; log("已缓存", s.key, JSON.stringify(entry.cachedSwitch)); continue; }
     if (profiling) {
       const { profile } = await call("Profiler.stop");
       const byId = new Map(profile.nodes.map((node) => [node.id, node.callFrame]));
@@ -199,6 +198,7 @@ try {
       entry.profileTop = [...self].filter(([key]) => !key.startsWith("(idle)")).sort((x, y) => y[1] - x[1]).slice(0, 25).map(([key, us]) => `${(us / 1000).toFixed(1)} ms ${key}`);
       writeFileSync(path.join(outDir, `${s.key}.cpuprofile`), JSON.stringify(profile));
     }
+    if (cachedOnly) { result.cached[s.key] = entry; log("已缓存", s.key, JSON.stringify(entry.cachedSwitch)); continue; }
     await sleep(800);
     // 开启对齐变化：点击到 alignmentReady === 'true'
     const align = await measure(`${toggle("对齐变化")}.click()`, `document.querySelector('.oris-split-view')?.dataset.alignmentReady === 'true'`, 30000);

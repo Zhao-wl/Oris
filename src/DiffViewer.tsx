@@ -82,13 +82,19 @@ interface EditorPool {
   unified?: EditorView;
 }
 
+/** 与 EditorState 默认的换行规则相同（`\r\n`、`\r`、`\n`），先得到 Text 以便在建状态之前算好装饰。 */
+function textOf(value: string) {
+  return Text.of(value.split(/\r\n?|\n/));
+}
+
 /** 复用已有 EditorView：挂到新的容器并以新文档与扩展替换状态；没有可复用实例时新建。 */
-function reuseOrCreate(existing: EditorView | undefined, parent: HTMLElement, doc: string, extensions: Extension[]) {
+function reuseOrCreate(existing: EditorView | undefined, parent: HTMLElement, doc: string | Text, extensions: Extension[]) {
   if (!existing) return new EditorView({ parent, doc, extensions });
-  parent.append(existing.dom);
+  // 复用的编辑器此时已从页面摘下（上一个控制器 destroy(true)）：先在页面外换入文档，再挂回。
+  // 摘下的滚动容器没有布局框，挂回后 scrollTop / scrollLeft 本来就是 0（WebView2 中实测）；原先挂回后再写 0 不改变结果，
+  // 却会在刚换入的大文档上强制一次同步样式与布局（每个编辑器约 5 ms，块数多时更多，lc5 阶段 3）。
   existing.setState(EditorState.create({ doc, extensions }));
-  existing.scrollDOM.scrollTop = 0;
-  existing.scrollDOM.scrollLeft = 0;
+  parent.append(existing.dom);
   remeasureWhenVisible(existing);
   return existing;
 }
@@ -288,6 +294,18 @@ const hunkHeaderField = StateField.define<DecorationSet>({
   provide: (field) => EditorView.decorations.from(field)
 });
 
+/** 块标题行（V2-05）：放在右侧（并排）或统一视图编辑器中每个差异块的起点之前。 */
+function hunkHeaderDecorations(doc: Text, chunks: readonly Change[], headers: HunkHeaders | null, run: (index: number, action: HunkHeaderAction["action"]) => void) {
+  if (!headers) return Decoration.none;
+  const ranges = chunks.flatMap((chunk, index) => {
+    const item = headers.items[index];
+    if (!item) return [];
+    const pos = Math.min(chunk.fromB, doc.length);
+    return [Decoration.widget({ widget: new HunkHeaderWidget(index, chunks.length, item, headers.actions, headers.disabledReason, run), block: true, side: -1 }).range(doc.lineAt(pos).from)];
+  });
+  return Decoration.set(ranges, true);
+}
+
 const setAlignmentSpacers = StateEffect.define<DecorationSet>();
 const alignmentSpacers = StateField.define<DecorationSet>({
   create: () => Decoration.none,
@@ -395,6 +413,8 @@ function specIndex(specs: readonly AlignmentSpacerSpec[]) {
   return index;
 }
 
+const NO_SPECS: readonly AlignmentSpacerSpec[] = Object.freeze([]);
+
 function specHeight(specs: readonly AlignmentSpacerSpec[], chunkIndex: number, role: AlignmentSpacerSpec["role"]) {
   return specIndex(specs).byRole.get(`${chunkIndex}:${role}`) ?? 0;
 }
@@ -407,8 +427,9 @@ function alignedBoundary(
   edge: "top" | "bottom"
 ) {
   const view = side === "a" ? split.a : split.b;
-  const specs = alignmentLayouts.get(split)?.[side] ?? [];
-  const samePositionOffset = (specIndex(specs).byPos.get(pos) ?? []).reduce((height, spec) => {
+  // 没有对齐间隔时共用同一个空数组：每次新建 [] 会让 specIndex 的缓存全部落空，每次查询都新建两个 Map（每次测量调用 6 × 块数次）。
+  const specs = alignmentLayouts.get(split)?.[side] ?? NO_SPECS;
+  const samePositionOffset = (specIndex(specs).byPos.get(pos) ?? NO_SPECS).reduce((height, spec) => {
     if (spec.pos !== pos || spec.role === "anchor") return height;
     if (spec.chunkIndex < chunkIndex) return height + spec.height;
     if (spec.chunkIndex > chunkIndex) return height;
@@ -712,24 +733,24 @@ function installChangeAlignment(split: SplitView, onGeometryChange: () => void) 
   };
 }
 
-function buildSideDecorations(view: EditorView, chunks: Change[], changes: DiffDocument["changes"], side: DiffSide, highlight: "words" | "lines") {
+export function buildSideDecorations(doc: Text, chunks: Change[], changes: DiffDocument["changes"], side: DiffSide, highlight: "words" | "lines") {
   const ranges: Range<Decoration>[] = [];
   for (const chunk of chunks) {
     const from = side === "a" ? chunk.fromA : chunk.fromB;
     const to = side === "a" ? chunk.toA : chunk.toB;
     if (from === to) continue;
     const tone = sideTone(chunk, side);
-    const firstLine = view.state.doc.lineAt(Math.min(from, view.state.doc.length)).number;
-    const lastPosition = Math.max(from, Math.min(view.state.doc.length, to) - 1);
-    const lastLine = view.state.doc.lineAt(lastPosition).number;
+    const firstLine = doc.lineAt(Math.min(from, doc.length)).number;
+    const lastPosition = Math.max(from, Math.min(doc.length, to) - 1);
+    const lastLine = doc.lineAt(lastPosition).number;
     for (let line = firstLine; line <= lastLine; line += 1) {
-      ranges.push(Decoration.line({ class: `oris-${tone}-line` }).range(view.state.doc.line(line).from));
+      ranges.push(Decoration.line({ class: `oris-${tone}-line` }).range(doc.line(line).from));
     }
   }
   if (highlight === "words") {
     for (const change of changes) {
-      const from = Math.min(view.state.doc.length, side === "a" ? change.fromA : change.fromB);
-      const to = Math.min(view.state.doc.length, side === "a" ? change.toA : change.toB);
+      const from = Math.min(doc.length, side === "a" ? change.fromA : change.fromB);
+      const to = Math.min(doc.length, side === "a" ? change.toA : change.toB);
       if (to > from) ranges.push(Decoration.mark({ class: "oris-changed-text" }).range(from, to));
     }
   }
@@ -1346,12 +1367,18 @@ function installSplitVisuals(split: SplitView, navigate: (index: number) => void
   };
   const measure = () => {
     measureFrame = 0;
+    const layouts = alignmentLayouts.get(split);
+    // 连接带几何与左右同步用的边界在同一轮中算出：同一块的上、下边界只查询一次（原先边界表又把每块的上下边界重算一遍）。
+    const boundaries: SplitView["boundaries"] = [{ a: boundaryY(split.a, 0), b: boundaryY(split.b, 0) }];
     geometry = split.chunks.map((chunk, index) => {
       const aTop = alignedBoundary(split, "a", chunk.fromA, index, "top");
       const bTop = alignedBoundary(split, "b", chunk.fromB, index, "top");
-      const aBottom = chunk.fromA === chunk.toA ? aTop : alignedBoundary(split, "a", chunk.toA, index, "bottom");
-      const bBottom = chunk.fromB === chunk.toB ? bTop : alignedBoundary(split, "b", chunk.toB, index, "bottom");
-      const layouts = alignmentLayouts.get(split);
+      // 一侧为空（纯新增 / 纯删除）时连接带的下边与上边重合，但边界表仍取该位置的“下边”（含块下方的间隔）
+      const aEdge = alignedBoundary(split, "a", chunk.toA, index, "bottom");
+      const bEdge = alignedBoundary(split, "b", chunk.toB, index, "bottom");
+      const aBottom = chunk.fromA === chunk.toA ? aTop : aEdge;
+      const bBottom = chunk.fromB === chunk.toB ? bTop : bEdge;
+      boundaries.push({ a: aTop, b: bTop }, { a: aEdge, b: bEdge });
       // 每块最多一个下边间隔
       const bodyHeight = (side: DiffSide) => layouts ? specHeight(layouts[side], index, "body") : 0;
       return {
@@ -1366,17 +1393,7 @@ function installSplitVisuals(split: SplitView, navigate: (index: number) => void
         bPaintBottom: chunk.fromB === chunk.toB ? bBottom + Math.max(1, bodyHeight("b")) : bBottom
       };
     });
-    split.boundaries = [{ a: boundaryY(split.a, 0), b: boundaryY(split.b, 0) }];
-    split.chunks.forEach((chunk, index) => {
-      split.boundaries.push({
-        a: alignedBoundary(split, "a", chunk.fromA, index, "top"),
-        b: alignedBoundary(split, "b", chunk.fromB, index, "top")
-      });
-      split.boundaries.push({
-        a: alignedBoundary(split, "a", chunk.toA, index, "bottom"),
-        b: alignedBoundary(split, "b", chunk.toB, index, "bottom")
-      });
-    });
+    split.boundaries = boundaries;
     split.boundaries.push({
       a: boundaryY(split.a, split.a.state.doc.length),
       b: boundaryY(split.b, split.b.state.doc.length)
@@ -1747,7 +1764,8 @@ function createSplitView(
   initialRatio: number,
   onLayoutChange: (ratio: number, leftWidth: number) => void,
   onPositionChange: (position: number, total: number) => void,
-  pool: EditorPool = {}
+  pool: EditorPool = {},
+  hunkHeaders: (doc: Text, chunks: readonly Change[]) => DecorationSet = () => Decoration.none
 ): SplitController {
   const root = document.createElement("div");
   root.className = "oris-split-view";
@@ -1774,14 +1792,16 @@ function createSplitView(
   root.dataset.leftLength = String(left.length);
   root.dataset.rightLength = String(right.length);
   root.dataset.hunkCount = String(chunks.length);
-  const a = reuseOrCreate(pool.a, paneA, left, shared);
-  const b = reuseOrCreate(pool.b, paneB, right, shared);
+  // 差异装饰随状态一起创建：换入文档后再 appendConfig 会让每个编辑器多一次重新配置与派发（每次派发都会读取 DOM 选区、强制布局）。
+  const docA = textOf(left);
+  const docB = textOf(right);
+  // 右侧的块标题行也随状态创建：挂载后再派发一次会多一轮 DOM 更新、选区读取与重新对齐。
+  const a = reuseOrCreate(pool.a, paneA, docA, [...shared, hunkHeaderField, EditorView.decorations.of(buildSideDecorations(docA, chunks, diffDocument.changes, "a", highlight))]);
+  const b = reuseOrCreate(pool.b, paneB, docB, [...shared, hunkHeaderField.init(() => hunkHeaders(docB, chunks)), EditorView.decorations.of(buildSideDecorations(docB, chunks, diffDocument.changes, "b", highlight))]);
   pool.a = a;
   pool.b = b;
   a.dom.id = "oris-left-editor";
   b.dom.id = "oris-right-editor";
-  a.dispatch({ effects: StateEffect.appendConfig.of(EditorView.decorations.of(buildSideDecorations(a, chunks, diffDocument.changes, "a", highlight))) });
-  b.dispatch({ effects: StateEffect.appendConfig.of(EditorView.decorations.of(buildSideDecorations(b, chunks, diffDocument.changes, "b", highlight))) });
   const split: SplitView = {
     dom: root,
     editorRoot,
@@ -1890,14 +1910,12 @@ function createSingleView(
   else root.append(pane, rail.rail);
   parent.append(root);
 
-  const view = reuseOrCreate(pool.single, pane, text, shared);
+  const doc = textOf(text);
+  const lineClass = presentation.tone === "inserted" ? "oris-inserted-line" : "oris-deleted-line";
+  const lineDecorations = Array.from({ length: doc.lines }, (_, index) => Decoration.line({ class: lineClass }).range(doc.line(index + 1).from));
+  const view = reuseOrCreate(pool.single, pane, doc, [...shared, hunkHeaderField, EditorView.decorations.of(Decoration.set(lineDecorations))]);
   pool.single = view;
   view.dom.id = "oris-single-editor";
-  const lineClass = presentation.tone === "inserted" ? "oris-inserted-line" : "oris-deleted-line";
-  const lineDecorations = Array.from({ length: view.state.doc.lines }, (_, index) =>
-    Decoration.line({ class: lineClass }).range(view.state.doc.line(index + 1).from)
-  );
-  view.dispatch({ effects: StateEffect.appendConfig.of(EditorView.decorations.of(Decoration.set(lineDecorations))) });
 
   if (presentation.empty) {
     const state = document.createElement("div");
@@ -1981,29 +1999,27 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
   hunkRef.current = hunkHeaders;
   /** 把块标题行放到右侧（并排）或统一视图编辑器中每个差异块的起点之前。 */
   const applyHunkHeaders = useRef(() => {});
+  const runHunkAction = useRef((index: number, action: HunkHeaderAction["action"]) => hunkRef.current?.onAction(index, action)).current;
   applyHunkHeaders.current = () => {
     const current = runtime.current;
     const view = current.split?.view.b ?? current.unified;
     if (!view) return;
     const headers = hunkRef.current;
+    // 并排视图的标题行随右侧编辑器的状态一起创建（createSplitView）；标题行没有变化时不再派发。
+    if (current.split && current.appliedHunkHeaders === headers) return;
     const chunks = current.split?.view.chunks ?? (current.unified ? getChunks(current.unified.state)?.chunks ?? [] : []);
-    const run = (index: number, action: HunkHeaderAction["action"]) => hunkRef.current?.onAction(index, action);
-    const ranges = headers ? chunks.flatMap((chunk, index) => {
-      const item = headers.items[index];
-      if (!item) return [];
-      const pos = Math.min(chunk.fromB, view.state.doc.length);
-      return [Decoration.widget({ widget: new HunkHeaderWidget(index, chunks.length, item, headers.actions, headers.disabledReason, run), block: true, side: -1 }).range(view.state.doc.lineAt(pos).from)];
-    }) : [];
+    const decorations = hunkHeaderDecorations(view.state.doc, chunks, headers, runHunkAction);
+    current.appliedHunkHeaders = headers;
     // 没有标题行、编辑器里也没有时不派发（每次派发都会让 CodeMirror 读取 DOM 选区）。
-    if (!ranges.length && view.state.field(hunkHeaderField, false)?.size === 0) return;
-    view.dispatch({ effects: setHunkHeaders.of(Decoration.set(ranges, true)) });
+    if (!decorations.size && view.state.field(hunkHeaderField, false)?.size === 0) return;
+    view.dispatch({ effects: setHunkHeaders.of(decorations) });
     current.split?.refreshLayout();
   };
   // 字号与配色直接订阅设置与当前方案（V2-06）：外观切换只重新渲染阅读器，不重新渲染整个 App。
   // 当前配色方案为 null（尚未加载）时沿用 V1 的 one-dark。
   const fontSize = useSettings(settings, (value) => value.appearance.fontSize);
   const scheme = useStore(activeScheme, (value) => value);
-  const runtime = useRef<{ split?: SplitController; single?: SingleController; unified?: EditorView; position: number }>({ position: 0 });
+  const runtime = useRef<{ split?: SplitController; single?: SingleController; unified?: EditorView; position: number; appliedHunkHeaders?: HunkHeaders | null }>({ position: 0 });
   const splitRatio = useRef(0.5);
   /** 按阅读键保存的阅读位置（最近 32 个），切回同一文件时恢复。 */
   const savedViewports = useRef(new Map<string, { line: number; text: string; offset: number; left: number }[]>());
@@ -2077,7 +2093,6 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
       // 统一视图折叠占位（@codemirror/merge 的 CollapseWidget）的中文文字，与并排视图一致。
       EditorState.phrases.of({ "$ unchanged lines": "展开 $ 行未变化内容" }),
       alignmentSpacers,
-      hunkHeaderField,
       gutterWidthVar,
       collapsedRanges,
       searchHighlights,
@@ -2129,12 +2144,14 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
           onSplitLayoutChange(ratio, leftWidth);
         },
         onPositionChange,
-        pool.current
+        pool.current,
+        (doc, chunks) => hunkHeaderDecorations(doc, chunks, hunkRef.current, runHunkAction)
       );
-      runtime.current = { split, position: 0 };
+      runtime.current = { split, position: 0, appliedHunkHeaders: hunkRef.current };
     } else {
       unified = reuseOrCreate(pool.current.unified, host.current, right, [
         ...shared,
+        hunkHeaderField,
         unifiedMergeView({
           original: left,
           highlightChanges: highlight === "words",
