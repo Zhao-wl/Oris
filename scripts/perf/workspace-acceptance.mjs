@@ -2,16 +2,18 @@
 // 嵌套仓库说明、历史中的指针跳转、共用 watcher、重启恢复、移除整个工作区。
 // 只经 CDP 操作本轮启动并核验过的 Oris 实例（PID + 完整路径 + 主窗口句柄 + 端口归属），不调用任何窗口激活 API；
 // 点击是 CDP 注入的页面事件，不是真实鼠标、键盘或系统焦点。Git 进程由 GIT_TRACE2_EVENT 逐个记录（argv、起止时间）。
-// 用法：node scripts/perf/workspace-acceptance.mjs --exe <oris.exe> [--port 9981] [--only local|real] [--real <工作区路径>] [--keep]
+// 用法：node scripts/perf/workspace-acceptance.mjs --exe <oris.exe> [--port 9981] [--only local|real|perf] [--real <工作区路径>] [--iterations 30] [--keep]
 //   --only local（默认）：在 %TEMP%\oris-gui 下生成夹具，界面中只做暂存 / 取消暂存这一类可逆写操作。
 //   --only real：只读冒烟真实工作区（打开、切换、浏览、打开选择器），前后比对各成员的 refs / index / HEAD / config 与 status。
+//   --only perf：V2 验收 §3 的工作区预算与 §4 内存（S 数据集，父仓库 + 7 个子模块共 8 个成员）。方法与 gui-probe core 相同：
+//     CDP 页面内“动作 → 断言首次成立 → 下一帧”，n = --iterations；普通项目与工作区交替添加，差值取两者 P50 / P95 之差。
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { GUI_ROOT, assertOutside, diffFingerprints, git, repositoryFingerprint } from "./gui-fixtures.mjs";
-import { PAGE_HELPERS, killOris, launchOris, sha256File, sleep } from "./gui-lib.mjs";
+import { GUI_ROOT, assertOutside, diffFingerprints, git, prepareCoreRepos, repositoryFingerprint } from "./gui-fixtures.mjs";
+import { PAGE_HELPERS, killOris, launchOris, percentile, processTreeDetailed, round, sha256File, sleep, summarize } from "./gui-lib.mjs";
 
 const args = process.argv.slice(2);
 const option = (name, fallback) => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : fallback; };
@@ -61,12 +63,12 @@ const H = String.raw`
   return true;
 })()`;
 
-async function start(profile, extraEnv = {}) {
+async function start(profile, extraEnv = {}, height = 960) {
   const app = await launchOris({ exe, profileDir: path.join(runDir, "profiles", profile), port: port++, log, extraEnv: { ORIS_APP_CACHE_DIR: path.join(runDir, `${profile}-cache`), ...extraEnv } });
   const { call, evaluate } = app.cdp;
   await call("Runtime.enable"); await call("Page.enable");
   await call("Page.addScriptToEvaluateOnNewDocument", { source: PAGE_HELPERS + ";" + H });
-  await call("Emulation.setDeviceMetricsOverride", { width: 1440, height: 960, deviceScaleFactor: 1, mobile: false });
+  await call("Emulation.setDeviceMetricsOverride", { width: 1440, height, deviceScaleFactor: 1, mobile: false });
   await evaluate(PAGE_HELPERS); await evaluate(H);
   log(`已启动 PID ${app.pid}，核验 ${q(app.identity)}`);
   const waitUntil = (expr, timeout = 30000) => evaluate(`window.__op.waitUntil(() => (${expr}), ${timeout})`, timeout + 5000).then((r) => { if (!r.ok) throw new Error(`等待失败：${expr}`); return r; });
@@ -374,9 +376,151 @@ async function realSuite() {
   check("真实工作区：各成员 refs / index / HEAD / config / status 前后一致", changed.length === 0, changed.map((c) => c.repo));
 }
 
+// ================================ 计时与内存（V2 验收 §3 / §4） ================================
+/** S 数据集：普通项目 = S1 副本；工作区 = 另一份 S1 副本（父仓库）+ S2–S8 副本作为 7 个子模块（共 8 个成员）。 */
+async function perfFixture() {
+  const repos = await prepareCoreRepos(path.join(runDir, "perf-repos"), 8);
+  const normal = repos[0].path;
+  const parent = path.join(runDir, "ws-S");
+  cpSync(path.join(GUI_ROOT, "pristine", "S1"), parent, { recursive: true, preserveTimestamps: true });
+  mkdirSync(path.join(parent, "subs"), { recursive: true });
+  const members = [];
+  for (let i = 1; i < repos.length; i++) {
+    const name = `m${i + 1}`;
+    const dir = path.join(parent, "subs", name);
+    renameSync(repos[i].path, dir);
+    members.push({ name, dir, head: git(dir, ["rev-parse", "HEAD"]) });
+  }
+  writeFileSync(path.join(parent, ".gitmodules"), members.map((m) => `[submodule "${m.name}"]\n\tpath = subs/${m.name}\n\turl = ./subs/${m.name}\n`).join(""));
+  // S 数据集的 index 含冲突条目，不能用 git commit；在临时 index 上从 HEAD 树加入 .gitmodules 与 7 个 gitlink 后提交，
+  // 再把同样的条目写入真实 index（父仓库原有的 100 个改动保持不变）。
+  const tempIndex = path.join(runDir, "ws-temp-index");
+  const plumb = (argv, extra = {}) => { const r = spawnSync("git", ["-c", "core.autocrlf=false", ...argv], { cwd: parent, encoding: "utf8", env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "Oris GUI", GIT_AUTHOR_EMAIL: "oris-gui@example.invalid", GIT_COMMITTER_NAME: "Oris GUI", GIT_COMMITTER_EMAIL: "oris-gui@example.invalid", GIT_AUTHOR_DATE: "1700000000 +0000", GIT_COMMITTER_DATE: "1700000000 +0000", ...extra } }); if (r.status !== 0) throw new Error(`git ${argv.join(" ")} 失败：${r.stderr}`); return r.stdout.trim(); };
+  const blob = plumb(["hash-object", "-w", ".gitmodules"]);
+  const entries = [["100644", blob, ".gitmodules"], ...members.map((m) => ["160000", m.head, `subs/${m.name}`])];
+  plumb(["read-tree", "HEAD"], { GIT_INDEX_FILE: tempIndex });
+  for (const [mode, oid, rel] of entries) plumb(["update-index", "--add", "--cacheinfo", `${mode},${oid},${rel}`], { GIT_INDEX_FILE: tempIndex });
+  const tree = plumb(["write-tree"], { GIT_INDEX_FILE: tempIndex });
+  const commit = plumb(["commit-tree", tree, "-p", "HEAD", "-m", "add 7 submodules"]);
+  plumb(["update-ref", "HEAD", commit]);
+  for (const [mode, oid, rel] of entries) plumb(["update-index", "--add", "--cacheinfo", `${mode},${oid},${rel}`]);
+  for (const m of members) plumb(["config", `submodule.${m.name}.url`, `./subs/${m.name}`]);
+  plumb(["submodule", "absorbgitdirs"]);
+  const absorbed = members.every((m) => statSync(path.join(m.dir, ".git")).isFile());
+  for (const dir of [normal, parent, ...members.map((m) => m.dir)]) git(dir, ["status", "--porcelain"], { allowFail: true });
+  // 预热（同 prepareCoreRepos）：刚复制、移动的大量文件会触发系统后台扫描；重复只读 status 直到连续两次都在最快值的 1.3 倍以内，
+  // 再静置 60 s，避免把夹具准备的代价与 Defender 扫描计入测量。
+  const warmup = {};
+  for (const dir of [normal, parent, ...members.map((m) => m.dir)]) {
+    const times = [];
+    for (let round = 0; round < 20; round++) {
+      const started = Date.now();
+      spawnSync("git", ["--no-optional-locks", "-C", dir, "status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignore-submodules=all"], { maxBuffer: 64 * 1024 * 1024 });
+      times.push(Date.now() - started);
+      const last = times.slice(-2);
+      if (last.length === 2 && last.every((ms) => ms <= Math.min(...times) * 1.3)) break;
+    }
+    warmup[path.basename(dir)] = times;
+  }
+  log("夹具预热完成，静置 60 s", q(warmup));
+  await sleep(60000);
+  const rowsOf = (dir) => git(dir, ["--no-optional-locks", "status", "--porcelain=v1", "--ignore-submodules=all", "-uall"]).split("\n").filter(Boolean).length;
+  return { normal, parent, parentName: path.basename(parent), members, absorbed, warmup, statusEntries: { normal: rowsOf(normal), parent: rowsOf(parent) } };
+}
+
+async function perfSuite() {
+  const iterations = Number(option("iterations", 30));
+  const fx = await perfFixture();
+  report.fixtures = { normal: fx.normal, parent: fx.parent, members: fx.members.map((m) => ({ name: m.name, head: m.head })), absorbedGitDirs: fx.absorbed, statusEntries: fx.statusEntries, warmupMs: fx.warmup };
+  log("夹具", q(report.fixtures));
+  const ctx = await start("perf", {}, 850);
+  const measure = (action, predicate, timeout = 30000) => ctx.evaluate(`window.__op.measure(() => { ${action} }, () => (${predicate}), ${timeout})`, timeout + 5000);
+  const tabCount = () => ctx.evaluate(`document.querySelectorAll('.project-tab').length`);
+  const add = async (dir, predicate) => {
+    await ctx.evaluate(`window.__op.setInput('仓库路径', ${q(dir)})`);
+    await ctx.waitUntil(`window.__op.button('载入/添加') && !window.__op.button('载入/添加').disabled`);
+    return measure(`window.__op.button('载入/添加').click()`, predicate);
+  };
+  const removeActive = async () => {
+    const before = await tabCount();
+    await ctx.evaluate(`document.querySelector('.project-tab.active .project-close').click()`);
+    await ctx.waitUntil(`document.querySelectorAll('.project-tab').length === ${before - 1}`);
+  };
+  const rowsReady = `window.__op.rows().length === 65 && !window.__op.loading()`; // 与 gui-probe core 相同：S 数据集“未暂存”范围 65 行
+  const normalReady = `window.__op.status().startsWith(${q(fx.normal)}) && ${rowsReady}`;
+  const parentReady = `window.__w.picker() === ${q(fx.parentName)} && ${rowsReady}`;
+  const memberReady = (name) => `window.__w.picker() === ${q(name)} && ${rowsReady}`;
+  const memberInteractive = (name) => `window.__w.picker() === ${q(name)} && !window.__op.loading() && window.__op.selected() && window.__op.readyFor(window.__op.selected(), null) === true`;
+  const openPicker = async () => { if (!(await ctx.evaluate(`!!document.querySelector('.repo-picker')`))) { await ctx.evaluate(`document.querySelector('.repo-picker-button').click()`); await ctx.waitUntil(`document.querySelector('.repo-picker') && window.__w.rows().length > 0`); } };
+  const closePicker = async () => { if (await ctx.evaluate(`!!document.querySelector('.repo-picker')`)) { await ctx.key(`document.querySelector('.repo-picker')`, { key: "Escape" }); await ctx.waitUntil(`!document.querySelector('.repo-picker')`); } };
+  const samples = { normalOpen: [], workspaceOpen: [], firstMemberSwitch: [], hotMemberSwitch: [], pickerOpen: [] };
+  try {
+    await ctx.waitUntil(`document.querySelector('.project-empty')`);
+    // 预热各一次（不计入）：第一次添加会加载 Worker、语法等前端模块。
+    await add(fx.normal, normalReady); await sleep(300); await removeActive(); await sleep(300);
+    await add(fx.parent, parentReady); await sleep(300);
+    report.statusText = await ctx.evaluate(`window.__op.status()`);
+    report.parentRows = (await ctx.evaluate(`window.__op.rows()`)).length;
+    await removeActive(); await sleep(300);
+    // 1–2. 普通项目与工作区交替首次打开；每次打开工作区后首次切到一个成员（轮换 7 个成员）。
+    for (let i = 0; i < iterations; i++) {
+      samples.normalOpen.push({ i, ...(await add(fx.normal, normalReady)) });
+      await sleep(300); await removeActive(); await sleep(300);
+      samples.workspaceOpen.push({ i, ...(await add(fx.parent, parentReady)) });
+      await sleep(300);
+      const member = fx.members[i % fx.members.length].name;
+      await openPicker();
+      await sleep(200);
+      samples.firstMemberSwitch.push({ i, member, ...(await measure(`window.__w.row(${q(member)}).click()`, memberReady(member))) });
+      await sleep(300); await removeActive(); await sleep(300);
+      if (i % 5 === 4) log(`首次打开 ${i + 1}/${iterations}`);
+    }
+    // 3. 热成员切换：打开工作区并把 8 个成员都打开一遍（预热），再轮换切换 n 次。
+    await add(fx.parent, parentReady); await sleep(500);
+    const order = [fx.parentName, ...fx.members.map((m) => m.name)];
+    for (const name of [...order.slice(1), order[0]]) { await openPicker(); await ctx.evaluate(`window.__w.row(${q(name)}).click()`); await ctx.waitUntil(memberInteractive(name), 30000); await sleep(200); }
+    let active = 0;
+    for (let i = 0; i < iterations; i++) {
+      active = (active + 1) % order.length;
+      await openPicker(); await sleep(400);
+      samples.hotMemberSwitch.push({ i, member: order[active], ...(await measure(`window.__w.row(${q(order[active])}).click()`, memberInteractive(order[active]), 20000)) });
+    }
+    // 5. 内存：8 个成员各打开过、热切换 n 次后静置 3 s，每秒采样 5 次（分层私有工作集，与 gui-probe memory 相同）。
+    await closePicker(); await sleep(3000);
+    const steady = [];
+    for (let i = 0; i < 5; i++) { steady.push({ at: Date.now(), layers: processTreeDetailed(ctx.app.pid).layers }); await sleep(1000); }
+    const median = (layer, key) => round(percentile(steady.map((s) => s.layers[layer][key]), 0.5));
+    report.memory = { what: "工作区 8 个成员各打开过、热切换后静置 3 s 的稳态（5 次采样中位数）", steadyMedian: Object.fromEntries(["framework", "tools", "oris", "total"].map((l) => [l, { privateWorkingSetMiB: median(l, "privateWorkingSetMiB"), workingSetMiB: median(l, "workingSetMiB") }])), samples: steady };
+    // 4. 打开仓库选择器到列表可交互（徽标随后补齐，不等待）。
+    for (let i = 0; i < iterations; i++) {
+      await closePicker(); await sleep(400);
+      samples.pickerOpen.push({ i, ...(await measure(`document.querySelector('.repo-picker-button').click()`, `document.querySelector('.repo-picker') && window.__w.rows().length === ${order.length}`, 10000)) });
+    }
+    await closePicker();
+  } catch (error) {
+    fail(`计时套件中断：${error.stack ?? error}`);
+  } finally {
+    await stop(ctx).catch(() => {});
+  }
+  const s = Object.fromEntries(Object.entries(samples).map(([k, v]) => [k, summarize(v)]));
+  const delta = s.normalOpen && s.workspaceOpen ? { p50: round(s.workspaceOpen.p50 - s.normalOpen.p50), p95: round(s.workspaceOpen.p95 - s.normalOpen.p95) } : null;
+  report.timings = { summary: s, openDelta: delta, samples };
+  const mem = report.memory?.steadyMedian;
+  report.budgets = {
+    "打开工作区比普通项目首次打开增加 ≤ 300 ms（P95 差）": delta ? delta.p95 <= 300 : null,
+    "工作区热成员切换 P95 ≤ 100 ms": s.hotMemberSwitch ? s.hotMemberSwitch.p95 <= 100 : null,
+    "工作区首次切到某成员 P95 ≤ 1.5 s": s.firstMemberSwitch ? s.firstMemberSwitch.p95 <= 1500 : null,
+    "打开仓库选择器 P95 ≤ 100 ms": s.pickerOpen ? s.pickerOpen.p95 <= 100 : null,
+    "内存：外部框架与工具 ≤ 200 MiB、Oris 自身 ≤ 15 MiB、总开销 ≤ 210 MiB（V2-D29 前台稳态）": mem ? (mem.framework.privateWorkingSetMiB + mem.tools.privateWorkingSetMiB) <= 200 && mem.oris.privateWorkingSetMiB <= 15 && mem.total.privateWorkingSetMiB <= 210 : null
+  };
+  for (const [name, ok] of Object.entries(report.budgets)) check(`预算：${name}`, ok === true, ok === null ? "未测得" : { summary: s, delta, memory: mem });
+  for (const [k, v] of Object.entries(samples)) { const bad = v.filter((x) => !x.ok); if (bad.length) fail(`${k} 有 ${bad.length} 次断言未成立：${q(bad.slice(0, 3))}`); }
+}
+
 try {
   if (only === "local") await localSuite();
   else if (only === "real") await realSuite();
+  else if (only === "perf") await perfSuite();
   else throw new Error(`未知 --only ${only}`);
 } finally {
   report.finishedAt = new Date().toISOString();

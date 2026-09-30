@@ -29,9 +29,14 @@ export function summarize(samples) {
 export const round = (value, digits = 1) => (value === null || value === undefined ? null : Number(value.toFixed(digits)));
 
 function powershell(script) {
-  const result = spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
-  if (result.status !== 0) throw new Error(`powershell failed: ${result.stderr}`);
-  return result.stdout;
+  // 本机负载高时 powershell 偶发启动失败（lc5 冒烟时见过一次），只读查询重试两次再报错。
+  let result;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    result = spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    if (result.status === 0) return result.stdout;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300);
+  }
+  throw new Error(`powershell failed: ${result.stderr}`);
 }
 
 /**
