@@ -1,4 +1,4 @@
-import { memo, useMemo, useState, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { shortOid, trackingText, type Branch, type RefsView, type StashEntry, type Tag } from "./history-api";
 import type { PinnedEndpoint } from "./history-model";
 import { stashLabel } from "./StashPanel";
@@ -20,6 +20,8 @@ interface Props {
   refsError: string | null;
   headLabel: string;
   current: Branch | null;
+  /** 历史页是否隐藏；每次从隐藏变为可见时，列表滚动定位到当前工作分支。 */
+  hidden?: boolean;
   /** 正在浏览（筛选历史）的引用完整名；null 为全部分支。 */
   filter: string | null;
   onFilter(ref: string | null): void;
@@ -40,9 +42,18 @@ interface Props {
 
 /** 历史页左侧（参考 SourceTree 侧栏）：本地分支、标签、远端分支（按 remote 分组）、Stash，可搜索、可折叠。 */
 export default function HistorySidebar(props: Props) {
-  const { refs, refsError, headLabel, current, filter, onFilter, stashes, stashError, selectedStash, onStash, onNewStash, blocked, onSwitch, onTrack, onPruneGone, onMenu } = props;
+  const { refs, refsError, headLabel, current, hidden = false, filter, onFilter, stashes, stashError, selectedStash, onStash, onNewStash, blocked, onSwitch, onTrack, onPruneGone, onMenu } = props;
   const [query, setQuery] = useState("");
   const [collapsed, setCollapsed] = useState(loadCollapsed);
+  const list = useRef<HTMLDivElement>(null);
+  // 待定位：首次显示或重新打开历史页后，等分支列表就绪时滚动到当前分支一次；之后刷新不再打扰用户的滚动位置。
+  const reveal = useRef(true);
+  useEffect(() => { if (hidden) reveal.current = true; }, [hidden]);
+  useEffect(() => {
+    if (hidden || !reveal.current || !refs) return;
+    reveal.current = false;
+    list.current?.querySelector(".log-branch.current")?.scrollIntoView?.({ block: "center" });
+  }, [hidden, refs]);
   const toggle = (key: string) => setCollapsed((currentSet) => {
     const next = new Set(currentSet);
     if (!next.delete(key)) next.add(key);
@@ -75,7 +86,7 @@ export default function HistorySidebar(props: Props) {
     <div className="log-current" title={current ? trackingText(current.tracking).title : undefined}>当前工作分支：<strong>● {headLabel}</strong>{current && <span className="log-track">{trackingText(current.tracking).short}</span>}</div>
     {refsError && <div className="log-error">{refsError}</div>}
     {refs?.shallow && <div className="log-note">浅克隆：领先 / 落后数不可靠，显示为未知</div>}
-    <div className="log-branch-list" aria-label="按分支筛选历史">
+    <div ref={list} className="log-branch-list" aria-label="按分支筛选历史">
       {!searching && <div role="listbox" aria-label="全部分支"><button type="button" role="option" aria-selected={filter === null} className={`log-branch${filter === null ? " browsing" : ""}`} onClick={() => onFilter(null)}>全部分支</button></div>}
       <Group id="local" label="本地分支" count={local.length} open={open("local")} searching={searching} onToggle={toggle}
         action={onPruneGone && tracked && <button type="button" className="log-group-action" disabled={!!blocked} title={blocked ?? "获取远端并清理已删除的远端分支（fetch --prune），然后删除上游已消失的本地分支"} onClick={onPruneGone}>清理…</button>}>
