@@ -3,7 +3,7 @@
 // 每个场景 R 份内容不同的副本，互相之间隔 2 个小文件（预取只取上下相邻各 1 个），逐个点击测“未缓存文件切换”；
 // 再在第一份副本上测已缓存切换、开启“对齐变化”（含对齐时滚动与可见边界误差）、F7 导航、滚轮滚动帧间隔、块操作按钮（块映射是否对得上）、切到统一视图与进程树内存。
 // 只经 CDP 操作本轮启动并核验过的 Oris 实例（launchOris / killOris），不调用任何窗口激活 API；按键为页面内派发的 KeyboardEvent，滚轮为 CDP 输入事件。
-// 用法：node scripts/perf/p-v2-10-gui.mjs --exe <oris.exe> --label <名称> [--port 9887] [--copies 6] [--profile <场景>]
+// 用法：node scripts/perf/p-v2-10-gui.mjs --exe <oris.exe> --label <名称> [--port 9887] [--copies 6] [--cached 5] [--profile <场景>]
 // --profile：在该场景的已缓存切换期间录制 CPU 剖析，输出自身耗时最高的函数（位置为打包产物中的行:列）。
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -17,6 +17,8 @@ const exe = option("exe");
 if (!exe) throw new Error("缺少 --exe");
 const label = option("label", "p-v2-10-gui");
 const copies = Number(option("copies", 6));
+// 已缓存切换每场景的次数（研究 10 为 5 次；发布性能会话用 30 次）。
+const cachedN = Number(option("cached", 5));
 const profileScenario = option("profile", null);
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const outDir = path.join(projectRoot, "artifacts", "gui-probe", label);
@@ -134,7 +136,7 @@ try {
     const cached = [];
     const profiling = profileScenario === s.key;
     if (profiling) { await call("Profiler.enable"); await call("Profiler.setSamplingInterval", { interval: 200 }); await call("Profiler.start"); }
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < cachedN; i++) {
       const other = targets.find((t) => t.scenario !== s.key && t.copy === 0).file;
       await measure(`window.__op.row(${q(other)}).click()`, rendered(other), 30000); await sleep(400);
       cached.push(await measure(`window.__op.row(${q(file)}).click()`, rendered(file), 30000)); await sleep(400);

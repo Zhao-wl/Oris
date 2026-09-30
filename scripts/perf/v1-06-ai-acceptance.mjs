@@ -24,6 +24,8 @@ if (!/^[0-9A-Za-z-]{1,60}$/.test(runId)) throw new Error("运行编号只能含�
 const profileId = `oris-test-${runId}`;
 const cliProfileId = `oris-test-${runId}-cli`;
 let port = Number(option("port", 9991));
+// 计时样本量（无预算，只记录）：入口打开次数；> 0 时另外追加这么多次“暂存全部 / 取消暂存全部”交替的计划执行计时。
+const timingN = Number(option("timing-n", 0));
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const outDir = path.join(projectRoot, "artifacts", "gui-probe", option("label", "v1-06-ai-acceptance"));
 const shotDir = path.join(outDir, "shots");
@@ -260,7 +262,7 @@ try {
 
   // 入口时延（已配置）
   const openSamples = [];
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < (timingN || 10); i++) {
     openSamples.push(await evaluate(`window.__op.measure(() => window.__ai.open(), () => document.activeElement === window.__ai.input(), 5000)`));
     await closeAi(); await sleep(150);
   }
@@ -319,6 +321,16 @@ try {
   const font = await runPlan("设置字号", "@设置 字号调到 15", { kind: "settings", summary: "字号 15", setting: "fontSize", value: 15 }, `getComputedStyle(document.querySelector('.cm-content') ?? document.body).fontSize === '15px' || JSON.parse(localStorage.getItem('oris.settings.v1')).appearance.fontSize === 15`);
   check("B26 @设置：设置计划直接执行（字号 15），仓库不变", font.ok && font.changed.length === 0 && (font.req?.body?.messages?.[0]?.content ?? "").includes(prompts.settingsActions), { changed: font.changed });
   await evaluate(`document.body.dispatchEvent(new KeyboardEvent('keydown', { key: '0', ctrlKey: true, bubbles: true, cancelable: true }))`);
+  if (timingN > 0) {
+    await sleep(500);
+    git(repo, ["reset", "-q", "--", "."]); await refresh();
+    const unstagedCount = git(repo, ["status", "--porcelain", "-uall"]).split("\n").filter(Boolean).length;
+    for (let i = 0; i < timingN; i++) {
+      const staging = i % 2 === 0;
+      await runPlan(staging ? "计时：暂存全部" : "计时：取消暂存全部", staging ? "暂存全部改动" : "取消暂存全部", { kind: "git", summary: staging ? "暂存全部" : "取消暂存", operation: { kind: staging ? "stage" : "unstage", pathIds: "all" } }, staging ? `window.__ai.staged() === ${unstagedCount}` : `window.__ai.staged() === 0`);
+    }
+    if (timingN % 2 === 1) { git(repo, ["reset", "-q", "--", "."]); await refresh(); }
+  }
   report.timings.planToRefresh = { samples: execTimings, summary: summarize(execTimings.filter((x) => x.ms !== null)), what: "假模型服务发出回复 → 操作完成且界面刷新（扣除模型响应时间）；无预算，只记录" };
 
   // ---------- 拦截（执行前拦下，不部分执行） ----------
@@ -524,7 +536,8 @@ try {
   }
 } catch (error) {
   fail(`异常：${String(error.stack ?? error).slice(0, 1200)}`);
-  try { if (app) report.failureShot = await shot("failure"); } catch { /* ignore */ }
+  // CDP 已断开时截图永远不会返回：最多等 10 s。
+  try { if (app) report.failureShot = await Promise.race([shot("failure"), sleep(10000).then(() => null)]); } catch { /* ignore */ }
 } finally {
   report.stop = await stop();
   server.close();

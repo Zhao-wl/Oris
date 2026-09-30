@@ -15,6 +15,7 @@ const exe = path.resolve(option("exe"));
 const runId = option("run-id");
 if (!runId) throw new Error("缺少 --run-id");
 const pause = Number(option("pause", 30));
+const preCheck = Number(option("pre-check", 0));
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const probe = (file) => path.join(projectRoot, "scripts", "perf", file);
 const lRepo = () => { const r = option("l-repo"); if (!r) throw new Error("L 套件需要 --l-repo"); return path.resolve(r); };
@@ -40,7 +41,14 @@ const SUITES = {
   "proc-v203": (l) => ({ script: "v2-03-acceptance.mjs", argv: ["--label", l] }),
   "proc-v204": (l) => ({ script: "v2-04-acceptance.mjs", argv: ["--label", l, "--only", "local"] }),
   large: (l) => ({ script: "v1-06-large.mjs", argv: ["--label", l, "--repo", lRepo()] }),
-  "git-probe-L": (l) => ({ script: "git-level-probe.mjs", noExe: true, argv: [lRepo(), "--iterations", "30", "--out", path.join(projectRoot, "artifacts", "gui-probe", l, "git-level-probe.json")], outDir: l })
+  "git-probe-L": (l) => ({ script: "git-level-probe.mjs", noExe: true, argv: [lRepo(), "--iterations", "30", "--out", path.join(projectRoot, "artifacts", "gui-probe", l, "git-level-probe.json")], outDir: l }),
+  // 长链 lc5 新增：V2-D75 之后的大文件（研究 10 §7.3，未缓存 30 份副本、已缓存 30 次）、对齐变化（研究 10 §7.5 与 wrap-align 探针）、
+  // V2-07 工作区（V2 验收 §3 / §4）、AI 入口与计划执行（无预算，只记录）。
+  "diff-blocks": (l) => ({ script: "p-v2-10-gui.mjs", argv: ["--label", l, "--copies", "30", "--cached", "30"] }),
+  "wrap-align-single": (l) => ({ script: "wrap-align-probe.mjs", argv: ["--label", l, "--fixture", "single"] }),
+  "wrap-align-multi": (l) => ({ script: "wrap-align-probe.mjs", argv: ["--label", l, "--fixture", "multi"] }),
+  workspace: (l) => ({ script: "workspace-acceptance.mjs", argv: ["--label", l, "--only", "perf", "--iterations", "30"] }),
+  "ai-latency": (l) => ({ script: "v1-06-ai-acceptance.mjs", argv: ["--label", l, "--run-id", `${runId}-ai`, "--timing-n", "30"] })
 };
 const suites = option("suites", "").split(",").filter(Boolean);
 for (const s of suites) if (!SUITES[s]) throw new Error(`未知套件：${s}`);
@@ -69,6 +77,14 @@ try {
   for (const [index, suite] of suites.entries()) {
     const entry = { suite, attempts: [] };
     session.suites.push(entry);
+    // 套件开始前的负载检查（--pre-check 秒数，默认 0 不做）：只记录空载时段的外部负载，不阻塞。
+    if (preCheck > 0) {
+      const from = Date.now();
+      await new Promise((r) => setTimeout(r, preCheck * 1000));
+      entry.preCheck = monitor.summary(from, Date.now());
+      log(`${suite} 开始前 ${preCheck} s：外部 CPU P50 ${entry.preCheck.externalCpu.p50}% / P95 ${entry.preCheck.externalCpu.p95}%（${entry.preCheck.topExternal.slice(0, 4).map((p) => `${p.name} ${p.maxCpu}%`).join("，")}）`);
+      save();
+    }
     for (let attempt = 0; attempt <= 2; attempt++) {
       const l = label(suite, attempt);
       const def = SUITES[suite](l);
