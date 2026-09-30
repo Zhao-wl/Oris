@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// lc5 阶段 3：已缓存文件切换时，差异装饰与块标题行随编辑器状态一起创建，切换过程中不再额外派发事务
+// lc5 阶段 3：已缓存文件切换时，差异装饰随编辑器状态一起创建，切换过程中左侧不派发事务、右侧只派发一次块标题行
 // （每次派发都会让 CodeMirror 读取 DOM 选区并强制同步布局）。jsdom 没有布局，只核对状态与派发次数。
 import { act, createRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -66,7 +66,7 @@ const onSplitLayoutChange = () => {};
 const editors = () => [...host.querySelectorAll<HTMLElement>(".cm-editor")].map((dom) => EditorView.findFromDOM(dom)!);
 
 describe("DiffViewer 已缓存文件切换", () => {
-  it("切到另一个文件时两个编辑器都不额外派发事务，装饰与块标题行随状态创建", () => {
+  it("切到另一个文件时装饰随状态创建：左侧不派发事务，右侧只派发一次块标题行", () => {
     render(fileA, docA, "repo:unstaged:a", headersFor(docA, "pending"));
     const [left, right] = editors();
     expect(right.state.doc.toString()).toBe(fileA.right);
@@ -78,8 +78,8 @@ describe("DiffViewer 已缓存文件切换", () => {
     expect(editors()).toEqual([left, right]);
     expect(right.state.doc.toString()).toBe(fileB.right);
     expect(dispatchLeft).not.toHaveBeenCalled();
-    expect(dispatchRight).not.toHaveBeenCalled();
-    // 修改行装饰与块标题行已在状态中
+    expect(dispatchRight).toHaveBeenCalledTimes(1);
+    // 修改行装饰已在状态中，块标题行已派发
     const modified = [...host.querySelectorAll(".oris-split-pane.right .cm-line.oris-modified-line")].map((n) => n.textContent);
     expect(modified).toContain(fileB.right.split("\n")[7]);
     // jsdom 中只渲染视口内的行：已渲染的块标题行都属于新文件（块总数为新文件的块数）

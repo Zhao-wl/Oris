@@ -153,11 +153,14 @@ try {
     for (let i = 0; i < cachedN; i++) {
       await measure(`window.__op.row(${q(other)}).click()`, rendered(other), 30000); await sleep(400);
       if (tracing) await evaluate(`console.timeStamp('oris-switch-start')`);
-      cached.push(await measure(`window.__op.row(${q(file)}).click()`, rendered(file), 30000));
+      cached.push({ ...(await measure(`window.__op.row(${q(file)}).click()`, rendered(file), 30000)), at: Date.now() });
       if (tracing) await evaluate(`console.timeStamp('oris-switch-end')`);
       await sleep(400);
     }
     entry.cachedSwitch = summarize(cached);
+    entry.cachedSamples = cached.map((x) => ({ ok: x.ok, ms: round(x.ms), at: x.at }));
+    // 切换完成后阅读器的 DOM 规模（两侧渲染的行数、块标题行、元素总数），用于判断初始视口是否过大
+    entry.domAfterSwitch = await evaluate(`({ lines: [...document.querySelectorAll('.oris-split-pane .cm-line')].length, gaps: document.querySelectorAll('.oris-split-pane .cm-gap').length, titles: document.querySelectorAll('.hunk-title').length, elements: document.querySelector('.diff-host')?.querySelectorAll('*').length ?? 0, byClass: Object.entries([...(document.querySelector('.diff-host')?.querySelectorAll('*') ?? [])].reduce((m, n) => { const k = n.tagName.toLowerCase() + '.' + (typeof n.className === 'string' ? n.className.split(' ')[0] : n.getAttribute('class')?.split(' ')[0] ?? ''); m[k] = (m[k] ?? 0) + 1; return m; }, {})).sort((x, y) => y[1] - x[1]).slice(0, 8), viewport: [...document.querySelectorAll('.oris-split-pane .cm-content')].map((c) => c.childElementCount), views: [...document.querySelectorAll('.oris-split-pane .cm-content')].map((c) => { const v = c.cmView?.view; return v ? { vp: v.viewport, blocks: v.viewportLineBlocks.length, visible: v.visibleRanges.map((r) => [r.from, r.to]), gutter: v.dom.querySelectorAll('.cm-gutterElement').length, contentHeight: Math.round(v.contentHeight), clientHeight: v.scrollDOM.clientHeight } : null; }) })`);
     if (tracing) {
       const done = new Promise((resolve) => app.cdp.on("Tracing.tracingComplete", resolve));
       await call("Tracing.end");

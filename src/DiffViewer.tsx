@@ -90,11 +90,10 @@ function textOf(value: string) {
 /** 复用已有 EditorView：挂到新的容器并以新文档与扩展替换状态；没有可复用实例时新建。 */
 function reuseOrCreate(existing: EditorView | undefined, parent: HTMLElement, doc: string | Text, extensions: Extension[]) {
   if (!existing) return new EditorView({ parent, doc, extensions });
-  // 复用的编辑器此时已从页面摘下（上一个控制器 destroy(true)）：先在页面外换入文档，再挂回。
-  // 摘下的滚动容器没有布局框，挂回后 scrollTop / scrollLeft 本来就是 0（WebView2 中实测）；原先挂回后再写 0 不改变结果，
-  // 却会在刚换入的大文档上强制一次同步样式与布局（每个编辑器约 5 ms，块数多时更多，lc5 阶段 3）。
-  existing.setState(EditorState.create({ doc, extensions }));
+  // 复用的编辑器此时已从页面摘下（上一个控制器 destroy(true)）。摘下的滚动容器没有布局框，挂回后 scrollTop / scrollLeft
+  // 本来就是 0（WebView2 中实测）；原先换入文档后再写 0 不改变结果，却会在刚换入的大文档上强制一次同步样式与布局，因此不再写。
   parent.append(existing.dom);
+  existing.setState(EditorState.create({ doc, extensions }));
   remeasureWhenVisible(existing);
   return existing;
 }
@@ -1141,13 +1140,14 @@ function installSplitResize(
   let ratio = initialRatio;
   let drag: { pointerId: number; startX: number; startWidth: number } | null = null;
   const availableWidth = () => Math.max(0, split.editorRoot.clientWidth - DIFF_SEPARATOR_WIDTH - DIFF_RAIL_WIDTH * 2);
-  const clamp = (width: number) => {
-    const available = availableWidth();
+  const clamp = (width: number, available: number) => {
     const minimum = Math.min(DIFF_PANE_MIN_WIDTH, available / 2);
     return Math.min(Math.max(minimum, width), Math.max(minimum, available - minimum));
   };
-  const applyWidth = (width: number, remember = true) => {
-    const next = Math.round(clamp(width));
+  // 可用宽度只读一次：写入 --diff-left-width 之后再读 clientWidth 会让样式失效后的布局再强制计算一遍（编辑器宽度不影响外层宽度）。
+  const applyWidth = (width: number | ((available: number) => number), remember = true) => {
+    const available = availableWidth();
+    const next = Math.round(clamp(typeof width === "function" ? width(available) : width, available));
     if (next !== leftWidth) {
       leftWidth = next;
       split.editorRoot.style.setProperty("--diff-left-width", `${next}px`);
@@ -1155,13 +1155,13 @@ function installSplitResize(
       split.b.requestMeasure();
       onGeometryChange();
     }
-    if (remember && availableWidth() > 0) ratio = next / availableWidth();
+    if (remember && available > 0) ratio = next / available;
     onLayoutChange(ratio, next + DIFF_RAIL_WIDTH);
-    separator.setAttribute("aria-valuemin", String(Math.round(Math.min(DIFF_PANE_MIN_WIDTH, availableWidth() / 2))));
-    separator.setAttribute("aria-valuemax", String(Math.round(Math.max(0, availableWidth() - DIFF_PANE_MIN_WIDTH))));
+    separator.setAttribute("aria-valuemin", String(Math.round(Math.min(DIFF_PANE_MIN_WIDTH, available / 2))));
+    separator.setAttribute("aria-valuemax", String(Math.round(Math.max(0, available - DIFF_PANE_MIN_WIDTH))));
     separator.setAttribute("aria-valuenow", String(next));
   };
-  applyWidth(availableWidth() * ratio, false);
+  applyWidth((available) => available * ratio, false);
   const onPointerDown = (event: PointerEvent) => {
     if (event.button !== 0) return;
     drag = { pointerId: event.pointerId, startX: event.clientX, startWidth: leftWidth };
@@ -1189,7 +1189,7 @@ function installSplitResize(
   separator.addEventListener("pointerup", onPointerEnd);
   separator.addEventListener("pointercancel", onPointerEnd);
   separator.addEventListener("keydown", onKeyDown);
-  const resize = new ResizeObserver(() => applyWidth(availableWidth() * ratio, false));
+  const resize = new ResizeObserver(() => applyWidth((available) => available * ratio, false));
   resize.observe(split.editorRoot);
   return () => {
     resize.disconnect();
@@ -1764,8 +1764,7 @@ function createSplitView(
   initialRatio: number,
   onLayoutChange: (ratio: number, leftWidth: number) => void,
   onPositionChange: (position: number, total: number) => void,
-  pool: EditorPool = {},
-  hunkHeaders: (doc: Text, chunks: readonly Change[]) => DecorationSet = () => Decoration.none
+  pool: EditorPool = {}
 ): SplitController {
   const root = document.createElement("div");
   root.className = "oris-split-view";
@@ -1795,9 +1794,10 @@ function createSplitView(
   // 差异装饰随状态一起创建：换入文档后再 appendConfig 会让每个编辑器多一次重新配置与派发（每次派发都会读取 DOM 选区、强制布局）。
   const docA = textOf(left);
   const docB = textOf(right);
-  // 右侧的块标题行也随状态创建：挂载后再派发一次会多一轮 DOM 更新、选区读取与重新对齐。
-  const a = reuseOrCreate(pool.a, paneA, docA, [...shared, hunkHeaderField, EditorView.decorations.of(buildSideDecorations(docA, chunks, diffDocument.changes, "a", highlight))]);
-  const b = reuseOrCreate(pool.b, paneB, docB, [...shared, hunkHeaderField.init(() => hunkHeaders(docB, chunks)), EditorView.decorations.of(buildSideDecorations(docB, chunks, diffDocument.changes, "b", highlight))]);
+  // 块标题行（块级 widget）不放进初始状态，仍在挂载后派发：初始状态里就有上千个块级 widget 时，CodeMirror 的
+  // viewportLineBlocks 会包含视口外的大量行块，行号栏按它建元素（1,813 块时约 5,000 个），布局反而慢一倍（lc5 阶段 3 实测）。
+  const a = reuseOrCreate(pool.a, paneA, docA, [...shared, EditorView.decorations.of(buildSideDecorations(docA, chunks, diffDocument.changes, "a", highlight))]);
+  const b = reuseOrCreate(pool.b, paneB, docB, [...shared, EditorView.decorations.of(buildSideDecorations(docB, chunks, diffDocument.changes, "b", highlight))]);
   pool.a = a;
   pool.b = b;
   a.dom.id = "oris-left-editor";
@@ -1913,7 +1913,7 @@ function createSingleView(
   const doc = textOf(text);
   const lineClass = presentation.tone === "inserted" ? "oris-inserted-line" : "oris-deleted-line";
   const lineDecorations = Array.from({ length: doc.lines }, (_, index) => Decoration.line({ class: lineClass }).range(doc.line(index + 1).from));
-  const view = reuseOrCreate(pool.single, pane, doc, [...shared, hunkHeaderField, EditorView.decorations.of(Decoration.set(lineDecorations))]);
+  const view = reuseOrCreate(pool.single, pane, doc, [...shared, EditorView.decorations.of(Decoration.set(lineDecorations))]);
   pool.single = view;
   view.dom.id = "oris-single-editor";
 
@@ -2005,11 +2005,11 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
     const view = current.split?.view.b ?? current.unified;
     if (!view) return;
     const headers = hunkRef.current;
-    // 并排视图的标题行随右侧编辑器的状态一起创建（createSplitView）；标题行没有变化时不再派发。
-    if (current.split && current.appliedHunkHeaders === headers) return;
+    // 挂载时已派发过同一份标题行：随后的 hunkHeaders effect 不再重复派发（重复派发会多一次选区读取、强制布局与重新对齐）。
+    if (current.appliedHunkHeaders === headers) return;
+    current.appliedHunkHeaders = headers;
     const chunks = current.split?.view.chunks ?? (current.unified ? getChunks(current.unified.state)?.chunks ?? [] : []);
     const decorations = hunkHeaderDecorations(view.state.doc, chunks, headers, runHunkAction);
-    current.appliedHunkHeaders = headers;
     // 没有标题行、编辑器里也没有时不派发（每次派发都会让 CodeMirror 读取 DOM 选区）。
     if (!decorations.size && view.state.field(hunkHeaderField, false)?.size === 0) return;
     view.dispatch({ effects: setHunkHeaders.of(decorations) });
@@ -2093,6 +2093,7 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
       // 统一视图折叠占位（@codemirror/merge 的 CollapseWidget）的中文文字，与并排视图一致。
       EditorState.phrases.of({ "$ unchanged lines": "展开 $ 行未变化内容" }),
       alignmentSpacers,
+      hunkHeaderField,
       gutterWidthVar,
       collapsedRanges,
       searchHighlights,
@@ -2144,14 +2145,12 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
           onSplitLayoutChange(ratio, leftWidth);
         },
         onPositionChange,
-        pool.current,
-        (doc, chunks) => hunkHeaderDecorations(doc, chunks, hunkRef.current, runHunkAction)
+        pool.current
       );
-      runtime.current = { split, position: 0, appliedHunkHeaders: hunkRef.current };
+      runtime.current = { split, position: 0 };
     } else {
       unified = reuseOrCreate(pool.current.unified, host.current, right, [
         ...shared,
-        hunkHeaderField,
         unifiedMergeView({
           original: left,
           highlightChanges: highlight === "words",
