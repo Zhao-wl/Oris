@@ -114,8 +114,70 @@ fn repo_id_of(worktree: &Path) -> String {
     hash_bytes(worktree.to_string_lossy().as_bytes())
 }
 
-/// 当前分支与 HEAD 提交；两者都是只读 plumbing。
-fn head_of(git: &Path, worktree: &Path) -> (Option<String>, Option<String>) {
+/// 从 Git 目录的文件直接读出当前分支与 HEAD 提交（与 V2-D53 读取子模块 HEAD 的方式相同，不启动 Git）。
+/// 只处理确定的情形：HEAD 为完整对象 ID（分离），或指向 `refs/heads/…` 且提交在松散引用或 `packed-refs` 中（两处都没有时为未出生分支）；
+/// 其他情形（使用 reftable、指向 refs/heads 以外、内容无法解析）返回 None，由调用方改用 Git 查询。
+pub(super) fn head_from_files(git_dir: &Path, common_dir: &Path) -> Option<(Option<String>, Option<String>)> {
+    use std::io::Read as _;
+    let read = |path: &Path| -> Option<String> {
+        let mut text = String::new();
+        std::fs::File::open(path).ok()?.take(4096).read_to_string(&mut text).ok()?;
+        Some(text)
+    };
+    if common_dir.join("reftable").exists() || git_dir.join("reftable").exists() {
+        return None;
+    }
+    let is_oid = |value: &str| (value.len() == 40 || value.len() == 64) && value.bytes().all(|b| b.is_ascii_hexdigit());
+    let head = read(&git_dir.join("HEAD"))?;
+    let head = head.trim();
+    if is_oid(head) {
+        return Some((None, Some(head.to_ascii_lowercase())));
+    }
+    let reference = head.strip_prefix("ref: ")?.trim();
+    let branch = reference.strip_prefix("refs/heads/")?;
+    if branch.is_empty() || reference.split('/').any(|part| part.is_empty() || part == "." || part == "..") {
+        return None;
+    }
+    if std::fs::metadata(common_dir.join("packed-refs")).is_ok_and(|meta| meta.len() > 16 * 1024 * 1024) {
+        return None;
+    }
+    let packed = match std::fs::read_to_string(common_dir.join("packed-refs")) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(_) => return None,
+    };
+    let packed_has = |name: &str| packed.lines().any(|line| line.split_once(' ').is_some_and(|(_, n)| n.trim() == name));
+    // `symbolic-ref --short` 在同名的其他引用存在时显示为 heads/<分支>：这类情形交给 Git，保证显示与原来逐字相同。
+    for other in [format!("refs/{branch}"), format!("refs/tags/{branch}"), format!("refs/remotes/{branch}"), format!("refs/remotes/{branch}/HEAD")] {
+        if common_dir.join(&other).exists() || packed_has(&other) {
+            return None;
+        }
+    }
+    let loose = read(&common_dir.join(reference));
+    let commit = match loose {
+        Some(value) => {
+            let value = value.trim();
+            if !is_oid(value) {
+                return None;
+            }
+            Some(value.to_ascii_lowercase())
+        }
+        None => {
+            packed.lines().find_map(|line| {
+                let (oid, name) = line.split_once(' ')?;
+                (name.trim() == reference && is_oid(oid)).then(|| oid.to_ascii_lowercase())
+            })
+        }
+    };
+    Some((Some(branch.to_owned()), commit))
+}
+
+/// 当前分支与 HEAD 提交：先直接读文件（lc5：打开工作区时每个成员少两次 Git 启动），拿不准时用只读 plumbing 查询。
+fn head_of(git: &Path, paths: &RepoPaths) -> (Option<String>, Option<String>) {
+    if let Some(found) = head_from_files(&paths.git_dir, &paths.common_dir) {
+        return found;
+    }
+    let worktree = &paths.worktree;
     let text = |args: &[&str]| {
         run_readonly(git, worktree, args)
             .ok()
@@ -242,7 +304,7 @@ fn linked_worktrees(git: &Path, worktree: &Path) -> Vec<LinkedWorktree> {
 }
 
 fn ready_member(git: &Path, kind: MemberKind, name: String, root: &Path, paths: &RepoPaths, parent: Option<String>, recorded: Option<String>) -> GroupMember {
-    let (branch, head_oid) = head_of(git, &paths.worktree);
+    let (branch, head_oid) = head_of(git, paths);
     GroupMember {
         repo_id: Some(repo_id_of(&paths.worktree)),
         kind,
@@ -280,6 +342,10 @@ fn unavailable(kind: MemberKind, name: String, root: &Path, path: &Path, parent:
 /// 只有解析出的工作区根正好是登记的路径才算就绪：目录还在但不是完整 worktree（例如停在 `locked initializing`）时，
 /// Git 会向上找到别的仓库，不能把它当成这个 worktree（否则所属仓库会被重复列出）。
 fn worktree_members(git: &Path, root: &Path, owner: &RepoPaths) -> Vec<GroupMember> {
+    // linked worktree 都登记在 `<common dir>/worktrees/` 下：没有这个目录时 `worktree list` 只会列出主工作区，不必启动 Git（lc5）。
+    if !owner.common_dir.join("worktrees").is_dir() {
+        return Vec::new();
+    }
     let owner_id = repo_id_of(&owner.worktree);
     let owner_name = owner.worktree.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     linked_worktrees(git, &owner.worktree)
@@ -366,7 +432,7 @@ pub fn discover(git: &Path, path: &Path, manual: &[String]) -> Result<GroupDisco
             // 分支 / HEAD 与 linked worktree 列表互不依赖：并行读取。
             let (head, worktrees) = std::thread::scope(|inner| {
                 let worktrees = inner.spawn(|| worktree_members(git, &root_ref.worktree, root_ref));
-                (head_of(git, &root_ref.worktree), worktrees.join().unwrap_or_default())
+                (head_of(git, root_ref), worktrees.join().unwrap_or_default())
             });
             let (branch, head_oid) = head;
             let mut members = vec![GroupMember {

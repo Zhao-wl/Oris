@@ -250,6 +250,51 @@ fn b33_pointer_switch_controls_gitlink_rows_and_never_scans_submodule_content() 
     assert_eq!(group::change_count(gp(), &battle, false).unwrap(), 1);
 }
 
+/// 直接读文件得到的分支与 HEAD 与 Git 的输出逐字相同；拿不准的情形（同名标签）返回 None 交给 Git（lc5）。
+#[test]
+fn head_from_files_matches_git_or_defers() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = canon(dir.path());
+    let git_opt = |root: &Path, args: &[&str]| -> Option<String> {
+        let out = Command::new("git").arg("-C").arg(root).args(args).output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+        (out.status.success() && !text.is_empty()).then_some(text)
+    };
+    let expected = |root: &Path| (git_opt(root, &["symbolic-ref", "--quiet", "--short", "HEAD"]), git_opt(root, &["rev-parse", "--verify", "--quiet", "HEAD"]));
+    let dirs = |root: &Path| (PathBuf::from(git_in(root, &["rev-parse", "--path-format=absolute", "--absolute-git-dir"])), PathBuf::from(git_in(root, &["rev-parse", "--path-format=absolute", "--git-common-dir"])));
+    let check = |root: &Path, label: &str| {
+        let (git_dir, common_dir) = dirs(root);
+        assert_eq!(group::head_from_files(&git_dir, &common_dir), Some(expected(root)), "{label}");
+    };
+    // 未出生分支
+    let unborn = base.join("unborn");
+    fs::create_dir_all(&unborn).unwrap();
+    git_in(&unborn, &["init", "-q", "-b", "main"]);
+    check(&unborn, "未出生分支");
+    // 松散引用、带 / 的分支名、packed-refs、分离 HEAD
+    let repo = base.join("repo");
+    repo_with_commit(&repo, "a.txt");
+    check(&repo, "松散引用");
+    git_in(&repo, &["switch", "-q", "-c", "feature/x"]);
+    check(&repo, "带 / 的分支名");
+    git_in(&repo, &["pack-refs", "--all"]);
+    assert!(!repo.join(".git").join("refs").join("heads").join("feature").join("x").exists());
+    check(&repo, "packed-refs");
+    let head = git_in(&repo, &["rev-parse", "HEAD"]);
+    git_in(&repo, &["switch", "-q", "--detach", &head]);
+    check(&repo, "分离 HEAD");
+    // linked worktree：HEAD 在 worktree 自己的 git 目录，分支引用在 common dir
+    git_in(&repo, &["switch", "-q", "main"]);
+    let linked = base.join("linked");
+    git_in(&repo, &["worktree", "add", "-q", "-b", "side", &linked.to_string_lossy()]);
+    check(&linked, "linked worktree");
+    // 同名标签：Git 显示为 heads/main，文件读取必须交给 Git
+    git_in(&repo, &["tag", "main"]);
+    let (git_dir, common_dir) = dirs(&repo);
+    assert_eq!(group::head_from_files(&git_dir, &common_dir), None);
+    assert_eq!(expected(&repo).0.as_deref(), Some("heads/main"));
+}
+
 /// 增删统计（后台详情）与 status 一样带 `--ignore-submodules`，不进入子模块检查改动（lc5）。
 /// 可观察方式：把 client 子模块的 HEAD 写坏——若统计命令进入子模块运行 status，Git 会直接失败。
 #[test]
