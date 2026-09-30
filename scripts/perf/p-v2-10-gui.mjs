@@ -4,6 +4,7 @@
 // 再在第一份副本上测已缓存切换、开启“对齐变化”（含对齐时滚动与可见边界误差）、F7 导航、滚轮滚动帧间隔、块操作按钮（块映射是否对得上）、切到统一视图与进程树内存。
 // 只经 CDP 操作本轮启动并核验过的 Oris 实例（launchOris / killOris），不调用任何窗口激活 API；按键为页面内派发的 KeyboardEvent，滚轮为 CDP 输入事件。
 // 用法：node scripts/perf/p-v2-10-gui.mjs --exe <oris.exe> --label <名称> [--port 9887] [--copies 6] [--cached 5] [--profile <场景>]
+//       [--cached-only] [--scenarios every5-3000,every50-10000] [--trace <场景>]
 // --profile：在该场景的已缓存切换期间录制 CPU 剖析，输出自身耗时最高的函数（位置为打包产物中的行:列）。
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -19,6 +20,10 @@ const label = option("label", "p-v2-10-gui");
 const copies = Number(option("copies", 6));
 // 已缓存切换每场景的次数（研究 10 为 5 次；发布性能会话用 30 次）。
 const cachedN = Number(option("cached", 5));
+// lc5 阶段 3：只测已缓存切换（反复 A/B 用）、只测指定场景、在某个场景的已缓存切换期间录制 CDP 时间线。
+const cachedOnly = args.includes("--cached-only");
+const onlyScenarios = option("scenarios", null)?.split(",") ?? null;
+const traceScenario = option("trace", null);
 const profileScenario = option("profile", null);
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const outDir = path.join(projectRoot, "artifacts", "gui-probe", label);
@@ -119,8 +124,8 @@ try {
   await waitUntil(`window.__op.rows().length === ${right.size} && !window.__op.loading()`, 60000);
   await sleep(1500);
 
-  // 1. 未缓存文件切换
-  for (const t of targets) {
+  // 1. 未缓存文件切换（--cached-only 时只把各场景第一份副本各打开一次，让它进入缓存）
+  for (const t of cachedOnly ? targets.filter((x) => x.copy === 0) : targets) {
     const r = await measure(`window.__op.row(${q(t.file)}).click()`, rendered(t.file), 30000);
     const state = await readState();
     (result.uncached[t.scenario] ??= []).push({ copy: t.copy, ...r, ...state });
@@ -130,18 +135,62 @@ try {
   for (const [key, samples] of Object.entries(result.uncached)) result.uncached[key] = { summary: summarize(samples), workerP50: round(percentile(samples.map((s) => s.worker), 0.5)), hunkCount: samples[0]?.hunkCount, samples };
 
   // 2. 第一份副本上的已缓存切换与交互
-  for (const s of SCENARIOS) {
+  for (const s of SCENARIOS.filter((x) => !onlyScenarios || onlyScenarios.includes(x.key))) {
     const file = targets.find((t) => t.scenario === s.key && t.copy === 0).file;
     const entry = {};
     const cached = [];
     const profiling = profileScenario === s.key;
+    const tracing = traceScenario === s.key;
     if (profiling) { await call("Profiler.enable"); await call("Profiler.setSamplingInterval", { interval: 200 }); await call("Profiler.start"); }
+    // 时间线录制时从一个小文件切过去，时间线里只剩目标文件的换入；其余情况与研究 10 相同（从另一个场景的大文件切过去）。
+    const other = tracing ? [...right.keys()].find((f) => f.includes("filler")) : targets.find((t) => t.scenario !== s.key && t.copy === 0).file;
+    const traceEvents = [];
+    const traceWindows = [];
+    if (tracing) {
+      app.cdp.on("Tracing.dataCollected", (params) => traceEvents.push(...params.value));
+      await call("Tracing.start", { categories: "devtools.timeline,disabled-by-default-devtools.timeline.stack,blink,v8.execute,toplevel", transferMode: "ReportEvents" });
+    }
     for (let i = 0; i < cachedN; i++) {
-      const other = targets.find((t) => t.scenario !== s.key && t.copy === 0).file;
       await measure(`window.__op.row(${q(other)}).click()`, rendered(other), 30000); await sleep(400);
-      cached.push(await measure(`window.__op.row(${q(file)}).click()`, rendered(file), 30000)); await sleep(400);
+      if (tracing) await evaluate(`console.timeStamp('oris-switch-start')`);
+      cached.push(await measure(`window.__op.row(${q(file)}).click()`, rendered(file), 30000));
+      if (tracing) await evaluate(`console.timeStamp('oris-switch-end')`);
+      await sleep(400);
     }
     entry.cachedSwitch = summarize(cached);
+    if (tracing) {
+      const done = new Promise((resolve) => app.cdp.on("Tracing.tracingComplete", resolve));
+      await call("Tracing.end");
+      await done;
+      writeFileSync(path.join(outDir, `${s.key}.trace.json`), JSON.stringify({ traceEvents }));
+      // 只统计 console.timeStamp 标出的“切到目标文件”窗口内的事件；按事件名汇总总时长（嵌套事件会重复计入上层，看相对大小）。
+      const marks = traceEvents.filter((e) => e.name === "TimeStamp" && /oris-switch-(start|end)/.test(e.args?.data?.message ?? "")).sort((a, b) => a.ts - b.ts);
+      for (let i = 0; i + 1 < marks.length; i++) if (marks[i].args.data.message === "oris-switch-start" && marks[i + 1].args.data.message === "oris-switch-end") traceWindows.push([marks[i].ts, marks[i + 1].ts]);
+      const inside = (e) => traceWindows.some(([from, to]) => e.ts >= from && e.ts <= to);
+      const totals = new Map();
+      for (const e of traceEvents) {
+        if (e.ph !== "X" || !e.dur || !inside(e)) continue;
+        const t = totals.get(e.name) ?? { count: 0, ms: 0, max: 0 };
+        t.count++; t.ms += e.dur / 1000; t.max = Math.max(t.max, e.dur / 1000);
+        totals.set(e.name, t);
+      }
+      const perSwitch = (ms) => round(ms / Math.max(1, traceWindows.length));
+      entry.trace = { windows: traceWindows.length, perSwitchMs: [...totals].sort((x, y) => y[1].ms - x[1].ms).slice(0, 30).map(([name, t]) => ({ name, count: round(t.count / Math.max(1, traceWindows.length)), ms: perSwitch(t.ms), max: round(t.max) })) };
+      // 强制样式 / 布局：按 JS 调用栈最内层 3 帧汇总
+      const forced = new Map();
+      for (const e of traceEvents) {
+        if (e.ph !== "X" || !inside(e) || (e.name !== "Layout" && e.name !== "UpdateLayoutTree")) continue;
+        const stack = e.args?.beginData?.stackTrace ?? e.args?.data?.stackTrace;
+        if (!stack?.length) continue;
+        const key = `${e.name} ← ${stack.slice(0, 3).map((f) => `${f.functionName || "(anon)"}:${f.lineNumber}:${f.columnNumber}`).join(" ← ")}`;
+        const t = forced.get(key) ?? { count: 0, ms: 0 };
+        t.count++; t.ms += e.dur / 1000;
+        forced.set(key, t);
+      }
+      entry.trace.forced = [...forced].sort((x, y) => y[1].ms - x[1].ms).slice(0, 20).map(([key, t]) => ({ key, count: round(t.count / Math.max(1, traceWindows.length)), ms: perSwitch(t.ms) }));
+      log("时间线", s.key, JSON.stringify(entry.trace.perSwitchMs.slice(0, 15)));
+    }
+    if (cachedOnly) { result.cached[s.key] = entry; log("已缓存", s.key, JSON.stringify(entry.cachedSwitch)); continue; }
     if (profiling) {
       const { profile } = await call("Profiler.stop");
       const byId = new Map(profile.nodes.map((node) => [node.id, node.callFrame]));
