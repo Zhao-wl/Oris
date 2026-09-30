@@ -29,11 +29,13 @@ for (let round = 1; round <= rounds; round++) {
     const session = sessionFile ? JSON.parse(readFileSync(path.join(sessionDir, sessionFile), "utf8")) : null;
     const attempt = session?.suites?.[0]?.attempts?.[0];
     const result = existsSync(path.join(probeDir, `perf-${id}-${suite}`, "result.json")) ? JSON.parse(readFileSync(path.join(probeDir, `perf-${id}-${suite}`, "result.json"), "utf8")) : null;
-    // 逐样本过滤：样本前后 5 s 内的负载采样外部 CPU 都 ≤ 10% 才计入“干净”统计（与“受干扰段落作废”同一口径，粒度到单次切换）。
+    // 逐样本过滤：样本前后 10 s 内的负载采样外部 CPU 都 ≤ 10% 才计入“干净”统计（与“受干扰段落作废”同一口径，粒度到单次切换）。
     const load = session?.loadSamples ?? [];
-    const clean = (at) => { const near = load.filter((s) => s.at >= at - 5000 && s.at <= at + 5000); return near.length > 0 && near.every((s) => s.externalCpu <= 10); };
+    // 监测偶尔会漏采（WMI 查询变慢）：在前后 10 s 内找采样；找不到的样本不计入干净统计，单独记为 noSample。
+    const clean = (at) => { const near = load.filter((s) => s.at >= at - 10000 && s.at <= at + 10000); return near.length > 0 && near.every((s) => s.externalCpu <= 10); };
+    const noSample = (at) => !load.some((s) => s.at >= at - 10000 && s.at <= at + 10000);
     const stat = (list) => { const ms = list.filter((x) => x.ok).map((x) => x.ms).sort((a, b) => a - b); const pick = (q) => ms.length ? ms[Math.min(ms.length - 1, Math.ceil(ms.length * q) - 1)] : null; return { n: ms.length, p50: pick(0.5), p95: pick(0.95), max: ms.at(-1) ?? null }; };
-    const cached = result ? Object.fromEntries(Object.entries(result.cached).map(([k, v]) => [k, { all: v.cachedSwitch, clean: v.cachedSamples ? stat(v.cachedSamples.filter((x) => clean(x.at))) : null, samples: v.cachedSamples }])) : null;
+    const cached = result ? Object.fromEntries(Object.entries(result.cached).map(([k, v]) => [k, { all: v.cachedSwitch, clean: v.cachedSamples ? stat(v.cachedSamples.filter((x) => clean(x.at))) : null, noSample: v.cachedSamples ? v.cachedSamples.filter((x) => noSample(x.at)).length : null, samples: v.cachedSamples }])) : null;
     const entry = { round, side, id, exit: r.status, exeSha256: result?.exeSha256, seconds: attempt?.seconds, disturbed: attempt?.disturbed, externalCpu: attempt?.load?.externalCpu, topExternal: attempt?.load?.topExternal?.slice(0, 5), cached, error: result?.error ?? null };
     summary.rounds.push(entry);
     log(`结束 ${id}：exit ${r.status}，外部 CPU ${JSON.stringify(entry.externalCpu)}，${JSON.stringify(Object.fromEntries(Object.entries(cached ?? {}).map(([k, v]) => [k, `全部 ${v.all.p50} / ${v.all.p95}；干净 n=${v.clean?.n} ${v.clean?.p50} / ${v.clean?.p95}`])))}`);
