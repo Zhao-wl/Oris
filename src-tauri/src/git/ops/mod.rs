@@ -38,6 +38,19 @@ use super::*;
 use process::{CancelHandle, OutputLog};
 use std::sync::atomic::AtomicU32;
 
+/// 切换类操作遇到本地改动时的处理方式（Git 拒绝切换、用户在确认框中选择后再次请求）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LocalChanges {
+    /// 普通切换：Git 因本地改动拒绝时返回需要确认。
+    #[default]
+    Keep,
+    /// 放弃修改后切换：先把改动储藏为备份提交并从列表移除（可凭 OID 找回），再切换。
+    Discard,
+    /// 带着改动切换：`git switch --merge`，冲突时留在工作区由用户解决。
+    Merge,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum OperationRequest {
@@ -110,17 +123,17 @@ pub enum OperationRequest {
         #[serde(default)]
         switch: bool,
         #[serde(default)]
-        stash_first: bool,
+        local_changes: LocalChanges,
         #[serde(default)]
-        stash_untracked: bool,
+        include_untracked: bool,
     },
     /// 切换到本地分支（完整名 refs/heads/…）。
     BranchSwitch {
         name: String,
         #[serde(default)]
-        stash_first: bool,
+        local_changes: LocalChanges,
         #[serde(default)]
-        stash_untracked: bool,
+        include_untracked: bool,
     },
     /// 从远端跟踪分支（refs/remotes/…）建立本地跟踪分支并切换；`local_name` 为空时使用同名。
     BranchTrack {
@@ -128,17 +141,17 @@ pub enum OperationRequest {
         #[serde(default)]
         local_name: Option<String>,
         #[serde(default)]
-        stash_first: bool,
+        local_changes: LocalChanges,
         #[serde(default)]
-        stash_untracked: bool,
+        include_untracked: bool,
     },
     /// 检出指定提交（分离 HEAD）。
     Checkout {
         commit: String,
         #[serde(default)]
-        stash_first: bool,
+        local_changes: LocalChanges,
         #[serde(default)]
-        stash_untracked: bool,
+        include_untracked: bool,
     },
     BranchRename { name: String, new_name: String },
     BranchDelete {
@@ -460,10 +473,10 @@ impl GitAdapter {
             OperationRequest::StashPush { message, include_untracked, path_ids } => self.op_stash_push(message.as_deref(), *include_untracked, path_ids.as_deref(), ctx),
             OperationRequest::StashApply { index, oid, pop } => self.op_stash_apply(*index, oid, *pop, ctx),
             OperationRequest::StashDrop { index, oid } => self.op_stash_drop(*index, oid, ctx),
-            OperationRequest::BranchCreate { name, start, switch, stash_first, stash_untracked } => self.op_branch_create(name, start, *switch, *stash_first, *stash_untracked, ctx),
-            OperationRequest::BranchSwitch { name, stash_first, stash_untracked } => self.op_branch_switch(name, *stash_first, *stash_untracked, ctx),
-            OperationRequest::BranchTrack { remote, local_name, stash_first, stash_untracked } => self.op_branch_track(remote, local_name.as_deref(), *stash_first, *stash_untracked, ctx),
-            OperationRequest::Checkout { commit, stash_first, stash_untracked } => self.op_checkout(commit, *stash_first, *stash_untracked, ctx),
+            OperationRequest::BranchCreate { name, start, switch, local_changes, include_untracked } => self.op_branch_create(name, start, *switch, *local_changes, *include_untracked, ctx),
+            OperationRequest::BranchSwitch { name, local_changes, include_untracked } => self.op_branch_switch(name, *local_changes, *include_untracked, ctx),
+            OperationRequest::BranchTrack { remote, local_name, local_changes, include_untracked } => self.op_branch_track(remote, local_name.as_deref(), *local_changes, *include_untracked, ctx),
+            OperationRequest::Checkout { commit, local_changes, include_untracked } => self.op_checkout(commit, *local_changes, *include_untracked, ctx),
             OperationRequest::BranchRename { name, new_name } => self.op_branch_rename(name, new_name, ctx),
             OperationRequest::BranchDelete { name, force } => self.op_branch_delete(name, *force, ctx),
             OperationRequest::SetUpstream { name, upstream } => self.op_set_upstream(name, upstream, ctx),

@@ -15,6 +15,7 @@ import ProjectTab from "./ProjectTab";
 import { ProjectStore, parsePersistedSnapshot, persistableSnapshot, scopeView, statsPending } from "./project-store";
 import { createStore, useStore } from "./store";
 import ConfirmDialog, { type ConfirmRequest } from "./ConfirmDialog";
+import SwitchDialog, { type SwitchChoice, type SwitchRequest } from "./SwitchDialog";
 import GitPanel, { type GitTab, type OperationRecord, type RunningOperation } from "./GitPanel";
 import { cancelOperation, discardBackups, headCommitInfo, hunkMap as readHunkMap, prepareDiscard, removeStaleLocks, runOperation, type BackupSummary, type HeadCommitInfo, type HunkMap, type OperationOutcome, type OperationRequest } from "./operations-api";
 import { fileLevelBlock, hunkMapKey, latin1View, matchHunks } from "./hunk-model";
@@ -27,7 +28,7 @@ import { cancelAiGeneration, generateAiCommit, planAiAction, type AiPlan } from 
 import { aiActionCatalogue, aiScope, parseAiAction, type AiAction } from "./ai-actions";
 import { mentionedPromptTags } from "./ai-prompt-tags";
 import HistoryPanel, { type FileHistoryRequest, type HistoryFileOpen } from "./HistoryPanel";
-import { readLog, readRefs, readRevisionPair, stashList, type Branch, type RefsView, type StashEntry } from "./history-api";
+import { readLog, readRefs, readRevisionPair, shortRef, stashList, type Branch, type RefsView, type StashEntry } from "./history-api";
 import BranchPopover, { type BranchActions } from "./BranchPopover";
 import { NewBranchDialog, RenameBranchDialog, TrackChoiceDialog, UpstreamDialog, type NewBranchRequest } from "./BranchDialogs";
 import { type StashPushOptions } from "./StashPanel";
@@ -196,6 +197,8 @@ export default function App() {
   const [multiSelection, setMultiSelection] = useState<ReadonlySet<string>>(() => new Set());
   const [confirmState, setConfirmState] = useState<(ConfirmRequest & { resolve(ok: boolean): void }) | null>(null);
   const askConfirm = useCallback((request: ConfirmRequest) => new Promise<boolean>((resolve) => setConfirmState({ ...request, resolve })), []);
+  const [switchState, setSwitchState] = useState<(SwitchRequest & { resolve(choice: SwitchChoice | null): void }) | null>(null);
+  const askSwitch = useCallback((request: SwitchRequest) => new Promise<SwitchChoice | null>((resolve) => setSwitchState({ ...request, resolve })), []);
   const workspaceRef = useRef(workspaceState);
   workspaceRef.current = workspaceState;
   /** 最近一次决定的当前仓库（同步更新，早于重新渲染）：自动刷新据此判断自己捕获的当前仓库是否已过期。 */
@@ -1235,20 +1238,18 @@ export default function App() {
     if (stored) void selectFile(scopeView(stored, projects.get(repoId)?.details, "unstaged"), first, activeProject?.gitExecutable ?? "");
   };
   const syncRunning = networkRunning && repoOps?.running ? repoOps.running.kind as SyncKind : null;
-  /** 切换类操作：Git 因工作区改动拒绝时询问“stash 后切换”；切换后不自动恢复。 */
-  const runSwitch = async (request: OperationRequest) => {
+  /** 切换类操作：Git 因工作区改动拒绝时让用户选择“放弃修改后切换”或“带着改动切换”。 */
+  const runSwitch = async (request: Extract<OperationRequest, { kind: "branchSwitch" | "branchTrack" | "checkout" | "branchCreate" }>) => {
     let outcome = await runOp(request);
     const confirmation = outcome?.status === "needsConfirmation" ? outcome.confirmation : null;
     if (confirmation && (confirmation.reason === "localChanges" || confirmation.reason === "untrackedOverwritten")) {
       const untracked = confirmation.reason === "untrackedOverwritten";
-      const ok = await askConfirm({
-        title: "stash 后切换",
-        message: confirmation.message,
-        items: confirmation.paths,
-        notes: [untracked ? "将储藏全部本地改动，包含未跟踪文件" : "将储藏已跟踪文件的全部改动（不含未跟踪文件）", "储藏为新的 stash@{0}；切换后不会自动恢复，之后可在底部“历史”页左侧的 Stash 中应用或弹出"],
-        confirmLabel: "stash 后切换"
-      });
-      if (ok) outcome = await runOp({ ...request, stashFirst: true, stashUntracked: untracked } as OperationRequest);
+      const target = request.kind === "branchSwitch" ? shortRef(request.name)
+        : request.kind === "branchTrack" ? request.localName ?? shortRef(request.remote).replace(/^[^/]+\//, "")
+        : request.kind === "checkout" ? `提交 ${request.commit.slice(0, 8)}` : request.name;
+      const staged = (projects.get(activeRepoId ?? "")?.snapshot?.scopes?.staged.length ?? 0) > 0;
+      const choice = await askSwitch({ target, message: confirmation.message, paths: confirmation.paths, untracked, staged });
+      if (choice) outcome = await runOp({ ...request, localChanges: choice, includeUntracked: untracked });
     }
     return outcome;
   };
@@ -1775,6 +1776,7 @@ export default function App() {
     {trackChoice && activeRepoId && <TrackChoiceDialog repoId={activeRepoId} remote={trackChoice.remote} existing={trackChoice.existing} refs={refsView} onCancel={() => setTrackChoice(null)}
       onSwitchExisting={() => { const choice = trackChoice; setTrackChoice(null); void runSwitch({ kind: "branchSwitch", name: `refs/heads/${choice.existing}` }); }}
       onTrackAs={(name) => { const choice = trackChoice; setTrackChoice(null); void runSwitch({ kind: "branchTrack", remote: choice.remote.fullName, localName: name }); }}/>}
+    {switchState && <SwitchDialog request={switchState} onChoose={(choice) => { switchState.resolve(choice); setSwitchState(null); }} onCancel={() => { switchState.resolve(null); setSwitchState(null); }}/>}
     {confirmState && <ConfirmDialog request={confirmState} onConfirm={() => { confirmState.resolve(true); setConfirmState(null); }} onCancel={() => { confirmState.resolve(false); setConfirmState(null); }}/>}
     {settingsOpen && <SettingsDialog settings={settings} onClose={() => setSettingsOpen(false)} gitInUse={snapshot ? { executable: snapshot.git.executable, version: snapshot.git.version, minimumVersion: snapshot.git.minimumVersion } : null}/>}
     {aiOpen && <AiCommitDialog onClose={() => setAiOpen(false)} onGenerate={aiPlan} onPlanAction={planAction} onExecuteAction={executeAction} onCancelGeneration={cancelAiGeneration} onCommit={aiCommit}/>}

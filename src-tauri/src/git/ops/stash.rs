@@ -16,7 +16,7 @@ impl GitAdapter {
         }
     }
 
-    fn unmerged_paths(&self) -> Vec<String> {
+    pub(super) fn unmerged_paths(&self) -> Vec<String> {
         run_readonly(&self.git, &self.worktree, &["ls-files", "-u", "-z"])
             .ok()
             .map(|o| {

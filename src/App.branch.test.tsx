@@ -90,31 +90,66 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("branch popover (B10)", () => {
-  it("switches a local branch and offers “stash 后切换” when Git refuses because of local changes", async () => {
-    bridge.operation.mockImplementationOnce(async () => outcome("branchSwitch", { status: "needsConfirmation", snapshot: null, message: "Git 拒绝切换到 feature：工作区改动会被覆盖", confirmation: { reason: "localChanges", message: "Git 拒绝切换到 feature：工作区改动会被覆盖。可以先储藏再切换，切换后不会自动恢复", paths: ["a.txt"] } }));
+  const option = (label: string) => all(".switch-option").find((b) => b.querySelector("strong")?.textContent === label) as HTMLButtonElement;
+
+  it("switches a local branch and offers discard / keep changes / cancel when Git refuses because of local changes", async () => {
+    const refuse = () => outcome("branchSwitch", { status: "needsConfirmation", snapshot: null, message: "Git 拒绝切换到 feature：工作区改动会被覆盖", confirmation: { reason: "localChanges", message: "Git 拒绝切换到 feature：工作区改动会被覆盖", paths: ["src/deep/a.txt"] } });
+    bridge.operation.mockImplementationOnce(async () => refuse());
     await mount();
     await openBranches();
     expect(branchRow("main").textContent).toContain("当前");
     expect(q(".branch-popover")?.textContent).toContain("远端跟踪分支 · 1");
     await click(button("切换", branchRow("feature")));
     expect(requests()[0]).toEqual({ kind: "branchSwitch", name: "refs/heads/feature" });
-    expect(q(".confirm-dialog")?.textContent).toContain("stash 后切换");
-    expect(q(".confirm-dialog")?.textContent).toContain("切换后不会自动恢复");
-    expect(q(".confirm-items")?.textContent).toContain("a.txt");
-    await click(button("stash 后切换", q(".confirm-dialog")!));
-    expect(requests()[1]).toEqual({ kind: "branchSwitch", name: "refs/heads/feature", stashFirst: true, stashUntracked: false });
+    expect(q(".switch-dialog h3")?.textContent).toBe("切换到 feature");
+    expect(q(".switch-file-name")?.textContent).toBe("a.txt");
+    expect(q(".switch-file-dir")?.textContent).toBe("src/deep");
+    expect(q(".switch-dialog")?.textContent).not.toContain("stash");
+    expect(document.activeElement?.textContent).toBe("取消");
+    await click(option("放弃修改后切换"));
+    expect(requests()[1]).toEqual({ kind: "branchSwitch", name: "refs/heads/feature", localChanges: "discard", includeUntracked: false });
+    expect(q(".switch-dialog")).toBeNull();
+    // 带着改动切换
+    bridge.operation.mockImplementationOnce(async () => refuse());
+    await openBranches();
+    await click(button("切换", branchRow("feature")));
+    await click(option("带着改动切换"));
+    expect(requests()[3]).toEqual({ kind: "branchSwitch", name: "refs/heads/feature", localChanges: "merge", includeUntracked: false });
+    // 取消：不再发请求
+    bridge.operation.mockImplementationOnce(async () => refuse());
+    await openBranches();
+    await click(button("切换", branchRow("feature")));
+    await click(button("取消", q(".switch-dialog")!));
+    expect(requests()).toHaveLength(5);
+    expect(q(".switch-dialog")).toBeNull();
   });
 
-  it("includes untracked files only when Git said untracked files would be overwritten", async () => {
+  it("includes untracked files when Git said untracked files would be overwritten, and cannot keep changes then", async () => {
     bridge.operation.mockImplementationOnce(async () => outcome("checkout", { status: "needsConfirmation", snapshot: null, confirmation: { reason: "untrackedOverwritten", message: "未跟踪文件会被覆盖", paths: ["new.txt"] } }));
     await mount();
     await openHistory();
     await act(async () => { q(".log-row")!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 })); }); await flush();
     await click(button("检出（分离 HEAD）"));
     expect(requests()[0]).toEqual({ kind: "checkout", commit: O("1") });
-    expect(q(".confirm-dialog")?.textContent).toContain("包含未跟踪文件");
-    await click(button("stash 后切换", q(".confirm-dialog")!));
-    expect(requests()[1]).toEqual({ kind: "checkout", commit: O("1"), stashFirst: true, stashUntracked: true });
+    expect(option("放弃修改后切换").textContent).toContain("包括未跟踪文件");
+    expect(option("带着改动切换").disabled).toBe(true);
+    await click(option("放弃修改后切换"));
+    expect(requests()[1]).toEqual({ kind: "checkout", commit: O("1"), localChanges: "discard", includeUntracked: true });
+  });
+
+  it("switches branches from the history sidebar context menu", async () => {
+    await mount();
+    await openHistory();
+    const menuOn = async (row: HTMLElement) => { await act(async () => { row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 })); }); await flush(); };
+    await menuOn(sideRow("local", "main"));
+    expect(button("切换到 main").disabled).toBe(true);
+    await act(async () => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); }); await flush();
+    await menuOn(sideRow("local", "feature"));
+    await click(button("切换到 feature"));
+    expect(requests()[0]).toEqual({ kind: "branchSwitch", name: "refs/heads/feature" });
+    await menuOn(all("[data-group='remote'] .log-branch")[0]);
+    await click(button("检出为本地分支并切换"));
+    expect(requests()[1]).toEqual({ kind: "branchTrack", remote: "refs/remotes/origin/feature" });
   });
 
   it("checks out a remote branch as a tracking branch and lets the user choose when the local name exists", async () => {

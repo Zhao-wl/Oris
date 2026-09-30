@@ -264,7 +264,7 @@ fn b10_branch_names_are_validated_with_git_rules() {
         assert!(h.adapter.check_branch_name(bad).is_err(), "{bad}");
     }
     let before = fingerprint(dir.path());
-    let error = h.try_run(OperationRequest::BranchCreate { name: "bad name".into(), start: "HEAD".into(), switch: false, stash_first: false, stash_untracked: false }).unwrap_err();
+    let error = h.try_run(OperationRequest::BranchCreate { name: "bad name".into(), start: "HEAD".into(), switch: false, local_changes: LocalChanges::Keep, include_untracked: false }).unwrap_err();
     assert!(matches!(error, GitError::WriteBlocked(_)));
     assert_eq!(fingerprint(dir.path()), before, "校验失败时不启动写进程");
 }
@@ -277,7 +277,7 @@ fn b10_create_switch_track_rename_delete_and_set_upstream() {
     let base = text(p, &["rev-parse", "HEAD"]);
     // 从 HEAD 新建，不切换。
     let before = fingerprint(p);
-    let outcome = h.run(OperationRequest::BranchCreate { name: "topic".into(), start: "HEAD".into(), switch: false, stash_first: false, stash_untracked: false });
+    let outcome = h.run(OperationRequest::BranchCreate { name: "topic".into(), start: "HEAD".into(), switch: false, local_changes: LocalChanges::Keep, include_untracked: false });
     assert_eq!(outcome.status, OpStatus::Succeeded, "{}", outcome.message);
     assert_eq!(changed(&before, &fingerprint(p)), vec!["head"], "只新增 refs/heads/topic");
     assert_eq!(text(p, &["branch", "--show-current"]), "main");
@@ -285,26 +285,26 @@ fn b10_create_switch_track_rename_delete_and_set_upstream() {
     assert!(try_text(p, &["config", "branch.topic.merge"]).is_none(), "--no-track");
     // 从远端跟踪分支的提交新建并立即切换。
     let feature_tip = text(p, &["rev-parse", "origin/feature"]);
-    let outcome = h.run(OperationRequest::BranchCreate { name: "from-commit".into(), start: feature_tip.clone(), switch: true, stash_first: false, stash_untracked: false });
+    let outcome = h.run(OperationRequest::BranchCreate { name: "from-commit".into(), start: feature_tip.clone(), switch: true, local_changes: LocalChanges::Keep, include_untracked: false });
     assert_eq!(outcome.status, OpStatus::Succeeded, "{}", outcome.message);
     assert_eq!((text(p, &["branch", "--show-current"]), text(p, &["rev-parse", "HEAD"])), ("from-commit".to_owned(), feature_tip.clone()));
     // 切换本地分支。
-    let outcome = h.run(OperationRequest::BranchSwitch { name: "refs/heads/main".into(), stash_first: false, stash_untracked: false });
+    let outcome = h.run(OperationRequest::BranchSwitch { name: "refs/heads/main".into(), local_changes: LocalChanges::Keep, include_untracked: false });
     assert_eq!(outcome.status, OpStatus::Succeeded, "{}", outcome.message);
     assert_eq!(text(p, &["branch", "--show-current"]), "main");
     // 远端分支：建立同名本地跟踪分支。
-    let outcome = h.run(OperationRequest::BranchTrack { remote: "refs/remotes/origin/feature".into(), local_name: None, stash_first: false, stash_untracked: false });
+    let outcome = h.run(OperationRequest::BranchTrack { remote: "refs/remotes/origin/feature".into(), local_name: None, local_changes: LocalChanges::Keep, include_untracked: false });
     assert_eq!(outcome.status, OpStatus::Succeeded, "{}", outcome.message);
     assert_eq!(text(p, &["branch", "--show-current"]), "feature");
     assert_eq!(text(p, &["rev-parse", "--abbrev-ref", "feature@{u}"]), "origin/feature");
     git_in(p, &["switch", "-q", "main"]);
     // 同名本地分支已存在：要求选择，不改仓库；指定新名称后建立。
     let before = fingerprint(p);
-    let outcome = h.run(OperationRequest::BranchTrack { remote: "refs/remotes/origin/feature".into(), local_name: None, stash_first: false, stash_untracked: false });
+    let outcome = h.run(OperationRequest::BranchTrack { remote: "refs/remotes/origin/feature".into(), local_name: None, local_changes: LocalChanges::Keep, include_untracked: false });
     assert_eq!(outcome.status, OpStatus::NeedsConfirmation);
     assert_eq!(outcome.confirmation.as_ref().unwrap().reason, "localExists");
     assert_eq!(fingerprint(p), before);
-    let outcome = h.run(OperationRequest::BranchTrack { remote: "refs/remotes/origin/feature".into(), local_name: Some("feature-2".into()), stash_first: false, stash_untracked: false });
+    let outcome = h.run(OperationRequest::BranchTrack { remote: "refs/remotes/origin/feature".into(), local_name: Some("feature-2".into()), local_changes: LocalChanges::Keep, include_untracked: false });
     assert_eq!(outcome.status, OpStatus::Succeeded, "{}", outcome.message);
     assert_eq!(text(p, &["rev-parse", "--abbrev-ref", "feature-2@{u}"]), "origin/feature");
     git_in(p, &["switch", "-q", "main"]);
@@ -340,57 +340,89 @@ fn b10_create_switch_track_rename_delete_and_set_upstream() {
     assert!(matches!(error, GitError::WriteBlocked(_)), "不能删除当前分支：{error}");
     // 类型化参数：不接受短名或任意参数。
     for bad in ["main", "--all", "refs/heads/../x"] {
-        assert!(h.try_run(OperationRequest::BranchSwitch { name: bad.into(), stash_first: false, stash_untracked: false }).is_err(), "{bad}");
+        assert!(h.try_run(OperationRequest::BranchSwitch { name: bad.into(), local_changes: LocalChanges::Keep, include_untracked: false }).is_err(), "{bad}");
     }
 }
 
 #[test]
-fn b10_detached_checkout_and_stash_then_switch_without_auto_restore() {
+fn b10_detached_checkout_and_switch_by_discarding_or_keeping_changes() {
     let (_dir, p) = with_remote();
     let p = p.as_path();
     let h = Harness::new(p);
     let base = text(p, &["rev-parse", "HEAD"]);
     git_in(p, &["branch", "-q", "--track", "feature", "origin/feature"]);
     // 检出指定提交：分离 HEAD。
-    let outcome = h.run(OperationRequest::Checkout { commit: base.clone(), stash_first: false, stash_untracked: false });
+    let outcome = h.run(OperationRequest::Checkout { commit: base.clone(), local_changes: LocalChanges::Keep, include_untracked: false });
     assert_eq!(outcome.status, OpStatus::Succeeded, "{}", outcome.message);
     assert!(try_text(p, &["symbolic-ref", "-q", "HEAD"]).is_none());
     assert_eq!(text(p, &["rev-parse", "HEAD"]), base);
     // 从分离 HEAD 新建分支。
-    let outcome = h.run(OperationRequest::BranchCreate { name: "from-detached".into(), start: "HEAD".into(), switch: true, stash_first: false, stash_untracked: false });
+    let outcome = h.run(OperationRequest::BranchCreate { name: "from-detached".into(), start: "HEAD".into(), switch: true, local_changes: LocalChanges::Keep, include_untracked: false });
     assert_eq!(outcome.status, OpStatus::Succeeded, "{}", outcome.message);
     assert_eq!(text(p, &["branch", "--show-current"]), "from-detached");
-    // 工作区改动会被覆盖：返回“stash 后切换”，不改仓库。
+    // 工作区改动会被覆盖：返回需要确认，不改仓库。
     git_in(p, &["switch", "-q", "feature"]);
-    commit(p, "a.txt", "feature edits a\n", "feature edits a");
+    commit(p, "a.txt", "feature edits a
+", "feature edits a");
     git_in(p, &["switch", "-q", "main"]);
-    write(p, "a.txt", "local change\n");
+    write(p, "a.txt", "local change
+");
     let before = fingerprint(p);
-    let outcome = h.run(OperationRequest::BranchSwitch { name: "refs/heads/feature".into(), stash_first: false, stash_untracked: false });
+    let switch = |local_changes, include_untracked| OperationRequest::BranchSwitch { name: "refs/heads/feature".into(), local_changes, include_untracked };
+    let outcome = h.run(switch(LocalChanges::Keep, false));
     assert_eq!(outcome.status, OpStatus::NeedsConfirmation, "{}", outcome.message);
     let confirmation = outcome.confirmation.unwrap();
     assert_eq!(confirmation.reason, "localChanges");
     assert_eq!(confirmation.paths, vec!["a.txt"]);
     assert_eq!(changed(&before, &fingerprint(p)), Vec::<String>::new());
-    let outcome = h.run(OperationRequest::BranchSwitch { name: "refs/heads/feature".into(), stash_first: true, stash_untracked: false });
+    // 放弃修改后切换：改动不留在 stash 列表，凭备份提交可找回。
+    let stashes = h.adapter.stash_list().unwrap().len();
+    let outcome = h.run(switch(LocalChanges::Discard, false));
     assert_eq!(outcome.status, OpStatus::Succeeded, "{}", outcome.message);
-    assert!(outcome.message.contains("没有自动恢复") && outcome.message.contains("stash@{0}"), "{}", outcome.message);
     assert_eq!(text(p, &["branch", "--show-current"]), "feature");
-    assert_eq!(fs::read_to_string(p.join("a.txt")).unwrap(), "feature edits a\n", "切换后不自动恢复");
-    assert!(h.adapter.stash_list().unwrap()[0].message.contains("切换到 feature 前储藏"));
-    // 未跟踪文件会被覆盖：原因不同，确认后含未跟踪一并储藏。
+    assert_eq!(fs::read_to_string(p.join("a.txt")).unwrap(), "feature edits a
+");
+    assert_eq!(h.adapter.stash_list().unwrap().len(), stashes, "备份不留在 stash 列表中");
+    let backup = outcome.message.split("git stash apply ").nth(1).and_then(|rest| rest.split('（').next()).expect("结果给出找回命令").to_owned();
+    assert_eq!(text(p, &["show", &format!("{backup}:a.txt")]), "local change", "备份提交保存了放弃的改动");
+    // 带着改动切换：改动与目标分支冲突时照样切换，冲突留在工作区。
     git_in(p, &["switch", "-q", "main"]);
+    write(p, "a.txt", "a
+more
+");
+    let outcome = h.run(switch(LocalChanges::Keep, false));
+    assert_eq!(outcome.status, OpStatus::NeedsConfirmation, "{}", outcome.message);
+    let outcome = h.run(switch(LocalChanges::Merge, false));
+    assert_eq!(outcome.status, OpStatus::Succeeded, "{}", outcome.message);
+    assert_eq!(text(p, &["branch", "--show-current"]), "feature");
+    assert!(outcome.message.contains("冲突") && outcome.touched == vec!["a.txt"], "a.txt 双方都改过，冲突留在工作区：{}", outcome.message);
+    git_in(p, &["checkout", "-qf", "main"]);
+    // 有已暂存改动时 Git 不能带着改动切换：明确说明，不改仓库。
+    write(p, "a.txt", "staged change
+");
+    git_in(p, &["add", "a.txt"]);
+    let before = fingerprint(p);
+    let outcome = h.run(switch(LocalChanges::Merge, false));
+    assert_eq!(outcome.status, OpStatus::Failed, "{}", outcome.message);
+    assert!(outcome.message.contains("已暂存"), "{}", outcome.message);
+    assert_eq!(changed(&before, &fingerprint(p)), Vec::<String>::new());
+    git_in(p, &["reset", "-q", "--hard"]);
+    // 未跟踪文件会被覆盖：原因不同，放弃时一并备份未跟踪文件。
     git_in(p, &["switch", "-qc", "adds-file"]);
-    commit(p, "new.txt", "tracked on branch\n", "add new");
+    commit(p, "new.txt", "tracked on branch
+", "add new");
     git_in(p, &["switch", "-q", "main"]);
-    write(p, "new.txt", "untracked local\n");
-    let outcome = h.run(OperationRequest::BranchSwitch { name: "refs/heads/adds-file".into(), stash_first: false, stash_untracked: false });
+    write(p, "new.txt", "untracked local
+");
+    let outcome = h.run(OperationRequest::BranchSwitch { name: "refs/heads/adds-file".into(), local_changes: LocalChanges::Keep, include_untracked: false });
     assert_eq!(outcome.status, OpStatus::NeedsConfirmation, "{}", outcome.message);
     assert_eq!(outcome.confirmation.unwrap().reason, "untrackedOverwritten");
-    let outcome = h.run(OperationRequest::BranchSwitch { name: "refs/heads/adds-file".into(), stash_first: true, stash_untracked: true });
+    let outcome = h.run(OperationRequest::BranchSwitch { name: "refs/heads/adds-file".into(), local_changes: LocalChanges::Discard, include_untracked: true });
     assert_eq!(outcome.status, OpStatus::Succeeded, "{}", outcome.message);
-    assert_eq!(fs::read_to_string(p.join("new.txt")).unwrap(), "tracked on branch\n");
-    assert!(h.adapter.stash_list().unwrap()[0].untracked.is_some());
+    assert_eq!(fs::read_to_string(p.join("new.txt")).unwrap(), "tracked on branch
+");
+    let backup = outcome.message.split("git stash apply ").nth(1).and_then(|rest| rest.split('（').next()).unwrap().to_owned();
+    assert_eq!(text(p, &["show", &format!("{backup}^3:new.txt")]), "untracked local", "未跟踪文件在备份提交的第三个父节点中");
 }
 
 // ------------------------------ B16 / B17 ------------------------------
@@ -406,8 +438,8 @@ fn b16_external_index_lock_blocks_stash_and_branch_writes_without_touching_the_l
     let h = Harness::new(p);
     for request in [
         OperationRequest::StashPush { message: None, include_untracked: false, path_ids: None },
-        OperationRequest::BranchCreate { name: "x".into(), start: "HEAD".into(), switch: true, stash_first: false, stash_untracked: false },
-        OperationRequest::Checkout { commit: "HEAD".into(), stash_first: false, stash_untracked: false },
+        OperationRequest::BranchCreate { name: "x".into(), start: "HEAD".into(), switch: true, local_changes: LocalChanges::Keep, include_untracked: false },
+        OperationRequest::Checkout { commit: "HEAD".into(), local_changes: LocalChanges::Keep, include_untracked: false },
     ] {
         let error = h.try_run(request).unwrap_err();
         assert!(matches!(error, GitError::ExternalLock(_)), "{error}");
