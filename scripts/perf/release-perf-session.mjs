@@ -16,6 +16,8 @@ const runId = option("run-id");
 if (!runId) throw new Error("缺少 --run-id");
 const pause = Number(option("pause", 30));
 const preCheck = Number(option("pre-check", 0));
+// 受干扰时的重测次数（默认 2，与发布性能测试相同）；同负载交替 A/B 时用 0，每轮只跑一次并记录负载。
+const retries = Number(option("retries", 2));
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const probe = (file) => path.join(projectRoot, "scripts", "perf", file);
 const lRepo = () => { const r = option("l-repo"); if (!r) throw new Error("L 套件需要 --l-repo"); return path.resolve(r); };
@@ -45,6 +47,8 @@ const SUITES = {
   // 长链 lc5 新增：V2-D75 之后的大文件（研究 10 §7.3，未缓存 30 份副本、已缓存 30 次）、对齐变化（研究 10 §7.5 与 wrap-align 探针）、
   // V2-07 工作区（V2 验收 §3 / §4）、AI 入口与计划执行（无预算，只记录）。
   "diff-blocks": (l) => ({ script: "p-v2-10-gui.mjs", argv: ["--label", l, "--copies", "30", "--cached", "30"] }),
+  // lc5 阶段 3：只测 5 个场景的已缓存切换（各 30 次），用于优化前后交替 A/B。
+  "diff-cached": (l) => ({ script: "p-v2-10-gui.mjs", argv: ["--label", l, "--copies", "1", "--cached", "30", "--cached-only"] }),
   "wrap-align-single": (l) => ({ script: "wrap-align-probe.mjs", argv: ["--label", l, "--fixture", "single"] }),
   "wrap-align-multi": (l) => ({ script: "wrap-align-probe.mjs", argv: ["--label", l, "--fixture", "multi"] }),
   workspace: (l) => ({ script: "workspace-acceptance.mjs", argv: ["--label", l, "--only", "perf", "--iterations", "30"] }),
@@ -85,7 +89,7 @@ try {
       log(`${suite} 开始前 ${preCheck} s：外部 CPU P50 ${entry.preCheck.externalCpu.p50}% / P95 ${entry.preCheck.externalCpu.p95}%（${entry.preCheck.topExternal.slice(0, 4).map((p) => `${p.name} ${p.maxCpu}%`).join("，")}）`);
       save();
     }
-    for (let attempt = 0; attempt <= 2; attempt++) {
+    for (let attempt = 0; attempt <= retries; attempt++) {
       const l = label(suite, attempt);
       const def = SUITES[suite](l);
       if (def.outDir) mkdirSync(path.join(projectRoot, "artifacts", "gui-probe", def.outDir), { recursive: true });
