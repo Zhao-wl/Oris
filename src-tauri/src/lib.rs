@@ -2,6 +2,9 @@ mod git;
 #[cfg(any(test, feature = "desktop"))]
 #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
 mod ai;
+#[cfg(any(test, feature = "desktop"))]
+#[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+mod reveal;
 mod snapshot_store;
 #[cfg(feature = "desktop")]
 mod updater;
@@ -841,6 +844,15 @@ async fn head_commit_info(repo_id: String, registry: State<'_, RepositoryRegistr
         .map_err(|error| GitError::Runtime(error.to_string()))?
 }
 
+/// 在系统文件管理器中显示工作区内的文件（选中）或目录（打开）；relative 为 `/` 分隔的仓库相对路径。
+#[cfg(feature = "desktop")]
+#[tauri::command]
+fn reveal_in_file_manager(repo_id: String, relative: String, registry: State<'_, RepositoryRegistry>) -> Result<(), String> {
+    let opened = opened(&registry, &repo_id).map_err(|error| error.to_string())?;
+    let target = reveal::target(opened.adapter.worktree(), &relative).map_err(|error| error.to_string())?;
+    reveal::open(&target)
+}
+
 /// WebView2 内存目标级别（技术方案 §7 / V2-D28）：窗口失焦或最小化时设为 Low，WebView2 主动回收缓存；
 /// 获得焦点时恢复 Normal。`ORIS_WEBVIEW_MEMORY_TARGET=low|normal` 只用于测量时固定级别。
 #[cfg(all(feature = "desktop", windows))]
@@ -959,6 +971,7 @@ pub fn run() {
             stash_changes,
             check_branch_name,
             merge_message,
+            reveal_in_file_manager,
             updater::check_update,
             updater::download_update,
             updater::install_update,

@@ -371,7 +371,7 @@ export default function HistoryPanel(props: Props) {
   const stashEntry = mode.kind === "stash" ? stash.entries?.find((e) => e.oid === mode.oid) ?? null : null;
 
   return <div ref={root} className="git-body log-layout" hidden={hidden} style={{ gridTemplateColumns: `${columns.left}px ${SPLITTER}px minmax(0, 1fr) ${SPLITTER}px ${columns.right}px` }} onContextMenu={(event) => { if (!(event.target as Element).closest("[data-endpoint]")) setMenu(null); }}>
-    <HistorySidebar refs={viewRefs} refsError={refsError} headLabel={headLabel} current={current} filter={filter} onFilter={setFilter}
+    <HistorySidebar refs={viewRefs} refsError={refsError} headLabel={headLabel} current={current} hidden={hidden} filter={filter} onFilter={setFilter}
       stashes={stashStale ? null : stash.entries} stashError={stash.error} selectedStash={mode.kind === "stash" ? mode.oid : null} onStash={(entry) => setMode({ kind: "stash", oid: entry.oid })} onNewStash={onStashPush ? () => setMode({ kind: "stashPush" }) : undefined}
       blocked={writeBlocked ?? null} onSwitch={onSwitch} onTrack={onTrack} onPruneGone={onPruneGone} onMenu={(x, y, endpoint) => setMenu({ x, y, endpoint })}/>
     {splitter("left")}
