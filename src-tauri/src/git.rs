@@ -1374,7 +1374,7 @@ fn eol(text: &str) -> &'static str {
     }
 }
 
-fn validate_relative(path: &str) -> Result<(), GitError> {
+pub(crate) fn validate_relative(path: &str) -> Result<(), GitError> {
     let parsed = Path::new(path);
     if parsed.is_absolute()
         || parsed
