@@ -11,7 +11,7 @@ const bridge = vi.hoisted(() => ({
   focused: false, focus: null as null | ((event: { payload: boolean }) => void),
   changed: null as null | ((event: { payload: string }) => void),
 }));
-vi.mock("./api", () => ({ openRepository: bridge.open, refreshRepository: bridge.refresh, readContentPair: bridge.read, closeRepository: bridge.close, cancelContentRead: vi.fn(async () => {}),
+vi.mock("./api", () => ({ discoverGroup: vi.fn(async () => ({ isGroup: false, members: [], selectedRepoId: null, ignored: [] })), memberChangeCount: vi.fn(async () => 0), watchGroup: vi.fn(async () => {}), setSubmodulePointers: vi.fn(async () => {}), openRepository: bridge.open, refreshRepository: bridge.refresh, readContentPair: bridge.read, closeRepository: bridge.close, cancelContentRead: vi.fn(async () => {}),
   repositoryDetails: bridge.details, activateRepository: bridge.activate, loadSnapshot: bridge.loadSnapshot, saveSnapshot: bridge.saveSnapshot, removeSnapshot: vi.fn(async () => {}) }));
 vi.mock("./diff", () => ({ calculateDiff: bridge.diff }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));

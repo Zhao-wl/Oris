@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Oris 工作区 · 交互效果图</title>
+<style>
+*{box-sizing:border-box}html,body{margin:0}body{background:#121316;color:#d5d7dc;font:13px/1.45 "Segoe UI","Microsoft YaHei",sans-serif}button,input{font:inherit}button{cursor:pointer}
+.shell{--bg:#1e1f22;--panel:#2b2d30;--chrome:#26272b;--text:#bcbec4;--sub:#92959e;--border:#393b40;--hover:#334a74;--accent:#79a8f8;--accentbg:#263f61;--danger:#ed7777;--ok:#81bd83;--warn:#e0a23b;--mod:#6c9df2;--add:#81bd83;--untracked:#c77dbb;position:relative;margin:14px 18px 26px;height:640px;min-width:1100px;border:1px solid #50535a;border-radius:8px;overflow:hidden;display:grid;grid-template-rows:42px 49px minmax(0,1fr) 25px;background:var(--bg);color:var(--text)}
+.shell button{color:var(--text);background:var(--panel);border:1px solid var(--border);border-radius:4px}.shell button:hover:not(:disabled){background:var(--hover)}.shell button:disabled{opacity:.45;cursor:not-allowed}
+.shell button.link{border:0;background:transparent;color:var(--accent);padding:0 2px}.shell button.link:hover{background:transparent!important;text-decoration:underline}
+.title{display:flex;align-items:center;gap:8px;background:var(--chrome);padding:0 11px;border-bottom:1px solid var(--border)}.logo{display:grid;place-items:center;width:24px;height:24px;border-radius:5px;background:#7165d3;color:#fff;font-weight:700}.space{flex:1}.title .branch{padding:3px 8px}
+.crumb{position:relative;display:inline-flex;align-items:center;gap:0}.crumb .ws{color:var(--sub);font-weight:600;padding-right:4px}.crumb .ws i{font-style:normal;color:var(--accent);margin-right:4px}.crumb .sep{color:var(--sub);padding:0 4px}.crumb>button{padding:3px 8px;font-weight:700;font-size:14px;border-color:transparent!important;background:transparent!important}.crumb>button:hover,.crumb>button[aria-expanded=true]{background:var(--hover)!important}.crumb>button .car{font-size:10px;color:var(--sub);margin-left:4px;font-weight:400}.crumb>button kbd{font:10px Consolas,monospace;color:var(--sub);border:1px solid var(--border);border-radius:3px;padding:0 3px;margin-left:6px;font-weight:400}
+.sync{display:flex;gap:6px}.sync button{padding:3px 9px}.sync small{color:var(--sub);font-size:11px}
+.projects{display:flex;align-items:center;gap:8px;background:var(--chrome);padding:5px 8px;border-bottom:1px solid var(--border)}.ptab{position:relative;min-width:150px;height:37px;padding:4px 8px 4px 8px;border:1px solid var(--border);border-radius:5px;background:var(--panel);font-size:12px;line-height:1.15;cursor:pointer}.ptab.active{border-color:var(--accent)}.ptab small{display:block;color:var(--sub);font-size:10px}.ptab .wsmark{display:inline-block;font-size:10px;color:var(--accent);border:1px solid var(--accent);border-radius:3px;padding:0 3px;margin-right:4px;line-height:13px}.ptab.flash{animation:fl 1.2s}@keyframes fl{0%{box-shadow:0 0 0 3px #79a8f8aa}100%{box-shadow:none}}
+.main{display:grid;grid-template-columns:360px minmax(0,1fr);min-height:0}
+.side{display:flex;flex-direction:column;border-right:1px solid var(--border);background:var(--bg);min-height:0}
+.side h4{margin:0;padding:8px 10px 4px;font-size:12px;color:var(--sub);display:flex;justify-content:space-between}
+.scopes{display:flex;gap:4px;padding:2px 10px 6px}.scopes button{flex:1;padding:3px 0;font-size:12px}.scopes button.on{background:var(--accentbg);border-color:var(--accent);color:var(--accent)}
+.tools{display:flex;align-items:center;gap:6px;padding:0 10px 6px}.tools input{flex:1;min-width:0;background:var(--panel);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:3px 7px;font-size:12px}
+.toggle{position:relative;display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--sub);white-space:nowrap;cursor:pointer;user-select:none}.toggle .sw{width:26px;height:14px;border-radius:7px;background:#44474d;position:relative;transition:.15s}.toggle .sw::after{content:"";position:absolute;left:2px;top:2px;width:10px;height:10px;border-radius:50%;background:#c9ccd2;transition:.15s}.toggle.on .sw{background:#3574f0}.toggle.on .sw::after{left:14px;background:#fff}.toggle.on{color:var(--text)}
+.files{flex:1;overflow:auto;min-height:0}
+.group{padding:6px 10px 2px;font-size:11px;color:var(--sub)}
+.row{display:flex;align-items:center;gap:6px;padding:3px 10px;font-size:12px;cursor:default;white-space:nowrap}.row:hover{background:#ffffff08}.row.sel{background:var(--accentbg)}
+.row .st{width:14px;text-align:center;font:600 11px Consolas,monospace}.st.M{color:var(--mod)}.st.A{color:var(--add)}.st.U{color:var(--untracked)}.st.S{color:var(--warn)}
+.row .p{flex:1;overflow:hidden;text-overflow:ellipsis}.row .p i{font-style:normal;color:var(--sub)}.row .n{color:var(--sub);font:11px Consolas,monospace}
+.row .act{visibility:hidden;font-size:11px;padding:0 6px}.row:hover .act{visibility:visible}
+.sub-row .p b{font-weight:600}.sub-row .oid{font:11px Consolas,monospace;color:var(--sub)}.sub-row .oid em{font-style:normal;color:var(--text)}
+.nested{border-top:1px solid var(--border);padding:6px 10px;font-size:12px;color:var(--sub)}.nested summary{cursor:pointer;list-style:none}.nested summary::before{content:"▸ ";}.nested[open] summary::before{content:"▾ "}.nested .nrow{display:flex;align-items:center;gap:6px;padding:4px 0 2px 14px}.nested .nrow code{font:12px Consolas,monospace;color:var(--text)}.nested .nrow span{flex:1}.nested p{margin:4px 0 0 14px;font-size:11px}
+.content{display:flex;flex-direction:column;min-width:0;min-height:0}
+.fhead{display:flex;align-items:center;gap:8px;padding:7px 12px;border-bottom:1px solid var(--border);font:12px Consolas,"Microsoft YaHei",monospace}.fhead .sub{color:var(--sub);font-family:"Segoe UI","Microsoft YaHei",sans-serif}
+.diff{flex:1;overflow:auto;background:repeating-linear-gradient(0deg,transparent 0 21px,#ffffff05 21px 22px);font:12px/22px Consolas,monospace;padding:6px 0}.diff div{padding:0 14px;white-space:pre}.diff .m{background:#6c9df21f}.diff .a{background:#81bd831f}.diff .ln{display:inline-block;width:34px;color:#5d6068}
+.info{margin:18px;padding:14px 16px;border:1px solid var(--border);border-radius:6px;background:var(--panel);max-width:560px;font-family:"Segoe UI","Microsoft YaHei",sans-serif;line-height:1.6}.info h3{margin:0 0 6px;font-size:14px}.info code{font:12px Consolas,monospace;background:#0003;padding:1px 5px;border-radius:3px}.info .sub{color:var(--sub);font-size:12px}
+.git{height:168px;border-top:1px solid var(--border);display:flex;flex-direction:column}.gtabs{display:flex;gap:2px;padding:4px 8px;border-bottom:1px solid var(--border);font-size:12px}.gtabs span{padding:2px 9px;border-radius:4px;color:var(--sub);cursor:pointer}.gtabs span.on{background:var(--panel);color:var(--text)}
+.log{display:grid;grid-template-columns:minmax(0,1fr) 360px;flex:1;min-height:0}.log .commits{overflow:auto;border-right:1px solid var(--border)}.crow{display:flex;gap:10px;padding:3px 12px;font-size:12px;cursor:pointer;white-space:nowrap}.crow:hover{background:#ffffff08}.crow.sel{background:var(--accentbg)}.crow code{font:11px Consolas,monospace;color:var(--sub)}.crow span{overflow:hidden;text-overflow:ellipsis;flex:1}.crow small{color:var(--sub)}
+.detail{overflow:auto;padding:4px 0}.detail .row{padding-left:12px}
+.status{display:flex;align-items:center;gap:10px;background:var(--chrome);padding:0 9px;font-size:11px;color:var(--sub);border-top:1px solid var(--border)}
+/* 仓库选择器 */
+.picker{position:absolute;top:calc(100% + 5px);left:0;z-index:25;width:470px;background:var(--panel);border:1px solid var(--border);border-radius:7px;box-shadow:0 14px 40px #000b;padding:6px 0 0;font-weight:400}
+.picker input{width:calc(100% - 16px);margin:2px 8px 6px;background:var(--bg);border:1px solid var(--accent);border-radius:4px;color:var(--text);padding:4px 8px;font-size:12px;outline:0}
+.picker .ghead{padding:5px 12px 2px;font-size:11px;color:var(--sub)}
+.m-row{display:grid;grid-template-columns:18px minmax(0,1fr) auto;align-items:center;gap:6px;padding:4px 12px;font-size:12px;cursor:pointer}.m-row:hover,.m-row.kb{background:var(--hover)}.m-row.cur .nm{color:var(--accent)}.m-row .ic{color:var(--sub);text-align:center}.m-row .nm{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.m-row .nm small{font-weight:400;color:var(--sub);margin-left:6px}
+.m-row.wt{padding-left:30px}.m-row.off{cursor:not-allowed;opacity:.55}.m-row.off:hover{background:transparent}
+.badges{display:flex;gap:4px;align-items:center;white-space:nowrap}.bd{font-size:10.5px;line-height:16px;padding:0 5px;border-radius:3px;border:1px solid var(--border);color:var(--sub)}.bd.br{font-family:Consolas,monospace;color:var(--text)}.bd.drift{color:var(--warn);border-color:#e0a23b66}.bd.chg{color:var(--mod);border-color:#6c9df266}.bd.dirty{color:var(--warn);border-style:dashed}.bd.none{color:var(--sub)}.bd.scan{color:var(--sub);border-style:dotted}
+.m-hint{grid-column:2/4;font-size:11px;color:var(--sub);margin-top:1px}.m-hint code{font:11px Consolas,monospace;color:var(--text);background:#0003;padding:0 4px;border-radius:3px}
+.pfoot{display:flex;align-items:center;gap:8px;border-top:1px solid var(--border);margin-top:6px;padding:6px 12px;font-size:11px;color:var(--sub)}.pfoot kbd{font:10px Consolas,monospace;border:1px solid var(--border);border-radius:3px;padding:0 3px}
+.m-rm{visibility:hidden;font-size:10px!important;padding:0 5px!important}.m-row:hover .m-rm{visibility:visible}
+.toasts{position:absolute;right:14px;bottom:36px;display:flex;flex-direction:column;gap:8px;z-index:15}.toast{display:flex;align-items:center;gap:10px;min-width:320px;max-width:480px;background:var(--panel);border:1px solid var(--border);border-left:3px solid var(--ok);border-radius:5px;padding:9px 12px;box-shadow:0 8px 24px #0009}.toast.warn{border-left-color:var(--warn)}.toast .msg{flex:1}.toast .msg small{display:block;color:var(--sub)}.toast .x{border:0!important;background:transparent!important;color:var(--sub)}
+.hidden{display:none!important}
+.legend{margin:0 18px 30px;color:#9b9ea8;font-size:12px;line-height:1.7}.legend b{color:#d5d7dc}
+</style>
+</head>
+<body>
+<div class="shell" id="shell">
+  <header class="title"><span class="logo">O</span><span id="crumb" class="crumb"></span><button type="button" class="branch" id="branch"></button><span class="sync"><button type="button">⟳ 获取 <small>3 分钟前</small></button><button type="button" id="pullBtn">↓0 拉取</button><button type="button" id="pushBtn">↑0 推送</button></span><span class="space"></span><button type="button">✦ AI</button><button type="button">⚙ 设置</button></header>
+  <div class="projects" id="projects"></div>
+  <div class="main">
+    <aside class="side">
+      <h4><span>变更</span><span id="count"></span></h4>
+      <div class="scopes"><button type="button" class="on">未暂存</button><button type="button">已暂存</button><button type="button">全部</button></div>
+      <div class="tools"><input placeholder="筛选文件" aria-label="筛选文件"><span id="toggleSlot"></span></div>
+      <div class="files" id="files"></div>
+      <div id="nestedSlot"></div>
+    </aside>
+    <section class="content">
+      <div class="fhead" id="fhead"></div>
+      <div class="diff" id="diff"></div>
+      <div class="git">
+        <div class="gtabs"><span class="on">日志</span><span>提交</span><span>Stash</span><span>操作输出</span></div>
+        <div class="log"><div class="commits" id="commits"></div><div class="detail" id="detail"></div></div>
+      </div>
+    </section>
+  </div>
+  <footer class="status" id="status"></footer>
+  <div class="toasts" id="toasts"></div>
+</div>
+<div class="legend">
+<b>要点：</b>一个工作区在项目栏只占一个标签（带“工作区”标识）；标题栏原来显示项目名称的位置改为“当前仓库 ▾”，点击或 Ctrl+E / ⌘E 打开仓库选择器，不另加面包屑；切换后变更、diff、日志、分支、同步按钮全部换成该仓库的内容，不混合显示。<br>
+<b>父仓库：</b>不显示子仓库内部文件；子模块指针开关只在含子模块的仓库出现，默认关闭；放在父仓库目录里的 worktree 在列表底部折叠说明，不进入变更列表。<br>
+<b>选择器徽标：</b>分支 / detached、“偏离记录”在打开工作区时就有；改动数在打开选择器后逐个补齐（最多同时 2 个），补齐前为“未扫描”，从不显示成 0；非当前仓库在外部变化后显示“有变化”。未初始化、目录缺失的灰显，不能打开，只给命令行做法。<br>
+<b>可以试：</b>点标题栏的仓库名或按 Ctrl+E 切换仓库；在父仓库打开“子模块指针”开关；在父仓库日志中点 a13abe3，再点“在 client 中比较”；切到 client 后点底部的“加入工作区”。<br>
+<b>演示数据：</b>仓库名、分支与 OID 取自 E:\Tap4fun\X20_2\game-workspace 的只读观察，改动与提交为虚构；不执行 Git。
+</div>
+<script>
+const MEMBERS=[
+  {id:'root',kind:'root',name:'game-workspace',path:'E:\\Tap4fun\\X20_2\\game-workspace',branch:'main',changes:3,drift:false,subs:true},
+  {id:'audio',kind:'sub',name:'audio',path:'audio',off:'uninit'},
+  {id:'battle',kind:'sub',name:'battle',path:'battle',branch:'dev_X20-61',changes:5,drift:true},
+  {id:'battle-r2',kind:'wt',parent:'battle',name:'battle-r2',path:'battle-r2',branch:'detached @ ba16c36',changes:0,drift:false},
+  {id:'co',kind:'wt',parent:'battle',name:'co',path:'battle\\.artifacts\\03-assisted-match\\co',off:'missing'},
+  {id:'client',kind:'sub',name:'client',path:'client',branch:'dev_X20-61',changes:12,drift:true},
+  {id:'gdconfig',kind:'sub',name:'gdconfig',path:'gdconfig',branch:'dev',changes:0,drift:true},
+  {id:'gdlore',kind:'sub',name:'gdlore',path:'gdlore',branch:'dev',changes:2,drift:true},
+  {id:'gs',kind:'sub',name:'gs',path:'gs',branch:'dev',changes:0,drift:true,dirtyBg:true},
+  {id:'venus',kind:'sub',name:'venus',path:'venus',branch:'detached @ b0c6ca6',changes:0,drift:false},
+];
+const FILES={
+  root:[['M','AGENTS.md','+6 −2'],['M','sync-skills.ps1','+3 −1'],['A','.agents/skills/daily-report/SKILL.md','+48']],
+  client:[['M','Assets/Scripts/Battle/FootballBallDecision.cs','+21 −9'],['M','Assets/Scripts/UI/PitchCanvas.cs','+14 −3'],['M','Assets/Scripts/UI/PitchCanvas.LivePresentation.cs','+8 −8'],['A','Assets/Scripts/Battle/SegmentRoute.cs','+132'],['U','Assets/Editor/RouteDebugWindow.cs','+57'],['M','ProjectSettings/ProjectSettings.asset','+2 −2']],
+  battle:[['M','src/match/assisted.rs','+40 −12'],['M','src/match/route.rs','+9 −4'],['A','tests/assisted_match.rs','+88'],['M','Cargo.toml','+1 −1'],['M','Cargo.lock','+12 −3']],
+  gdlore:[['M','design-index.md','+3'],['A','features/football/route.md','+64']],
+  'battle-r2':[],gdconfig:[],gs:[],venus:[]
+};
+const POINTERS=[['battle','9bfd6f9','ad25251'],['client','027b748','66bedd1'],['gdconfig','71ba14a','d285032'],['gdlore','2081bbd','07ad19a'],['gs','2ad45d2','cbb6193']];
+const LOGS={
+  root:[['027b748','docs: 更正目录结构描述——client 已去顶层嵌套','zhao · 2 天前',false],['a13abe3','chore: add client submodule','zhao · 3 天前',true],['2ad45d2','Remove client submodule','zhao · 3 天前',true],['2081bbd','fix: update client submodule pointer','zhao · 4 天前',true],['71ba14a','Update .gitmodules','zhao · 5 天前',false]],
+  client:[['66bedd1','足球：Segment Route 编排生产化','zhao · 今天'],['1a2b3c4','修正 Terminal Fill 覆盖证明','zhao · 昨天'],['c2e4410','PitchCanvas 实时演示','zhao · 昨天'],['027b748','合并 dev 到 dev_X20-61','zhao · 2 天前']],
+  battle:[['ad25251','assisted match：路线评分','zhao · 今天'],['9bfd6f9','vb0.1.2 起点','zhao · 1 周前']],
+};
+const init=()=>({cur:'root',picker:false,kb:0,q:'',ptr:false,scanned:new Set(),scanning:new Set(),selCommit:null,projects:['Oris','ws'],compare:null,selFile:0});
+let state=init();
+const $=id=>document.getElementById(id);
+const M=id=>MEMBERS.find(m=>m.id===id);
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+function render(){
+  const hasWs=state.projects.includes('ws');
+  const cur=M(state.cur);
+  // 标题栏
+  $('crumb').innerHTML=hasWs?`<button type="button" id="pickBtn" title="切换仓库（Ctrl+E / ⌘E）" aria-haspopup="listbox" aria-expanded="${state.picker}">${esc(cur.name)}<span class="car">▾</span></button>${state.picker?picker():''}`:`<strong>${state.projects.includes('client')?'client':'Oris'}</strong>`;
+  $('branch').textContent=`⑂ ${hasWs?cur.branch:'dev_X20-61'} ▾`;
+  $('pullBtn').textContent=cur.id==='client'?'↓2 拉取':'↓0 拉取';$('pushBtn').textContent=cur.id==='client'||cur.id==='battle'?'↑4 推送':'↑0 推送';
+  // 项目栏
+  $('projects').innerHTML=`<button type="button" id="addBtn">添加项目</button>`+state.projects.map(p=>p==='ws'?`<div class="ptab active" id="wsTab"><span class="wsmark">工作区</span>game-workspace<small>E:\\Tap4fun\\X20_2\\game-workspace · 7 个子模块</small></div>`:p==='Oris'?`<div class="ptab">Oris<small>D:\\Projects\\Research\\Oris</small></div>`:`<div class="ptab ${p==='client'?'active':''}">${p}<small>…\\game-workspace\\${p}</small></div>`).join('');
+  // 左侧
+  const files=hasWs?(FILES[cur.id]||[]):FILES.client;
+  const ptrRows=cur.subs&&state.ptr?POINTERS:[];
+  $('count').textContent=`${files.length+ptrRows.length} 个文件`;
+  $('toggleSlot').innerHTML=hasWs&&cur.subs?`<span class="toggle ${state.ptr?'on':''}" id="ptrToggle" role="switch" aria-checked="${state.ptr}" title="显示子模块指针变化（按仓库保存，默认关闭）。关闭时不显示任何子模块条目；打开时只显示提交指针变化，子模块内部的改动到子仓库中查看。"><span class="sw"></span>子模块指针</span>`:'';
+  let html='';
+  if(ptrRows.length){html+=`<div class="group">子模块指针（记录 → 当前）</div>`+ptrRows.map(([n,a,b])=>`<div class="row sub-row"><span class="st S">S</span><span class="p"><b>◫ ${n}</b> <span class="oid">${a} → <em>${b}</em></span></span><button type="button" class="act" data-go="${n}">切换到该仓库</button><button type="button" class="act">暂存</button></div>`).join('')}
+  if(files.length){if(ptrRows.length)html+=`<div class="group">文件</div>`;html+=files.map(([s,p,n],i)=>{const k=p.lastIndexOf('/');return `<div class="row ${i===state.selFile&&!state.compare?'sel':''}" data-file="${i}"><span class="st ${s}">${s}</span><span class="p">${esc(p.slice(k+1))} <i>${esc(k>0?p.slice(0,k):'')}</i></span><span class="n">${n}</span></div>`}).join('')}
+  if(!files.length&&!ptrRows.length)html=`<div class="group" style="padding:14px 10px">没有本地改动</div>`;
+  $('files').innerHTML=html;
+  $('nestedSlot').innerHTML=hasWs&&cur.id==='root'?`<details class="nested" open><summary>1 个嵌套仓库未显示</summary><div class="nrow"><code>battle-r2/</code><span>battle 的 worktree</span><button type="button" class="link" data-go="battle-r2">切换</button></div><p>这些目录是独立的 Git 仓库，不作为父仓库的未跟踪文件显示。不需要看到这条说明时，可以把它们写入 .gitignore。</p></details>`
+    :hasWs&&cur.id==='client'?`<details class="nested" open><summary>1 个嵌套仓库未显示</summary><div class="nrow"><code>.gdconfig_tmp/</code><span>独立仓库，未加入工作区</span><button type="button" class="link" id="joinBtn">加入工作区</button></div></details>`:'';
+  // 右侧
+  if(state.compare){
+    $('fhead').innerHTML=`<span>client · 比较 <b>${state.compare[0]}</b> ↔ <b>${state.compare[1]}</b></span><span class="sub">由父仓库提交 a13abe3 的子模块指针变化打开</span>`;
+    $('diff').innerHTML=`<div class="info" style="margin:12px 18px"><h3>版本比较：3 个提交，14 个文件</h3><div class="sub">复用现有的“比较两个版本”视图，这里只示意入口。</div></div>`+['Assets/Scripts/Battle/SegmentRoute.cs','Assets/Scripts/UI/PitchCanvas.cs','Assets/Scripts/Battle/FootballBallDecision.cs'].map(p=>`<div><span class="ln"></span>M  ${p}</div>`).join('');
+  }else if(files.length){
+    const f=files[state.selFile]||files[0];
+    $('fhead').innerHTML=`<span>${esc(f[1])}</span><span class="sub">${hasWs?esc(cur.name):'client'} · 未暂存</span>`;
+    $('diff').innerHTML=demoDiff(f[1]);
+  }else{
+    $('fhead').innerHTML=`<span class="sub">${esc(cur.name)}</span>`;
+    $('diff').innerHTML=`<div class="info"><h3>没有本地改动</h3><div class="sub">${cur.subs?'子模块指针开关关闭时，子模块的指针变化不在这里显示。':'这里只显示该仓库自己的改动。'}</div></div>`;
+  }
+  // 日志
+  const log=LOGS[hasWs?cur.id:'client']||[['ba16c36','（该仓库的日志）','']];
+  $('commits').innerHTML=log.map(([o,s,w,g])=>`<div class="crow ${state.selCommit===o?'sel':''}" data-commit="${o}"><code>${o}</code><span>${esc(s)}${g?' <small>◫ 子模块指针</small>':''}</span><small>${w||''}</small></div>`).join('');
+  $('detail').innerHTML=detail(cur);
+  $('status').innerHTML=hasWs?`<span>${esc(cur.kind==='root'?cur.path:'E:\\Tap4fun\\X20_2\\game-workspace\\'+cur.path)} · ${esc(cur.branch)}</span><span class="space"></span><span>工作区 game-workspace · 当前仓库 ${esc(cur.name)}</span>`:`<span>E:\\Tap4fun\\X20_2\\game-workspace\\client · dev_X20-61</span>`;
+  if(state.picker)setTimeout(()=>{const i=$('pq');if(i&&document.activeElement!==i){i.focus();i.setSelectionRange(i.value.length,i.value.length)}},0);
+}
+function detail(cur){
+  if(cur.id!=='root'||!state.selCommit)return `<div class="group" style="padding:8px 12px">选中提交查看文件</div>`;
+  if(state.selCommit==='a13abe3')return `<div class="group">a13abe3 · 2 个条目</div><div class="row sub-row"><span class="st S">S</span><span class="p"><b>◫ client</b> <span class="oid">027b748 → <em>1a2b3c4</em></span></span><button type="button" class="link" data-cmp="client">在 client 中比较</button></div><div class="row"><span class="st M">M</span><span class="p">.gitmodules</span></div><div class="row sub-row"><span class="st S">S</span><span class="p"><b>◫ gs</b> <span class="oid">5e5e5e5 → <em>7f7f7f7</em></span></span><button type="button" class="link" data-cmp="gs">在 gs 中比较</button></div><div class="group" style="padding-top:6px">历史中的指针变化始终显示，不受“子模块指针”开关影响。</div>`;
+  return `<div class="group">${state.selCommit}</div><div class="row"><span class="st M">M</span><span class="p">.gitmodules</span></div>`;
+}
+function demoDiff(p){
+  const l=[['','// '+p],['',''],['m','-    var route = BuildRoute(ctx);'],['a','+    var route = SegmentRoute.Build(ctx, options);'],['',''],['','    if (route == null) return;'],['a','+    route.Validate();'],['','    Apply(route);']];
+  return l.map(([c,t],i)=>`<div class="${c}"><span class="ln">${i+11}</span>${esc(t)}</div>`).join('');
+}
+// ---------- 选择器 ----------
+function visibleMembers(){const q=state.q.trim().toLowerCase();return MEMBERS.filter(m=>!q||m.name.toLowerCase().includes(q)||m.path.toLowerCase().includes(q))}
+function badges(m){
+  if(m.off==='uninit')return `<span class="bd none">未初始化</span>`;
+  if(m.off==='missing')return `<span class="bd none">目录缺失</span>`;
+  let b=`<span class="bd br">${esc(m.branch)}</span>`;
+  if(m.drift)b+=`<span class="bd drift" title="当前提交与父仓库记录的指针不同">偏离记录</span>`;
+  if(m.dirtyBg&&!state.scanned.has(m.id))b+=`<span class="bd dirty" title="打开工作区后在外部发生了变化，切换过去时刷新">有变化</span>`;
+  if(m.id===state.cur||state.scanned.has(m.id))b+=m.changes?`<span class="bd chg">${m.changes} 个改动</span>`:`<span class="bd none">无改动</span>`;
+  else b+=`<span class="bd scan">${state.scanning.has(m.id)?'读取中…':'未扫描'}</span>`;
+  return b;
+}
+function picker(){
+  const list=visibleMembers();
+  const grp=k=>({root:'父仓库',sub:'子模块',wt:null,manual:'手动加入'}[k]);
+  let html='',last=null;
+  list.forEach((m,i)=>{
+    const g=m.kind==='wt'?'sub':m.kind;
+    if(g!==last){html+=`<div class="ghead">${grp(g)}</div>`;last=g}
+    const off=!!m.off;
+    html+=`<div class="m-row ${m.kind==='wt'?'wt':''} ${off?'off':''} ${m.id===state.cur?'cur':''} ${i===state.kb?'kb':''}" data-member="${m.id}" role="option" aria-disabled="${off}" aria-selected="${m.id===state.cur}"><span class="ic">${m.kind==='root'?'▦':m.kind==='wt'?'⤷':'◫'}</span><span class="nm">${esc(m.name)}<small>${m.kind==='wt'?'worktree · ':''}${esc(m.path)}</small></span><span class="badges">${badges(m)}</span>${m.off==='uninit'?`<span class="m-hint">未初始化，Oris 不执行初始化。可在命令行执行 <code>git submodule update --init -- audio</code></span>`:m.off==='missing'?`<span class="m-hint">worktree 目录已不存在。可在命令行执行 <code>git -C battle worktree prune</code></span>`:''}</div>`;
+  });
+  if(state.joined)html+=`<div class="ghead">手动加入</div><div class="m-row" data-member="none"><span class="ic">◫</span><span class="nm">.gdconfig_tmp<small>client\\.gdconfig_tmp</small></span><span class="badges"><span class="bd br">main</span><span class="bd scan">未扫描</span><button type="button" class="m-rm" id="rmJoined">移出</button></span></div>`;
+  if(!list.length)html+=`<div class="ghead" style="padding:10px 12px">没有匹配的仓库</div>`;
+  return `<div class="picker" role="listbox" aria-label="选择仓库"><div class="ghead" style="padding:0 12px 4px">工作区 game-workspace · 7 个子模块</div><input id="pq" placeholder="搜索仓库（名称或路径）" value="${esc(state.q)}">${html}<div class="pfoot"><span><kbd>↑</kbd><kbd>↓</kbd> 选择 · <kbd>Enter</kbd> 切换 · <kbd>Esc</kbd> 关闭</span><span class="space"></span><button type="button" class="link" id="rescan">刷新全部状态</button></div></div>`;
+}
+let scanTimers=[];
+function clearScan(){scanTimers.forEach(clearTimeout);scanTimers=[]}
+function startScan(){
+  // 最多同时 2 个只读 status；只补“未扫描”的成员
+  const queue=MEMBERS.filter(m=>!m.off&&m.id!==state.cur&&!state.scanned.has(m.id)).map(m=>m.id);
+  const next=()=>{if(!state.picker)return;const id=queue.shift();if(!id)return;state.scanning.add(id);render();
+    scanTimers.push(setTimeout(()=>{state.scanning.delete(id);state.scanned.add(id);render();next()},id==='client'?1400:500+Math.random()*400))};
+  next();next();
+}
+function openPicker(){state.picker=true;state.q='';state.kb=MEMBERS.findIndex(m=>m.id===state.cur);render();startScan()}
+function closePicker(){state.picker=false;clearScan();state.scanning.clear();render()}
+function go(id){const m=M(id);if(!m||m.off)return;state.cur=id;state.selFile=0;state.compare=null;state.selCommit=null;state.scanned.add(id);closePicker()}
+function toast(kind,title,sub){const el=document.createElement('div');el.className=`toast ${kind}`;el.innerHTML=`<span class="msg">${title}<small>${sub}</small></span><button type="button" class="x">×</button>`;el.querySelector('.x').onclick=()=>el.remove();$('toasts').appendChild(el);setTimeout(()=>el.remove(),6000)}
+document.addEventListener('click',e=>{
+  const t=e.target.closest('button,[data-member],[data-file],[data-commit],#ptrToggle');
+  if(t?.id==='pickBtn'){state.picker?closePicker():openPicker();return}
+  if(t?.dataset.member){const m=M(t.dataset.member);if(m&&!m.off)go(m.id);return}
+  if(t?.id==='rescan'){state.scanned=new Set([state.cur]);clearScan();startScan();render();return}
+  if(t?.id==='rmJoined'){state.joined=false;render();return}
+  if(t?.id==='ptrToggle'){state.ptr=!state.ptr;render();return}
+  if(t?.dataset.go){go(t.dataset.go);return}
+  if(t?.id==='joinBtn'){state.joined=true;toast('','已把 .gdconfig_tmp 加入工作区','出现在仓库选择器的“手动加入”分组，可随时移出');render();return}
+  if(t?.dataset.file){state.selFile=+t.dataset.file;state.compare=null;render();return}
+  if(t?.dataset.commit){state.selCommit=t.dataset.commit;render();return}
+  if(t?.dataset.cmp==='client'){state.cur='client';state.compare=['027b748','1a2b3c4'];state.selCommit=null;render();return}
+  if(t?.dataset.cmp==='gs'){toast('warn','gs 中还没有提交 7f7f7f7','可以切换到 gs 后先获取，再回来比较；Oris 不会自动获取');return}
+  if(state.picker&&!e.target.closest('.picker'))closePicker();
+});
+document.addEventListener('input',e=>{if(e.target.id==='pq'){state.q=e.target.value;state.kb=0;render()}});
+document.addEventListener('keydown',e=>{
+  if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='e'&&state.projects.includes('ws')){e.preventDefault();state.picker?closePicker():openPicker();return}
+  if(!state.picker)return;
+  const list=visibleMembers();
+  if(e.key==='Escape'){closePicker();return}
+  if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();let i=state.kb;do{i=(i+(e.key==='ArrowDown'?1:-1)+list.length)%list.length}while(list[i].off&&i!==state.kb);state.kb=i;render();return}
+  if(e.key==='Enter'){const m=list[state.kb];if(m&&!m.off)go(m.id)}
+});
+render();
+</script>
+</body>
+</html>

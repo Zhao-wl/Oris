@@ -349,12 +349,14 @@ async fn open_repository(
     scope: CompareScope,
     git_executable: Option<String>,
     request_id: String,
+    submodule_pointers: Option<bool>,
     registry: State<'_, RepositoryRegistry>,
     watchers: State<'_, WatcherRegistry>,
     app: tauri::AppHandle,
 ) -> Result<RepositorySnapshot, GitError> {
     let (adapter, snapshot) = tauri::async_runtime::spawn_blocking(move || {
         let adapter = GitAdapter::open(path, git_executable)?;
+        adapter.set_submodule_pointers(submodule_pointers.unwrap_or(false));
         let snapshot = adapter.snapshot_v2(request_id, scope, false)?;
         Ok::<_, GitError>((adapter, snapshot))
     })
@@ -372,9 +374,88 @@ async fn open_repository(
             OpenRepository { adapter: adapter.clone(), generation: Arc::default(), slots: Arc::default(), history: Arc::default() },
         );
     }
-    watchers.0.lock().map_err(|_| GitError::Registry)?.remove(&repo_id);
+    {
+        // 工作区成员由工作区共用的 watcher 覆盖（V2-D82），重新打开成员时不拆掉它。
+        let mut lru = watchers.0.lock().map_err(|_| GitError::Registry)?;
+        if !lru.in_group(&repo_id) {
+            lru.remove(&repo_id);
+        }
+    }
     ensure_watcher(&app, &watchers, &adapter)?;
     Ok(snapshot)
+}
+
+/// 工作区发现（任务 V2-07）：只读，不打开 GitAdapter，不建立 watcher。
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn discover_group(path: String, manual: Vec<String>, git_executable: Option<String>) -> Result<git::group::GroupDiscovery, GitError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let git = std::path::PathBuf::from(git_executable.filter(|v| !v.trim().is_empty()).unwrap_or_else(|| "git".into()));
+        git::detect_git_version(&git)?;
+        git::group::discover(&git, std::path::Path::new(&path), &manual)
+    })
+    .await
+    .map_err(|error| GitError::Runtime(error.to_string()))?
+}
+
+/// 成员徽标的改动数（V2-D83）：一次只读 status；由前端限制并发。
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn member_change_count(path: String, submodule_pointers: bool, git_executable: Option<String>) -> Result<usize, GitError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let git = std::path::PathBuf::from(git_executable.filter(|v| !v.trim().is_empty()).unwrap_or_else(|| "git".into()));
+        let worktree = dunce::canonicalize(&path).map_err(|error| GitError::InvalidRepository(error.to_string()))?;
+        git::group::change_count(&git, &worktree, submodule_pointers)
+    })
+    .await
+    .map_err(|error| GitError::Runtime(error.to_string()))?
+}
+
+#[cfg(feature = "desktop")]
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GroupWatchMember {
+    repo_id: String,
+    worktree_path: String,
+    git_dir: String,
+    common_dir: String,
+}
+
+/// 工作区共用一个 watcher（V2-D82）：替换各成员自己的 watcher，在 LRU 中只占一个名额。第一个成员是父仓库。
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn watch_group(key: String, members: Vec<GroupWatchMember>, git_executable: Option<String>, watchers: State<'_, WatcherRegistry>, app: tauri::AppHandle) -> Result<(), GitError> {
+    let git = std::path::PathBuf::from(git_executable.filter(|v| !v.trim().is_empty()).unwrap_or_else(|| "git".into()));
+    let targets = members
+        .into_iter()
+        .map(|member| {
+            let worktree = std::path::PathBuf::from(&member.worktree_path);
+            let git = git.clone();
+            let listed = worktree.clone();
+            watch::WatchTarget {
+                repo_id: member.repo_id,
+                worktree,
+                git_dir: member.git_dir.into(),
+                common_dir: member.common_dir.into(),
+                tracked_ignored: Box::new(move || git::tracked_ignored_at(&git, &listed)),
+            }
+        })
+        .collect();
+    let emitter = app.clone();
+    let watcher = watch::watch_group(targets, watch::DEBOUNCE, move |change| {
+        let _ = emitter.emit("repository-invalidated", change);
+    })
+    .map_err(GitError::Runtime)?;
+    watchers.0.lock().map_err(|_| GitError::Registry)?.insert(&key, watcher);
+    Ok(())
+}
+
+/// 切换子模块指针开关（V2-D80）后由前端刷新。
+#[cfg(feature = "desktop")]
+#[tauri::command]
+fn set_submodule_pointers(repo_id: String, show: bool, registry: State<'_, RepositoryRegistry>) -> Result<(), GitError> {
+    opened(&registry, &repo_id)?.adapter.set_submodule_pointers(show);
+    Ok(())
 }
 
 #[cfg(feature = "desktop")]
@@ -403,7 +484,9 @@ async fn refresh_repository(
     if manual {
         // 手动刷新允许 status 回写 index stat 缓存（V2-D09）；由此产生的 index 事件在短窗口内跳过。
         if let Some(watcher) = watchers.0.lock().map_err(|_| GitError::Registry)?.get(&repo_id) {
-            watcher.suppression.index_for(std::time::Duration::from_millis(2500));
+            if let Some(suppression) = watcher.suppression(&repo_id) {
+                suppression.index_for(std::time::Duration::from_millis(2500));
+            }
         }
     }
     tauri::async_runtime::spawn_blocking(move || opened.adapter.snapshot_v2(request_id, scope, manual))
@@ -558,7 +641,7 @@ async fn run_operation(
 ) -> Result<ops::OperationOutcome, GitError> {
     let opened = opened(&registry, &repo_id)?;
     let guard = runner.begin(&repo_id)?;
-    let suppression = watchers.0.lock().map_err(|_| GitError::Registry)?.get(&repo_id).map(|w| w.suppression.clone());
+    let suppression = watchers.0.lock().map_err(|_| GitError::Registry)?.get(&repo_id).and_then(|w| w.suppression(&repo_id));
     if let Some(suppression) = &suppression {
         suppression.begin_operation();
     }
@@ -837,6 +920,10 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             open_repository,
+            discover_group,
+            member_change_count,
+            watch_group,
+            set_submodule_pointers,
             refresh_repository,
             repository_details,
             activate_repository,
