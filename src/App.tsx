@@ -408,7 +408,7 @@ export default function App() {
   }, [acceptSnapshot]);
 
   // ---------- 工作区（V2-07） ----------
-  /** 工作区共用一个 watcher（V2-D81）：父仓库在第一位，只登记就绪成员。 */
+  /** 工作区共用一个 watcher（V2-D82）：父仓库在第一位，只登记就绪成员。 */
   const startGroupWatch = useCallback((discovery: GroupDiscovery) => {
     const rootId = discovery.members[0]?.repoId;
     const members = discovery.members
@@ -438,7 +438,7 @@ export default function App() {
   }, [startGroupWatch]);
   const refreshGroupRef = useRef(refreshGroup);
   refreshGroupRef.current = refreshGroup;
-  /** 添加工作区（V2-D75、V2-D78）：已有的独立成员项目直接并入；直接添加的是子模块目录时选中该子模块。 */
+  /** 添加工作区（V2-D76、V2-D79）：已有的独立成员项目直接并入；直接添加的是子模块目录时选中该子模块。 */
   const addGroup = useCallback(async (found: GroupDiscovery, effectiveGitExecutable: string) => {
     const rootId = found.members[0].repoId!;
     const existingRoot = workspaceRef.current.projects.find((project) => project.repo.repoId === rootId && project.group);
@@ -470,7 +470,7 @@ export default function App() {
     if (!repositoryPath.trim()) return;
     // 先占用请求门控：发现期间进行中的自动刷新作废、新的自动刷新延后，避免旧项目的刷新结果把当前项目切回去。
     const requestId = newRequestId(); repositoryGate.current.activate(requestId); contentGate.current.activate(requestId);
-    // 工作区识别（V2-D75）：只读发现；失败（例如不是仓库）时按普通项目的路径报告错误。
+    // 工作区识别（V2-D76）：只读发现；失败（例如不是仓库）时按普通项目的路径报告错误。
     const found = await discoverGroup(repositoryPath.trim(), [], effectiveGitExecutable || null).catch(() => null);
     if (!repositoryGate.current.accepts(requestId)) return;
     if (found?.isGroup && found.members[0]?.repoId) {
@@ -568,7 +568,7 @@ export default function App() {
     setScope(activeProject.anchor.scope); setFilter(activeProject.anchor.filter); setFileView(activeProject.anchor.fileView); setPath(activeProject.repo.worktreePath); setGitExecutable(activeProject.gitExecutable);
   }, [activeProject?.repo.repoId]);
 
-  // 工作区：第一次进入时读取成员并建立共用 watcher；记住当前成员，切回标签或重启后恢复（V2-D77）。
+  // 工作区：第一次进入时读取成员并建立共用 watcher；记住当前成员，切回标签或重启后恢复（V2-D78）。
   const activeRootId = activeRoot?.repo.repoId ?? null;
   useEffect(() => { if (activeRootId && !groupsRef.current[activeRootId]) void refreshGroup(activeRootId); }, [activeRootId, refreshGroup]);
   useEffect(() => {
@@ -641,7 +641,7 @@ export default function App() {
     let timer = 0, firstEventAt = 0;
     const unlisten = listen<string | { repoId: string; paths: string[]; global: boolean; kinds?: string[] }>("repository-invalidated", (event) => {
       let change = typeof event.payload === "string" ? { repoId: event.payload, paths: [] as string[], global: true, kinds: [] as string[] } : event.payload;
-      // 工作区（V2-D81）：成员登记或 .gitmodules 变化时重新读取成员；非当前成员的徽标显示“有变化”；
+      // 工作区（V2-D82）：成员登记或 .gitmodules 变化时重新读取成员；非当前成员的徽标显示“有变化”；
       // 子模块的提交变化会改变父仓库记录的指针，父仓库打开了指针开关时一并刷新或标记待刷新。
       const root = groupRootOf(workspaceRef.current, change.repoId);
       if (root) {
@@ -725,7 +725,7 @@ export default function App() {
     if (cached.scopes) {
       // V2：watcher 持续监听最近 5 个项目；没有变化且 watcher 未被淘汰时不需要重新扫描。
       const watched = await activateRepository(project.repo.repoId).catch(() => false);
-      // 工作区的共用 watcher 被 LRU 淘汰后，activate 只为该成员单独重建了 watcher：恢复工作区 watcher（V2-D81）。
+      // 工作区的共用 watcher 被 LRU 淘汰后，activate 只为该成员单独重建了 watcher：恢复工作区 watcher（V2-D82）。
       const groupRoot = groupRootOf(workspaceRef.current, project.repo.repoId);
       const discovered = groupRoot ? groupsRef.current[groupRoot.repo.repoId] : undefined;
       if (!watched && discovered) startGroupWatch(discovered);
@@ -808,10 +808,10 @@ export default function App() {
 
   const visibleFiles = useMemo(() => { const query = filter.trim().toLocaleLowerCase(); return snapshot?.files.filter((file) => file.displayPath.toLocaleLowerCase().includes(query)).sort(compareFiles) ?? []; }, [snapshot, filter]);
   visibleFilesRef.current = visibleFiles;
-  // 工作区成员不单独占标签（V2-D75）；工作区标签也按成员名称匹配搜索。
+  // 工作区成员不单独占标签（V2-D76）；工作区标签也按成员名称匹配搜索。
   const visibleProjects = useMemo(() => { const query = projectFilter.trim().toLocaleLowerCase(); return tabProjects(workspaceState).filter((project) => `${projectName(project)} ${project.repo.worktreePath} ${project.group ? workspaceState.projects.filter((member) => member.groupId === project.repo.repoId).map(projectName).join(" ") : ""}`.toLocaleLowerCase().includes(query)); }, [projectFilter, workspaceState]);
   const activeTab = tabKey(workspaceState, activeRepoId);
-  // ---------- 工作区：成员徽标、手动成员、子模块指针开关（V2-D76、V2-D79、V2-D82） ----------
+  // ---------- 工作区：成员徽标、手动成员、子模块指针开关（V2-D77、V2-D80、V2-D83） ----------
   const memberBadgesRef = useRef(memberBadges);
   memberBadgesRef.current = memberBadges;
   /** 成员改动数只在打开选择器或“刷新全部状态”时读取：最多同时 2 个只读 status，关闭选择器后不再启动新的读取。 */
@@ -852,7 +852,7 @@ export default function App() {
     if (activeRepoId && runtime?.snapshot) map[activeRepoId] = { count: changeCountOf(runtime.snapshot) };
     return map;
   }, [memberBadges, activeGroup, activeRepoId, runtime, projects]);
-  /** 手动加入 / 移出独立嵌套仓库（V2-D76）；只改应用记录，不写仓库。 */
+  /** 手动加入 / 移出独立嵌套仓库（V2-D77）；只改应用记录，不写仓库。 */
   const changeManual = async (memberPath: string, add: boolean) => {
     const root = groupRootOf(workspaceRef.current, workspaceRef.current.activeRepoId);
     if (!root?.group) return;
@@ -868,7 +868,7 @@ export default function App() {
     const name = memberPath.split(/[\\/]/).filter(Boolean).pop() ?? memberPath;
     setGroupToast({ id: ++syncToastSeq, kind: "fetch", status: "succeeded", title: add ? `已把 ${name} 加入工作区` : `已把 ${name} 移出工作区`, detail: add ? "出现在仓库选择器的“手动加入”分组，可随时移出；不修改仓库" : "只移除 Oris 记录，不删除目录", actions: [] });
   };
-  /** 子模块指针开关（V2-D79）：按仓库保存，切换后重新扫描当前仓库。 */
+  /** 子模块指针开关（V2-D80）：按仓库保存，切换后重新扫描当前仓库。 */
   const toggleSubmodulePointers = async () => {
     if (!activeProject || !activeRepoId) return;
     const repoId = activeRepoId;
@@ -896,7 +896,7 @@ export default function App() {
   const nestedMember = (relative: string) => snapshot && activeGroup ? activeGroup.members.find((member) => samePath(member.worktreePath, joinPath(snapshot.repo.worktreePath, relative))) : undefined;
   /** 工作区中当前仓库的子模块成员（gitlink 条目“切换到该仓库”）。 */
   const submoduleMember = (relative: string) => nestedMember(relative);
-  /** 父仓库历史中的子模块指针变化：切换到子仓库并打开两个提交的比较（V2-D84）。 */
+  /** 父仓库历史中的子模块指针变化：切换到子仓库并打开两个提交的比较（V2-D85）。 */
   const compareInSubmodule = (file: { path: string; submodule?: { old: string | null; new: string | null } }) => {
     const member = submoduleMember(file.path);
     const record = member?.repoId ? workspaceState.projects.find((project) => project.repo.repoId === member.repoId) : undefined;
@@ -938,7 +938,7 @@ export default function App() {
   }, [pair, latin1Active, readable]);
   const viewDocument = latin1Active ? latin1Doc : diffDocument;
   // 历史页只在当前仓库已在后端打开后挂载：首次切到的工作区成员（或尚在打开的项目）此前读取会报“仓库尚未打开”，
-  // 从父仓库历史跳来的比较请求也要等到这时再执行（V2-D84）。
+  // 从父仓库历史跳来的比较请求也要等到这时再执行（V2-D85）。
   const repoReady = !!activeRepoId && !!runtime?.snapshot && runtime.snapshot.repo.repoId === activeRepoId && opened.current.has(activeRepoId);
   useEffect(() => { if (gitTab === "log" && activeRepoId && repoReady) setLogMounted(activeRepoId); }, [gitTab, activeRepoId, repoReady]);
   useEffect(() => { setRefsView(null); setFileHistoryRequest(null); setBranchOpen(false); setSyncMenu(null); setSyncToast(null); setRemotesFetchHeadAt(null); setRemoteChoice(null); }, [activeRepoId]);
@@ -1583,7 +1583,7 @@ export default function App() {
       // 专注 diff：Ctrl/Cmd+Shift+Enter 切换；Esc 退出（搜索面板打开时 Esc 先关闭搜索，由其捕获阶段处理）。
       if ((event.ctrlKey || event.metaKey) && event.shiftKey && !event.altKey && event.key === "Enter") { event.preventDefault(); setFocusMode((value) => !value); return; }
       if (event.key === "Escape" && focusMode && !document.querySelector("[role=dialog], [role=alertdialog]")) { setFocusMode(false); return; }
-      // 工作区仓库选择器：Ctrl+E / ⌘E（V2-D85，Ctrl+1–9 已用于切换项目）。
+      // 工作区仓库选择器：Ctrl+E / ⌘E（V2-D86，Ctrl+1–9 已用于切换项目）。
       if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "e" && activeRoot && !document.querySelector(".dialog-overlay")) { event.preventDefault(); setPickerOpen((value) => !value); return; }
       if (!settingsOpen && !aiOpen && matchesAiShortcut(event, aiShortcut)) {
         event.preventDefault(); setAiOpen(true); return;

@@ -106,7 +106,7 @@ pub struct ChangedFile {
     pub path_id: String,
     pub old_path_id: Option<String>,
     pub status: ChangeStatus,
-    /// 子模块条目（gitlink，mode 160000）的前后提交指针（R-WORKSPACE，V2-D84）；普通文件为 None。
+    /// 子模块条目（gitlink，mode 160000）的前后提交指针（R-WORKSPACE，V2-D85）；普通文件为 None。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub submodule: Option<SubmodulePointer>,
 }
@@ -371,7 +371,7 @@ pub fn read_log(git: &Path, worktree: &Path, query: &LogQuery, cursor: Option<&L
 }
 
 pub(super) fn diff_tree(git: &Path, worktree: &Path, args: &[&str]) -> Result<Vec<ChangedFile>, GitError> {
-    // `--raw` 在名称状态之外给出两侧 mode 与 OID，用来识别子模块指针变化（V2-D84）；文件集合与 `--name-status` 相同。
+    // `--raw` 在名称状态之外给出两侧 mode 与 OID，用来识别子模块指针变化（V2-D85）；文件集合与 `--name-status` 相同。
     let mut all = vec!["diff-tree", "-r", "-z", "--no-commit-id", "--no-ext-diff", "--no-textconv", "--raw", "--no-abbrev", "-M"];
     all.extend_from_slice(args);
     let raw = run_required(git, worktree, &all)?.stdout;

@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { CompareScope, ConflictVersion, ContentPair, GroupDiscovery, RepositoryDetails, RepositorySnapshot } from "./types";
 
-/** `submodulePointers`：子模块指针开关（V2-D79，默认关闭）。 */
+/** `submodulePointers`：子模块指针开关（V2-D80，默认关闭）。 */
 export const openRepository = (path: string, scope: CompareScope, gitExecutable: string | null, requestId: string, submodulePointers = false) =>
   invoke<RepositorySnapshot>("open_repository", { path, scope, gitExecutable, requestId, submodulePointers });
 
@@ -9,11 +9,11 @@ export const openRepository = (path: string, scope: CompareScope, gitExecutable:
 export const discoverGroup = (path: string, manual: string[], gitExecutable: string | null) =>
   invoke<GroupDiscovery>("discover_group", { path, manual, gitExecutable });
 
-/** 成员徽标的改动数（V2-D82）：一次只读 status。 */
+/** 成员徽标的改动数（V2-D83）：一次只读 status。 */
 export const memberChangeCount = (path: string, submodulePointers: boolean, gitExecutable: string | null) =>
   invoke<number>("member_change_count", { path, submodulePointers, gitExecutable });
 
-/** 工作区共用一个 watcher（V2-D81）；第一个成员为父仓库。 */
+/** 工作区共用一个 watcher（V2-D82）；第一个成员为父仓库。 */
 export const watchGroup = (key: string, members: { repoId: string; worktreePath: string; gitDir: string; commonDir: string }[], gitExecutable: string | null) =>
   invoke<void>("watch_group", { key, members, gitExecutable });
 

@@ -107,7 +107,7 @@ pub(super) struct ScanState {
     pub has_head: bool,
     pub branch: BranchInfo,
     pub in_progress: InProgress,
-    /// 未跟踪的嵌套仓库目录（工作区相对路径，不含末尾 `/`），不进入文件列表（V2-D80）。
+    /// 未跟踪的嵌套仓库目录（工作区相对路径，不含末尾 `/`），不进入文件列表（V2-D81）。
     pub nested_repos: Vec<String>,
     pub index_stat: Option<WtStat>,
     pub refs_digest: Vec<u8>,
@@ -255,7 +255,7 @@ pub(super) fn scope_lists(entries: &[Entry], has_head: bool) -> ScopeLists {
 }
 
 impl GitAdapter {
-    /// 子模块条目的两侧提交（V2-D79）：已暂存为 HEAD → index，未暂存为 index → 子模块当前 HEAD，全部为 HEAD → 子模块当前 HEAD。
+    /// 子模块条目的两侧提交（V2-D80）：已暂存为 HEAD → index，未暂存为 index → 子模块当前 HEAD，全部为 HEAD → 子模块当前 HEAD。
     /// 子模块 HEAD 只读文件（`media::submodule_head`），不启动 Git。
     fn attach_pointers(&self, lists: &mut ScopeLists, entries: &[Entry]) {
         use super::log::SubmodulePointer;
@@ -341,7 +341,7 @@ impl GitAdapter {
             "--untracked-files=all",
             "--find-renames",
         ];
-        // 子模块指针开关（V2-D79）：显式覆盖 `.gitmodules` / config 的 `ignore`；两种取值都不进入子模块检查工作区改动。
+        // 子模块指针开关（V2-D80）：显式覆盖 `.gitmodules` / config 的 `ignore`；两种取值都不进入子模块检查工作区改动。
         if self.worktree.join(".gitmodules").is_file() {
             args.push(if self.submodule_pointers() { "--ignore-submodules=dirty" } else { "--ignore-submodules=all" });
         }
@@ -358,7 +358,7 @@ impl GitAdapter {
         };
         let raw = output.stdout;
         let (branch, mut files) = status_v2::parse(&raw)?;
-        // 未跟踪的嵌套仓库目录（放在工作区里的 worktree、独立仓库）不作为未跟踪文件显示（V2-D80）。
+        // 未跟踪的嵌套仓库目录（放在工作区里的 worktree、独立仓库）不作为未跟踪文件显示（V2-D81）。
         let mut nested_repos = Vec::new();
         for list in [&mut files.all, &mut files.unstaged] {
             list.retain(|entry| {

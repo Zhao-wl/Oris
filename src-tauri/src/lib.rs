@@ -375,7 +375,7 @@ async fn open_repository(
         );
     }
     {
-        // 工作区成员由工作区共用的 watcher 覆盖（V2-D81），重新打开成员时不拆掉它。
+        // 工作区成员由工作区共用的 watcher 覆盖（V2-D82），重新打开成员时不拆掉它。
         let mut lru = watchers.0.lock().map_err(|_| GitError::Registry)?;
         if !lru.in_group(&repo_id) {
             lru.remove(&repo_id);
@@ -398,7 +398,7 @@ async fn discover_group(path: String, manual: Vec<String>, git_executable: Optio
     .map_err(|error| GitError::Runtime(error.to_string()))?
 }
 
-/// 成员徽标的改动数（V2-D82）：一次只读 status；由前端限制并发。
+/// 成员徽标的改动数（V2-D83）：一次只读 status；由前端限制并发。
 #[cfg(feature = "desktop")]
 #[tauri::command]
 async fn member_change_count(path: String, submodule_pointers: bool, git_executable: Option<String>) -> Result<usize, GitError> {
@@ -421,7 +421,7 @@ struct GroupWatchMember {
     common_dir: String,
 }
 
-/// 工作区共用一个 watcher（V2-D81）：替换各成员自己的 watcher，在 LRU 中只占一个名额。第一个成员是父仓库。
+/// 工作区共用一个 watcher（V2-D82）：替换各成员自己的 watcher，在 LRU 中只占一个名额。第一个成员是父仓库。
 #[cfg(feature = "desktop")]
 #[tauri::command]
 async fn watch_group(key: String, members: Vec<GroupWatchMember>, git_executable: Option<String>, watchers: State<'_, WatcherRegistry>, app: tauri::AppHandle) -> Result<(), GitError> {
@@ -450,7 +450,7 @@ async fn watch_group(key: String, members: Vec<GroupWatchMember>, git_executable
     Ok(())
 }
 
-/// 切换子模块指针开关（V2-D79）后由前端刷新。
+/// 切换子模块指针开关（V2-D80）后由前端刷新。
 #[cfg(feature = "desktop")]
 #[tauri::command]
 fn set_submodule_pointers(repo_id: String, show: bool, registry: State<'_, RepositoryRegistry>) -> Result<(), GitError> {

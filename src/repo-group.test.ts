@@ -42,7 +42,7 @@ const record = (repoId: string, name: string, extra: Partial<ProjectRecord> = {}
 });
 const state = (projects: ProjectRecord[], activeRepoId: string | null = projects[0]?.repo.repoId ?? null): WorkspaceState => ({ version: 2, activeRepoId, projects });
 
-describe("工作区项目记录（V2-D75、V2-D78）", () => {
+describe("工作区项目记录（V2-D76、V2-D79）", () => {
   it("添加工作区：父仓库成为标签，就绪成员补建隐藏记录，未初始化的不建记录", () => {
     const applied = applyDiscovery(state([record("oris", "Oris")]), discovery(), "");
     const tabs = tabProjects(applied.state).map((project) => project.repo.repoId);
@@ -62,7 +62,7 @@ describe("工作区项目记录（V2-D75、V2-D78）", () => {
     expect(client.customName).toBe("客户端");
     expect(client.anchor).toEqual(anchor);
     expect(client.groupId).toBe("id-game-workspace");
-    // 直接添加子模块目录：选中该子模块（V2-D78）。
+    // 直接添加子模块目录：选中该子模块（V2-D79）。
     expect(applied.selected).toBe("id-client");
     expect(groupRootOf(applied.state, "id-client")?.repo.repoId).toBe("id-game-workspace");
   });

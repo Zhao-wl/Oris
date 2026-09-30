@@ -143,7 +143,7 @@ pub struct FileChange {
     /// 子模块条目（gitlink，mode 160000）：不提供丢弃（R-DISCARD）。
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     gitlink: bool,
-    /// 子模块条目两侧的提交（V2-D79：列表中显示“记录 → 当前”）；普通文件为 None。
+    /// 子模块条目两侧的提交（V2-D80：列表中显示“记录 → 当前”）；普通文件为 None。
     #[serde(skip_serializing_if = "Option::is_none")]
     submodule: Option<log::SubmodulePointer>,
 }
@@ -226,10 +226,10 @@ pub struct RepositorySnapshot {
     stats_ready: bool,
     branch_info: Option<scan::BranchSummary>,
     in_progress: Option<scan::InProgressSummary>,
-    /// 未跟踪的嵌套仓库目录（V2-D80），不在文件列表中，界面在列表底部折叠说明。
+    /// 未跟踪的嵌套仓库目录（V2-D81），不在文件列表中，界面在列表底部折叠说明。
     #[serde(skip_serializing_if = "Vec::is_empty")]
     nested_repos: Vec<String>,
-    /// 仓库顶层有 `.gitmodules`：界面提供子模块指针开关（V2-D79）。
+    /// 仓库顶层有 `.gitmodules`：界面提供子模块指针开关（V2-D80）。
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     has_submodules: bool,
 }
@@ -320,7 +320,7 @@ pub struct GitAdapter {
     snapshots: Arc<Mutex<HashMap<CompareScope, Vec<read_guard::ReadSnapshot>>>>,
     scans: Arc<Mutex<Vec<Arc<scan::ScanState>>>>,
     reader: object_reader::SharedReader,
-    /// 子模块指针开关（V2-D79，默认关闭）：只影响含 `.gitmodules` 的仓库的 status 参数。
+    /// 子模块指针开关（V2-D80，默认关闭）：只影响含 `.gitmodules` 的仓库的 status 参数。
     submodule_pointers: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -381,7 +381,7 @@ impl GitAdapter {
         })
     }
 
-    /// 设置子模块指针开关（V2-D79）；下一次扫描生效。
+    /// 设置子模块指针开关（V2-D80）；下一次扫描生效。
     pub fn set_submodule_pointers(&self, show: bool) {
         self.submodule_pointers.store(show, std::sync::atomic::Ordering::SeqCst);
     }
@@ -486,7 +486,7 @@ impl GitAdapter {
         let mut lists = state.lists.clone();
         if let Some(details) = details {
             lists.all = details.all.clone();
-            // 修正后的“全部”列表来自 diff 命令，不含子模块两侧提交：按 pathId 从扫描结果带过来（V2-D79）。
+            // 修正后的“全部”列表来自 diff 命令，不含子模块两侧提交：按 pathId 从扫描结果带过来（V2-D80）。
             for file in lists.all.iter_mut().filter(|f| f.gitlink) {
                 file.submodule = state.lists.all.iter().find(|s| s.path_id == file.path_id).and_then(|s| s.submodule.clone());
             }

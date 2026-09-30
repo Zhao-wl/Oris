@@ -49,7 +49,7 @@ interface Props {
   onStashPush?(options: StashPushOptions): Promise<boolean>;
   onStashApply?(entry: StashEntry, pop: boolean): void;
   onStashDrop?(entry: StashEntry): void;
-  /** 工作区（V2-D84）：父仓库提交中的子模块指针变化，切换到子仓库比较前后两个提交。 */
+  /** 工作区（V2-D85）：父仓库提交中的子模块指针变化，切换到子仓库比较前后两个提交。 */
   onSubmoduleCompare?(file: ChangedFile): void;
   /** 由父仓库历史跳转过来的比较请求（只对 repoId 相同的面板生效）。 */
   compareRequest?: { repoId: string; nonce: number; left: string; right: string; label: string } | null;
@@ -225,7 +225,7 @@ export default function HistoryPanel(props: Props) {
       if (!isStale(error)) setMode((current) => current.kind === "compare" && current.a === a && current.b === b ? { ...current, error: current.hint ? `${current.hint}（${errorText(error)}）` : errorText(error) } : current);
     });
   }, [repoId]);
-  // 父仓库历史中的子模块指针（V2-D84）：打开两个提交的比较；子仓库缺少提交时说明，不自动获取。
+  // 父仓库历史中的子模块指针（V2-D85）：打开两个提交的比较；子仓库缺少提交时说明，不自动获取。
   const appliedCompare = useRef<number | null>(null);
   useEffect(() => {
     if (!compareRequest || compareRequest.repoId !== repoId || appliedCompare.current === compareRequest.nonce) return;

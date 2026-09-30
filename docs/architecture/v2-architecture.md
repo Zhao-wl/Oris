@@ -245,7 +245,7 @@ flowchart LR
 后端新增只读命令 `discover_group(path)`，全部走只读通道（§8 的只读约束）：
 
 1. `rev-parse --show-toplevel --absolute-git-dir --git-common-dir --show-superproject-working-tree`。
-2. **归属**：`--show-superproject-working-tree` 非空，说明所选目录是子模块，改为以父仓库为工作区（V2-D78）；子模块的 linked worktree 不会报告父仓库，改用 common dir 判断：common dir 位于 `<某仓库>/.git/modules/<名称>` 之下时，以该仓库为父仓库，并用父仓库的 `.gitmodules` 核对名称。父仓库本身也是子模块时（子模块的子模块），按普通项目处理。
+2. **归属**：`--show-superproject-working-tree` 非空，说明所选目录是子模块，改为以父仓库为工作区（V2-D79）；子模块的 linked worktree 不会报告父仓库，改用 common dir 判断：common dir 位于 `<某仓库>/.git/modules/<名称>` 之下时，以该仓库为父仓库，并用父仓库的 `.gitmodules` 核对名称。父仓库本身也是子模块时（子模块的子模块），按普通项目处理。
 3. **成员**：
    - 子模块：`git config --file .gitmodules --null --get-regexp '^submodule\..*\.path$'`，按 §8 校验路径；是否初始化：`<path>/.git` 存在且在该目录下 `rev-parse --show-toplevel` 等于该路径。
    - 父仓库记录的指针：一次 `ls-files -s -z -- <全部子模块路径>`，取 mode 160000 的 OID。
@@ -257,19 +257,19 @@ flowchart LR
 
 - `ProjectRecord` 增加 `group?: { activeRepoId: string; members: MemberRecord[] }`，`MemberRecord = { repo: RepositoryInfo; anchor: ReadingAnchor; customName?: string; manual?: boolean; showSubmodulePointers?: boolean }`。普通项目没有 `group` 字段，行为不变。
 - 存储版本升到 3：v2 记录原样读入（没有 `group`）；写入 v3。回退到旧版本时，旧版本只认识外层 `repo`，工作区会退化为只打开父仓库，不丢数据。
-- 合并（V2-D78）：添加工作区或识别出归属时，在同一次 `upsertProject` 里把 `repoId` 属于成员的独立项目移入 `group.members`（保留 `customName`、`anchor`），并从项目列表中删除；工作区占用父仓库原来的位置，父仓库原来不在列表中时占用第一个被并入成员的位置。提交草稿、快照、同步默认方式本来就按 repoId 保存，不需要迁移。
+- 合并（V2-D79）：添加工作区或识别出归属时，在同一次 `upsertProject` 里把 `repoId` 属于成员的独立项目移入 `group.members`（保留 `customName`、`anchor`），并从项目列表中删除；工作区占用父仓库原来的位置，父仓库原来不在列表中时占用第一个被并入成员的位置。提交草稿、快照、同步默认方式本来就按 repoId 保存，不需要迁移。
 - `activeRepoId`（外层，项目栏选中项）保持为工作区父仓库的 repoId；当前仓库由 `group.activeRepoId` 决定。前端所有按 repoId 取状态的地方改为取“当前项目的当前仓库 repoId”，集中在一个选择函数里，避免散落的判断。
 
 ### 10.4 status 与子模块指针
 
-- `scan.rs` 与 `status_v2.rs` 的 status 参数增加 `--ignore-submodules=all`（开关关闭）或 `--ignore-submodules=dirty`（开关打开），由调用方按仓库传入（V2-D79）。不含子模块的仓库不传，保持现状。
+- `scan.rs` 与 `status_v2.rs` 的 status 参数增加 `--ignore-submodules=all`（开关关闭）或 `--ignore-submodules=dirty`（开关打开），由调用方按仓库传入（V2-D80）。不含子模块的仓库不传，保持现状。
 - 这一参数同时解决性能问题：不设 `ignore` 的仓库，原来的 status 会进入每个子模块检查工作区改动；两种取值都不会。
 - 指针行复用现有 gitlink 条目（`media.rs` 的 `SubmoduleInfo`），文件列表中显示为“子模块 name：a → b”，并带“切换到该仓库”动作（按路径在成员中查找 repoId）。暂存 / 取消暂存走现有文件级通道；discard、hunk 继续按 V2-D55 / R-DISCARD 禁用。
-- 嵌套仓库目录（V2-D80）：porcelain v2 对未跟踪的嵌套仓库只报告一条以 `/` 结尾的目录记录。扫描后按“路径是成员根，或目录下存在 `.git`”把这些记录从文件列表移到 `nestedRepos` 字段，前端在列表底部折叠显示。判断 `.git` 只对 `?` 类型且以 `/` 结尾的记录做，不遍历目录。
+- 嵌套仓库目录（V2-D81）：porcelain v2 对未跟踪的嵌套仓库只报告一条以 `/` 结尾的目录记录。扫描后按“路径是成员根，或目录下存在 `.git`”把这些记录从文件列表移到 `nestedRepos` 字段，前端在列表底部折叠显示。判断 `.git` 只对 `?` 类型且以 `/` 结尾的记录做，不遍历目录。
 
 ### 10.5 Watcher 共用与分派
 
-- 一个工作区只建一个递归 watcher，监听父仓库工作区根；工作区外的 worktree 与 Git 目录（例如放在别处的 linked worktree）另加非递归或递归监听，登记在同一个 `GroupWatcher` 下，在 `WatchLru` 中只占一个名额（V2-D81）。
+- 一个工作区只建一个递归 watcher，监听父仓库工作区根；工作区外的 worktree 与 Git 目录（例如放在别处的 linked worktree）另加非递归或递归监听，登记在同一个 `GroupWatcher` 下，在 `WatchLru` 中只占一个名额（V2-D82）。
 - 分派：为每个就绪成员登记 `(worktree 根, git_dir, common_dir)`，事件路径按最长前缀找到所属成员后，交给该成员自己的 `IgnoreRules` 与 `classify`。父仓库的 `.git/modules/<name>` 属于对应子模块的 Git 目录，最长前缀天然把它分给子模块。
 - 刷新：当前仓库照常刷新；其他成员（包括未选中时的父仓库）只把 `ProjectRuntime.dirty` 置位，徽标显示“有变化”，切换过去时刷新。父仓库 `.gitmodules` 或各仓库 `worktrees/` 登记目录变化时，重新执行一次 `discover_group`。
 - Windows 上的 ReadDirectoryChangesW 无法在系统层排除子目录，子仓库目录中的事件仍会送达，只是在分派后按子仓库规则过滤（子仓库的 `.gitignore`，例如 Unity 的 `Library/`），不会让父仓库重扫。这部分过滤开销由 B36 测量。
@@ -277,7 +277,7 @@ flowchart LR
 ### 10.6 徽标与资源
 
 - 打开工作区时：`discover_group` 已经给出分支、HEAD 与记录的指针，偏离即 `headOid != recordedOid`。
-- 改动数：打开选择器或手动刷新时，对尚未扫描或 dirty 的成员执行一次只读 status（与正常扫描相同的参数），最多同时 2 个，结果只写入该成员的轻量状态，不预读 diff 内容（V2-D82）。
+- 改动数：打开选择器或手动刷新时，对尚未扫描或 dirty 的成员执行一次只读 status（与正常扫描相同的参数），最多同时 2 个，结果只写入该成员的轻量状态，不预读 diff 内容（V2-D83）。
 - 成员的 GitAdapter 只在第一次切换过去时创建；切走后常驻 `cat-file` 按现有空闲回收。空闲时常驻 Git 子进程 ≤ 5 的上限（验收 §4）对整个应用生效，工作区不另开额度。
 - 快照持久化按 repoId 计数，工作区的每个已打开成员各算一个，仍受“每项目 2 MiB，最多 20 个”的上限约束；超出时优先淘汰其他项目中最久未用的成员快照。
 
@@ -285,7 +285,7 @@ flowchart LR
 
 - 标题栏的仓库选择器与项目搜索共用一套列表组件（搜索、键盘上下选择、Enter 切换、Esc 关闭）；成员按“父仓库 → 子模块（按 `.gitmodules` 顺序）→ 手动加入”排列，worktree 缩进在所属仓库下。
 - 切换成员与切换项目走同一条路径：替换当前 repoId，立即显示该成员的 ProjectRuntime 快照，dirty 时后台刷新（R-FLOW“切换项目”预算同样适用）。
-- 历史中的 gitlink 条目（V2-D84）：跳转时先切换成员，再用现有的“比较两个版本”入口打开 a ↔ b；任一提交在子仓库中不存在（`cat-file -e` 失败）时说明“该子仓库中还没有这个提交，可以先获取”，不自动获取。
+- 历史中的 gitlink 条目（V2-D85）：跳转时先切换成员，再用现有的“比较两个版本”入口打开 a ↔ b；任一提交在子仓库中不存在（`cat-file -e` 失败）时说明“该子仓库中还没有这个提交，可以先获取”，不自动获取。
 
 ### 10.8 实施说明（2026-09-29，任务 V2-07）
 

@@ -23,7 +23,7 @@ export interface ProjectRecord {
   groupId?: string;
   /** 工作区父仓库（V2-07）：上次选中的成员与手动加入的独立嵌套仓库路径。 */
   group?: { lastRepoId: string; manual: string[] };
-  /** 子模块指针开关（V2-D79），按仓库保存，默认关闭。 */
+  /** 子模块指针开关（V2-D80），按仓库保存，默认关闭。 */
   showSubmodulePointers?: boolean;
 }
 

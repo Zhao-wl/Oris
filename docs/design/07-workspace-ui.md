@@ -1,6 +1,6 @@
 # 工作区效果图
 
-状态：**用户已确认**（2026-09-29，V2-D85），尚未实施。评审中按用户意见调整：仓库切换放在标题栏原项目名称的位置，不加面包屑；效果图去掉场景切换栏与说明条。对应 [R-WORKSPACE](../specs/v2-product.md) 与任务 [V2-07](../tasks/v2/07-workspace.md)，决策见 V2-D75–V2-D84。视觉沿用[一二期混合发布参考图](04-mixed-release-ui-reference.md)与[同步工具栏](06-sync-toolbar-ui.md)。
+状态：**用户已确认**（2026-09-29，V2-D86），尚未实施。评审中按用户意见调整：仓库切换放在标题栏原项目名称的位置，不加面包屑；效果图去掉场景切换栏与说明条。对应 [R-WORKSPACE](../specs/v2-product.md) 与任务 [V2-07](../tasks/v2/07-workspace.md)，决策见 V2-D76–V2-D85。视觉沿用[一二期混合发布参考图](04-mixed-release-ui-reference.md)与[同步工具栏](06-sync-toolbar-ui.md)。
 
 [打开可交互效果图](oris-workspace.html)
 

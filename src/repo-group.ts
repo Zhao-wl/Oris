@@ -47,14 +47,14 @@ export function memberRepo(member: GroupMember): RepositoryInfo | null {
 
 export interface GroupApplied {
   state: WorkspaceState;
-  /** 此前作为独立项目添加、这次并入工作区的成员名称（V2-D78，用于一次性提示）。 */
+  /** 此前作为独立项目添加、这次并入工作区的成员名称（V2-D79，用于一次性提示）。 */
   merged: string[];
   /** 应当打开的成员 repoId。 */
   selected: string;
 }
 
 /**
- * 把一次发现结果写入项目列表（V2-D78）：已有的独立成员项目直接并入（保留别名与锚点），新成员补建记录，
+ * 把一次发现结果写入项目列表（V2-D79）：已有的独立成员项目直接并入（保留别名与锚点），新成员补建记录，
  * 已不在工作区中的成员记录移除。工作区标签占用父仓库原来的位置；父仓库原来不在列表中时占用第一个被并入成员的位置。
  */
 export function applyDiscovery(state: WorkspaceState, discovery: GroupDiscovery, gitExecutable: string): GroupApplied {
@@ -119,14 +119,14 @@ export function removeGroup(state: WorkspaceState, rootId: string): { state: Wor
   return { state: { ...state, projects, activeRepoId: activeRemoved ? next : state.activeRepoId }, removed };
 }
 
-/** 记录工作区上次选中的成员（切换或重启后恢复，V2-D77）。 */
+/** 记录工作区上次选中的成员（切换或重启后恢复，V2-D78）。 */
 export function rememberMember(state: WorkspaceState, repoId: string): WorkspaceState {
   const root = groupRootOf(state, repoId);
   if (!root || root.group?.lastRepoId === repoId) return state;
   return { ...state, projects: state.projects.map((project) => project === root ? { ...project, group: { lastRepoId: repoId, manual: project.group?.manual ?? [] } } : project) };
 }
 
-/** 修改手动加入的成员路径（V2-D76）。 */
+/** 修改手动加入的成员路径（V2-D77）。 */
 export function setManualMembers(state: WorkspaceState, rootId: string, manual: string[]): WorkspaceState {
   return { ...state, projects: state.projects.map((project) => project.repo.repoId === rootId && project.group ? { ...project, group: { ...project.group, manual } } : project) };
 }

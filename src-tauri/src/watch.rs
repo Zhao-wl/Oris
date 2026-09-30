@@ -21,7 +21,7 @@ pub enum ChangeKind {
     Refs,
     Stash,
     InProgress,
-    /// worktree / 子模块 Git 目录的登记发生变化（新增、删除）：工作区需要重新读取成员列表（V2-D81）。
+    /// worktree / 子模块 Git 目录的登记发生变化（新增、删除）：工作区需要重新读取成员列表（V2-D82）。
     Members,
 }
 
@@ -410,7 +410,7 @@ pub fn watch(
     watch_group(vec![target], debounce, emit)
 }
 
-/// 启动一个覆盖多个仓库的 watcher（工作区，V2-D81）：只为不在其他目标之内的根目录建立递归监听，
+/// 启动一个覆盖多个仓库的 watcher（工作区，V2-D82）：只为不在其他目标之内的根目录建立递归监听，
 /// 事件按最长前缀分派后，由各成员自己的忽略规则与屏蔽窗口分类。第一个目标是工作区的父仓库。
 pub fn watch_group(
     targets: Vec<WatchTarget>,
@@ -850,7 +850,7 @@ mod tests {
         assert_eq!(names(&batches[2]), vec!["battle-r2/b.rs", ".git/modules/battle/index", ".git/modules/battle/refs/heads/main", ".git/modules/battle/worktrees/battle-r2/HEAD", ""]);
     }
 
-    /// V2-D81：父仓库不因子仓库目录中的写入（含被子仓库忽略的大量写入）收到通知；一个 watcher 在 LRU 中只占一个名额。
+    /// V2-D82：父仓库不因子仓库目录中的写入（含被子仓库忽略的大量写入）收到通知；一个 watcher 在 LRU 中只占一个名额。
     #[test]
     fn group_watcher_keeps_parent_quiet_for_child_writes() {
         let dir = repo();

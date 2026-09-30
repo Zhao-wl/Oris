@@ -55,11 +55,11 @@ pub struct GroupMember {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupDiscovery {
-    /// 是否为工作区（父仓库 `.gitmodules` 中至少有一个子模块条目，V2-D75）。
+    /// 是否为工作区（父仓库 `.gitmodules` 中至少有一个子模块条目，V2-D76）。
     pub is_group: bool,
     /// 父仓库与全部成员（父仓库在第一位；不是工作区时只有所选仓库自身）。
     pub members: Vec<GroupMember>,
-    /// 所选目录对应的成员 repoId（直接添加子模块目录时为该子模块，V2-D78）。
+    /// 所选目录对应的成员 repoId（直接添加子模块目录时为该子模块，V2-D79）。
     pub selected_repo_id: Option<String>,
     /// 被忽略的 `.gitmodules` 条目与原因（绝对路径、越界路径等）。
     pub ignored: Vec<String>,
@@ -309,11 +309,11 @@ fn superproject_by_common_dir(common_dir: &Path) -> Option<PathBuf> {
     None
 }
 
-/// 发现 `path` 所在的工作区。`manual` 为用户手动加入的独立嵌套仓库路径（V2-D76）。
+/// 发现 `path` 所在的工作区。`manual` 为用户手动加入的独立嵌套仓库路径（V2-D77）。
 pub fn discover(git: &Path, path: &Path, manual: &[String]) -> Result<GroupDiscovery, GitError> {
     let requested = dunce::canonicalize(path).map_err(|error| GitError::InvalidRepository(error.to_string()))?;
     let selected = repo_paths(git, &requested)?;
-    // 归属（V2-D78）：子模块目录报告父仓库；子模块的 worktree 用 common dir 推出父仓库。父仓库本身也是子模块时按普通项目处理。
+    // 归属（V2-D79）：子模块目录报告父仓库；子模块的 worktree 用 common dir 推出父仓库。父仓库本身也是子模块时按普通项目处理。
     let candidate = superproject_of(git, &selected.worktree)
         .or_else(|| superproject_by_common_dir(&selected.common_dir).filter(|root| root.join(".gitmodules").is_file()));
     let root = match candidate {
@@ -410,7 +410,7 @@ fn single(git: &Path, selected: &RepoPaths) -> GroupDiscovery {
     GroupDiscovery { is_group: false, selected_repo_id: member.repo_id.clone(), members: vec![member], ignored: Vec::new() }
 }
 
-/// 成员的改动数（徽标，V2-D82）：一次只读 status，不读取内容；子模块指针按该仓库的开关计入。
+/// 成员的改动数（徽标，V2-D83）：一次只读 status，不读取内容；子模块指针按该仓库的开关计入。
 pub fn change_count(git: &Path, worktree: &Path, show_submodule_pointers: bool) -> Result<usize, GitError> {
     let mut args = vec!["status", "--porcelain=v2", "-z", "--untracked-files=all"];
     if worktree.join(".gitmodules").is_file() {

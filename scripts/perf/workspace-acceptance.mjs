@@ -269,7 +269,7 @@ async function localSuite() {
     check("B36 选中父仓库时子仓库的大量写入不触发父仓库或子仓库扫描", !afterWrites.some((e) => e.command.startsWith("status")), afterWrites.map((e) => `${e.cwd} ${e.command}`));
     await ctx.click(`document.querySelector('.repo-picker-button')`);
     await ctx.waitUntil(`window.__w.row('client')`);
-    // 有变化的成员在打开选择器时重新读取（V2-D82）：“有变化”之后改动数更新为新值（Game.cs + 20 个新文件；Library/ 被忽略）。
+    // 有变化的成员在打开选择器时重新读取（V2-D83）：“有变化”之后改动数更新为新值（Game.cs + 20 个新文件；Library/ 被忽略）。
     await ctx.waitUntil(`!window.__w.scanning()`, 30000);
     const clientBadges = await ctx.evaluate(`window.__w.rows().find((r) => r.name === 'client').badges`);
     check("B35 子仓库外部变化后重新读取，改动数更新（被忽略的 Library/ 不计）", clientBadges.includes("21 个改动"), clientBadges);

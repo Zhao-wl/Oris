@@ -4,7 +4,7 @@ import PathText from "./PathText";
 import VirtualRows, { VIRTUAL_THRESHOLD } from "./VirtualRows";
 
 /** 提交 / 比较 / stash 的变化文件列表；文件很多时改用虚拟列表，滚动容器为外层 `.log-detail`。 */
-export default function FileList({ files, activeKey, keyFor, onOpen, onHistory, onSubmodule }: { files: ChangedFile[]; activeKey: string | null; keyFor(file: ChangedFile): string; onOpen(file: ChangedFile): void; onHistory?(file: ChangedFile): void; /** 工作区（V2-D84）：在子仓库中比较子模块指针的前后两个提交。 */ onSubmodule?(file: ChangedFile): void }) {
+export default function FileList({ files, activeKey, keyFor, onOpen, onHistory, onSubmodule }: { files: ChangedFile[]; activeKey: string | null; keyFor(file: ChangedFile): string; onOpen(file: ChangedFile): void; onHistory?(file: ChangedFile): void; /** 工作区（V2-D85）：在子仓库中比较子模块指针的前后两个提交。 */ onSubmodule?(file: ChangedFile): void }) {
   const host = useRef<HTMLElement | null>(null);
   const move = (event: ReactKeyboardEvent<HTMLElement>, index: number) => {
     const delta = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;

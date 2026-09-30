@@ -30,7 +30,7 @@ export interface FileChange {
   contentUnchanged?: ContentUnchanged;
   /** 子模块条目（gitlink）：不提供丢弃。 */
   gitlink?: boolean;
-  /** 子模块条目两侧的提交（V2-D79，列表显示“记录 → 当前”）。 */
+  /** 子模块条目两侧的提交（V2-D80，列表显示“记录 → 当前”）。 */
   submodule?: { old: string | null; new: string | null };
   /** 乐观更新中、等待 Git 确认（仅前端）。 */
   pending?: boolean;
@@ -74,9 +74,9 @@ export interface RepositorySnapshot {
   statsReady?: boolean;
   branchInfo?: BranchSummary | null;
   inProgress?: InProgressSummary | null;
-  /** 未跟踪的嵌套仓库目录（工作区相对路径），不在文件列表中（V2-D80）。 */
+  /** 未跟踪的嵌套仓库目录（工作区相对路径），不在文件列表中（V2-D81）。 */
   nestedRepos?: string[];
-  /** 仓库顶层有 `.gitmodules`：提供子模块指针开关（V2-D79）。 */
+  /** 仓库顶层有 `.gitmodules`：提供子模块指针开关（V2-D80）。 */
   hasSubmodules?: boolean;
 }
 

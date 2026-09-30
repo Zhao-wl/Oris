@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 import type { GroupMember } from "./types";
 import { pickerOrder } from "./repo-group";
 
-/** 成员徽标中的改动状态（V2-D82）：count 为 undefined 时显示“未扫描”，不显示成 0。 */
+/** 成员徽标中的改动状态（V2-D83）：count 为 undefined 时显示“未扫描”，不显示成 0。 */
 export interface MemberBadge { count?: number; scanning?: boolean; dirty?: boolean }
 
 interface Props {
