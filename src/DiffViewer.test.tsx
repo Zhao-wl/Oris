@@ -110,6 +110,30 @@ describe("DiffViewer 已缓存文件切换", () => {
     act(() => ref.current!.navigate(1));
     expect(editors()[1].state.selection.main.head).toBe(docA.hunks[1].fromB);
   });
+
+  it("概览轨道：标记整层重建、点击由标记层委托，跳到对应的块；切换文件后指向新文件的块", async () => {
+    // jsdom 没有布局：给轨道一个高度，每块才有各自的标记
+    const clientHeight = Object.getOwnPropertyDescriptor(Element.prototype, "clientHeight")!;
+    Object.defineProperty(Element.prototype, "clientHeight", { configurable: true, get() { return (this as Element).classList.contains("diff-overview-rail") ? 600 : 0; } });
+    try {
+      const frame = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+      render(fileA, docA, "repo:unstaged:a", null);
+      await frame();
+      const rightMarkers = () => [...host.querySelectorAll<HTMLElement>(".diff-overview-rail.right .diff-overview-marker-list > .diff-overview-marker")];
+      expect(rightMarkers().length).toBe(docA.hunks.length);
+      // 视口框仍在外层，不在标记层内
+      expect(host.querySelector(".diff-overview-rail.right .diff-overview-markers > .diff-overview-viewport")).not.toBeNull();
+      act(() => rightMarkers()[3].click());
+      expect(editors()[1].state.selection.main.head).toBe(docA.hunks[3].fromB);
+      render(fileB, docB, "repo:unstaged:b", null);
+      await frame();
+      expect(rightMarkers().length).toBe(docB.hunks.length);
+      act(() => rightMarkers()[2].click());
+      expect(editors()[1].state.selection.main.head).toBe(docB.hunks[2].fromB);
+    } finally {
+      Object.defineProperty(Element.prototype, "clientHeight", clientHeight);
+    }
+  });
 });
 
 describe("buildSideDecorations", () => {

@@ -124,6 +124,12 @@ fn b31_discovers_members_worktrees_and_ignores_unsafe_entries() {
     assert_eq!(battle.recorded_oid.as_deref(), Some(git_in(&fx.root.join("battle"), &["rev-parse", "HEAD"]).as_str()));
     assert_eq!(battle.head_oid, battle.recorded_oid);
     assert_eq!(battle.branch.as_deref(), Some("main"));
+    // 记录的指针与成员发现并行读取后按 .gitmodules 顺序填回（lc5）：每个子模块拿到的都是自己的 gitlink，未初始化的也有。
+    for name in ["battle", "client", "tools", "audio"] {
+        let recorded = git_in(&fx.root, &["ls-files", "-s", "--", name]);
+        let expected = recorded.split_whitespace().nth(1).map(str::to_owned);
+        assert_eq!(find(name).recorded_oid, expected, "{name} 的记录指针");
+    }
     // 不安全的 .gitmodules 条目被忽略并说明原因。
     assert_eq!(found.ignored.len(), 2, "{:?}", found.ignored);
     assert!(found.ignored.iter().any(|i| i.starts_with("evil")));

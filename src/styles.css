@@ -161,6 +161,7 @@ button:disabled { opacity:.45; cursor:default; }
 .diff-overview-rail.left { border-right-width:1px; }.diff-overview-rail.right { border-left-width:1px; }
 .diff-overview-rail:focus-visible { outline:2px solid var(--blue); outline-offset:-2px; }
 .diff-overview-markers { position:absolute; inset:0; pointer-events:none; background:color-mix(in srgb, var(--panel) 70%, var(--chrome)); }
+.diff-overview-marker-list { position:absolute; inset:0; pointer-events:none; }
 .diff-overview-viewport { position:absolute; left:1px; right:1px; min-height:2px; box-sizing:border-box; pointer-events:auto; z-index:3; cursor:default; background:var(--overview-viewport-bg, #d7e5ff24); border:1px solid var(--overview-viewport-border, #d7e5ffb8); border-radius:3px; box-shadow:inset 0 0 0 1px var(--overview-viewport-shadow, #1115); }
 .diff-overview-viewport:active,.diff-overview-rail[data-dragging] .diff-overview-viewport { background:var(--overview-viewport-active, #d7e5ff38); }
 :root.theme-light .diff-overview-viewport { background:var(--overview-viewport-bg, #315ee718); border-color:var(--overview-viewport-border, #315ee788); box-shadow:inset 0 0 0 1px var(--overview-viewport-shadow, #fff8); }
