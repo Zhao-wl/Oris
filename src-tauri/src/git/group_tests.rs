@@ -250,6 +250,22 @@ fn b33_pointer_switch_controls_gitlink_rows_and_never_scans_submodule_content() 
     assert_eq!(group::change_count(gp(), &battle, false).unwrap(), 1);
 }
 
+/// 增删统计（后台详情）与 status 一样带 `--ignore-submodules`，不进入子模块检查改动（lc5）。
+/// 可观察方式：把 client 子模块的 HEAD 写坏——若统计命令进入子模块运行 status，Git 会直接失败。
+#[test]
+fn b33_details_do_not_run_git_inside_submodules() {
+    let fx = fixture();
+    fs::write(fx.root.join("AGENTS.md"), "changed\n").unwrap();
+    fs::write(fx.root.join("client").join("client.txt"), "modified in submodule\n").unwrap();
+    fs::write(fx.root.join(".git").join("modules").join("client").join("HEAD"), "not a ref\n").unwrap();
+    let adapter = GitAdapter::open(fx.root.to_string_lossy().into_owned(), None).unwrap();
+    let snapshot = adapter.snapshot_v2("off".into(), CompareScope::Unstaged, false).unwrap();
+    let details = adapter.details(&snapshot.revision).unwrap_or_else(|error| panic!("统计不应进入子模块：{error}"));
+    let with_details = adapter.build_snapshot("unstaged".into(), CompareScope::Unstaged, &adapter.scan_state(&snapshot.revision).unwrap(), Some(&details));
+    let agents = with_details.files.iter().find(|f| f.display_path == "AGENTS.md").unwrap();
+    assert_eq!((agents.additions, agents.deletions), (Some(1), Some(1)));
+}
+
 #[test]
 fn b34_nested_repositories_are_listed_separately_not_as_untracked_files() {
     let fx = fixture();
