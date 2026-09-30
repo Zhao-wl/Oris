@@ -19,7 +19,8 @@
   构建前先运行 npm test。
 
 .PARAMETER OutputRoot
-  将前端和 Rust 产物输出到指定独立目录，使用相对 frontendDist 嵌入资源。
+  将前端和 Rust 产物输出到指定独立目录，使用相对 frontendDist 嵌入资源。每次构建先清空其中的 dist 子目录；
+  target 保留，便于增量编译。
 
 .EXAMPLE
   npm run package
@@ -102,7 +103,9 @@ try {
 
   if ($configPath) {
     Invoke-Step '检查 TypeScript' { npx tsc -b }
-    Invoke-Step '构建独立前端目录' { node node_modules/vite/bin/vite.js build --outDir $frontendDir }
+    # 独立前端目录在项目外，Vite 默认不清空：复用同一个 OutputRoot 时旧的带哈希文件会累积并一起嵌入 exe。
+    # --emptyOutDir 只清空 <OutputRoot>\dist，每次构建只嵌入本次的前端产物。
+    Invoke-Step '构建独立前端目录' { node node_modules/vite/bin/vite.js build --outDir $frontendDir --emptyOutDir }
   }
 
   # 先只编译；安装包在验证入口之后单独生成（需要编译产物中的 WebView2Loader.dll）。
