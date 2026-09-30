@@ -8,6 +8,8 @@ const DRAG_THRESHOLD = 4;
 interface Props {
   project: ProjectRecord;
   active: boolean;
+  /** 工作区标签（V2-07）：子模块数（尚未读取成员时为 null）；普通项目不传。 */
+  workspaceMembers?: number | null;
   onSelect(): void;
   onRename(name: string): void;
   onRemove(): void;
@@ -20,7 +22,7 @@ interface Props {
 const tabAt = (x: number, y: number) => document.elementFromPoint(x, y)?.closest<HTMLElement>(".project-tab[data-repo-id]") ?? null;
 const clearDropTarget = () => document.querySelectorAll(".project-tab.drop-target").forEach(node => node.classList.remove("drop-target"));
 
-export default function ProjectTab({ project, active, onSelect, onRename, onRemove, onReorder }: Props) {
+export default function ProjectTab({ project, active, workspaceMembers, onSelect, onRename, onRemove, onReorder }: Props) {
   const [editing, setEditing] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [draft, setDraft] = useState("");
@@ -88,10 +90,10 @@ export default function ProjectTab({ project, active, onSelect, onRename, onRemo
       <small title={project.repo.worktreePath}><PathText path={project.repo.worktreePath}/></small>
     </div> : <button type="button" className="project-switch" aria-pressed={active}
       onKeyDown={event => { if (event.key === "F2") { event.preventDefault(); beginEdit(); } }}>
-      <span title={`${name} · 双击重命名（F2）`} onDoubleClick={event => { event.stopPropagation(); beginEdit(); }}>{name}</span>
-      <small title={project.repo.worktreePath}><PathText path={project.repo.worktreePath}/></small>
+      <span title={`${name} · 双击重命名（F2）`} onDoubleClick={event => { event.stopPropagation(); beginEdit(); }}>{workspaceMembers !== undefined && <span className="project-ws-mark" title="工作区：父仓库与子模块在同一个标签内切换">工作区</span>}{name}</span>
+      <small title={project.repo.worktreePath}><PathText path={project.repo.worktreePath}/>{workspaceMembers ? ` · ${workspaceMembers} 个子模块` : ""}</small>
     </button>}
-    <button type="button" className="project-close" aria-label={`移除项目 ${name}`} title="只移除 Oris 记录，不删除目录"
+    <button type="button" className="project-close" aria-label={`移除项目 ${name}`} title={workspaceMembers !== undefined ? "移除整个工作区：只移除 Oris 记录，不删除目录" : "只移除 Oris 记录，不删除目录"}
       onPointerDown={event => event.stopPropagation()}
       onClick={event => { event.stopPropagation(); onRemove(); }}>×</button>
   </div>;

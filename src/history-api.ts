@@ -25,7 +25,9 @@ export interface LogCursor { tips: string[]; skip: number }
 export interface LogPage { commits: CommitInfo[]; next: LogCursor | null; tips: string[] }
 
 export type ChangeStatus = "added" | "modified" | "deleted" | "renamed" | "copied" | "typeChanged" | "unmerged";
-export interface ChangedFile { path: string; oldPath: string | null; pathId: string; oldPathId: string | null; status: ChangeStatus }
+/** gitlink 前后指向的子仓库提交（V2-D85）；新增时 old 为 null，删除时 new 为 null。 */
+export interface SubmodulePointer { old: string | null; new: string | null }
+export interface ChangedFile { path: string; oldPath: string | null; pathId: string; oldPathId: string | null; status: ChangeStatus; submodule?: SubmodulePointer }
 export interface CommitChanges { oid: string; parent: string | null; parents: string[]; files: ChangedFile[] }
 export interface Comparison { leftRef: string; rightRef: string; left: string; right: string; files: ChangedFile[] }
 

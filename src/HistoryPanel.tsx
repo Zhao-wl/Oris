@@ -49,6 +49,10 @@ interface Props {
   onStashPush?(options: StashPushOptions): Promise<boolean>;
   onStashApply?(entry: StashEntry, pop: boolean): void;
   onStashDrop?(entry: StashEntry): void;
+  /** 工作区（V2-D85）：父仓库提交中的子模块指针变化，切换到子仓库比较前后两个提交。 */
+  onSubmoduleCompare?(file: ChangedFile): void;
+  /** 由父仓库历史跳转过来的比较请求（只对 repoId 相同的面板生效）。 */
+  compareRequest?: { repoId: string; nonce: number; left: string; right: string; label: string } | null;
 }
 
 const PAGE_SIZE = 200;
@@ -77,7 +81,7 @@ function saveColumns(columns: Columns) { try { localStorage.setItem(COLUMNS_KEY,
 
 type Mode =
   | { kind: "commit" }
-  | { kind: "compare"; a: PinnedEndpoint; b: PinnedEndpoint; result: Comparison | null; error: string | null }
+  | { kind: "compare"; a: PinnedEndpoint; b: PinnedEndpoint; result: Comparison | null; error: string | null; hint?: string }
   | { kind: "file"; request: FileHistoryRequest; history: FileHistory | null; loading: boolean; error: string | null; selected: string | null }
   | { kind: "stash"; oid: string }
   | { kind: "stashPush" };
@@ -89,7 +93,7 @@ interface Menu { x: number; y: number; endpoint: PinnedEndpoint }
  * 中间提交图与列表，右侧详情。单击引用只筛选历史，双击分支才切换；三栏宽度可拖动。
  */
 export default function HistoryPanel(props: Props) {
-  const { repoId, refsVersion, hidden, fileHistoryRequest, activeKey, onOpenFile, onRefs, onCheckout, onNewBranch, onMerge, writeBlocked, onSwitch, onTrack, onDeleteBranch, onPruneGone, stashVersion = 0, selectedFiles = [], onStashPush, onStashApply, onStashDrop } = props;
+  const { repoId, refsVersion, hidden, fileHistoryRequest, activeKey, onOpenFile, onRefs, onCheckout, onNewBranch, onMerge, writeBlocked, onSwitch, onTrack, onDeleteBranch, onPruneGone, stashVersion = 0, selectedFiles = [], onStashPush, onStashApply, onStashDrop, onSubmoduleCompare, compareRequest } = props;
   const [refs, setRefs] = useState<RefsView | null>(null);
   const [refsError, setRefsError] = useState<string | null>(null);
   const [filter, setFilter] = useState<string | null>(null);
@@ -214,13 +218,21 @@ export default function HistoryPanel(props: Props) {
   useEffect(() => { if (fileHistoryRequest) loadFileHistory(fileHistoryRequest, null, null); }, [fileHistoryRequest, loadFileHistory]);
 
   // ---------- 比较（直接比较两个端点，非共同基线） ----------
-  const runCompare = useCallback((a: PinnedEndpoint, b: PinnedEndpoint) => {
-    setMode({ kind: "compare", a, b, result: null, error: null });
+  const runCompare = useCallback((a: PinnedEndpoint, b: PinnedEndpoint, hint?: string) => {
+    setMode({ kind: "compare", a, b, result: null, error: null, hint });
     // 两端都传已固定的 OID：比较期间 ref 移动不会悄悄替换端点。
     void compareRevisions(repoId, a.oid, b.oid).then((result) => setMode((current) => current.kind === "compare" && current.a === a && current.b === b ? { ...current, result } : current), (error) => {
-      if (!isStale(error)) setMode((current) => current.kind === "compare" && current.a === a && current.b === b ? { ...current, error: errorText(error) } : current);
+      if (!isStale(error)) setMode((current) => current.kind === "compare" && current.a === a && current.b === b ? { ...current, error: current.hint ? `${current.hint}（${errorText(error)}）` : errorText(error) } : current);
     });
   }, [repoId]);
+  // 父仓库历史中的子模块指针（V2-D85）：打开两个提交的比较；子仓库缺少提交时说明，不自动获取。
+  const appliedCompare = useRef<number | null>(null);
+  useEffect(() => {
+    if (!compareRequest || compareRequest.repoId !== repoId || appliedCompare.current === compareRequest.nonce) return;
+    appliedCompare.current = compareRequest.nonce;
+    const endpoint = (oid: string): PinnedEndpoint => ({ ref: oid, oid, label: `${compareRequest.label} ${shortOid(oid)}` });
+    runCompare(endpoint(compareRequest.left), endpoint(compareRequest.right), "该子仓库中还没有其中的提交，可以先获取后再比较；Oris 不会自动获取");
+  }, [compareRequest, repoId, runCompare]);
   const compareWith = (endpoint: PinnedEndpoint) => {
     setMenu(null);
     if (!compareStart) { setCompareStart(endpoint); return; }
@@ -399,7 +411,7 @@ export default function HistoryPanel(props: Props) {
         runCompare(renew(mode.a), renew(mode.b));
       }} onClose={() => { setMode({ kind: "commit" }); setCompareStart(null); }} onOpen={(file) => mode.result && openCompareFile(mode.result, mode.a, mode.b, file)}/>
         : mode.kind === "file" ? <FileHistoryDetail mode={mode}/>
-        : selected ? <CommitDetail commit={selected} changes={changes} error={changesError} activeKey={activeKey} onParent={setParent} onOpen={(file) => changes && openCommitFile(selected, changes, file)} onHistory={(file) => loadFileHistory({ pathId: file.pathId, path: file.path, start: selected.oid, nonce: Date.now() }, null, null)}/>
+        : selected ? <CommitDetail commit={selected} changes={changes} error={changesError} activeKey={activeKey} onParent={setParent} onOpen={(file) => changes && openCommitFile(selected, changes, file)} onHistory={(file) => loadFileHistory({ pathId: file.pathId, path: file.path, start: selected.oid, nonce: Date.now() }, null, null)} onSubmodule={onSubmoduleCompare}/>
         : <div className="log-empty">选择一个提交查看元信息与变化文件</div>}
     </aside>
     {menu && <EndpointMenu menu={menu} hasStart={!!compareStart} blocked={writeBlocked ?? null} onClose={() => setMenu(null)} onStart={() => { setCompareStart(menu.endpoint); setMenu(null); }} onCompare={() => compareWith(menu.endpoint)}
@@ -437,7 +449,7 @@ const CommitRow = memo(function CommitRow({ row, commit, top, graphWidth, loaded
   </div>;
 });
 
-function CommitDetail({ commit, changes, error, activeKey, onParent, onOpen, onHistory }: { commit: CommitInfo; changes: CommitChanges | null; error: string | null; activeKey: string | null; onParent(parent: string): void; onOpen(file: ChangedFile): void; onHistory(file: ChangedFile): void }) {
+function CommitDetail({ commit, changes, error, activeKey, onParent, onOpen, onHistory, onSubmodule }: { commit: CommitInfo; changes: CommitChanges | null; error: string | null; activeKey: string | null; onParent(parent: string): void; onOpen(file: ChangedFile): void; onHistory(file: ChangedFile): void; onSubmodule?(file: ChangedFile): void }) {
   const current = changes?.oid === commit.oid ? changes : null;
   return <div className="log-detail-body">
     <strong className="log-detail-subject">{commit.subject || "（无提交信息）"}</strong>
@@ -448,7 +460,7 @@ function CommitDetail({ commit, changes, error, activeKey, onParent, onOpen, onH
     {commit.body && <pre className="log-body">{commit.body}</pre>}
     {error && <div className="log-error">{error}</div>}
     {current ? <><div className="log-group">变化文件 · {current.files.length}{current.parent ? ` · 相对 ${shortOid(current.parent)}` : " · 相对空树"}</div>
-      <FileList files={current.files} activeKey={activeKey} keyFor={(file) => `commit:${commit.oid}:${current.parent ?? "root"}:${file.pathId}`} onOpen={onOpen} onHistory={onHistory}/></> : !error && <div className="log-empty">正在读取变化文件…</div>}
+      <FileList files={current.files} activeKey={activeKey} keyFor={(file) => `commit:${commit.oid}:${current.parent ?? "root"}:${file.pathId}`} onOpen={onOpen} onHistory={onHistory} onSubmodule={onSubmodule}/></> : !error && <div className="log-empty">正在读取变化文件…</div>}
   </div>;
 }
 

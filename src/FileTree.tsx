@@ -126,9 +126,10 @@ function FileButton({ file, selectedPathId, onSelect, depth = 0, showPath = fals
       onKeyDown={onKeyDown}
       onContextMenu={actions ? (event) => { event.preventDefault(); actions.openMenu(file, event.clientX, event.clientY); } : undefined}
     >
-      <span className="file-icon">◇</span>
+      <span className="file-icon">{file.gitlink ? "◫" : "◇"}</span>
       <PathText path={label} className="file-path" title={file.displayPath}/>
       {file.oldDisplayPath && <PathText path={file.oldDisplayPath} prefix="← " className="old-path"/>}
+      {file.submodule && <span className="submodule-pointer" title={`子模块提交指针：${file.submodule.old ?? "（无）"} → ${file.submodule.new ?? "（无）"}`}>{file.submodule.old?.slice(0, 7) ?? "（新增）"} → {file.submodule.new?.slice(0, 7) ?? "（未知）"}</span>}
       {file.pending ? <span className="line-stat pending-mark" title="等待 Git 确认">确认中</span>
         : file.contentUnchanged ? <span className="line-stat unchanged" title={contentUnchangedLabels[file.contentUnchanged].detail}>{contentUnchangedLabels[file.contentUnchanged].short}</span>
         : file.additions !== null ? <span className="line-stat">+{file.additions} −{file.deletions ?? 0}</span>

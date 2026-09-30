@@ -4,7 +4,7 @@ import PathText from "./PathText";
 import VirtualRows, { VIRTUAL_THRESHOLD } from "./VirtualRows";
 
 /** 提交 / 比较 / stash 的变化文件列表；文件很多时改用虚拟列表，滚动容器为外层 `.log-detail`。 */
-export default function FileList({ files, activeKey, keyFor, onOpen, onHistory }: { files: ChangedFile[]; activeKey: string | null; keyFor(file: ChangedFile): string; onOpen(file: ChangedFile): void; onHistory?(file: ChangedFile): void }) {
+export default function FileList({ files, activeKey, keyFor, onOpen, onHistory, onSubmodule }: { files: ChangedFile[]; activeKey: string | null; keyFor(file: ChangedFile): string; onOpen(file: ChangedFile): void; onHistory?(file: ChangedFile): void; /** 工作区（V2-D85）：在子仓库中比较子模块指针的前后两个提交。 */ onSubmodule?(file: ChangedFile): void }) {
   const host = useRef<HTMLElement | null>(null);
   const move = (event: ReactKeyboardEvent<HTMLElement>, index: number) => {
     const delta = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
@@ -24,8 +24,9 @@ export default function FileList({ files, activeKey, keyFor, onOpen, onHistory }
   };
   if (!files.length) return <div className="log-empty">没有文件变化</div>;
   const content = (file: ChangedFile, index: number) => <>
-    <button type="button" className="log-file" title={file.oldPath ? `${file.oldPath} → ${file.path}` : file.path} onClick={() => onOpen(file)} onKeyDown={(event) => move(event, index)}><span className={`status-letter ${file.status}`}>{statusLetter[file.status]}</span><PathText path={file.path} className="log-file-path" title={file.path}/>{file.oldPath && <PathText path={file.oldPath} prefix="← " className="log-file-old"/>}</button>
-    {onHistory && <button type="button" className="quiet log-file-history" title={`查看 ${file.path} 的文件历史`} onClick={() => onHistory(file)}>历史</button>}
+    <button type="button" className="log-file" title={file.oldPath ? `${file.oldPath} → ${file.path}` : file.path} onClick={() => onOpen(file)} onKeyDown={(event) => move(event, index)}><span className={`status-letter ${file.status}`}>{statusLetter[file.status]}</span><PathText path={file.path} className="log-file-path" title={file.path}/>{file.oldPath && <PathText path={file.oldPath} prefix="← " className="log-file-old"/>}{file.submodule && <span className="log-submodule" title="子模块提交指针">◫ {file.submodule.old?.slice(0, 7) ?? "（新增）"} → {file.submodule.new?.slice(0, 7) ?? "（删除）"}</span>}</button>
+    {onSubmodule && file.submodule?.old && file.submodule.new && <button type="button" className="quiet log-submodule-compare" title={`切换到子仓库 ${file.path}，比较这两个提交`} onClick={() => onSubmodule(file)}>在 {file.path.split("/").pop()} 中比较</button>}
+    {onHistory && !file.submodule && <button type="button" className="quiet log-file-history" title={`查看 ${file.path} 的文件历史`} onClick={() => onHistory(file)}>历史</button>}
   </>;
   const rowKey = (file: ChangedFile) => file.pathId + (file.oldPathId ?? "");
   // 大提交（例如整仓导入的根提交有十万级文件）只渲染可视区域附近的行，否则一次性生成的 DOM 会让界面卡死。

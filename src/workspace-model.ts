@@ -19,6 +19,12 @@ export interface ProjectRecord {
   customName?: string;
   lastOpenedAt: number;
   anchor: ReadingAnchor;
+  /** 工作区成员（V2-07）：所属工作区父仓库的 repoId。成员不单独占项目标签。 */
+  groupId?: string;
+  /** 工作区父仓库（V2-07）：上次选中的成员与手动加入的独立嵌套仓库路径。 */
+  group?: { lastRepoId: string; manual: string[] };
+  /** 子模块指针开关（V2-D80），按仓库保存，默认关闭。 */
+  showSubmodulePointers?: boolean;
 }
 
 export interface WorkspaceState {
@@ -78,6 +84,14 @@ function validAnchor(value: unknown): ReadingAnchor {
   };
 }
 
+function validGroup(value: unknown): ProjectRecord["group"] | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as { lastRepoId?: unknown; manual?: unknown };
+  if (typeof candidate.lastRepoId !== "string") return null;
+  const manual = Array.isArray(candidate.manual) ? candidate.manual.filter((item): item is string => typeof item === "string" && !!item) : [];
+  return { lastRepoId: candidate.lastRepoId, manual };
+}
+
 export function loadWorkspace(storage: Pick<Storage, "getItem">): WorkspaceState {
   try {
     const value = JSON.parse(storage.getItem(WORKSPACE_KEY) ?? "null") as unknown;
@@ -99,9 +113,15 @@ export function loadWorkspace(storage: Pick<Storage, "getItem">): WorkspaceState
         pinned: entry.pinned === true,
         customName: typeof entry.customName === "string" ? entry.customName.trim() : undefined,
         lastOpenedAt: typeof entry.lastOpenedAt === "number" && Number.isFinite(entry.lastOpenedAt) ? entry.lastOpenedAt : 0,
-        anchor: validAnchor(entry.anchor)
+        anchor: validAnchor(entry.anchor),
+        ...(typeof entry.groupId === "string" && entry.groupId ? { groupId: entry.groupId } : {}),
+        ...(validGroup(entry.group) ? { group: validGroup(entry.group)! } : {}),
+        ...(entry.showSubmodulePointers === true ? { showSubmodulePointers: true } : {})
       });
     }
+    // 成员引用的工作区已不存在时退回为普通项目，避免记录“隐身”。
+    const roots = new Set(projects.filter((project) => project.group).map((project) => project.repo.repoId));
+    for (const project of projects) if (project.groupId && (!roots.has(project.groupId) || project.group)) delete project.groupId;
 
     const requested = typeof candidate.activeRepoId === "string" ? candidate.activeRepoId : null;
     return {
