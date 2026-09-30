@@ -118,3 +118,18 @@ it("offers “在资源管理器中打开” on file and directory context menus
   expect(reveal()).toBeUndefined();
   await act(async () => root.unmount());
 });
+
+it("offers “在资源管理器中打开” on virtualized flat rows", async () => {
+  const root = createRoot(host);
+  const files = make(VIRTUAL_THRESHOLD + 30);
+  const onReveal = vi.fn();
+  const actions = { scope: "unstaged" as const, disabledReason: null, selection: new Set<string>(), onSelection: () => {}, onAction: () => {}, onReveal };
+  await act(async () => root.render(<FileTree files={files} selectedPathId={null} mode="flat" onSelect={() => {}} actions={actions} />));
+  expect(host.querySelector("[data-virtual-count]")).not.toBeNull();
+  const first = host.querySelector(".file")!;
+  await act(async () => { first.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 10, clientY: 10 })); });
+  const item = [...host.querySelectorAll<HTMLButtonElement>(".file-menu button")].find((b) => b.textContent === "在资源管理器中打开")!;
+  await act(async () => item.click());
+  expect(onReveal).toHaveBeenLastCalledWith(first.getAttribute("aria-label"));
+  await act(async () => root.unmount());
+});
