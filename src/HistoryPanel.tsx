@@ -365,6 +365,9 @@ export default function HistoryPanel(props: Props) {
   const end = Math.min(layout.rows.length, Math.ceil((view.top + view.height) / ROW_HEIGHT) + OVERSCAN);
   const graphWidth = Math.min(MAX_GRAPH_LANES, Math.max(1, layout.width)) * LANE_WIDTH;
   const menuBranch = menu ? viewRefs?.local.find((b) => b.fullName === menu.endpoint.ref) ?? null : null;
+  const menuRemote = menu ? viewRefs?.remote.find((b) => b.fullName === menu.endpoint.ref) ?? null : null;
+  const menuSwitch = menuBranch && onSwitch ? { label: `切换到 ${menuBranch.name}`, current: menuBranch.current, run: () => { setMenu(null); onSwitch(menuBranch); } }
+    : menuRemote && onTrack ? { label: "检出为本地分支并切换", current: false, run: () => { setMenu(null); onTrack(menuRemote); } } : undefined;
   const stashEntry = mode.kind === "stash" ? stash.entries?.find((e) => e.oid === mode.oid) ?? null : null;
 
   return <div ref={root} className="git-body log-layout" hidden={hidden} style={{ gridTemplateColumns: `${columns.left}px ${SPLITTER}px minmax(0, 1fr) ${SPLITTER}px ${columns.right}px` }} onContextMenu={(event) => { if (!(event.target as Element).closest("[data-endpoint]")) setMenu(null); }}>
@@ -415,6 +418,7 @@ export default function HistoryPanel(props: Props) {
         : <div className="log-empty">选择一个提交查看元信息与变化文件</div>}
     </aside>
     {menu && <EndpointMenu menu={menu} hasStart={!!compareStart} blocked={writeBlocked ?? null} onClose={() => setMenu(null)} onStart={() => { setCompareStart(menu.endpoint); setMenu(null); }} onCompare={() => compareWith(menu.endpoint)}
+      switchTo={menuSwitch}
       onCheckout={onCheckout && menu.endpoint.ref === menu.endpoint.oid ? () => { setMenu(null); onCheckout(menu.endpoint.oid); } : undefined}
       onNewBranch={onNewBranch ? () => { setMenu(null); onNewBranch({ ref: menu.endpoint.ref, label: menu.endpoint.label }); } : undefined}
       onMerge={onMerge && menu.endpoint.ref !== refs?.head.branch && menu.endpoint.oid !== refs?.head.oid ? () => { setMenu(null); onMerge({ ref: menu.endpoint.ref, oid: menu.endpoint.oid, label: shortRef(menu.endpoint.label) }); } : undefined}
@@ -507,7 +511,7 @@ function FileHistoryDetail({ mode }: { mode: Extract<Mode, { kind: "file" }> }) 
   </div>;
 }
 
-function EndpointMenu({ menu, hasStart, blocked, onClose, onStart, onCompare, onCheckout, onNewBranch, onMerge, deleteBranch }: { menu: Menu; hasStart: boolean; blocked: string | null; onClose(): void; onStart(): void; onCompare(): void; onCheckout?(): void; onNewBranch?(): void; onMerge?(): void; deleteBranch?: { current: boolean; run(): void } }) {
+function EndpointMenu({ menu, hasStart, blocked, onClose, onStart, onCompare, switchTo, onCheckout, onNewBranch, onMerge, deleteBranch }: { menu: Menu; hasStart: boolean; blocked: string | null; onClose(): void; onStart(): void; onCompare(): void; switchTo?: { label: string; current: boolean; run(): void }; onCheckout?(): void; onNewBranch?(): void; onMerge?(): void; deleteBranch?: { current: boolean; run(): void } }) {
   const host = useRef<HTMLDivElement>(null);
   const position = useMenuPosition(host, menu.x, menu.y);
   useEffect(() => {
@@ -520,6 +524,7 @@ function EndpointMenu({ menu, hasStart, blocked, onClose, onStart, onCompare, on
   }, [onClose]);
   return <div ref={host} className="file-menu log-menu" role="menu" style={position} aria-label="比较">
     <span className="file-menu-note">{shortRef(menu.endpoint.label)} @ {shortOid(menu.endpoint.oid)}</span>
+    {switchTo && <button type="button" role="menuitem" disabled={!!blocked || switchTo.current} title={switchTo.current ? "已在该分支上" : blocked ?? undefined} onClick={switchTo.run}>{switchTo.label}</button>}
     <button type="button" role="menuitem" onClick={onStart}>设为比较起点（A）</button>
     <button type="button" role="menuitem" disabled={!hasStart} title={hasStart ? undefined : "先把另一个提交或分支设为比较起点"} onClick={onCompare}>与比较起点比较（A → 此处）</button>
     {onCheckout && <button type="button" role="menuitem" disabled={!!blocked} title={blocked ?? "检出该提交查看（分离 HEAD），不移动任何分支"} onClick={onCheckout}>检出（分离 HEAD）</button>}

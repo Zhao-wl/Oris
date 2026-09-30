@@ -398,6 +398,24 @@ button.op-status { padding:0 6px; border:0; background:transparent; font-size:11
 .confirm-items li.more { color:var(--dim); list-style:none; }
 .confirm-note { color:var(--dim); font-size:12px; }
 .confirm-footer { display:flex; justify-content:flex-end; gap:8px; margin-top:8px; }
+.switch-dialog { width:min(560px, calc(100vw - 48px)); }
+.switch-target { font-family:var(--mono, ui-monospace, Consolas, monospace); color:var(--blue); }
+.switch-reason { color:var(--dim); font-size:13px; }
+.switch-files-head { margin:4px 0 4px; color:var(--dim); font-size:12px; }
+.switch-files { flex:0 1 auto; min-height:0; margin:0 0 12px; padding:4px 0; max-height:200px; overflow:auto; list-style:none; background:var(--bg); border:1px solid var(--border); border-radius:5px; font-size:12px; }
+.switch-files li { display:flex; align-items:baseline; gap:8px; min-width:0; padding:2px 10px; white-space:nowrap; }
+.switch-files li:hover { background:color-mix(in srgb, var(--hover) 45%, transparent); }
+.switch-files li.more { color:var(--dim); }
+.switch-file-name { flex:none; }
+.switch-file-dir { min-width:0; overflow:hidden; text-overflow:ellipsis; color:var(--dim); }
+.switch-options { display:grid; gap:8px; }
+.switch-option { display:flex; flex-direction:column; align-items:flex-start; gap:3px; padding:9px 12px; text-align:left; background:var(--bg); border:1px solid var(--border); border-radius:5px; }
+.switch-option strong { font-size:13px; }
+.switch-option span { color:var(--dim); font-size:12px; line-height:1.5; }
+.switch-option:not(:disabled):hover { border-color:var(--blue); background:color-mix(in srgb, var(--hover) 45%, var(--bg)); }
+.switch-option.danger strong { color:var(--error, #ff7b72); }
+.switch-option.danger:not(:disabled):hover { border-color:var(--error, #ff7b72); background:color-mix(in srgb, var(--error, #ff7b72) 10%, var(--bg)); }
+.switch-option:disabled { opacity:.55; cursor:default; }
 :root.theme-high-contrast .file-menu, :root.theme-high-contrast .confirm-dialog { outline:1px solid var(--toggle-on-border, var(--blue)); }
 
 /* ---------- 任务 04：日志页（分支、提交图与列表、提交详情）、历史阅读、获取远端状态 ---------- */

@@ -1,4 +1,4 @@
-// V2-03 界面验收：B09（stash）、B10（分支与检出、stash 后切换）、B16（外部锁）、B17（只读回归）、切换后刷新（M4）。
+// V2-03 界面验收：B09（stash）、B10（分支与检出、放弃修改后切换）、B16（外部锁）、B17（只读回归）、切换后刷新（M4）。
 // 只经 CDP 操作本轮启动并核验过的 Oris 实例（PID + 完整路径 + 主窗口句柄 + 端口归属），不调用任何窗口激活 API；
 // 点击与输入是 CDP 注入的页面事件，不是真实鼠标、键盘或系统焦点。
 // 每个写操作都记录操作前后的仓库指纹（index、HEAD 与本地分支、stash、远端跟踪引用、config、工作区；不含 .git/objects 与 .git/logs）。
@@ -398,7 +398,7 @@ async function main() {
     e = evidence("从分离 HEAD 新建分支并切换", work, before, fingerprint(work), ["head"]);
     check("B10 从分离 HEAD 新建分支并切换，横幅消失", e.unexpected.length === 0 && git(work, ["branch", "--show-current"]) === "from-detached" && git(work, ["rev-parse", "HEAD"]) === target, { e });
 
-    // ---------- stash 后切换 ----------
+    // ---------- 放弃修改后切换 ----------
     git(work, ["switch", "-q", "main"]); await ctx.refresh();
     put(work, "a.txt", "local edit conflicting with feature\n");
     await ctx.refresh();
@@ -406,26 +406,30 @@ async function main() {
     before = fingerprint(work);
     await ctx.openPopover();
     await ctx.click(`window.__b.rowButton('feature', '切换')`);
-    await ctx.waitUntil(`document.querySelector('.confirm-dialog')?.textContent.includes('stash 后切换')`, 15000);
-    const refuse = await ctx.evaluate(`document.querySelector('.confirm-dialog').textContent`);
-    const untouched = evidence("Git 拒绝切换（尚未确认）", work, before, fingerprint(work), []).changedCount === 0;
-    await traced("stash 后切换", async () => { await ctx.confirmDialog("stash 后切换"); await ctx.settle(); });
+    const option = (label) => `[...document.querySelectorAll('.switch-option')].find((b) => b.querySelector('strong')?.textContent === ${JSON.stringify(label)})`;
+    await ctx.waitUntil(`!!document.querySelector('.switch-dialog')`, 15000);
+    const refuse = await ctx.evaluate(`document.querySelector('.switch-dialog').textContent`);
+    const untouched = evidence("Git 拒绝切换（尚未选择）", work, before, fingerprint(work), []).changedCount === 0;
+    await traced("放弃修改后切换", async () => { await ctx.click(option("放弃修改后切换")); await ctx.settle(); });
     const afterSwitch = await ctx.evaluate(`window.__b.opStatus()`);
-    e = evidence("stash 后切换到 feature", work, before, fingerprint(work), ["head", "index", "worktree", "stash"]);
+    e = evidence("放弃修改后切换到 feature", work, before, fingerprint(work), ["head", "index", "worktree", "stash"]);
     const notice = await ctx.evaluate(`document.querySelector('.editor')?.textContent ?? ''`);
-    check("B10 工作区改动阻止切换：说明原因（列出 a.txt）并提供“stash 后切换”；确认后储藏再切换，不自动恢复并提示可恢复", refuse.includes("a.txt") && refuse.includes("不会自动恢复") && untouched && e.unexpected.length === 0 && git(work, ["branch", "--show-current"]) === "feature" && read(work, "a.txt") === "a on feature\n" && stashLines(work)[0].includes("切换到 feature 前储藏") && afterSwitch.text.includes("没有自动恢复"), { refuse: refuse.slice(0, 300), afterSwitch, e });
-    check("M4 切换后阅读的文件已不在变化列表：回到合法入口并提示", notice.includes("此前选中的文件已不在当前比较范围中"), { notice: notice.slice(0, 300), shot: await ctx.shot("m4-after-stash-switch") });
-    // 未跟踪文件会被覆盖：确认后含未跟踪一并储藏。
+    check("B10 工作区改动阻止切换：列出 a.txt 并提供“放弃修改后切换 / 带着改动切换 / 取消”；放弃后切换，给出找回命令", refuse.includes("a.txt") && refuse.includes("带着改动切换") && untouched && e.unexpected.length === 0 && git(work, ["branch", "--show-current"]) === "feature" && read(work, "a.txt") === "a on feature\n" && !stashLines(work).some((line) => line.includes("放弃改动")) && afterSwitch.text.includes("git stash apply"), { refuse: refuse.slice(0, 300), afterSwitch, e });
+    check("M4 切换后阅读的文件已不在变化列表：回到合法入口并提示", notice.includes("此前选中的文件已不在当前比较范围中"), { notice: notice.slice(0, 300), shot: await ctx.shot("m4-after-discard-switch") });
+    // 未跟踪文件会被覆盖：不能带着改动切换，放弃时一并备份未跟踪文件。
     // 当前在 feature（没有 only-main.txt）：放一个同名未跟踪文件，切回 main 时会被覆盖。
     put(work, "only-main.txt", "untracked copy that main would overwrite\n");
     await ctx.refresh();
     await ctx.openPopover();
     await ctx.click(`window.__b.rowButton('main', '切换')`);
-    await ctx.waitUntil(`document.querySelector('.confirm-dialog')?.textContent.includes('包含未跟踪文件')`, 15000);
+    await ctx.waitUntil(`document.querySelector('.switch-dialog')?.textContent.includes('包括未跟踪文件')`, 15000);
+    const mergeDisabled = await ctx.evaluate(`${option("带着改动切换")}.disabled`);
     before = fingerprint(work);
-    await ctx.confirmDialog("stash 后切换"); await ctx.settle();
-    e = evidence("stash（含未跟踪）后切换到 main", work, before, fingerprint(work), ["head", "index", "worktree", "stash"]);
-    check("B10 未跟踪文件会被覆盖：确认后含未跟踪一并储藏再切换", e.unexpected.length === 0 && git(work, ["branch", "--show-current"]) === "main" && read(work, "only-main.txt") === "main only\n" && git(work, ["rev-parse", "-q", "--verify", "stash@{0}^3"], { allowFail: true }).length === 40, { e });
+    await ctx.click(option("放弃修改后切换")); await ctx.settle();
+    const untrackedStatus = await ctx.evaluate(`window.__b.opStatus()`);
+    const backup = /git stash apply ([0-9a-f]{40})/.exec(untrackedStatus.text)?.[1] ?? "";
+    e = evidence("放弃修改（含未跟踪）后切换到 main", work, before, fingerprint(work), ["head", "index", "worktree", "stash"]);
+    check("B10 未跟踪文件会被覆盖：不能带着改动切换；放弃时备份未跟踪文件再切换", mergeDisabled && e.unexpected.length === 0 && git(work, ["branch", "--show-current"]) === "main" && read(work, "only-main.txt") === "main only\n" && !!backup && git(work, ["show", `${backup}^3:only-main.txt`], { allowFail: true }).startsWith("untracked copy"), { e, untrackedStatus });
 
     // ---------- B16 外部 index.lock ----------
     const lock = path.join(work, ".git", "index.lock");

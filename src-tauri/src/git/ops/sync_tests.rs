@@ -490,7 +490,7 @@ fn b14_external_rebase_cherry_pick_revert_and_bisect_block_every_new_write() {
             OperationRequest::Merge { target: "refs/heads/topic".into(), expected: topic.clone(), no_ff: false },
             OperationRequest::MergeCommit { message: "x".into() },
             OperationRequest::Fetch { remote: Some("origin".into()), prune: false },
-            OperationRequest::BranchSwitch { name: "refs/heads/topic".into(), stash_first: false, stash_untracked: false },
+            OperationRequest::BranchSwitch { name: "refs/heads/topic".into(), local_changes: LocalChanges::Keep, include_untracked: false },
             OperationRequest::StashPush { message: None, include_untracked: false, path_ids: None },
             OperationRequest::Commit { message: "x".into() },
         ]
@@ -567,18 +567,18 @@ fn v2_d45_merge_in_progress_blocks_worktree_moving_operations_but_not_ref_only_o
     let before = fingerprint(p);
     let head = git_in(p, &["rev-parse", "HEAD"]);
     for request in [
-        OperationRequest::BranchSwitch { name: "refs/heads/topic".into(), stash_first: false, stash_untracked: false },
-        OperationRequest::Checkout { commit: head.clone(), stash_first: false, stash_untracked: false },
+        OperationRequest::BranchSwitch { name: "refs/heads/topic".into(), local_changes: LocalChanges::Keep, include_untracked: false },
+        OperationRequest::Checkout { commit: head.clone(), local_changes: LocalChanges::Keep, include_untracked: false },
         OperationRequest::StashPush { message: None, include_untracked: false, path_ids: None },
         pull(PullMode::FfOnly),
-        OperationRequest::BranchCreate { name: "x".into(), start: "HEAD".into(), switch: true, stash_first: false, stash_untracked: false },
+        OperationRequest::BranchCreate { name: "x".into(), start: "HEAD".into(), switch: true, local_changes: LocalChanges::Keep, include_untracked: false },
     ] {
         let kind = request.kind();
         let error = h.try_run(request).unwrap_err();
         assert!(matches!(&error, GitError::WriteBlocked(m) if m.contains("合并进行中")), "{kind}: {error}");
     }
     assert_eq!(fingerprint(p), before);
-    let outcome = h.run(OperationRequest::BranchCreate { name: "kept".into(), start: "HEAD".into(), switch: false, stash_first: false, stash_untracked: false });
+    let outcome = h.run(OperationRequest::BranchCreate { name: "kept".into(), start: "HEAD".into(), switch: false, local_changes: LocalChanges::Keep, include_untracked: false });
     assert_eq!(outcome.status, OpStatus::Succeeded, "只新建分支不影响工作区：{}", outcome.message);
     assert!(p.join(".git/MERGE_HEAD").exists());
 }

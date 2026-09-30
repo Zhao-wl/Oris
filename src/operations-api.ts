@@ -18,10 +18,10 @@ export type OperationRequest =
   | { kind: "stashPush"; message?: string | null; includeUntracked?: boolean; pathIds?: string[] | null }
   | { kind: "stashApply"; index: number; oid: string; pop?: boolean }
   | { kind: "stashDrop"; index: number; oid: string }
-  | ({ kind: "branchCreate"; name: string; start: string; switch?: boolean } & StashFirst)
-  | ({ kind: "branchSwitch"; name: string } & StashFirst)
-  | ({ kind: "branchTrack"; remote: string; localName?: string | null } & StashFirst)
-  | ({ kind: "checkout"; commit: string } & StashFirst)
+  | ({ kind: "branchCreate"; name: string; start: string; switch?: boolean } & SwitchLocalChanges)
+  | ({ kind: "branchSwitch"; name: string } & SwitchLocalChanges)
+  | ({ kind: "branchTrack"; remote: string; localName?: string | null } & SwitchLocalChanges)
+  | ({ kind: "checkout"; commit: string } & SwitchLocalChanges)
   | { kind: "branchRename"; name: string; newName: string }
   | { kind: "branchDelete"; name: string; force?: boolean }
   | { kind: "setUpstream"; name: string; upstream: string }
@@ -31,8 +31,10 @@ export type OperationRequest =
   | { kind: "mergeAbort" }
   | { kind: "mergeCommit"; message: string };
 
-/** “stash 后切换”：Git 因工作区改动拒绝切换、用户确认后，先储藏（可含未跟踪文件）再切换，切换后不自动恢复。 */
+/** “stash 后拉取”：Git 因工作区改动拒绝拉取、用户确认后，先储藏（可含未跟踪文件）再拉取，拉取后不自动恢复。 */
 export interface StashFirst { stashFirst?: boolean; stashUntracked?: boolean }
+/** Git 因本地改动拒绝切换、用户选择后再次请求：放弃修改后切换（先备份）或带着改动切换（switch --merge）。 */
+export interface SwitchLocalChanges { localChanges?: "keep" | "discard" | "merge"; includeUntracked?: boolean }
 
 export type OperationKind = "stage" | "unstage" | "markResolved" | "discard" | "undoDiscard" | "commit" | "commitSelected" | "undoCommit" | "fetch"
   | "hunkStage" | "hunkUnstage" | "hunkDiscard"
