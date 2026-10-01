@@ -423,12 +423,13 @@ pub fn watch_group(
     let mut roots: Vec<PathBuf> = Vec::new();
     let mut members = Vec::new();
     let mut suppressions = HashMap::new();
+    // “已跟踪但被忽略”的清单（ls-files -c -i，每个仓库一次全量扫描）按成员顺序在一个后台线程里依次计算（父仓库在前）。
+    // lc5：原先每个成员各开一个线程同时扫描，8 个 S 规模成员的扫描与打开父仓库重叠，每个持续约 1.6 s，父仓库的 status 与统计明显变慢。
+    let mut pending_tracked: Vec<(Arc<IgnoreRules>, Box<dyn FnOnce() -> HashSet<String> + Send>)> = Vec::new();
     for target in targets {
         let suppression = Arc::new(Suppression::default());
         let rules = Arc::new(IgnoreRules::new(&target.worktree, &target.git_dir, HashSet::new()));
-        let pending_rules = rules.clone();
-        let tracked_ignored = target.tracked_ignored;
-        std::thread::spawn(move || pending_rules.set_tracked_ignored(tracked_ignored()));
+        pending_tracked.push((rules.clone(), target.tracked_ignored));
         for root in [&target.worktree, &target.git_dir, &target.common_dir] {
             if !roots.iter().any(|existing| root.starts_with(existing)) {
                 roots.retain(|existing| !existing.starts_with(root));
@@ -444,6 +445,11 @@ pub fn watch_group(
             suppression,
         });
     }
+    std::thread::spawn(move || {
+        for (rules, tracked_ignored) in pending_tracked {
+            rules.set_tracked_ignored(tracked_ignored());
+        }
+    });
     let mut debouncer = new_debouncer_opt::<_, notify::RecommendedWatcher, NoCache>(debounce, None, move |result: DebounceEventResult| {
         let paths: Vec<PathBuf> = match result {
             Ok(events) => events

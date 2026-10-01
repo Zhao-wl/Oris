@@ -475,6 +475,8 @@ export default function App() {
     if (!repositoryPath.trim()) return;
     // 先占用请求门控：发现期间进行中的自动刷新作废、新的自动刷新延后，避免旧项目的刷新结果把当前项目切回去。
     const requestId = newRequestId(); repositoryGate.current.activate(requestId); contentGate.current.activate(requestId);
+    // 发现是异步的（工作区约 0.1–0.6 s）：先清掉上一次的错误，否则重新添加时旧的失败说明会一直停留到发现结束（lc5 功能复验发现）。
+    setError(null);
     // 工作区识别（V2-D76）：只读发现；失败（例如不是仓库）时按普通项目的路径报告错误。
     const found = await discoverGroup(repositoryPath.trim(), [], effectiveGitExecutable || null).catch(() => null);
     if (!repositoryGate.current.accepts(requestId)) return;

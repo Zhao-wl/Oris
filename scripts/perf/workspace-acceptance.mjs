@@ -517,10 +517,49 @@ async function perfSuite() {
   for (const [k, v] of Object.entries(samples)) { const bad = v.filter((x) => !x.ok); if (bad.length) fail(`${k} 有 ${bad.length} 次断言未成立：${q(bad.slice(0, 3))}`); }
 }
 
+// ================================ 打开工作区的 Git 进程时间线（定位“打开工作区”比普通项目慢在哪里） ================================
+async function perfTraceSuite() {
+  const fx = await perfFixture();
+  const traceDir = path.join(runDir, "trace-open");
+  mkdirSync(traceDir, { recursive: true });
+  const trace = tracer(traceDir);
+  const ctx = await start("perf-trace", { GIT_TRACE2_EVENT: traceDir }, 850);
+  const rounds = Number(option("iterations", 3));
+  report.openTimelines = [];
+  try {
+    await ctx.waitUntil(`document.querySelector('.project-empty')`);
+    for (let i = 0; i < rounds; i++) {
+      for (const [kind, dir, ready] of [["normal", fx.normal, `window.__op.status().startsWith(${q(fx.normal)}) && window.__op.rows().length === 65 && !window.__op.loading()`], ["workspace", fx.parent, `window.__w.picker() === ${q(fx.parentName)} && window.__op.rows().length === 65 && !window.__op.loading()`]]) {
+        trace.take();
+        await ctx.evaluate(`window.__op.setInput('仓库路径', ${q(dir)})`);
+        await ctx.waitUntil(`window.__op.button('载入/添加') && !window.__op.button('载入/添加').disabled`);
+        const t0 = Date.now();
+        await ctx.evaluate(`window.__op.button('载入/添加').click()`);
+        await ctx.waitUntil(ready, 30000);
+        const doneMs = Date.now() - t0;
+        await sleep(1500);
+        const entries = trace.take().filter((e) => e.start).map((e) => ({ at: e.start - t0, ms: e.end ? e.end - e.start : null, cwd: e.cwd ? path.relative(runDir, e.cwd) : null, command: e.command.slice(0, 120) })).sort((a, b) => a.at - b.at);
+        report.openTimelines.push({ round: i, kind, doneMs, processes: entries.length, beforeDone: entries.filter((e) => e.at < doneMs).length, entries });
+        log(kind, `完成 ${doneMs} ms，Git 进程 ${entries.length}（完成前 ${entries.filter((e) => e.at < doneMs).length}）`);
+        await sleep(300);
+        const before = await ctx.evaluate(`document.querySelectorAll('.project-tab').length`);
+        await ctx.evaluate(`document.querySelector('.project-tab.active .project-close').click()`);
+        await ctx.waitUntil(`document.querySelectorAll('.project-tab').length === ${before - 1}`);
+        await sleep(500);
+      }
+    }
+  } catch (error) {
+    fail(`时间线中断：${error.stack ?? error}`);
+  } finally {
+    await stop(ctx).catch(() => {});
+  }
+}
+
 try {
   if (only === "local") await localSuite();
   else if (only === "real") await realSuite();
   else if (only === "perf") await perfSuite();
+  else if (only === "perf-trace") await perfTraceSuite();
   else throw new Error(`未知 --only ${only}`);
 } finally {
   report.finishedAt = new Date().toISOString();

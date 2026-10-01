@@ -82,6 +82,16 @@ interface EditorPool {
   unified?: EditorView;
 }
 
+/**
+ * 阅读器的固定主题只创建一次（lc5）：EditorView.theme 每次调用都会生成新的作用域类名，并向文档样式表追加一组规则。
+ * 原先写在切换文件时重跑的 effect 里，每切换一次文件样式表就多 3 条规则、永不回收，长时间使用后每次样式重算都越来越慢。
+ */
+const DIFF_EDITOR_THEME = EditorView.theme({
+  "&": { height: "100%" },
+  ".cm-scroller": { fontFamily: "JetBrains Mono, Cascadia Code, SFMono-Regular, Consolas, monospace" },
+  ".cm-content": { caretColor: "transparent" }
+});
+
 /** 与 EditorState 默认的换行规则相同（`\r\n`、`\r`、`\n`），先得到 Text 以便在建状态之前算好装饰。 */
 function textOf(value: string) {
   return Text.of(value.split(/\r\n?|\n/));
@@ -1124,7 +1134,16 @@ function createRail(side: DiffSide, controls: string) {
   const viewport = document.createElement("div");
   viewport.className = "diff-overview-viewport";
   viewport.setAttribute("aria-hidden", "true");
-  markers.append(viewport);
+  // 标记单独放一层（位置与层级不变）：重建时一次换掉全部标记，点击由这一层委托处理（lc5：上千块时逐个移除、逐个绑定监听器约 6 ms）。
+  const markerList = document.createElement("div");
+  markerList.className = "diff-overview-marker-list";
+  markerList.addEventListener("click", (event) => {
+    const marker = (event.target as Element | null)?.closest?.<HTMLElement>(".diff-overview-marker");
+    if (!marker || !markerList.contains(marker)) return;
+    event.stopPropagation();
+    markerNavigation.get(markerList)?.(Number(marker.dataset.hunkIndex));
+  });
+  markers.append(viewport, markerList);
   rail.append(markers);
   return { rail, markers, viewport };
 }
@@ -1221,7 +1240,8 @@ function renderRailMarkers(
   navigate: (index: number) => void,
   toneOverride?: Exclude<AlignmentTone, "neutral">
 ) {
-  const markers = rail.querySelector<HTMLElement>(".diff-overview-markers")!;
+  const markers = rail.querySelector<HTMLElement>(".diff-overview-marker-list")!;
+  markerNavigation.set(markers, navigate);
   const doc = view.state.doc;
   // 只读一次高度：循环中读取会在每次追加标记后强制同步布局（块数多时为 O(n²)，V2-D75）
   const railHeight = rail.clientHeight;
@@ -1230,8 +1250,7 @@ function renderRailMarkers(
   const previous = renderedRailMarkers.get(rail);
   if (previous && previous.chunks === chunks && previous.doc === doc && previous.height === railHeight && previous.deviceMinimum === deviceMinimum && previous.tone === toneOverride) return;
   renderedRailMarkers.set(rail, { chunks, doc, height: railHeight, deviceMinimum, tone: toneOverride });
-  // Keep the viewport band attached: detaching it would drop an active drag's pointer capture.
-  markers.querySelectorAll(".diff-overview-marker").forEach((node) => node.remove());
+  // 视口框在外层、不随标记重建（摘下它会丢失拖动中的指针捕获）；标记层整体替换。
   const fragment = document.createDocumentFragment();
   const occupied = new Map<string, { node: HTMLButtonElement; top: number; bottom: number }>();
   chunks.forEach((chunk, index) => {
@@ -1254,15 +1273,14 @@ function renderRailMarkers(
     node.style.height = `${marker.height}px`;
     node.dataset.hunkIndex = String(index);
     node.setAttribute("aria-label", `跳到第 ${index + 1} 个差异块`);
-    node.addEventListener("click", (event) => {
-      event.stopPropagation();
-      navigate(index);
-    });
     fragment.append(node);
     occupied.set(bucket, { node, top: marker.top, bottom: marker.top + marker.height });
   });
-  markers.append(fragment);
+  markers.replaceChildren(fragment);
 }
+
+/** 各轨道标记层当前的跳转函数（标记点击委托给标记层，见 createRail）。 */
+const markerNavigation = new WeakMap<HTMLElement, (index: number) => void>();
 
 const renderedRailMarkers = new WeakMap<HTMLElement, { chunks: readonly Change[]; doc: Text; height: number; deviceMinimum: number; tone: string | undefined }>();
 
@@ -2109,11 +2127,7 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
           return true;
         }
       }),
-      EditorView.theme({
-        "&": { height: "100%" },
-        ".cm-scroller": { fontFamily: "JetBrains Mono, Cascadia Code, SFMono-Regular, Consolas, monospace" },
-        ".cm-content": { caretColor: "transparent" }
-      }),
+      DIFF_EDITOR_THEME,
       ...(wrap ? [EditorView.lineWrapping] : []),
       // 字号由宿主元素上的 --diff-font-size 决定（见下方 useLayoutEffect），不放进编辑器主题。
       ...(appearance.current.scheme

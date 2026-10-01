@@ -477,7 +477,11 @@ impl GitAdapter {
             }
             Ok(stats)
         };
-        let diff_opts = ["--no-ext-diff", "--no-textconv", "--no-renames", "--numstat", "-z"];
+        // 与 status 相同的子模块取值（V2-D80）：不带时 Git 会进入每个子模块各跑一次 status 判断是否有改动
+        // （lc5 实测：7 个子模块的工作区中 diff-files 从约 0.2 s 变为约 1.8 s，并额外启动 18 个 Git 进程）。
+        let submodules = self.worktree.join(".gitmodules").is_file().then(|| if self.submodule_pointers() { "--ignore-submodules=dirty" } else { "--ignore-submodules=all" });
+        let mut diff_opts = vec!["--no-ext-diff", "--no-textconv", "--no-renames", "--numstat", "-z"];
+        diff_opts.extend(submodules);
         let (unstaged, staged, all, renames) = std::thread::scope(|scope| {
             let unstaged = scope.spawn(|| {
                 let mut args = vec!["diff-files"];
@@ -504,12 +508,10 @@ impl GitAdapter {
                 if !state.has_head {
                     return Ok(Vec::new());
                 }
-                let raw = run_required(
-                    &self.git,
-                    &self.worktree,
-                    &["diff-index", "--no-ext-diff", "--no-textconv", "-M", "--name-status", "-z", "HEAD", "--"],
-                )?
-                .stdout;
+                let mut args = vec!["diff-index", "--no-ext-diff", "--no-textconv", "-M", "--name-status", "-z"];
+                args.extend(submodules);
+                args.extend_from_slice(&["HEAD", "--"]);
+                let raw = run_required(&self.git, &self.worktree, &args)?.stdout;
                 let fields: Vec<&[u8]> = raw.split(|b| *b == 0).filter(|f| !f.is_empty()).collect();
                 let mut pairs = Vec::new();
                 let mut i = 0;

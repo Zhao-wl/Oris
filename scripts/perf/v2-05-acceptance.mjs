@@ -368,9 +368,11 @@ async function runPerf({ repo }) {
         const beforeTraces = traces();
         const running = await measure(`[...document.querySelectorAll('.confirm-dialog button')].find((b) => b.textContent === '丢弃此块').click()`, `document.querySelector('.op-status.running')`, 10000);
         const confirmed = await evaluate(`window.__op.waitUntil(() => !document.querySelector('.op-status.running') && ${totalExpr} === ${start - i - 1}, 20000)`, 25000);
+        // 失败时记录界面给出的原因（lc5：一次丢弃没有执行时，后续样本都会因块数错位而失败）
+        const diagnosis = running.ok && confirmed.ok ? undefined : await evaluate(`({ total: ${totalExpr}, opStatus: document.querySelector('.op-status')?.textContent ?? null, statusbar: document.querySelector('.statusbar')?.textContent?.slice(0, 300) ?? null, dialog: document.querySelector('.confirm-dialog')?.textContent?.slice(0, 300) ?? null, pending: document.querySelectorAll('.hunk-title.pending').length, unmatched: document.querySelectorAll('.hunk-title.unmatched').length })`);
         await sleep(1500);
         const added = [...traces()].filter((n) => !beforeTraces.has(n));
-        samples.push({ i, ok: running.ok && confirmed.ok, ms: running.ms + confirmed.ms, feedbackMs: running.ms, gitProcesses: added.length, commands: commands(added) });
+        samples.push({ i, ok: running.ok && confirmed.ok, ms: running.ms + confirmed.ms, feedbackMs: running.ms, gitProcesses: added.length, commands: commands(added), ...(diagnosis ? { diagnosis, runningOk: running.ok } : {}) });
         await sleep(300);
       }
       return { what: "确认丢弃到工具栏块数减一（含整文件备份 hash-object）", feedback: summarize(samples.map((x) => ({ ok: x.ok, ms: x.feedbackMs }))), confirm: summarize(samples), samples };

@@ -82,6 +82,21 @@ fn repo_paths(git: &Path, dir: &Path) -> Result<RepoPaths, GitError> {
     })
 }
 
+/// 所选目录的路径与所属父仓库合并为一次 `rev-parse`（lc5：打开工作区时的 Git 启动都在关键路径上）。
+/// `--show-superproject-working-tree` 不在子模块中时不输出，因此第 4 行存在即为父仓库工作区。
+fn repo_paths_and_superproject(git: &Path, dir: &Path) -> Result<(RepoPaths, Option<PathBuf>), GitError> {
+    let output = run_required(git, dir, &["rev-parse", "--path-format=absolute", "--show-toplevel", "--absolute-git-dir", "--git-common-dir", "--show-superproject-working-tree"])?;
+    let text = String::from_utf8(output.stdout).map_err(|_| GitError::UnsupportedPathEncoding)?;
+    let mut lines = text.lines();
+    let paths = RepoPaths {
+        worktree: canonical_output_path(lines.next())?,
+        git_dir: canonical_output_path(lines.next())?,
+        common_dir: canonical_output_path(lines.next())?,
+    };
+    let superproject = lines.next().map(str::trim).filter(|line| !line.is_empty()).and_then(|line| dunce::canonicalize(line).ok());
+    Ok((paths, superproject))
+}
+
 fn superproject_of(git: &Path, worktree: &Path) -> Option<PathBuf> {
     let output = run_readonly(git, worktree, &["rev-parse", "--show-superproject-working-tree"]).ok()?;
     if !output.status.success() {
@@ -99,8 +114,70 @@ fn repo_id_of(worktree: &Path) -> String {
     hash_bytes(worktree.to_string_lossy().as_bytes())
 }
 
-/// 当前分支与 HEAD 提交；两者都是只读 plumbing。
-fn head_of(git: &Path, worktree: &Path) -> (Option<String>, Option<String>) {
+/// 从 Git 目录的文件直接读出当前分支与 HEAD 提交（与 V2-D53 读取子模块 HEAD 的方式相同，不启动 Git）。
+/// 只处理确定的情形：HEAD 为完整对象 ID（分离），或指向 `refs/heads/…` 且提交在松散引用或 `packed-refs` 中（两处都没有时为未出生分支）；
+/// 其他情形（使用 reftable、指向 refs/heads 以外、内容无法解析）返回 None，由调用方改用 Git 查询。
+pub(super) fn head_from_files(git_dir: &Path, common_dir: &Path) -> Option<(Option<String>, Option<String>)> {
+    use std::io::Read as _;
+    let read = |path: &Path| -> Option<String> {
+        let mut text = String::new();
+        std::fs::File::open(path).ok()?.take(4096).read_to_string(&mut text).ok()?;
+        Some(text)
+    };
+    if common_dir.join("reftable").exists() || git_dir.join("reftable").exists() {
+        return None;
+    }
+    let is_oid = |value: &str| (value.len() == 40 || value.len() == 64) && value.bytes().all(|b| b.is_ascii_hexdigit());
+    let head = read(&git_dir.join("HEAD"))?;
+    let head = head.trim();
+    if is_oid(head) {
+        return Some((None, Some(head.to_ascii_lowercase())));
+    }
+    let reference = head.strip_prefix("ref: ")?.trim();
+    let branch = reference.strip_prefix("refs/heads/")?;
+    if branch.is_empty() || reference.split('/').any(|part| part.is_empty() || part == "." || part == "..") {
+        return None;
+    }
+    if std::fs::metadata(common_dir.join("packed-refs")).is_ok_and(|meta| meta.len() > 16 * 1024 * 1024) {
+        return None;
+    }
+    let packed = match std::fs::read_to_string(common_dir.join("packed-refs")) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(_) => return None,
+    };
+    let packed_has = |name: &str| packed.lines().any(|line| line.split_once(' ').is_some_and(|(_, n)| n.trim() == name));
+    // `symbolic-ref --short` 在同名的其他引用存在时显示为 heads/<分支>：这类情形交给 Git，保证显示与原来逐字相同。
+    for other in [format!("refs/{branch}"), format!("refs/tags/{branch}"), format!("refs/remotes/{branch}"), format!("refs/remotes/{branch}/HEAD")] {
+        if common_dir.join(&other).exists() || packed_has(&other) {
+            return None;
+        }
+    }
+    let loose = read(&common_dir.join(reference));
+    let commit = match loose {
+        Some(value) => {
+            let value = value.trim();
+            if !is_oid(value) {
+                return None;
+            }
+            Some(value.to_ascii_lowercase())
+        }
+        None => {
+            packed.lines().find_map(|line| {
+                let (oid, name) = line.split_once(' ')?;
+                (name.trim() == reference && is_oid(oid)).then(|| oid.to_ascii_lowercase())
+            })
+        }
+    };
+    Some((Some(branch.to_owned()), commit))
+}
+
+/// 当前分支与 HEAD 提交：先直接读文件（lc5：打开工作区时每个成员少两次 Git 启动），拿不准时用只读 plumbing 查询。
+fn head_of(git: &Path, paths: &RepoPaths) -> (Option<String>, Option<String>) {
+    if let Some(found) = head_from_files(&paths.git_dir, &paths.common_dir) {
+        return found;
+    }
+    let worktree = &paths.worktree;
     let text = |args: &[&str]| {
         run_readonly(git, worktree, args)
             .ok()
@@ -108,7 +185,12 @@ fn head_of(git: &Path, worktree: &Path) -> (Option<String>, Option<String>) {
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
             .filter(|t| !t.is_empty())
     };
-    (text(&["symbolic-ref", "--quiet", "--short", "HEAD"]), text(&["rev-parse", "--verify", "--quiet", "HEAD"]))
+    // 两次查询互不依赖：并行启动，打开工作区时少一次串行的 Git 启动。
+    std::thread::scope(|scope| {
+        let branch = scope.spawn(|| text(&["symbolic-ref", "--quiet", "--short", "HEAD"]));
+        let head = text(&["rev-parse", "--verify", "--quiet", "HEAD"]);
+        (branch.join().unwrap_or(None), head)
+    })
 }
 
 /// `.gitmodules` 中的 (名称, 路径)。只读取 `submodule.<name>.path`。
@@ -222,7 +304,7 @@ fn linked_worktrees(git: &Path, worktree: &Path) -> Vec<LinkedWorktree> {
 }
 
 fn ready_member(git: &Path, kind: MemberKind, name: String, root: &Path, paths: &RepoPaths, parent: Option<String>, recorded: Option<String>) -> GroupMember {
-    let (branch, head_oid) = head_of(git, &paths.worktree);
+    let (branch, head_oid) = head_of(git, paths);
     GroupMember {
         repo_id: Some(repo_id_of(&paths.worktree)),
         kind,
@@ -260,6 +342,10 @@ fn unavailable(kind: MemberKind, name: String, root: &Path, path: &Path, parent:
 /// 只有解析出的工作区根正好是登记的路径才算就绪：目录还在但不是完整 worktree（例如停在 `locked initializing`）时，
 /// Git 会向上找到别的仓库，不能把它当成这个 worktree（否则所属仓库会被重复列出）。
 fn worktree_members(git: &Path, root: &Path, owner: &RepoPaths) -> Vec<GroupMember> {
+    // linked worktree 都登记在 `<common dir>/worktrees/` 下：没有这个目录时 `worktree list` 只会列出主工作区，不必启动 Git（lc5）。
+    if !owner.common_dir.join("worktrees").is_dir() {
+        return Vec::new();
+    }
     let owner_id = repo_id_of(&owner.worktree);
     let owner_name = owner.worktree.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     linked_worktrees(git, &owner.worktree)
@@ -312,10 +398,10 @@ fn superproject_by_common_dir(common_dir: &Path) -> Option<PathBuf> {
 /// 发现 `path` 所在的工作区。`manual` 为用户手动加入的独立嵌套仓库路径（V2-D77）。
 pub fn discover(git: &Path, path: &Path, manual: &[String]) -> Result<GroupDiscovery, GitError> {
     let requested = dunce::canonicalize(path).map_err(|error| GitError::InvalidRepository(error.to_string()))?;
-    let selected = repo_paths(git, &requested)?;
+    // 路径与所属父仓库一次读出（lc5：原先分两次 rev-parse，都在打开项目的关键路径上）。
+    let (selected, superproject) = repo_paths_and_superproject(git, &requested)?;
     // 归属（V2-D79）：子模块目录报告父仓库；子模块的 worktree 用 common dir 推出父仓库。父仓库本身也是子模块时按普通项目处理。
-    let candidate = superproject_of(git, &selected.worktree)
-        .or_else(|| superproject_by_common_dir(&selected.common_dir).filter(|root| root.join(".gitmodules").is_file()));
+    let candidate = superproject.or_else(|| superproject_by_common_dir(&selected.common_dir).filter(|root| root.join(".gitmodules").is_file()));
     let root = match candidate {
         Some(root) if superproject_of(git, &root).is_none() && !gitmodule_paths(git, &root).is_empty() => root,
         Some(_) => return Ok(single(git, &selected)),
@@ -325,7 +411,8 @@ pub fn discover(git: &Path, path: &Path, manual: &[String]) -> Result<GroupDisco
     if modules.is_empty() {
         return Ok(single(git, &selected));
     }
-    let root_paths = repo_paths(git, &root)?;
+    // 添加的就是父仓库时，路径已在上面读出，不再重复 rev-parse。
+    let root_paths = if root == selected.worktree { RepoPaths { worktree: selected.worktree.clone(), git_dir: selected.git_dir.clone(), common_dir: selected.common_dir.clone() } } else { repo_paths(git, &root)? };
     let mut ignored = Vec::new();
     let mut valid: Vec<(String, String, PathBuf)> = Vec::new();
     for (name, value) in modules {
@@ -334,13 +421,20 @@ pub fn discover(git: &Path, path: &Path, manual: &[String]) -> Result<GroupDisco
             Err(reason) => ignored.push(format!("{name}（{value}）：{reason}")),
         }
     }
-    let recorded = recorded_pointers(git, &root_paths.worktree, &valid.iter().map(|(_, p, _)| p.clone()).collect::<Vec<_>>());
     let root_id = repo_id_of(&root_paths.worktree);
-    // 各成员的读取相互独立，并行执行以缩短打开时间（技术方案 §10.6）。
-    let groups: Vec<Vec<GroupMember>> = std::thread::scope(|scope| {
+    // 各成员的读取相互独立，并行执行以缩短打开时间（技术方案 §10.6）；父仓库 index 中记录的指针（ls-files -s）也与之并行，
+    // 结束后按 `.gitmodules` 中的顺序填回各子模块（lc5）。
+    let (recorded, groups): (std::collections::HashMap<String, String>, Vec<Vec<GroupMember>>) = std::thread::scope(|scope| {
         let root_ref = &root_paths;
+        let paths: Vec<String> = valid.iter().map(|(_, p, _)| p.clone()).collect();
+        let recorded = scope.spawn(move || recorded_pointers(git, &root_ref.worktree, &paths));
         let mut handles = vec![scope.spawn(move || {
-            let (branch, head_oid) = head_of(git, &root_ref.worktree);
+            // 分支 / HEAD 与 linked worktree 列表互不依赖：并行读取。
+            let (head, worktrees) = std::thread::scope(|inner| {
+                let worktrees = inner.spawn(|| worktree_members(git, &root_ref.worktree, root_ref));
+                (head_of(git, root_ref), worktrees.join().unwrap_or_default())
+            });
+            let (branch, head_oid) = head;
             let mut members = vec![GroupMember {
                 repo_id: Some(repo_id_of(&root_ref.worktree)),
                 kind: MemberKind::Superproject,
@@ -355,11 +449,10 @@ pub fn discover(git: &Path, path: &Path, manual: &[String]) -> Result<GroupDisco
                 head_oid,
                 recorded_oid: None,
             }];
-            members.extend(worktree_members(git, &root_ref.worktree, root_ref));
+            members.extend(worktrees);
             members
         })];
-        for (name, relative, dir) in &valid {
-            let recorded = recorded.get(relative).cloned();
+        for (name, _, dir) in &valid {
             let root_dir = &root_ref.worktree;
             let root_id = root_id.clone();
             handles.push(scope.spawn(move || {
@@ -370,17 +463,26 @@ pub fn discover(git: &Path, path: &Path, manual: &[String]) -> Result<GroupDisco
                     .flatten()
                     .filter(|paths| dunce::canonicalize(dir).is_ok_and(|d| d == paths.worktree));
                 match initialized {
-                    Some(paths) if paths.worktree.starts_with(root_dir) => {
-                        let mut members = vec![ready_member(git, MemberKind::Submodule, name.clone(), root_dir, &paths, Some(root_id), recorded)];
-                        members.extend(worktree_members(git, root_dir, &paths));
+                    Some(paths) if paths.worktree.starts_with(root_dir) => std::thread::scope(|inner| {
+                        let worktrees = inner.spawn(|| worktree_members(git, root_dir, &paths));
+                        let mut members = vec![ready_member(git, MemberKind::Submodule, name.clone(), root_dir, &paths, Some(root_id), None)];
+                        members.extend(worktrees.join().unwrap_or_default());
                         members
-                    }
-                    _ => vec![unavailable(MemberKind::Submodule, name.clone(), root_dir, dir, Some(root_id), MemberState::Uninitialized, recorded)],
+                    }),
+                    _ => vec![unavailable(MemberKind::Submodule, name.clone(), root_dir, dir, Some(root_id), MemberState::Uninitialized, None)],
                 }
             }));
         }
-        handles.into_iter().map(|h| h.join().unwrap_or_default()).collect()
+        let groups: Vec<Vec<GroupMember>> = handles.into_iter().map(|h| h.join().unwrap_or_default()).collect();
+        (recorded.join().unwrap_or_default(), groups)
     });
+    // 子模块成员是第 2 组起每组的第一项，顺序与 valid 相同。
+    let mut groups = groups;
+    for (group, (_, relative, _)) in groups.iter_mut().skip(1).zip(&valid) {
+        if let Some(first) = group.first_mut() {
+            first.recorded_oid = recorded.get(relative).cloned();
+        }
+    }
     let mut members: Vec<GroupMember> = groups.into_iter().flatten().collect();
     for value in manual {
         let dir = PathBuf::from(value);

@@ -20,7 +20,8 @@ function suspects() {
   if (!Array.isArray(list)) list = [list];
   const self = process.pid;
   // 用户日常使用的 Oris（安装目录启动、默认应用数据目录）不是测试进程：单独列出，不作为不通过的依据。
-  const userInstance = (cmd) => /\\com\.oris\.viewer\\EBWebView/i.test(cmd) || (/oris\.exe/i.test(cmd) && !/Oris-builds|Oris-target|worktrees|Oris-lc|target\\(release|debug)/i.test(cmd));
+  // 测试实例的 profile 在 %TEMP%\oris-gui 下：命令行带这个路径的一律按测试进程处理。
+  const userInstance = (cmd) => !/oris-gui/i.test(cmd) && (/\\com\.oris\.viewer\\EBWebView/i.test(cmd) || (/oris\.exe/i.test(cmd) && !/Oris-builds|Oris-target|worktrees|Oris-lc|target\\(release|debug)/i.test(cmd)));
   return list.filter((p) => p.ProcessId !== self && p.ParentProcessId !== self).filter((p) => {
     const cmd = String(p.CommandLine ?? "");
     if (/^oris\.exe$/i.test(p.Name)) return true;
