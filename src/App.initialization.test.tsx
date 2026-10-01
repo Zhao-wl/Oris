@@ -32,6 +32,7 @@ vi.mock("./FileTree", () => ({
 }));
 vi.mock("./ImageViewer", () => ({ default: () => <div data-testid="image-viewer"/> }));
 import App from "./App";
+import { discoverGroup } from "./api";
 
 const repo = (id: string) => ({ repoId: id, displayName: id, worktreePath: `C:/${id}`, gitDir: `C:/${id}/.git`, commonDir: `C:/${id}/.git`, branch: "main" });
 const snapshot = (id: string, revision = "r1"): RepositorySnapshot => ({
@@ -143,6 +144,29 @@ describe("controlled focus state integration (no native windows)", () => {
     await focus(false); reading.resolve(pair("a")); await flush();
     expect(host.querySelector('[data-testid="readable"]')?.textContent).toBe("a:unstaged:f");
     expect(host.textContent).not.toContain("正在读取真实仓库");
+  });
+  it("re-adding after a failed open clears the old error immediately, while workspace discovery is still pending", async () => {
+    await act(async () => { root.render(<App />); }); await flush();
+    const add = async () => {
+      await act(async () => {
+        const field = host.querySelector('input[aria-label="仓库路径"]')!;
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(field, 'C:/a');
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      await click('.openbar button');
+    };
+    bridge.open.mockRejectedValueOnce(new Error("找不到或无法启动 Git（PATH 中没有 git）"));
+    await add();
+    expect(host.querySelector('.state.error')?.textContent).toContain("PATH 中没有 git");
+    // 第二次添加：发现尚未完成时，上一次的失败说明不能继续显示
+    const discovery = deferred<Awaited<ReturnType<typeof discoverGroup>>>();
+    vi.mocked(discoverGroup).mockReturnValueOnce(discovery.promise);
+    await add();
+    expect(host.querySelector('.state.error')).toBeNull();
+    discovery.resolve({ isGroup: false, members: [], selectedRepoId: null, ignored: [] });
+    await flush();
+    expect(host.querySelector('.state.error')).toBeNull();
+    expect(bridge.open).toHaveBeenCalledTimes(2);
   });
   it("clears loading and shows a useful error when initialization fails unfocused", async () => {
     bridge.open.mockRejectedValueOnce(new Error("repository missing"));
