@@ -2,6 +2,8 @@
 
 状态：Awaiting acceptance（待签名、macOS 最终版本复测、AI 真实模型冒烟；安装 / 卸载已由用户自测，2026-09-29）。
 
+2026-10-01 长链 lc5：v0.6.0 之后的最终 main（`59670df`，构建 `530D88CE…`）上重跑全部功能界面套件，除 WebView2 运行时自身的对外连接（已知，见 B23）外全部通过；完成发布性能会话：V1 §4 与 V2 §3–§4 全部预算行达标（外部变化 → 界面更新未验证、失焦 3 s 口径为 V2-D59 已知限制）；期间修复工作区打开慢、阅读器主题重复创建导致切换越来越慢、大文件已缓存切换、重新添加项目时旧错误残留。见 [lc5 发布性能报告](../validation/v1-06-performance-lc5.md)、[RC 验收结果 · lc5 复验](../validation/v1-06-rc-results.md) 与 [长链总结](../validation/long-chain-perf-lc5-summary.md)。状态不变：待签名、macOS 最终版本复测、AI 真实模型冒烟。
+
 2026-09-29 长链 lc4：v0.4.1 之后的最终 main（`4fbe76a`，构建 `FA72B2D4…`）上重跑全部功能界面套件，全部通过；B12 真实远端（AgentHub SSH / HTTPS）通过；新增 B30（分支删除与清理，V2-D74）本地通过、真实远端未运行（权限拦截）；修复“正在浏览的分支被删除后历史列表停在错误状态”与“自动换行 + 对齐时上下文行错开”。本轮不做性能测试。见 [RC 验收结果 · lc4 复验](../validation/v1-06-rc-results.md) 与 [长链总结](../validation/long-chain-prune-wrapalign-b12-summary.md)。依赖：03、04、05 验收通过。
 
 2026-09-26 Windows 与发布准备（长链阶段 3）：A01–A15 与 B01–B22 在最终构建上重跑，追溯矩阵见 [发布验收结果](../validation/v1-06-release-results.md)；Windows NSIS 内部测试包（未签名）已构建，未安装测试（用户选择只构建，见 [Windows 安装交接清单](../release/windows-install-checklist.md)）；[发行说明草稿](../release/release-notes.md)、[macOS 交接清单](../release/macos-checklist.md)、[第三方许可证清单](../release/third-party-licenses.md)。2026-09-27 发布性能测试（Windows）见 [v1-06-performance](../validation/v1-06-performance.md)：S 数据集 24 项预算中 21 项达标，切换字号（长文件滚动场景）未达标、失焦后内存稳态口径未达标；L 数据集满足有界 / 可取消 / 不崩溃。2026-09-28 用户验收确认 Windows 结果，性能未达标项按现状登记为已知问题（V2-D58–V2-D60），06 保持 Awaiting acceptance。仍未完成：Windows 签名与 macOS 签名 / 公证（阻塞：缺证书）、macOS 最终版本复测、安装 / 卸载实测。
