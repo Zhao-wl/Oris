@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import schemeIndex from "../themes/generated/index.json";
+import { defaultAiRuleSet } from "../ai-rules";
 import { createSettingsRegistry, DEFAULT_AI_PROMPTS, DEFAULT_SCHEMES, FONT_SIZE_MAX, FONT_SIZE_MIN, integerSetting, loadSettings, migrateGitExecutable, SETTINGS_KEY, SETTINGS_VERSION, SettingsStore } from "./index";
 
 const memory = (initial: Record<string, string> = {}) => {
@@ -15,7 +16,7 @@ describe("settings model, registry and persistence", () => {
     expect(DEFAULT_SCHEMES).toEqual({ lightScheme: "oris-light", darkScheme: "oris-dark" });
     expect(oris).toMatchObject({ version: SETTINGS_VERSION, appearance: { themeMode: "dark", lightScheme: "oris-light", darkScheme: "oris-dark", fontSize: 13 }, git: { executable: "" } });
     expect(oris.appearance).not.toHaveProperty("diffColorMode");
-    expect(oris.ai).toEqual({ profiles: [], activeId: "", shortcut: "CtrlOrMeta+P", prompts: DEFAULT_AI_PROMPTS });
+    expect(oris.ai).toEqual({ profiles: [], activeId: "", shortcut: "CtrlOrMeta+P", prompts: DEFAULT_AI_PROMPTS, ruleSet: defaultAiRuleSet() });
     const vscode = loadSettings(memory(), registry({ lightScheme: "light-2026", darkScheme: "dark-2026" })).settings;
     expect(vscode.appearance).toMatchObject({ lightScheme: "light-2026", darkScheme: "dark-2026" });
     expect(() => createSettingsRegistry({ schemes: schemeIndex, defaults: { lightScheme: "dark-2026", darkScheme: "oris-dark" } })).toThrow();

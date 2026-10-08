@@ -370,6 +370,82 @@ button.danger:not(:disabled):hover { color:var(--error, #ff7b72); border-color:v
 .ai-data-note ul { margin:0 0 4px; padding-left:18px; }
 .ai-prompt-field { display:flex; flex-direction:column; gap:6px; }
 .ai-prompt-field textarea { width:100%; min-height:86px; resize:vertical; padding:8px 10px; color:var(--text); background:var(--bg); border:1px solid var(--border); border-radius:5px; font:inherit; line-height:1.45; }
+.settings-ai-group { display:flex; flex-direction:column; gap:4px; }
+.settings-ai-group>button { display:flex; align-items:center; justify-content:space-between; }
+.settings-ai-subnav { display:flex; flex-direction:column; gap:4px; padding-left:16px; }
+.settings-ai-subnav[hidden] { display:none; }
+.ai-page-head, .ai-page-actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.ai-page-head { justify-content:space-between; margin-bottom:14px; }
+.ai-page-head>p { flex:1; min-width:180px; }
+.ai-page-actions>input { flex:1; min-width:120px; }
+.ai-command-layout { display:grid; grid-template-columns:180px minmax(0,1fr); gap:20px; }
+.ai-command-list { display:flex; flex-direction:column; align-self:start; border:1px solid var(--border); border-radius:5px; overflow:hidden; }
+.ai-command-list>button { display:flex; flex-direction:column; gap:4px; text-align:left; padding:10px 12px; border:0; border-bottom:1px solid var(--border); border-radius:0; }
+.ai-command-list>button:last-child { border-bottom:0; }
+.ai-command-list>button[aria-pressed=true] { background:var(--hover); }
+.ai-command-list small { color:var(--dim); overflow-wrap:anywhere; }
+.ai-command-editor, .ai-rule-transfer { display:flex; flex-direction:column; gap:13px; min-width:0; }
+.ai-command-editor>label, .ai-rule-two>label, .ai-rule-transfer>label, .ai-route-default>label { display:flex; flex-direction:column; gap:5px; }
+.ai-rules-page input:not([type=checkbox]), .ai-rules-page select, .ai-rules-page textarea { width:100%; min-width:0; padding:7px 9px; color:var(--text); background:var(--bg); border:1px solid var(--border); border-radius:4px; font:inherit; }
+.ai-rules-page textarea { resize:vertical; }
+.ai-command-editor fieldset { border:0; padding:0; margin:0; }
+.ai-command-editor legend { padding:0 0 5px; }
+.ai-context-checks { display:flex; flex-wrap:wrap; gap:9px 14px; }
+.ai-context-checks>label, .ai-rule-footer label { display:flex; align-items:center; gap:5px; }
+.ai-rule-two, .ai-route-default { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.ai-route-reference, .ai-rule-footer { display:flex; flex-wrap:wrap; gap:10px; justify-content:space-between; align-items:center; padding-top:12px; border-top:1px solid var(--border); }
+.ai-route-reference { padding:10px 12px; background:var(--bg); border:1px solid var(--border); border-radius:5px; }
+.ai-recommend-list { display:flex; flex-wrap:wrap; gap:8px; padding:12px; margin-bottom:14px; border:1px solid var(--border); border-radius:5px; }
+.ai-route-default { padding:12px; margin-bottom:14px; background:var(--bg); border:1px solid var(--border); border-radius:5px; }
+.ai-routes-table-wrap { overflow-x:auto; }
+.ai-routes-table { width:100%; border-collapse:collapse; text-align:left; }
+.ai-routes-table th, .ai-routes-table td { padding:9px 7px; border-bottom:1px solid var(--border); }
+.ai-routes-table th { font-weight:400; color:var(--dim); }
+.ai-routes-table td small { display:block; color:var(--dim); margin-top:3px; }
+.ai-routes-table td select { min-width:145px; }
+.ai-routes-table td button { white-space:nowrap; }
+.ai-route-preview, .ai-rule-transfer { padding:14px; margin-top:18px; border:1px solid var(--border); border-radius:5px; }
+.ai-route-preview h4, .ai-rule-transfer h4 { margin:0 0 10px; }
+.ai-rule-transfer h4 { margin-bottom:0; }
+.ai-conversation { width:min(720px, calc(100vw - 36px)); height:min(680px, calc(100vh - 64px)); display:flex; flex-direction:column; padding:0; overflow:hidden; }
+.ai-conversation-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 16px; border-bottom:1px solid var(--border); }
+.ai-conversation-head>div { min-width:0; }
+.ai-conversation-head small { display:block; color:var(--dim); margin-top:4px; overflow-wrap:anywhere; }
+.ai-conversation-route { padding:10px 16px; background:var(--bg); border-bottom:1px solid var(--border); }
+.ai-route-badges { display:flex; flex-wrap:wrap; gap:7px; align-items:center; margin-bottom:5px; }
+.ai-route-badges>span { padding:3px 7px; border:1px solid var(--border); border-radius:4px; font-size:12px; overflow-wrap:anywhere; max-width:100%; }
+.ai-route-badges>button { padding:3px 7px; font-size:12px; }
+.ai-conversation-route small { color:var(--dim); }
+.ai-model-picker { display:flex; flex-wrap:wrap; align-items:center; gap:10px; padding-top:10px; }
+.ai-model-picker>label { display:flex; gap:6px; align-items:center; }
+.ai-model-picker select { max-width:280px; min-width:0; padding:5px; background:var(--panel); color:var(--text); border:1px solid var(--border); border-radius:4px; }
+.ai-model-picker small { width:100%; }
+.ai-conversation-messages { min-height:70px; flex:1; overflow:auto; padding:18px 16px; display:flex; flex-direction:column; gap:18px; }
+.ai-conversation-empty { margin:auto; color:var(--dim); }
+.ai-chat-message { flex:none; max-width:100%; overflow-wrap:anywhere; }
+.ai-chat-message.user { align-self:flex-end; max-width:90%; padding:10px 12px; background:var(--hover); border:1px solid var(--border); border-radius:7px; }
+.ai-chat-message.operation { padding:9px 12px; border:1px solid var(--border); border-radius:5px; background:var(--bg); }
+.ai-chat-byline { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-bottom:5px; font-size:12px; color:var(--dim); }
+.ai-chat-byline strong { color:var(--text); }
+.ai-chat-byline button { margin-left:auto; padding:1px 6px; font-size:11px; border:0; background:transparent; }
+.ai-message-content p { margin:0 0 9px; line-height:1.65; }
+.ai-message-content p:last-child { margin-bottom:0; }
+.ai-message-content ul, .ai-message-content ol { padding-left:22px; margin:0 0 9px; }
+.ai-message-content code { background:var(--bg); padding:1px 4px; border-radius:3px; }
+.ai-code-block { border:1px solid var(--border); border-radius:5px; margin:8px 0; overflow:hidden; background:var(--bg); }
+.ai-code-block>div { display:flex; align-items:center; justify-content:space-between; padding:5px 10px; border-bottom:1px solid var(--border); font-size:12px; }
+.ai-code-block button { font-size:11px; }
+.ai-code-block pre { overflow:auto; padding:10px; margin:0; font-size:12px; }
+.ai-code-block code { padding:0; }
+.ai-conversation .ai-input-progress { position:static; flex:none; align-self:flex-start; }
+.ai-conversation>p { margin:0; padding:6px 16px; max-height:90px; overflow:auto; overflow-wrap:anywhere; }
+.ai-conversation-composer { padding:10px 16px 12px; border-top:1px solid var(--border); }
+.ai-conversation-composer textarea { width:100%; padding:8px; min-height:64px; max-height:140px; resize:vertical; font:inherit; color:var(--text); background:var(--bg); border:1px solid var(--border); border-radius:5px; }
+.ai-compose-footer { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-top:8px; }
+.ai-compose-footer small { color:var(--dim); }
+.ai-conversation .ai-prompt-menu { max-height:min(250px, 32vh); }
+@media(max-width:800px) { .ai-command-layout { grid-template-columns:1fr; } .ai-command-list { display:grid; grid-template-columns:1fr 1fr; } }
+@media(max-width:560px) { .settings-dialog { grid-template-columns:110px minmax(0,1fr); width:calc(100vw - 20px); height:calc(100vh - 20px); } .settings-body { padding-right:10px; padding-left:10px; } .settings-ai-subnav { padding-left:6px; } .ai-rule-two, .ai-route-default { grid-template-columns:1fr; } .ai-conversation { width:calc(100vw - 20px); height:calc(100vh - 28px); } .ai-model-picker select { max-width:190px; } }
 .commit-progress, .commit-result { display:flex; flex-direction:column; gap:4px; font-size:12px; min-width:0; }
 .commit-result.succeeded>span { color:var(--status-added, #4f9f64); }
 .commit-result.failed>span, .commit-result.cancelled>span { color:var(--error, #ff7b72); }

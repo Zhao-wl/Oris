@@ -21,7 +21,7 @@ beforeEach(async () => {
   const values = new Map<string, string>();
   settings = new SettingsStore({ getItem: (key) => values.get(key) ?? null, setItem: (key, value) => void values.set(key, value) }, createSettingsRegistry({ schemes: schemeIndex }));
   await act(async () => root.render(<SettingsDialog settings={settings} gitInUse={null} onClose={() => {}}/>));
-  await click([...host.querySelectorAll(".settings-nav button")].find((button) => button.textContent === "AI")!);
+  await click(host.querySelector('[aria-controls="settings-ai-subnav"]')!);
 });
 
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.unstubAllGlobals(); });

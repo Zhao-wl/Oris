@@ -1,5 +1,6 @@
 import { booleanSetting, enumSetting, integerSetting, SettingsRegistry, stringSetting, type SettingsValues } from "./registry";
 import { DEFAULT_AI_SHORTCUT } from "../ai-shortcut";
+import { defaultAiRuleSet, validateAiRuleSet, type AiRuleSet } from "../ai-rules";
 
 /** 设置模型版本；读取到其他版本时回退默认值并提示（不覆盖原文件，直到用户修改）。 */
 export const SETTINGS_VERSION = 1;
@@ -33,6 +34,7 @@ export interface AiSettings {
   activeId: string;
   shortcut: string;
   prompts: AiOperationPrompts;
+  ruleSet: AiRuleSet;
 }
 
 export interface AiOperationPrompts {
@@ -136,6 +138,7 @@ export function createSettingsRegistry({ schemes, defaults = DEFAULT_SCHEMES, de
         }, ui: { label: "AI 配置", control: "text" } },
         stringSetting("activeId", "", { label: "当前配置", control: "text" }),
         stringSetting("shortcut", DEFAULT_AI_SHORTCUT, { label: "AI 输入快捷键", control: "text" }, (value) => value.length <= 100),
+        { key: "ruleSet", type: "object", defaultValue: defaultAiRuleSet(), validate: validateAiRuleSet, ui: { label: "AI 指令与路由", control: "text" } },
         { key: "prompts", type: "object", defaultValue: DEFAULT_AI_PROMPTS, validate(value) {
           if (!value || typeof value !== "object") return undefined;
           const prompts = value as Partial<AiOperationPrompts>;

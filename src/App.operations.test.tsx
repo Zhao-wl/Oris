@@ -234,11 +234,11 @@ describe("commit panel (B07)", () => {
     bridge.operation.mockResolvedValue(outcome("stage", snap([], [change("a.txt"), change("b.txt")], "r2")));
     await mount();
     await click(host.querySelector(".titlebar .commit-entry")!);
-    await type(host.querySelector<HTMLTextAreaElement>('textarea[aria-label="输入 AI 指令"]')!, "@Git 暂存仓库");
+    await type(host.querySelector<HTMLTextAreaElement>('textarea[aria-label="输入 AI 指令"]')!, "暂存仓库");
     await click(host.querySelector<HTMLButtonElement>('[aria-label="确认 AI 指令"]')!);
     expect(bridge.planAi).toHaveBeenCalledOnce();
     expect(bridge.operation).toHaveBeenCalledWith("a", "unstaged", expect.any(String), { kind: "stage", pathIds: ["id-a.txt", "id-b.txt"] });
-    expect(host.querySelector(".ai-commit-dialog")).toBeNull();
+    expect(host.querySelector(".ai-commit-dialog [role=log]")?.textContent).toContain("done");
     expect(host.querySelector(".confirm-dialog")).toBeNull();
   });
   it("lets the model choose all staged files for a different prompt", async () => {
@@ -249,11 +249,11 @@ describe("commit panel (B07)", () => {
     bridge.operation.mockResolvedValue(outcome("unstage", snap([change("a.txt"), change("b.txt")], [], "r2")));
     await mount();
     await click(host.querySelector(".titlebar .commit-entry")!);
-    await type(host.querySelector<HTMLTextAreaElement>('textarea[aria-label="输入 AI 指令"]')!, "@Git 取消暂存");
+    await type(host.querySelector<HTMLTextAreaElement>('textarea[aria-label="输入 AI 指令"]')!, "取消暂存");
     await click(host.querySelector<HTMLButtonElement>('[aria-label="确认 AI 指令"]')!);
     expect(bridge.planAi).toHaveBeenCalledOnce();
     expect(bridge.operation).toHaveBeenCalledWith("a", "unstaged", expect.any(String), { kind: "unstage", pathIds: ["id-a.txt", "id-b.txt"] });
-    expect(host.querySelector(".ai-commit-dialog")).toBeNull();
+    expect(host.querySelector(".ai-commit-dialog [role=log]")?.textContent).toContain("done");
   });
   it("V2-D68：AI 丢弃不代替用户确认，后端要求确认时停止并说明、不重试", async () => {
     settings.update("ai", "profiles", [{ id: "test-ai", name: "Test AI", kind: "cli", provider: "codex", executable: "/bin/false", baseUrl: "", model: "test-model", hasKey: false }]);
@@ -300,7 +300,7 @@ describe("commit panel (B07)", () => {
   it("opens the AI commit input from the top button and the window shortcut", async () => {
     await mount();
     await click(host.querySelector(".titlebar .commit-entry")!);
-    expect(host.querySelector('.ai-commit-dialog textarea[rows="1"]')).not.toBeNull();
+    expect(host.querySelector('.ai-commit-dialog textarea[rows="2"]')).not.toBeNull();
     await act(async () => { host.querySelector(".ai-commit-overlay")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); });
     expect(host.querySelector(".ai-commit-dialog")).toBeNull();
     await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "p", ctrlKey: true, bubbles: true })); });
@@ -390,4 +390,29 @@ describe("commit panel (B07)", () => {
     expect(host.querySelector(".commit-result.failed pre")?.textContent).toContain("HOOK-FAIL-MARKER");
     expect((host.querySelector("textarea[aria-label='提交信息']") as HTMLTextAreaElement).value).toBe("wip");
   });
+});
+
+it("keeps the main request prefix stable around a routed one-shot command and reads ordinary diff without conflict versions", async () => {
+  settings.update("ai", "profiles", [
+    { id: "test-ai", name: "主模型", kind: "cli", provider: "codex", executable: "", baseUrl: "", model: "main-model", hasKey: false },
+    { id: "tool-ai", name: "工具模型", kind: "cli", provider: "claude", executable: "", baseUrl: "", model: "tool-model", hasKey: false }
+  ]);
+  settings.update("ai", "activeId", "test-ai");
+  const originalRules = settings.get().ai.ruleSet;
+  settings.update("ai", "ruleSet", { ...originalRules, routes: originalRules.routes.map(r => r.commandId === "review" ? { ...r, profileId: "tool-ai" } : r) });
+  bridge.planAi.mockResolvedValue({ kind: "answer", message: "已检查当前状态" });
+  try {
+    await mount(); await click(host.querySelector(".titlebar .commit-entry")!);
+    const input = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="输入 AI 指令"]')!;
+    for (const text of ["解释当前改动", "@审查 检查改动", "说明审查结果"]) {
+      await type(input, text); await click(host.querySelector<HTMLButtonElement>('[aria-label="确认 AI 指令"]')!);
+    }
+    expect(bridge.planAi).toHaveBeenCalledTimes(3);
+    const [first, tool, last] = bridge.planAi.mock.calls;
+    expect(first[0].model).toBe("main-model"); expect(tool[0].model).toBe("tool-model"); expect(last[0].model).toBe("main-model");
+    expect(last[3]).toBe(first[3]); expect(last[6].startsWith(first[6])).toBe(true);
+    expect(tool[6]).toBeUndefined(); expect(tool[2].conversation).toHaveLength(2);
+    expect(last[6]).toContain('"role":"tool"'); expect(last[3]).not.toContain("只报告有代码依据的问题");
+    expect(bridge.read.mock.calls.every(call => call[6] === undefined)).toBe(true);
+  } finally { settings.update("ai", "ruleSet", originalRules); }
 });
