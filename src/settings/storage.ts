@@ -1,4 +1,5 @@
-import { SETTINGS_VERSION, toSettings, type Settings } from "./model";
+import { DEFAULT_AI_PROMPTS, SETTINGS_VERSION, toSettings, type Settings } from "./model";
+import { defaultAiRuleSet, type AiCommand } from "../ai-rules";
 import type { SettingsRegistry } from "./registry";
 
 /** 与项目列表相同的持久化机制（localStorage）；键名带版本。 */
@@ -72,6 +73,23 @@ export function loadSettings(storage: Pick<Storage, "getItem">, registry: Settin
   if (!raw || typeof raw !== "object") return { settings: defaults(), notice: "corrupted", corrected: [], migratedGitExecutable: null };
   if ((raw as { version?: unknown }).version !== SETTINGS_VERSION) {
     return { settings: defaults(), notice: "incompatible", corrected: [], migratedGitExecutable: null };
+  }
+  // 只在旧设置缺少规则集时迁移；空规则集及用户删除的推荐项不会自动补回。
+  const oldAi = (raw as { ai?: Record<string, unknown> }).ai;
+  if (oldAi && typeof oldAi === "object" && !Object.hasOwn(oldAi, "ruleSet")) {
+    const rules = defaultAiRuleSet();
+    const prompts = oldAi.prompts as Partial<typeof DEFAULT_AI_PROMPTS> | undefined;
+    for (const [key, tag] of [["describedCommit", "提交"], ["settingsActions", "设置"], ["pull", "拉取"], ["merge", "合并"], ["gitActions", "Git"]] as const) {
+      const prompt = prompts?.[key];
+      if (typeof prompt !== "string" || prompt.length > 10000 || prompt === DEFAULT_AI_PROMPTS[key]) continue;
+      let c = rules.commands.find(c => c.tag === tag);
+      if (!c) {
+        c = { id: "legacy-git", tag, name: "Git 操作", description: "保留的自定义 Git 提示词", prompt, mode: "action", contexts: ["status", "refs", "diff"], enabled: true } satisfies AiCommand;
+        rules.commands.push(c); rules.routes.push({ id: "route-legacy-git", commandId: c.id, profileId: null, enabled: true });
+      }
+      c.prompt = prompt;
+    }
+    oldAi.ruleSet = rules;
   }
   const { values, corrected } = registry.normalize(raw);
   if (values.ai?.shortcut === "CtrlOrMeta+Shift+M") values.ai.shortcut = "CtrlOrMeta+P";

@@ -1,13 +1,12 @@
-/** @ 标签只选择要注入的提示词包，不直接决定或执行操作。 */
-export const AI_PROMPT_TAGS = [
-  { name: "Git", label: "@Git", detail: "Git 操作与仓库状态" },
-  { name: "设置", label: "@设置", detail: "外观、Git 与 AI 设置" },
-  { name: "提交", label: "@提交", detail: "选择文件并生成提交信息" },
-  { name: "拉取", label: "@拉取", detail: "当前分支与上游的拉取流程" },
-  { name: "合并", label: "@合并", detail: "分支目标与合并流程" }
-] as const;
+import { RECOMMENDED_AI_COMMANDS, type AiRuleSet } from "./ai-rules";
+/** 标签加载任务规则；用户明确发送的请求仍是执行依据。 */
+export interface AiPromptTag { id: string; name: string; label: string; detail: string }
+export const AI_PROMPT_TAGS: AiPromptTag[] = RECOMMENDED_AI_COMMANDS.map(c => ({ id: c.id, name: c.tag, label: `@${c.tag}`, detail: c.description }));
+export function configuredPromptTags(rules: AiRuleSet): AiPromptTag[] {
+  return rules.commands.filter(c => c.enabled && rules.routes.some(r => r.commandId === c.id && r.enabled))
+    .map(c => ({ id: c.id, name: c.tag, label: `@${c.tag}`, detail: c.description }));
+}
 
-export type AiPromptTag = typeof AI_PROMPT_TAGS[number];
 export interface PromptTagMatch { start: number; end: number; query: string }
 
 const isSpace = (char: string) => /\s/u.test(char);
@@ -26,9 +25,9 @@ export function activePromptTag(text: string, caret: number): PromptTagMatch | n
   return { start, end, query };
 }
 
-export function matchingPromptTags(query: string): readonly AiPromptTag[] {
+export function matchingPromptTags(query: string, tags: readonly AiPromptTag[] = AI_PROMPT_TAGS): readonly AiPromptTag[] {
   const normalized = query.toLocaleLowerCase();
-  return AI_PROMPT_TAGS.filter((tag) => tag.name.toLocaleLowerCase().startsWith(normalized));
+  return tags.filter((tag) => tag.name.toLocaleLowerCase().startsWith(normalized));
 }
 
 /** 选择候选时保证标签后有空格，并把光标放在该空格后。 */
@@ -42,8 +41,11 @@ export function insertPromptTag(text: string, match: PromptTagMatch, tag: AiProm
 }
 
 /** 提示词注入仅识别两侧为空白或文本边界的完整标签。 */
-export function mentionedPromptTags(text: string): Set<AiPromptTag["name"]> {
-  const found = new Set<AiPromptTag["name"]>();
-  for (const match of text.matchAll(/(^|\s)@(Git|设置|提交|拉取|合并)(?=\s|$)/gu)) found.add(match[2] as AiPromptTag["name"]);
+export function mentionedPromptTags(text: string, tags: readonly AiPromptTag[] = AI_PROMPT_TAGS): Set<string> {
+  const found = new Set<string>();
+  for (const match of text.matchAll(/(?:^|\s)@([\p{L}\p{N}_-]+)(?=\s|$)/gu)) {
+    const tag = tags.find(t => t.name.toLowerCase() === match[1].toLowerCase());
+    if (tag) found.add(tag.name);
+  }
   return found;
 }

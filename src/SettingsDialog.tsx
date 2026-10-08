@@ -9,6 +9,7 @@ import { displayAiShortcut } from "./ai-shortcut";
 import { getVersion } from "@tauri-apps/api/app";
 import { useStore } from "./store";
 import { updater } from "./update-model";
+import { AiCommandsPage, AiRoutesPage } from "./AiRulesSettings";
 
 interface Props {
   settings: SettingsStore;
@@ -224,10 +225,6 @@ function AiPage({ settings }: { settings: SettingsStore }) {
         ["stagedMessage", "根据暂存内容生成提交信息"],
         ["describedCommit", "根据描述选择文件并生成提交信息"],
         ["commandCenter", "AI 操作入口"],
-        ["gitActions", "@Git 提示词"],
-        ["settingsActions", "@设置 提示词"],
-        ["pull", "@拉取 提示词"],
-        ["merge", "@合并 提示词"]
       ] as const).map(([key, label]) => <div className="ai-prompt-field" key={key}>
         <div className="settings-row-head"><label htmlFor={`ai-prompt-${key}`}>{label}</label><button type="button" disabled={ai.prompts[key] === DEFAULT_AI_PROMPTS[key]} onClick={() => settings.update("ai", "prompts", { ...ai.prompts, [key]: DEFAULT_AI_PROMPTS[key] })}>恢复默认</button></div>
         <textarea id={`ai-prompt-${key}`} aria-label={`${label}系统提示词`} value={ai.prompts[key]} maxLength={10_000} onChange={(event) => settings.update("ai", "prompts", { ...ai.prompts, [key]: event.target.value })}/>
@@ -242,7 +239,7 @@ function AiPage({ settings }: { settings: SettingsStore }) {
         <li>测试连接：仅发送固定的简短测试文本，不发送项目文件内容。</li>
         <li>生成提交信息：已暂存的文件列表与已暂存的改动（最多约 90 KB）。</li>
         <li>按描述选择文件提交：候选文件列表、已暂存与未暂存的改动（各最多约 90 KB）、未跟踪文件开头最多 2 KB（最多 40 个），合计最多约 18 万字符。</li>
-        <li>AI 指令：项目与分支名、未暂存 / 已暂存文件列表、分支与远端名称、当前打开文件两侧的内容（各最多 12,000 字符）、外观设置与已保存 AI 组合的名称和模型；指令提到 stash、丢弃记录、撤销提交或历史时，另附 stash 说明、丢弃记录的文件路径、HEAD 提交或最近 20 条提交的标题与作者。</li>
+        <li>AI 指令：按指令的上下文选择发送仓库状态、文件列表、分支与远端、当前打开文件两侧的内容（各最多 12,000 字符）、可提交文件差异（最多 40,000 字符）、最近 20 条提交标题与作者、外观及 AI 组合名称和模型；操作需要时另附 stash、丢弃备份或 HEAD 信息。主会话首次发送后固定模型，传输记录最多 48 块、240,000 字符；一次性指令按各自路由执行，并携带最近 24 条消息、合计 32,000 字符的会话背景。结果返回主会话，关闭后不保存。达到上限时裁剪较早记录并提示。</li>
       </ul>
       <p>API Key 只随请求发送给该组合的服务地址。</p>
     </div>
@@ -298,6 +295,8 @@ function ShortcutsPage({ settings }: { settings: SettingsStore }) {
 export default function SettingsDialog({ settings, onClose, gitInUse }: Props) {
   const categories = [...settings.registry.list(), { id: "shortcuts", label: "快捷键", order: 40, settings: [] }];
   const [active, setActive] = useState(categories[0]?.id ?? "appearance");
+  const [aiExpanded, setAiExpanded] = useState(false);
+  const [aiCommandId, setAiCommandId] = useState<string>();
   const dialog = useRef<HTMLDivElement>(null);
   useEffect(() => {
     dialog.current?.focus();
@@ -308,14 +307,17 @@ export default function SettingsDialog({ settings, onClose, gitInUse }: Props) {
   return <div className="settings-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <div className="settings-dialog" role="dialog" aria-modal="true" aria-label="设置" tabIndex={-1} ref={dialog}>
       <nav className="settings-nav" aria-label="设置分类">
-        {categories.map((category) => <button key={category.id} className={category.id === active ? "active" : ""} aria-current={category.id === active} onClick={() => setActive(category.id)}>{category.label}</button>)}
+        {categories.map((category) => category.id === "ai" ? <div className="settings-ai-group" key="ai">
+          <button aria-expanded={aiExpanded} aria-controls="settings-ai-subnav" onClick={() => { setAiExpanded(v => !v); if (!aiExpanded && !["ai", "ai-commands", "ai-routes"].includes(active)) setActive("ai"); }}>AI<span aria-hidden="true">{aiExpanded ? "⌄" : "›"}</span></button>
+          <div id="settings-ai-subnav" className="settings-ai-subnav" hidden={!aiExpanded}>{[["ai", "连接与模型"], ["ai-commands", "指令"], ["ai-routes", "规则路由"]].map(([id, label]) => <button key={id} className={active === id ? "active" : ""} aria-current={active === id} onClick={() => setActive(id)}>{label}</button>)}</div>
+        </div> : <button key={category.id} className={category.id === active ? "active" : ""} aria-current={category.id === active} onClick={() => setActive(category.id)}>{category.label}</button>)}
         <span className="settings-nav-more">更多分类（以后）</span>
       </nav>
       <div className="settings-body">
-        <header><h3>{categories.find((c) => c.id === active)?.label}</h3><button aria-label="关闭设置" onClick={onClose}>×</button></header>
+        <header><h3>{active === "ai-commands" ? "AI 指令" : active === "ai-routes" ? "规则路由" : active === "ai" ? "AI · 连接与模型" : categories.find((c) => c.id === active)?.label}</h3><button aria-label="关闭设置" onClick={onClose}>×</button></header>
         {settings.notice === "corrupted" && <p className="settings-error">设置文件已损坏，已使用默认值（项目列表不受影响）。</p>}
         {settings.notice === "incompatible" && <p className="settings-error">设置文件版本不兼容，已使用默认值。</p>}
-        {active === "appearance" ? <AppearancePage settings={settings} /> : active === "git" ? <GitPage settings={settings} gitInUse={gitInUse} /> : active === "shortcuts" ? <ShortcutsPage settings={settings} /> : active === "update" ? <UpdatePage settings={settings} /> : <AiPage settings={settings} />}
+        {active === "appearance" ? <AppearancePage settings={settings} /> : active === "git" ? <GitPage settings={settings} gitInUse={gitInUse} /> : active === "shortcuts" ? <ShortcutsPage settings={settings} /> : active === "update" ? <UpdatePage settings={settings} /> : active === "ai-commands" ? <AiCommandsPage settings={settings} initialCommandId={aiCommandId} onRoutes={() => setActive("ai-routes")}/> : active === "ai-routes" ? <AiRoutesPage settings={settings} onCommands={id => { setAiCommandId(id); setActive("ai-commands"); }}/> : <AiPage settings={settings} />}
       </div>
     </div>
   </div>;
