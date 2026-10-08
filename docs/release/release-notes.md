@@ -1,4 +1,6 @@
-# Oris 发行说明（v0.8.2）
+# Oris 发行说明（macOS v0.8.3 / Windows v0.8.2）
+
+macOS 最新手动安装包：**[v0.8.3（Apple Silicon）已公开发布](https://github.com/Zhao-wl/Oris/releases/tag/v0.8.3)**，公开时间为 2026-10-08 23:13（北京时间），tag 指向 `7c906f8`。本次修复应用包内 Codex CLI 漏检，支持 macOS 14 及以上；提供 DMG、校验和及验证记录，使用 ad-hoc 签名，未进行 Developer ID 签名 / Apple 公证，也未提供 macOS 自动更新签名。更新与核验见 [0.8.3 更新日志](v0.8.3.md) 和 [收尾记录](../validation/v0.8.3-release-closeout.md)。当前源码版本为 0.8.3；Windows 自动更新入口仍保留 0.8.2，下文的 Windows 发布信息继续适用。
 
 本次发布：**[v0.8.2（Windows x64）已公开发布](https://github.com/Zhao-wl/Oris/releases/tag/v0.8.2)**，公开时间为 2026-10-08 19:28（北京时间），tag 指向 `12c2db1`。更新内容见 [0.8.2 更新日志](v0.8.2.md)，测试、产物哈希与签名核验见 [0.8.2 发布收尾记录](../validation/v0.8.2-release-closeout.md)。安装包、签名和自动更新清单均已上传。NSIS 安装包具备自动更新签名，尚无 Windows Authenticode 代码签名；macOS 签名 / 公证、安装后的最终版本复测、真实 Windows 前后台焦点切换及 AI 真实模型兼容性仍未完成验证。06 整体不因此标记为全部验收通过；历史验收见 [RC 验收结果](../validation/v1-06-rc-results.md)，安装 / 卸载此前已由用户自测。
 
