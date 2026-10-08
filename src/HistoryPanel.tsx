@@ -486,7 +486,7 @@ function FileHistoryList({ mode, activeKey, onBack, onMore, onOpen }: { mode: Ex
     {mode.error && <div className="log-error">{mode.error}</div>}
     <ul className="log-history" aria-label="文件历史记录">
       {entries.map((entry) => <li key={entry.commit.oid + entry.pathId} className={`${mode.selected === entry.commit.oid ? "selected" : ""}${activeKey === `file:${entry.commit.oid}:${entry.pathId}` ? " active" : ""}`}>
-        <button type="button" className="log-history-row" onClick={() => onOpen(entry)}><span className={`status-letter ${entry.status}`}>{statusLetter[entry.status]}</span><span className="log-sha">{shortOid(entry.commit.oid)}</span><span className="log-subject">{entry.commit.subject}</span><span className="log-date">{time(entry.commit.authorTime)}</span><PathText path={entry.path} className="log-file-path"/></button>
+        <button type="button" className="log-history-row" onClick={() => onOpen(entry)}><span className={`status-letter ${entry.status}`}>{statusLetter[entry.status]}</span><span className="log-sha">{shortOid(entry.commit.oid)}</span><span className="log-subject">{entry.commit.subject}</span><span className="log-date">{time(entry.commit.authorTime)}</span><span className="log-committer" title={`提交者：${entry.commit.committerName} <${entry.commit.committerEmail}>`}>{entry.commit.committerName}</span></button>
         {entry.renamedFrom && <div className="log-rename-boundary" role="note">↳ rename 跟随边界：此提交由 {entry.renamedFrom} 改名而来，更早的记录使用原路径（由 Git 的 rename 检测判断）</div>}
       </li>)}
     </ul>

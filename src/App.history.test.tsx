@@ -92,7 +92,7 @@ beforeEach(() => {
   });
   bridge.compare.mockImplementation(async (_repo: string, left: string, right: string) => ({ leftRef: left, rightRef: right, left, right, files: [{ path: "diff.txt", oldPath: null, pathId: "id-diff.txt", oldPathId: null, status: "modified" }] }));
   bridge.fileHistory.mockResolvedValue({ entries: [
-    { commit: history[1], path: "new.txt", pathId: "id-new.txt", status: "renamed", renamedFrom: "old.txt", renamedFromId: "id-old.txt" },
+    { commit: { ...history[1], committerName: "Bob", committerEmail: "bob@x" }, path: "new.txt", pathId: "id-new.txt", status: "renamed", renamedFrom: "old.txt", renamedFromId: "id-old.txt" },
     { commit: history[3], path: "old.txt", pathId: "id-old.txt", status: "added", renamedFrom: null, renamedFromId: null }
   ], next: null, reachedOrigin: true });
   bridge.revision.mockImplementation(async (_repo: string, left: string | null, _right: string, pathId: string) => pair(left ? "commit" : "emptyTree", pathId, !left));
@@ -250,6 +250,10 @@ describe("compare and file history (A09)", () => {
     await mount();
     await click(button("文件历史"));
     expect(bridge.fileHistory).toHaveBeenLastCalledWith("a", "HEAD", "id-a.txt", 100, null);
+    expect(all(".log-history-row .log-committer").map((node) => node.textContent)).toEqual(["Bob", "Alice"]);
+    expect(q(".log-history-row .log-committer")?.getAttribute("title")).toBe("提交者：Bob <bob@x>");
+    expect(q(".log-history-row .log-file-path")).toBeNull();
+    expect(q(".log-file-title")?.textContent).toContain("a.txt");
     expect(q(".log-rename-boundary")?.textContent).toContain("由 old.txt 改名而来");
     expect(q(".log-commits-pane")?.textContent).toContain("已到达文件起点");
     await click(all(".log-history-row")[0]);
