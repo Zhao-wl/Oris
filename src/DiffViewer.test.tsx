@@ -360,3 +360,41 @@ describe("独立行跳转", () => {
     expect(editors()[0].state.selection.main.head).toBe(editors()[0].state.doc.line(30).from);
   });
 });
+
+describe("拓展-01 两种阅读视图的行选区", () => {
+  for (const mode of ["split", "unified"] as const) {
+    it(`${mode} 的原文删除行和新文变化行映射正确，选行不覆盖当前行提交信息`, async () => {
+      const left = "head\nold feature\nold debug\ntail\n", right = "head\nnew feature\nnew debug\ntail\n";
+      const document = documentFor(left, right, mode), onChangeSelect = vi.fn(), onLineSelect = vi.fn();
+      await act(async () => root.render(<DiffViewer readingKey={`fine:${mode}`} presentation={{ kind: "compare" }} left={left} right={right} document={document} mode={mode} highlight="lines" collapsed={false} wrap={true} alignChanges={true} onPositionChange={onPositionChange} onSplitLayoutChange={onSplitLayoutChange} onChangeSelect={onChangeSelect} onLineSelect={onLineSelect} changeSelection={[{ side: "a", line: 2 }, { side: "b", line: 2 }]} selectedLine={{ side: "b", line: 3 }}/>));
+      const entries = editors();
+      const oldRow = mode === "split" ? [...entries[0].contentDOM.querySelectorAll('.cm-line')].find(n => n.textContent?.includes("old feature"))! : host.querySelector('div.cm-deletedLine,del.cm-deletedText')!;
+      expect(oldRow.classList.contains("oris-change-selected")).toBe(true);
+      await act(async () => oldRow.dispatchEvent(new MouseEvent("pointerup", { button: 0, ctrlKey: true, bubbles: true })));
+      expect(onChangeSelect).toHaveBeenCalledWith({ side: "a", line: 2 }, false);
+      const newView = entries[entries.length - 1];
+      const newRow = [...newView.contentDOM.querySelectorAll('.cm-line')].find(n => n.textContent?.includes("new feature"))!;
+      expect(newRow.classList.contains("oris-change-selected")).toBe(true);
+      await act(async () => newRow.dispatchEvent(new MouseEvent("pointerup", { button: 0, shiftKey: true, bubbles: true })));
+      expect(onChangeSelect).toHaveBeenCalledWith({ side: "b", line: 2 }, true);
+      expect(onLineSelect).toHaveBeenCalled();
+      expect(newView.state.doc.toString()).toBe(right);
+    });
+  }
+  it("筛选装饰更新保留编辑器实例、文档与选择；普通差异导航不变", async () => {
+    const left = "start\nconst x = 1;\nend\n", right = "start\n const x=1;\nend\n", document = documentFor(left, right, "noise");
+    const presentation = { kind: "compare" as const }, changeSelection = [{ side: "b" as const, line: 2 }];
+    const notes = [{ side: "a" as const, line: 2, format: true, move: 1 }, { side: "b" as const, line: 2, format: true, move: 1 }];
+    const renderFine = async (enabled: boolean) => act(async () => root.render(<DiffViewer readingKey="fine:noise" presentation={presentation} left={left} right={right} document={document} mode="split" highlight="words" collapsed={false} wrap={true} alignChanges={true} onPositionChange={onPositionChange} onSplitLayoutChange={onSplitLayoutChange} changeSelection={changeSelection} fineNotes={notes} showMoves={enabled} dimFormat={enabled}/>));
+    await renderFine(false); const before = editors();
+    const dispatch = vi.spyOn(before[1], "setState");
+    await renderFine(true); expect(editors()).toEqual(before); expect(dispatch).not.toHaveBeenCalled();
+    expect(host.querySelectorAll('.oris-format-noise').length).toBeGreaterThan(0);
+    expect(host.querySelector('[title*="移动候选 1"]')).not.toBeNull();
+    await renderFine(false);
+    expect(host.querySelectorAll('.oris-format-noise')).toHaveLength(0);
+    expect(host.querySelectorAll('.oris-change-selected').length).toBeGreaterThan(0);
+    expect(before[0].state.doc.toString()).toBe(left); expect(before[1].state.doc.toString()).toBe(right);
+    expect(document.hunks.length).toBe(1);
+  });
+});

@@ -69,3 +69,13 @@ describe("单字节（Latin-1）显示", () => {
     expect(latin1View(side({ encoding: "missing", text: "" }))).toBe("");
   });
 });
+
+it("行操作在映射不准确时提前禁用，CRLF 和 Latin-1 显示可继续核验", async () => {
+  const { lineLevelBlock } = await import("./hunk-model");
+  const side = { encoding: "utf-8", text: "a\r\nb\r\n" };
+  const pair = { left: side, right: side } as import("./types").ContentPair;
+  expect(lineLevelBlock(pair, null)).toBeNull();
+  expect(lineLevelBlock({ ...pair, right: { ...pair.right, text: "a\rb\r" } }, null)).toContain("CR");
+  expect(lineLevelBlock({ ...pair, left: { ...pair.left, encoding: "utf-16le" } }, null)).toContain("UTF-16");
+  expect(lineLevelBlock(pair, { ...map([[0, 1, 0, 1]]), lineBlocked: "clean filter 无法核验" })).toContain("clean filter");
+});

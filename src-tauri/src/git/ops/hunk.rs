@@ -7,6 +7,9 @@
 //! - 丢弃先把整个工作区文件写入对象库并记录（R-DISCARD 备份，可撤销）；写回时在工作区原始字节上只替换目标块的行，
 //!   避免 git apply 按 core.autocrlf 重写整个文件的换行（无法逐行对应时才交给 git apply）。
 use super::*;
+#[path = "line_patch.rs"]
+mod line_patch;
+pub use line_patch::{LinePreview, LineSelection, LineSelectionRequest};
 
 /// 某一块在两侧的行范围（0 起、左闭右开）与内容摘要。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -30,6 +33,8 @@ pub struct HunkMap {
     pub hunks: Vec<HunkRef>,
     /// 整个文件不能做块操作的原因。
     pub blocked: Option<String>,
+    /// 仅行操作的映射限制；整块丢弃仍沿用已有备份与回退流程。
+    pub line_blocked: Option<String>,
     /// 额外说明（例如文件模式变化不随块操作）。
     pub note: Option<String>,
 }
@@ -313,6 +318,7 @@ struct HunkSource {
     old: Vec<u8>,
     hunks: Vec<RawHunk>,
     mode_changed: bool,
+    line_blocked: Option<String>,
 }
 
 impl GitAdapter {
@@ -380,20 +386,23 @@ impl GitAdapter {
         if lines.len() > MAX_TEXT_LINES {
             return refuse("超出内容预算（100,000 行），不提供块操作");
         }
-        if let Err(reason) = reconstruct(&lines, &hunks) {
-            return Ok(Err(format!("Git 的差异与读取到的内容不一致（{reason}），请刷新")));
-        }
-        Ok(Ok(HunkSource { path, content_ids: [hash_bytes(&left), hash_bytes(&right)], old: left, hunks, mode_changed }))
+        let clean = match reconstruct(&lines, &hunks) {
+            Ok(clean) => clean,
+            Err(reason) => return Ok(Err(format!("Git 的差异与读取到的内容不一致（{reason}），请刷新"))),
+        };
+        let line_blocked = line_patch::line_mapping_block(&left, &right, &clean);
+        Ok(Ok(HunkSource { path, content_ids: [hash_bytes(&left), hash_bytes(&right)], old: left, hunks, mode_changed, line_blocked }))
     }
 
     /// 只读 IPC：某文件在当前范围内可操作的差异块。
     pub fn hunk_map(&self, scope: CompareScope, revision: &str, path_id: &str) -> Result<HunkMap, GitError> {
         let state = self.scan_state(revision).ok_or(GitError::StaleRequest)?;
-        let mut map = HunkMap { scope, path_id: path_id.to_owned(), content_ids: [String::new(), String::new()], hunks: Vec::new(), blocked: None, note: None };
+        let mut map = HunkMap { scope, path_id: path_id.to_owned(), content_ids: [String::new(), String::new()], hunks: Vec::new(), blocked: None, line_blocked: None, note: None };
         match self.hunk_source(&state, scope, path_id)? {
             Err(reason) => map.blocked = Some(reason),
             Ok(source) => {
                 map.content_ids = source.content_ids;
+                map.line_blocked = source.line_blocked;
                 map.hunks = source.hunks.iter().map(RawHunk::reference).collect();
                 if source.hunks.is_empty() {
                     map.blocked = Some(if source.mode_changed { "只有文件模式变化，没有可操作的差异块；请使用文件级操作".into() } else { "Git 没有报告内容差异".into() });

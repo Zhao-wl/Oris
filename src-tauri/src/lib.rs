@@ -894,6 +894,15 @@ async fn hunk_map(repo_id: String, scope: CompareScope, revision: String, path_i
         .map_err(|error| GitError::Runtime(error.to_string()))?
 }
 
+/// 后端原始字节生成行选区预览并预检，只读。
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn preview_lines(repo_id: String, scope: CompareScope, selection: ops::LineSelectionRequest, registry: State<'_, RepositoryRegistry>) -> Result<ops::LinePreview, GitError> {
+    let opened = opened(&registry, &repo_id)?;
+    tauri::async_runtime::spawn_blocking(move || opened.adapter.preview_lines(scope, &selection))
+        .await.map_err(|error| GitError::Runtime(error.to_string()))?
+}
+
 /// 提交面板的 HEAD 信息与已推送判断（只读）。
 #[cfg(feature = "desktop")]
 #[tauri::command]
@@ -1003,6 +1012,7 @@ pub fn run() {
             read_content_pair,
             cancel_content_read,
             hunk_map,
+            preview_lines,
             save_snapshot,
             load_snapshot,
             remove_snapshot,

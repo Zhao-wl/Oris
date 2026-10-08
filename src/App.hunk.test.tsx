@@ -9,10 +9,10 @@ import { defaultAnchor, WORKSPACE_KEY } from "./workspace-model";
 // 静态导入：mock 内动态 import 在高负载下会慢于 mount() 的固定等待，导致块按钮尚未渲染。
 import { computeDiff } from "./diff-core";
 
-const bridge = vi.hoisted(() => ({ open: vi.fn(), refresh: vi.fn(), read: vi.fn(), diff: vi.fn(), map: vi.fn(), operation: vi.fn() }));
+const bridge = vi.hoisted(() => ({ open: vi.fn(), refresh: vi.fn(), read: vi.fn(), diff: vi.fn(), map: vi.fn(), preview: vi.fn(), operation: vi.fn() }));
 vi.mock("./api", () => ({ discoverGroup: vi.fn(async () => ({ isGroup: false, members: [], selectedRepoId: null, ignored: [] })), memberChangeCount: vi.fn(async () => 0), watchGroup: vi.fn(async () => {}), setSubmodulePointers: vi.fn(async () => {}), openRepository: bridge.open, refreshRepository: bridge.refresh, readContentPair: bridge.read, closeRepository: vi.fn(async () => {}), cancelContentRead: vi.fn(async () => {}),
   repositoryDetails: vi.fn(async () => null), activateRepository: vi.fn(async () => true), loadSnapshot: vi.fn(async () => null), saveSnapshot: vi.fn(async () => true), removeSnapshot: vi.fn(async () => {}) }));
-vi.mock("./operations-api", () => ({ runOperation: bridge.operation, hunkMap: bridge.map, cancelOperation: vi.fn(async () => true), lastOperation: vi.fn(async () => null), prepareDiscard: vi.fn(), discardBackups: vi.fn(async () => []), headCommitInfo: vi.fn(async () => null) }));
+vi.mock("./operations-api", () => ({ runOperation: bridge.operation, hunkMap: bridge.map, previewLines: bridge.preview, cancelOperation: vi.fn(async () => true), lastOperation: vi.fn(async () => null), prepareDiscard: vi.fn(), discardBackups: vi.fn(async () => []), headCommitInfo: vi.fn(async () => null) }));
 vi.mock("./diff", () => ({ calculateDiff: bridge.diff }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ isFocused: async () => false, onFocusChanged: async () => () => {} }) }));
@@ -51,7 +51,7 @@ let host: HTMLDivElement;
 let root: Root;
 const flush = async () => { await act(async () => { for (let i = 0; i < 25; i++) await Promise.resolve(); }); };
 const click = async (element: Element | null | undefined) => { if (!element) throw new Error("元素不存在"); await act(async () => (element as HTMLElement).click()); await flush(); };
-const buttons = (label: string) => [...host.querySelectorAll(".hunk button")].filter((b) => b.textContent === label) as HTMLButtonElement[];
+const buttons = (label: string) => [...host.querySelectorAll("button")].filter((b) => b.textContent === label) as HTMLButtonElement[];
 const notices = () => [...host.querySelectorAll(".reading-notice p")].map((n) => n.textContent).join("\n");
 const settle = async () => { for (let i = 0; i < 40 && !host.querySelector('[data-testid="viewer"]'); i++) await flush(); };
 const mount = async () => { await act(async () => { root.render(<App />); }); await flush(); await click(host.querySelector('.file[aria-label="a.txt"]')); await settle(); };
@@ -67,6 +67,7 @@ beforeEach(() => {
   bridge.diff.mockImplementation(async (requestId: string, contentIds: [string, string], left: string, right: string, whitespace = "keep") =>
     ({ requestId, contentIds, whitespace, elapsedMs: 0, ...computeDiff(left, right, whitespace) }));
   bridge.map.mockResolvedValue(gitMap());
+  bridge.preview.mockResolvedValue({ digest: "preview-digest", patch: "@@ -2 +2 @@\n-two\n+TWO\n", removed: 1, added: 1, note: "实际 index 写入方向" });
   bridge.operation.mockImplementation(async (_repo: string, _scope: string, _op: string, request: { kind: OperationOutcome["kind"] }) => outcome(request.kind));
   localStorage.setItem(WORKSPACE_KEY, JSON.stringify({ version: 2, activeRepoId: "a", projects: [{ repo, gitExecutable: "", pinned: false, lastOpenedAt: 0, anchor: defaultAnchor() }] }));
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
@@ -142,4 +143,69 @@ describe("块操作（V2-05）", () => {
     expect(buttons("取消暂存此块")).toHaveLength(2);
     expect(buttons("暂存此块")).toHaveLength(0);
   });
+});
+
+
+describe("拓展-01 行选区接线", () => {
+  it("块拆分后成对选行，必须先预览；确认请求携带原始摘要、两端 contentId 和 revision", async () => {
+    await mount(); await click(buttons("拆分 / 选行…")[0]);
+    const panel = host.querySelector('.fine-diff-panel'); expect(panel).not.toBeNull();
+    const details = panel!.querySelector('details')!;
+    await act(async () => { details.open = true; details.dispatchEvent(new Event("toggle")); });
+    await click([...panel!.querySelectorAll('button')].find(b => b.textContent === "成对选择 1"));
+    expect(bridge.operation).not.toHaveBeenCalled();
+    await click(buttons("预览暂存选区")[0]);
+    const selection = { pathId: "id-a.txt", contentIds: ["L", "R"], expectedRevision: "r1", selections: [{ hunk: gitMap().hunks[0], oldLines: [0], newLines: [0] }] };
+    expect(bridge.preview).toHaveBeenCalledWith("a", "unstaged", selection);
+    expect(panel!.querySelector("pre")?.textContent).toContain("+TWO");
+    expect(bridge.operation).not.toHaveBeenCalled();
+    await click(buttons("确认暂存选区")[0]);
+    expect(bridge.operation).toHaveBeenCalledWith("a", "unstaged", expect.any(String), { kind: "linesStage", selection, previewDigest: "preview-digest" });
+  });
+  it("预览拒绝过期选区时显示原因，不发送写请求", async () => {
+    bridge.preview.mockRejectedValue("revision/contentId 已过期");
+    await mount(); await click(buttons("选行 / 拆块")[0]);
+    const details = host.querySelector('.fine-diff-panel details')!;
+    await act(async () => { (details as HTMLDetailsElement).open = true; details.dispatchEvent(new Event("toggle")); });
+    await click(host.querySelector('input[aria-label="新行 2"]'));
+    await click(buttons("预览暂存选区")[0]);
+    expect(host.querySelector('.fine-diff-panel [role="alert"]')?.textContent).toContain("已过期");
+    expect(buttons("确认暂存选区")).toHaveLength(0); expect(bridge.operation).not.toHaveBeenCalled();
+  });
+  it("忽略空白禁用行操作；阅读筛选不调用写接口和块映射", async () => {
+    await mount();
+    await click(buttons("移动候选")[0]); await click(buttons("淡化格式噪声")[0]);
+    expect(bridge.operation).not.toHaveBeenCalled(); expect(bridge.map).not.toHaveBeenCalled();
+    expect(notices()).toContain("不证明语义等价"); expect(notices()).toContain("只影响阅读");
+    const whitespace = host.querySelector<HTMLSelectElement>('select[aria-label="空白规则"]')!;
+    await act(async () => { whitespace.value = "ignore"; whitespace.dispatchEvent(new Event("change", { bubbles: true })); }); await flush();
+    expect((buttons("选行 / 拆块")[0] as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+it("已暂存视图按单侧选择预览取消暂存，并发送 linesUnstage", async () => {
+  await mount(); await click([...host.querySelectorAll('.scope')].find(b => b.textContent === "已暂存"));
+  await click(host.querySelector('.file[aria-label="a.txt"]')); await click(buttons("拆分 / 选行…")[1]);
+  await click(host.querySelector('input[aria-label="新行 6"]'));
+  await click(buttons("预览取消暂存选区")[0]);
+  expect(bridge.preview).toHaveBeenCalledWith("a", "staged", expect.objectContaining({ selections: [{ hunk: gitMap().hunks[1], oldLines: [], newLines: [0] }] }));
+  expect(bridge.operation).not.toHaveBeenCalled();
+  await click(buttons("确认取消暂存选区")[0]);
+  expect(bridge.operation).toHaveBeenCalledWith("a", "staged", expect.any(String), expect.objectContaining({ kind: "linesUnstage", previewDigest: "preview-digest" }));
+});
+
+it("读取行映射失败时说明原因，不能无限显示载入中", async () => {
+  bridge.map.mockRejectedValue("Git 原始差异读取失败");
+  await mount(); await click(buttons("选行 / 拆块")[0]);
+  expect(host.querySelector('.fine-diff-panel')?.textContent).toContain("Git 原始差异读取失败");
+  expect(host.querySelector('.fine-diff-panel')?.textContent).not.toContain("正在核验");
+});
+
+it("后端报告 clean filter 无法映射时禁用行操作，保留既有整块操作", async () => {
+  bridge.map.mockResolvedValue(gitMap({ lineBlocked: "clean filter 无法准确映射" }));
+  await mount(); await click(buttons("选行 / 拆块")[0]);
+  expect(host.querySelector('.fine-diff-panel')?.textContent).toContain("clean filter 无法准确映射");
+  expect(host.querySelectorAll('.fine-diff-panel input')).toHaveLength(0);
+  expect(buttons("暂存此块")).toHaveLength(2);
+  expect(bridge.preview).not.toHaveBeenCalled(); expect(bridge.operation).not.toHaveBeenCalled();
 });

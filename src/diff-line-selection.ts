@@ -72,7 +72,7 @@ export function lineAtNode(entry: LineSelectionView, node: Node, offset = 0): Di
   return { side: side === "left" ? "a" : "b", line: view.state.doc.lineAt(position).number };
 }
 
-export function installLineSelection(entries: LineSelectionView[], onSelect: (selection: DiffLineSelection) => void) {
+export function installLineSelection(entries: LineSelectionView[], onSelect: (selection: DiffLineSelection) => void, onChangeSelect?: (selection: DiffLineSelection, range: boolean) => void) {
   let last = "";
   const selectNode = (node: Node, offset = 0) => {
     const entry = entries.find(entry => entry.view.contentDOM.contains(node));
@@ -84,6 +84,11 @@ export function installLineSelection(entries: LineSelectionView[], onSelect: (se
   };
   const pointer = (event: PointerEvent) => {
     if (event.button !== 0 || !(event.target instanceof Node)) return;
+    if ((event.ctrlKey || event.metaKey || event.shiftKey) && onChangeSelect) {
+      const entry = entries.find(entry => entry.view.contentDOM.contains(event.target as Node));
+      const line = entry ? lineAtNode(entry, event.target) : null;
+      if (line) onChangeSelect(line, event.shiftKey);
+    }
     const selection = globalThis.getSelection();
     if (selection && !selection.isCollapsed && selection.focusNode && entries.some(entry => entry.view.contentDOM.contains(selection.focusNode))) selectNode(selection.focusNode, selection.focusOffset);
     else selectNode(event.target);

@@ -442,3 +442,189 @@ fn b15_discard_keeps_other_bytes_under_autocrlf() {
         assert_eq!(fs::read_to_string(p.join(path)).unwrap(), expected, "{path}：只还原目标块，其余字节（含换行）不变");
     }
 }
+// 拓展-01 / #24：真实 Git 行选区验收，复用同一 OperationRunner 和状态指纹。
+use super::hunk::{LineSelection, LineSelectionRequest};
+
+fn line_request(h: &Harness, scope: CompareScope, path: &str, choices: &[(usize, Vec<usize>, Vec<usize>)]) -> LineSelectionRequest {
+    let snapshot = h.adapter.snapshot_for_scope("lines".into(), scope).unwrap();
+    let map = h.adapter.hunk_map(scope, &snapshot.revision, &id(path)).unwrap();
+    assert!(map.blocked.is_none(), "{:?}", map.blocked);
+    LineSelectionRequest { path_id: id(path), content_ids: map.content_ids, expected_revision: snapshot.revision,
+        selections: choices.iter().map(|(i, old, new)| LineSelection { hunk: map.hunks[*i].clone(), old_lines: old.clone(), new_lines: new.clone() }).collect() }
+}
+fn apply_lines(h: &Harness, scope: CompareScope, selection: LineSelectionRequest) -> OperationOutcome {
+    let preview = h.adapter.preview_lines(scope, &selection).unwrap();
+    // 真实 IPC 形状经 serde 解码，覆盖 camelCase 契约。
+    let request = serde_json::from_value(serde_json::json!({
+        "kind": if scope == CompareScope::Staged { "linesUnstage" } else { "linesStage" },
+        "selection": selection, "previewDigest": preview.digest,
+    })).unwrap();
+    h.run(request, scope).unwrap()
+}
+
+#[test]
+fn lines_mixed_hunk_stages_only_target_and_unstages_inverse() {
+    let dir = init(); let p = dir.path();
+    write(p, "f.txt", b"head\nfeature old\ndebug old\ntail\n"); commit_all(p);
+    let edited = b"head\nfeature new\ndebug new\ntail\n";
+    write(p, "f.txt", edited);
+    let h = Harness::new(p);
+    let selection = line_request(&h, CompareScope::Unstaged, "f.txt", &[(0, vec![0], vec![0])]);
+    let fp = fingerprint(p);
+    let preview = h.adapter.preview_lines(CompareScope::Unstaged, &selection).unwrap();
+    assert!(preview.patch.contains("-feature old\n+feature new"));
+    assert!(!preview.patch.contains("debug new"));
+    assert_eq!(fingerprint(p), fp, "预览严格只读");
+    let before = diffs(p);
+    let outcome = apply_lines(&h, CompareScope::Unstaged, selection);
+    assert_eq!(outcome.status, OpStatus::Succeeded, "{}", outcome.message);
+    let e = evidence("lines-mixed-hunk-stage", p, before, fp);
+    assert_eq!(e.changed, vec!["index"]);
+    assert_eq!(git_raw(p, &["show", ":f.txt"]), b"head\nfeature new\ndebug old\ntail\n");
+    assert_eq!(bodies(&e.after.1), vec!["-feature old\n+feature new\n"]);
+    assert_eq!(bodies(&e.after.0), vec!["-debug old\n+debug new\n"]);
+    assert_eq!(fs::read(p.join("f.txt")).unwrap(), edited);
+    let selection = line_request(&h, CompareScope::Staged, "f.txt", &[(0, vec![0], vec![0])]);
+    assert_eq!(apply_lines(&h, CompareScope::Staged, selection).status, OpStatus::Succeeded);
+    assert!(diffs(p).1.is_empty());
+    assert_eq!(fs::read(p.join("f.txt")).unwrap(), edited);
+    // 整个混合块都已暂存时，只取消 feature，debug 保持已暂存。
+    git_raw(p, &["add", "f.txt"]);
+    let selection = line_request(&h, CompareScope::Staged, "f.txt", &[(0, vec![0], vec![0])]);
+    assert_eq!(apply_lines(&h, CompareScope::Staged, selection).status, OpStatus::Succeeded);
+    assert_eq!(git_raw(p, &["show", ":f.txt"]), b"head\nfeature old\ndebug new\ntail\n");
+    assert_eq!(bodies(&diffs(p).1), vec!["-debug old\n+debug new\n"]);
+    assert_eq!(bodies(&diffs(p).0), vec!["-feature old\n+feature new\n"]);
+}
+
+#[test]
+fn lines_partial_replacements_have_explicit_independent_sides() {
+    for (scope, old, new, expected) in [
+        (CompareScope::Unstaged, vec![], vec![0], b"head\nold\nnew\ntail\n".as_slice()),
+        (CompareScope::Unstaged, vec![0], vec![], b"head\ntail\n".as_slice()),
+        (CompareScope::Staged, vec![0], vec![], b"head\nold\nnew\ntail\n".as_slice()),
+        (CompareScope::Staged, vec![], vec![0], b"head\ntail\n".as_slice()),
+    ] {
+        let dir = init(); let p = dir.path(); write(p, "f", b"head\nold\ntail\n"); commit_all(p); write(p, "f", b"head\nnew\ntail\n");
+        if scope == CompareScope::Staged { git_raw(p, &["add", "f"]); }
+        let h = Harness::new(p); let selection = line_request(&h, scope, "f", &[(0, old, new)]);
+        let result = apply_lines(&h, scope, selection);
+        assert_eq!(result.status, OpStatus::Succeeded, "{}", result.message);
+        assert_eq!(git_raw(p, &["show", ":f"]), expected);
+        assert_eq!(fs::read(p.join("f")).unwrap(), b"head\nnew\ntail\n");
+    }
+}
+
+#[test]
+fn lines_pure_add_delete_and_adjacent_hunks_use_index_context() {
+    let dir = init(); let p = dir.path(); write(p, "f", b"1\nremove a\nremove b\n4\n5\n6\n7\n8\n9\n"); commit_all(p);
+    write(p, "f", b"1\n4\nadd a\nadd b\n5\n6\nSEVEN\n8\n9\n");
+    let h = Harness::new(p); let map = h.map(CompareScope::Unstaged, "f"); assert_eq!(map.hunks.len(), 3);
+    let selection = line_request(&h, CompareScope::Unstaged, "f", &[(0, vec![1], vec![]), (1, vec![], vec![0]), (2, vec![0], vec![0])]);
+    let result = apply_lines(&h, CompareScope::Unstaged, selection); assert_eq!(result.status, OpStatus::Succeeded, "{}", result.message);
+    assert_eq!(git_raw(p, &["show", ":f"]), b"1\nremove a\n4\nadd a\n5\n6\nSEVEN\n8\n9\n");
+    assert!(diffs(p).0.contains("+add b")); assert!(diffs(p).0.contains("-remove a"));
+}
+
+#[test]
+fn lines_raw_crlf_latin1_bom_and_missing_newline_round_trip() {
+    for (name, before, after, expected) in [
+        ("crlf", b"a\r\nold\r\ndebug\r\nz\r\n".as_slice(), b"a\r\nnew\r\nDEBUG\r\nz\r\n".as_slice(), b"a\r\nnew\r\ndebug\r\nz\r\n".as_slice()),
+        ("latin1", b"a\ncaf\xe9\ndebug\nz\n".as_slice(), b"a\ncaf\xe9 \xa9\nDEBUG\nz\n".as_slice(), b"a\ncaf\xe9 \xa9\ndebug\nz\n".as_slice()),
+        ("bom", b"\xef\xbb\xbfa\nold\ndebug\nz\n".as_slice(), b"\xef\xbb\xbfa\nnew\nDEBUG\nz\n".as_slice(), b"\xef\xbb\xbfa\nnew\ndebug\nz\n".as_slice()),
+        ("tail", b"a\nold\ndebug".as_slice(), b"a\nnew\nDEBUG".as_slice(), b"a\nnew\ndebug".as_slice()),
+    ] {
+        let dir = init(); let p = dir.path(); write(p, name, before); commit_all(p); write(p, name, after);
+        let h = Harness::new(p); let selection = line_request(&h, CompareScope::Unstaged, name, &[(0, vec![0], vec![0])]);
+        let result = apply_lines(&h, CompareScope::Unstaged, selection); assert_eq!(result.status, OpStatus::Succeeded, "{name}: {}", result.message);
+        assert_eq!(git_raw(p, &["show", &format!(":{name}")]), expected, "{name}");
+        let selection = line_request(&h, CompareScope::Staged, name, &[(0, vec![0], vec![0])]);
+        assert_eq!(apply_lines(&h, CompareScope::Staged, selection).status, OpStatus::Succeeded);
+        assert_eq!(git_raw(p, &["show", &format!(":{name}")]), before);
+        assert_eq!(fs::read(p.join(name)).unwrap(), after);
+    }
+    // 末行替换与仅增减末尾换行。
+    for (before, after) in [(b"a\nold".as_slice(), b"a\nnew".as_slice()), (b"a\nold".as_slice(), b"a\nold\n".as_slice())] {
+        let dir = init(); let p = dir.path(); write(p, "f", before); commit_all(p); write(p, "f", after); let h = Harness::new(p);
+        let selection = line_request(&h, CompareScope::Unstaged, "f", &[(0, vec![0], vec![0])]);
+        assert_eq!(apply_lines(&h, CompareScope::Unstaged, selection).status, OpStatus::Succeeded);
+        assert_eq!(git_raw(p, &["show", ":f"]), after);
+    }
+}
+
+#[test]
+fn lines_autocrlf_maps_displayed_worktree_to_clean_git_lines() {
+    let dir = init(); let p = dir.path(); git_raw(p, &["config", "core.autocrlf", "true"]);
+    write(p, "f", b"a\nold\ndebug\nz\n"); commit_all(p); write(p, "f", b"a\r\nnew\r\nDEBUG\r\nz\r\n"); let h = Harness::new(p);
+    let selection = line_request(&h, CompareScope::Unstaged, "f", &[(0, vec![0], vec![0])]);
+    assert_eq!(apply_lines(&h, CompareScope::Unstaged, selection).status, OpStatus::Succeeded);
+    assert_eq!(git_raw(p, &["show", ":f"]), b"a\nnew\ndebug\nz\n");
+    assert_eq!(fs::read(p.join("f")).unwrap(), b"a\r\nnew\r\nDEBUG\r\nz\r\n");
+}
+
+#[test]
+fn lines_reject_stale_revision_content_and_unpreviewed_selection() {
+    for stale in ["revision", "content", "index", "digest", "range"] {
+        let dir = init(); let p = dir.path(); write(p, "f", b"a\nold\nz\n"); write(p, "other", b"x\n"); commit_all(p); write(p, "f", b"a\nnew\nz\n"); let h = Harness::new(p);
+        let mut selection = line_request(&h, CompareScope::Unstaged, "f", &[(0, vec![0], vec![0])]);
+        let mut digest = h.adapter.preview_lines(CompareScope::Unstaged, &selection).unwrap().digest;
+        match stale {
+            "revision" => { write(p, "other", b"y\n"); },
+            "content" => { write(p, "f", b"a\nNEW\nz\n"); },
+            "index" => { git_raw(p, &["add", "f"]); },
+            "digest" => digest = "tampered".into(),
+            _ => selection.selections[0].new_lines = vec![999],
+        }
+        let before = diffs(p); let index = index_entries(p); let bytes = fs::read(p.join("f")).unwrap();
+        let result = h.run(OperationRequest::LinesStage { selection, preview_digest: digest }, CompareScope::Unstaged).unwrap();
+        assert_eq!(result.status, OpStatus::Failed, "{stale}: {}", result.message);
+        assert_eq!(diffs(p), before); assert_eq!(index_entries(p), index); assert_eq!(fs::read(p.join("f")).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn lines_reject_ambiguous_tail_filters_cr_and_external_lock() {
+    let dir = init(); let p = dir.path(); write(p, "f", b"a\nold"); commit_all(p); write(p, "f", b"a\nnew"); let h = Harness::new(p);
+    let selection = line_request(&h, CompareScope::Unstaged, "f", &[(0, vec![], vec![0])]);
+    assert!(h.adapter.preview_lines(CompareScope::Unstaged, &selection).unwrap_err().to_string().contains("无末尾换行"));
+    let selection = line_request(&h, CompareScope::Unstaged, "f", &[(0, vec![0], vec![0])]); let digest = h.adapter.preview_lines(CompareScope::Unstaged, &selection).unwrap().digest;
+    fs::write(p.join(".git/index.lock"), b"external").unwrap(); let fp = fingerprint(p);
+    assert!(matches!(h.run(OperationRequest::LinesStage { selection, preview_digest: digest }, CompareScope::Unstaged), Err(GitError::ExternalLock(_))));
+    assert_eq!(fingerprint(p), fp);
+    fs::remove_file(p.join(".git/index.lock")).unwrap();
+    let dir = init(); let p = dir.path(); write(p, "f", b"a\rold\rz"); commit_all(p); write(p, "f", b"a\rnew\rz"); let h = Harness::new(p);
+    let selection = line_request(&h, CompareScope::Unstaged, "f", &[(0, vec![0], vec![0])]);
+    assert!(h.adapter.preview_lines(CompareScope::Unstaged, &selection).unwrap_err().to_string().contains("CR"));
+    let dir = init(); let p = dir.path(); write(p, ".gitattributes", b"f filter=hash\n"); git_raw(p, &["config", "filter.hash.clean", "git hash-object --stdin"]);
+    write(p, "f", b"a\nold\nz\n"); commit_all(p); write(p, "f", b"a\nnew\nz\n"); let h = Harness::new(p);
+    let selection = line_request(&h, CompareScope::Unstaged, "f", &[(0, vec![0], vec![0])]);
+    assert!(h.adapter.preview_lines(CompareScope::Unstaged, &selection).unwrap_err().to_string().contains("filter"));
+}
+
+#[test]
+fn lines_large_contiguous_replacement_keeps_order_and_small_preview() {
+    let dir = init(); let p = dir.path();
+    let base: String = (0..20_000).map(|i| format!("old {i}\n")).collect();
+    let edited: String = (0..20_000).map(|i| format!("new {i}\n")).collect();
+    write(p, "f", base.as_bytes()); commit_all(p); write(p, "f", edited.as_bytes());
+    let h = Harness::new(p); let start = std::time::Instant::now();
+    let selection = line_request(&h, CompareScope::Unstaged, "f", &[(0, vec![10_000], vec![10_000])]);
+    let preview = h.adapter.preview_lines(CompareScope::Unstaged, &selection).unwrap();
+    assert!(preview.patch.len() < 500, "预览只包含选择与所需上下文");
+    assert_eq!(apply_lines(&h, CompareScope::Unstaged, selection).status, OpStatus::Succeeded);
+    let expected = base.replacen("old 10000\n", "new 10000\n", 1);
+    assert_eq!(git_raw(p, &["show", ":f"]), expected.as_bytes());
+    let elapsed = start.elapsed(); eprintln!("20,000 行混合块映射、两次预览与执行耗时 {elapsed:?}");
+    assert!(elapsed.as_secs() < 15, "行补丁生成应按输入规模增长");
+}
+
+#[test]
+fn lines_force_text_utf16_is_rejected_before_writing() {
+    let dir = init(); let p = dir.path(); write(p, ".gitattributes", b"f diff\n");
+    write(p, "f", b"\xff\xfeo\x00l\x00d\x00\n\x00"); commit_all(p);
+    write(p, "f", b"\xff\xfen\x00e\x00w\x00\n\x00"); let h = Harness::new(p);
+    let selection = line_request(&h, CompareScope::Unstaged, "f", &[(0, vec![0], vec![0])]);
+    let before = fingerprint(p);
+    assert!(h.adapter.preview_lines(CompareScope::Unstaged, &selection).unwrap_err().to_string().contains("NUL"));
+    assert_eq!(fingerprint(p), before);
+}

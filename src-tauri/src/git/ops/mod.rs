@@ -29,7 +29,7 @@ pub use commit::HeadCommitInfo;
 #[cfg_attr(not(feature = "desktop"), allow(unused_imports))]
 pub use discard::{BackupStore, BackupSummary, DiscardPlan};
 #[cfg_attr(not(feature = "desktop"), allow(unused_imports))]
-pub use hunk::HunkMap;
+pub use hunk::{HunkMap, LinePreview, LineSelectionRequest};
 use hunk::HunkAction;
 #[cfg(test)]
 mod hunk_tests;
@@ -87,6 +87,8 @@ pub enum OperationRequest {
         #[serde(default)]
         confirmed_unrecoverable: bool,
     },
+    LinesStage { selection: LineSelectionRequest, preview_digest: String },
+    LinesUnstage { selection: LineSelectionRequest, preview_digest: String },
     Commit { message: String },
     CommitSelected { message: String, path_ids: Vec<String>, expected_revision: String },
     UndoCommit { expected_head: String },
@@ -196,6 +198,8 @@ impl OperationRequest {
             Self::HunkStage { .. } => "hunkStage",
             Self::HunkUnstage { .. } => "hunkUnstage",
             Self::HunkDiscard { .. } => "hunkDiscard",
+            Self::LinesStage { .. } => "linesStage",
+            Self::LinesUnstage { .. } => "linesUnstage",
             Self::Commit { .. } => "commit",
             Self::CommitSelected { .. } => "commit",
             Self::UndoCommit { .. } => "undoCommit",
@@ -466,6 +470,8 @@ impl GitAdapter {
             OperationRequest::HunkStage { path_id, content_ids, hunk } => self.op_hunk(HunkAction::Stage, path_id, content_ids, hunk, false, ctx),
             OperationRequest::HunkUnstage { path_id, content_ids, hunk } => self.op_hunk(HunkAction::Unstage, path_id, content_ids, hunk, false, ctx),
             OperationRequest::HunkDiscard { path_id, content_ids, hunk, confirmed_unrecoverable } => self.op_hunk(HunkAction::Discard, path_id, content_ids, hunk, *confirmed_unrecoverable, ctx),
+            OperationRequest::LinesStage { selection, preview_digest } => self.op_lines(CompareScope::Unstaged, selection, preview_digest, ctx),
+            OperationRequest::LinesUnstage { selection, preview_digest } => self.op_lines(CompareScope::Staged, selection, preview_digest, ctx),
             OperationRequest::Commit { message } => self.op_commit(message, ctx),
             OperationRequest::CommitSelected { message, path_ids, expected_revision } => self.op_commit_selected(message, path_ids, expected_revision, ctx),
             OperationRequest::UndoCommit { expected_head } => self.op_undo_commit(expected_head, ctx),

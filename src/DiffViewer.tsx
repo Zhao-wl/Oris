@@ -27,8 +27,13 @@ import { collectQueryMatches, createReadingQuery, type ReadingSearchOptions, typ
 import type { DiffDocument } from "./types";
 import type { HunkItem } from "./hunk-model";
 import { highlightLineSelection, installLineSelection, lineSelectionMarker, type DiffLineSelection } from "./diff-line-selection";
+import { applyFineMarkers, fineMarkers } from "./fine-diff-decorations";
+import type { FineLineNote } from "./fine-diff-model";
+import "./fine-diff.css";
 import { installGoToLine } from "./go-to-line";
 
+const EMPTY_CHANGE_SELECTION: DiffLineSelection[] = [];
+const EMPTY_FINE_NOTES: FineLineNote[] = [];
 const DIFF_SEPARATOR_WIDTH = 56;
 const DIFF_RAIL_WIDTH = 24;
 const DIFF_PANE_MIN_WIDTH = 180;
@@ -197,7 +202,7 @@ class CollapsedLinesWidget extends WidgetType {
 
 /** 块操作（V2-05）：显示在差异块上方的块标题行，操作用完整文字；中央连接带保持纯阅读语义。 */
 export interface HunkHeaderAction {
-  action: "stage" | "unstage" | "discard";
+  action: "stage" | "unstage" | "discard" | "split";
   label: string;
   danger?: boolean;
 }
@@ -2019,16 +2024,26 @@ interface Props {
   /** 块操作标题行（V2-05）；为 null 时不显示（“全部”范围、历史阅读、不可操作的文件）。 */
   hunkHeaders?: HunkHeaders | null;
   onLineSelect?(selection: DiffLineSelection): void;
+  onChangeSelect?(selection: DiffLineSelection, range: boolean): void;
+  changeSelection?: DiffLineSelection[];
+  fineNotes?: FineLineNote[];
+  showMoves?: boolean;
+  dimFormat?: boolean;
   selectedLine?: DiffLineSelection | null;
 }
 
 const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
-  { readingKey, presentation, left, right, document, mode, highlight, collapsed, wrap, alignChanges, onPositionChange, onSplitLayoutChange, hunkHeaders = null, onLineSelect, selectedLine = null },
+  { readingKey, presentation, left, right, document, mode, highlight, collapsed, wrap, alignChanges, onPositionChange, onSplitLayoutChange, hunkHeaders = null, onLineSelect, selectedLine = null, onChangeSelect, changeSelection = EMPTY_CHANGE_SELECTION, fineNotes = EMPTY_FINE_NOTES, showMoves = false, dimFormat = false },
   ref
 ) {
   const host = useRef<HTMLDivElement>(null);
   const lineSelect = useRef(onLineSelect);
   lineSelect.current = onLineSelect;
+  const changeSelect = useRef(onChangeSelect);
+  changeSelect.current = onChangeSelect;
+  const fineState = useRef({ changeSelection, fineNotes, showMoves, dimFormat });
+  fineState.current = { changeSelection, fineNotes, showMoves, dimFormat };
+  const refreshDeletedMarkers = useRef(() => {});
   const hunkRef = useRef(hunkHeaders);
   hunkRef.current = hunkHeaders;
   /** 把块标题行放到右侧（并排）或统一视图编辑器中每个差异块的起点之前。 */
@@ -2133,6 +2148,8 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
       searchHighlights,
       selectionHighlights,
       lineSelectionMarker,
+      fineMarkers,
+      EditorView.updateListener.of(update => { if (update.viewportChanged || update.docChanged) queueMicrotask(() => refreshDeletedMarkers.current()); }),
       EditorView.editable.of(false),
       EditorView.contentAttributes.of({ tabindex: "0" }),
       EditorView.domEventHandlers({
@@ -2239,7 +2256,7 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
       });
     }
     readingSearch = installReadingSearch(host.current, searchViews, split ? (onComplete) => split?.settleViewport(onComplete) : undefined);
-    const removeLineSelection = installLineSelection(searchViews, selection => lineSelect.current?.(selection));
+    const removeLineSelection = installLineSelection(searchViews, selection => lineSelect.current?.(selection), (selection, range) => changeSelect.current?.(selection, range));
     const removeGoToLine = installGoToLine(host.current, searchViews, (entry, line) => {
       if (split) split.revealLine(entry.side === "left" ? "a" : "b", line);
       else if (unified) expandUnified(unified, line);
@@ -2274,6 +2291,15 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
       : current.unified ? [{ view: current.unified, side: "unified" as const }] : [];
     highlightLineSelection(entries, selectedLine);
   }, [selectedLine, layoutKey, document, mode, presentation]);
+  useEffect(() => {
+    const current = runtime.current;
+    const entries = current.split ? [{ view: current.split.view.a, side: "left" as const }, { view: current.split.view.b, side: "right" as const }]
+      : current.unified ? [{ view: current.unified, side: "unified" as const }] : [];
+    const state = fineState.current;
+    refreshDeletedMarkers.current = applyFineMarkers(entries, state.changeSelection, state.fineNotes, state.showMoves, state.dimFormat);
+    refreshDeletedMarkers.current();
+    return () => { refreshDeletedMarkers.current = () => {}; };
+  }, [changeSelection, fineNotes, showMoves, dimFormat, document, mode, layoutKey, highlight, collapsed, wrap, alignChanges, presentation]);
   // 指针移入或键盘聚焦阅读器时按需读取块映射。
   useEffect(() => {
     const element = host.current;

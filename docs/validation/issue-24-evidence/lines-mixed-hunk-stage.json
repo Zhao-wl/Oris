@@ -1,0 +1,24 @@
+{
+  "changedGroups": [
+    "index"
+  ],
+  "fingerprintAfter": {
+    "config": "3e98bee1a7dcca33cd631a2f3243bdad12943da1c7e15569a0e1c3407d816338",
+    "index": "8c2ff0637b6f16f80e7a208edafb0c52ae8fe15de8885ac207722df7d614421c",
+    "refs": "a9680f1b91e9b54b1e1ebc7d215a2d305315178521951e8bdd875f9b76fef930",
+    "stash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "worktree": "f6cbc510449c2b5d5b431c68b3e8344150defcfd8c2945558046705099ced911"
+  },
+  "fingerprintBefore": {
+    "config": "3e98bee1a7dcca33cd631a2f3243bdad12943da1c7e15569a0e1c3407d816338",
+    "index": "17ccd419022c4e880542df6f2fc7cc167c37c836bf36eab209a5f2fd9f4504b8",
+    "refs": "a9680f1b91e9b54b1e1ebc7d215a2d305315178521951e8bdd875f9b76fef930",
+    "stash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "worktree": "f6cbc510449c2b5d5b431c68b3e8344150defcfd8c2945558046705099ced911"
+  },
+  "gitDiffAfter": "diff --git a/f.txt b/f.txt\nindex 3cab60f..9febd88 100644\n--- a/f.txt\n+++ b/f.txt\n@@ -3 +3 @@ feature new\n-debug old\n+debug new\n",
+  "gitDiffBefore": "diff --git a/f.txt b/f.txt\nindex d2b09f6..9febd88 100644\n--- a/f.txt\n+++ b/f.txt\n@@ -2,2 +2,2 @@ head\n-feature old\n-debug old\n+feature new\n+debug new\n",
+  "gitDiffCachedAfter": "diff --git a/f.txt b/f.txt\nindex d2b09f6..3cab60f 100644\n--- a/f.txt\n+++ b/f.txt\n@@ -2 +2 @@ head\n-feature old\n+feature new\n",
+  "gitDiffCachedBefore": "",
+  "scenario": "lines-mixed-hunk-stage"
+}

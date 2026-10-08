@@ -1,0 +1,11 @@
+.fine-diff-panel { border-bottom: 1px solid var(--border); padding: 6px 12px; flex-shrink: 0; max-height: 40vh; overflow: auto; font-size: 12px; }
+.fine-diff-actions { display: flex; align-items: center; gap: 8px; }
+.fine-diff-panel p { margin: 6px 0; }
+.fine-diff-groups { max-height: 180px; overflow: auto; }
+.fine-diff-unit { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; padding: 3px 0; }
+.fine-diff-unit label { display: flex; align-items: baseline; gap: 6px; flex: 1; min-width: 240px; }
+.fine-diff-unit code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.fine-diff-preview pre { max-height: 160px; overflow: auto; white-space: pre-wrap; }
+.cm-line.oris-change-selected, .cm-deletedLine.oris-change-selected, del.cm-deletedText.oris-change-selected { box-shadow: inset 3px 0 var(--focus, #579afa); outline: 1px solid var(--focus, #579afa); outline-offset: -1px; }
+.cm-line.oris-move-candidate, .cm-deletedLine.oris-move-candidate, del.cm-deletedText.oris-move-candidate { border-inline-end: 3px solid var(--focus, #579afa); }
+.oris-format-noise { opacity: .55; }

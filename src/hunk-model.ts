@@ -65,3 +65,12 @@ export function latin1View(side: ContentPair["left"]): string | null {
   for (let i = 0; i < bytes.length; i += 8192) out += String.fromCharCode(...bytes.subarray(i, i + 8192));
   return out;
 }
+
+/** 行操作还要求显示行与 Git 原始行一致；块丢弃的既有回退不受此限制影响。 */
+export function lineLevelBlock(pair: ContentPair, map: HunkMap | null): string | null {
+  for (const side of [pair.left, pair.right]) {
+    if (side.encoding.startsWith("utf-16")) return "UTF-16 无法准确映射到 Git 原始行，不提供行操作";
+    if (/\r(?!\n)/u.test(side.text ?? side.latin1 ?? "")) return "单独 CR 换行无法映射 Git 的 LF 行边界，请使用文件级操作";
+  }
+  return map?.lineBlocked ?? null;
+}
