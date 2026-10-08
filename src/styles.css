@@ -353,7 +353,8 @@ button.danger:not(:disabled):hover { color:var(--error, #ff7b72); border-color:v
 .ai-detected, .ai-add { display:flex; flex-wrap:wrap; gap:6px; }
 .ai-settings .settings-row input, .ai-settings .settings-row select { min-width:180px; max-width:100%; }
 .ai-profile-list { display:flex; flex-direction:column; gap:7px; }
-.ai-profile-card { display:flex; align-items:center; gap:7px; padding:8px; border:1px solid var(--border); border-radius:6px; background:var(--bg); }
+.ai-profile-card { display:flex; flex-wrap:wrap; align-items:center; gap:7px; padding:8px; border:1px solid var(--border); border-radius:6px; background:var(--bg); }
+.ai-profile-item > p { margin:5px 8px 0; overflow-wrap:anywhere; }
 .ai-profile-card.editing { border-color:var(--blue); }
 .ai-profile-edit { display:flex; flex:1; min-width:0; flex-direction:column; align-items:flex-start; gap:2px; text-align:left; border:0; background:transparent; }
 .ai-profile-edit span { color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%; }
