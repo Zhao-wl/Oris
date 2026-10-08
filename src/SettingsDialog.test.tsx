@@ -9,6 +9,9 @@ vi.mock("./api", () => ({ validateGit: (...args: unknown[]) => validateGit(...ar
 import SettingsDialog from "./SettingsDialog";
 import { createSettingsRegistry, DEFAULT_SCHEMES, SettingsStore } from "./settings";
 import { schemeIndex } from "./themes/runtime";
+import { updater } from "./update-model";
+
+const initialUpdateState = updater.store.get();
 
 let root: Root;
 let host: HTMLDivElement;
@@ -26,7 +29,7 @@ beforeEach(() => {
   onClose = vi.fn<() => void>();
   validateGit.mockReset();
 });
-afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
+afterEach(async () => { await act(async () => root.unmount()); host.remove(); updater.store.set(initialUpdateState); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 it("lists all 21 schemes (V2-D31), tags defaults and high contrast, and applies selections immediately", async () => {
   await render();
@@ -79,4 +82,28 @@ it("closes on Escape and on overlay click", async () => {
   expect(onClose).toHaveBeenCalledTimes(1);
   await act(async () => { host.querySelector(".settings-overlay")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); });
   expect(onClose).toHaveBeenCalledTimes(2);
+});
+
+it("explains macOS manual updates and opens the detected release without claiming automatic installation", async () => {
+  vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
+  const openDownloadPage = vi.spyOn(updater, "openDownloadPage").mockResolvedValue();
+  updater.store.set({ currentVersion: "0.8.2", checkedAt: 42, upToDate: false,
+    phase: { kind: "manual", info: { version: "0.8.3", notes: "Codex 检测修复", date: "2026-10-08" } } });
+  await render();
+  await click(button("更新"));
+  expect(host.textContent).toContain("发现新版本 0.8.3");
+  expect(host.textContent).toContain("有新版本时提示下载");
+  expect(host.textContent).toContain("下载 DMG 后退出 Oris");
+  expect(host.textContent).not.toMatch(/当前不是安装版|安装前校验签名|完成后自动重启/);
+  await click(button("打开下载页"));
+  expect(openDownloadPage).toHaveBeenCalledOnce();
+});
+
+it("keeps the Windows signed automatic update explanation", async () => {
+  vi.spyOn(navigator, "platform", "get").mockReturnValue("Win32");
+  await render();
+  await click(button("更新"));
+  expect(host.textContent).toContain("有新版本时在后台下载");
+  expect(host.textContent).toContain("安装前校验签名");
+  expect(host.textContent).toContain("完成后自动重启");
 });

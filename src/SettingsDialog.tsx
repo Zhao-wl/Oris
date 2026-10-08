@@ -5,7 +5,7 @@ import { schemeIndex, type SchemeIndexEntry } from "./themes/runtime";
 import notices from "./themes/generated/NOTICES.txt?raw";
 import { detectAiTools, listAiModels, setAiKey, testAiConnection, type ToolCandidate } from "./ai-api";
 import type { AiProfile } from "./settings";
-import { displayAiShortcut } from "./ai-shortcut";
+import { displayAiShortcut, isMacPlatform } from "./ai-shortcut";
 import { getVersion } from "@tauri-apps/api/app";
 import { useStore } from "./store";
 import { updater } from "./update-model";
@@ -247,13 +247,14 @@ function AiPage({ settings }: { settings: SettingsStore }) {
 }
 
 function UpdatePage({ settings }: { settings: SettingsStore }) {
+  const mac = isMacPlatform();
   const autoCheck = useSettings(settings, (value) => value.update.autoCheck);
   const state = useStore(updater.store, (value) => value);
   const [version, setVersion] = useState<string | null>(null);
   useEffect(() => { getVersion().then(setVersion, () => {}); }, []);
   const { phase } = state;
   const status = phase.kind === "checking" ? "正在检查…"
-    : phase.kind === "manual" ? `发现新版本 ${phase.info.version}。当前不是安装版，无法自动更新，请从下载页获取安装包。`
+    : phase.kind === "manual" ? `发现新版本 ${phase.info.version}。当前版本需要手动更新，请从下载页获取安装包。`
     : phase.kind === "downloading" ? `正在后台下载 ${phase.info.version}…`
     : phase.kind === "ready" ? `${phase.info.version} 已下载，点击标题栏的「重启以更新」完成安装。`
     : phase.kind === "installing" ? "正在启动安装程序…"
@@ -267,7 +268,7 @@ function UpdatePage({ settings }: { settings: SettingsStore }) {
     <div className="settings-row">
       <label htmlFor="settings-update-auto">自动检查更新</label>
       <input id="settings-update-auto" type="checkbox" checked={autoCheck} onChange={(event) => settings.update("update", "autoCheck", event.target.checked)} />
-      <small>启动后与每 4 小时检查一次；有新版本时在后台下载</small>
+      <small>{mac ? "启动后与每 4 小时检查一次；有新版本时提示下载" : "启动后与每 4 小时检查一次；有新版本时在后台下载"}</small>
     </div>
     <div className="settings-row">
       <button type="button" disabled={["checking", "downloading", "installing"].includes(phase.kind)} onClick={() => void updater.check({ manual: true })}>检查更新</button>
@@ -276,7 +277,9 @@ function UpdatePage({ settings }: { settings: SettingsStore }) {
     {status && <p className="settings-note" role="status">{status}</p>}
     {phase.kind === "failed" && <p className="settings-error" role="alert">{phase.message}</p>}
     {"info" in phase && phase.info?.notes && <pre className="update-notes">{phase.info.notes}</pre>}
-    <p className="settings-note">更新包来自 GitHub Releases，安装前校验签名；安装时 Oris 会退出并在完成后自动重启。</p>
+    <p className="settings-note">{mac
+      ? "更新包来自 GitHub Releases。macOS 当前使用手动安装包；下载 DMG 后退出 Oris，将 Oris.app 拖入“应用程序”替换旧版。"
+      : "更新包来自 GitHub Releases，安装前校验签名；安装时 Oris 会退出并在完成后自动重启。"}</p>
   </div>;
 }
 
