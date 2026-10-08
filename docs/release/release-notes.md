@@ -1,6 +1,6 @@
 # Oris 发行说明（v0.8.0）
 
-本次版本：**0.8.0（Windows x64）**，更新内容见 [0.8.0 更新日志](v0.8.0.md)。发布完成后由 [GitHub Release](https://github.com/Zhao-wl/Oris/releases/tag/v0.8.0) 提供签名安装包与自动更新清单。NSIS 安装包具备自动更新签名，尚无 Windows Authenticode 代码签名；macOS 签名 / 公证、最终版本复测、真实 Windows 前后台焦点切换及 AI 真实模型兼容性仍未完成验证。06 整体不因此标记为全部验收通过；历史验收见 [RC 验收结果](../validation/v1-06-rc-results.md)，安装 / 卸载此前已由用户自测。
+本次发布：**[v0.8.0（Windows x64）已公开发布](https://github.com/Zhao-wl/Oris/releases/tag/v0.8.0)**，公开时间为 2026-10-08 14:49（北京时间），tag 指向 `e4e41f8`。更新内容见 [0.8.0 更新日志](v0.8.0.md)，测试、产物哈希与签名核验见 [0.8.0 发布收尾记录](../validation/v0.8.0-release-closeout.md)。安装包、签名和自动更新清单均已上传。NSIS 安装包具备自动更新签名，尚无 Windows Authenticode 代码签名；macOS 签名 / 公证、最终版本复测、真实 Windows 前后台焦点切换及 AI 真实模型兼容性仍未完成验证。06 整体不因此标记为全部验收通过；历史验收见 [RC 验收结果](../validation/v1-06-rc-results.md)，安装 / 卸载此前已由用户自测。
 
 历史发布：v0.7.0 于 2026-10-08 10:29（北京时间）重新公开，tag 指向 `5280875`，更新与产物核验见 [0.7.0 更新日志](v0.7.0.md) 和 [发布收尾记录](../validation/v0.7.0-release-closeout.md)。v0.6.0 于 2026-09-30 03:42 UTC 发布（tag `9f2bba7`），v0.5.0 于同日 01:19 UTC 发布（tag `8dc620b`），均附 NSIS 安装包与更新签名。
 
@@ -58,7 +58,7 @@
 
 | 平台 | 架构 | 安装包 | 状态 |
 | --- | --- | --- | --- |
-| Windows 11 | x64 | NSIS 安装程序（`Oris_0.8.0_x64-setup.exe`） | 本次发布目标；具备自动更新签名，尚无 Authenticode 代码签名 |
+| Windows 11 | x64 | NSIS 安装程序（`Oris_0.8.0_x64-setup.exe`） | 已公开发布；具备自动更新签名，尚无 Authenticode 代码签名 |
 | macOS 14 及以上 | Apple Silicon（arm64，M1 起） | DMG | 本轮未构建；用户按 [macOS 交接清单](macos-checklist.md) 构建与复测 |
 
 不提供 Intel Mac、Universal、Windows ARM64 原生包。
