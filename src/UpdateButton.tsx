@@ -37,7 +37,7 @@ export default function UpdateButton({ autoCheck, busyReason, updater = defaultU
   let button: ReactNode = null;
   switch (phase.kind) {
     case "manual":
-      button = <button type="button" className="update-button" title={`${describe(phase.info)}\n\n当前不是安装版，点击打开下载页`} onClick={() => void updater.openDownloadPage()}>新版本 {phase.info.version}</button>;
+      button = <button type="button" className="update-button" title={`${describe(phase.info)}\n\n当前版本需要手动更新，点击打开下载页`} onClick={() => void updater.openDownloadPage()}>新版本 {phase.info.version}</button>;
       break;
     case "downloading": {
       const value = percent(phase);

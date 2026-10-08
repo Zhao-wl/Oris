@@ -1,6 +1,6 @@
 # 自动更新与发版
 
-Oris 使用 Tauri 官方 `tauri-plugin-updater`，交互参考 VS Code：发现新版本后在后台下载，标题栏（「✦ AI」左侧）常驻显示「重启以更新」，点击后安装并重启。
+Oris 在 Windows 上使用 Tauri 官方 `tauri-plugin-updater`，交互参考 VS Code：发现新版本后在后台下载，标题栏（「✦ AI」左侧）常驻显示「重启以更新」，点击后安装并重启。macOS 检查正式 DMG 版本并提供手动下载入口。
 
 ## 客户端行为
 
@@ -12,10 +12,14 @@ Oris 使用 Tauri 官方 `tauri-plugin-updater`，交互参考 VS Code：发现�
 | 安装中 | `正在更新…` | Windows 以 NSIS passive 模式安装（只显示进度），完成后自动启动新版本 |
 | 失败 | `更新失败` | 悬停显示原因，点击重试对应阶段 |
 | 免安装版 | `新版本 x.y.z` | 当前 exe 旁没有 `uninstall.exe`（例如直接运行 `target\release\oris.exe`）时不能原地替换，点击打开 Release 页面 |
+| macOS 手动安装包 | `新版本 x.y.z` | 检查对应架构的正式 DMG，点击打开该版本 Release 页面后手动安装 |
 
 - 检查时机：启动 5 秒后一次，之后每 4 小时一次；可在「设置 → 更新」关闭自动检查，或手动「检查更新」。开发构建（debug）不做原地安装。
-- 更新源：`https://github.com/Zhao-wl/Oris/releases/latest/download/latest.json`。网络请求和签名校验都在 Rust 端完成，前端 CSP 不变。
-- 只有**通过安装包安装**的实例能自动更新；第一个带更新功能的版本需要手动安装一次。
+- Windows 更新源：`https://github.com/Zhao-wl/Oris/releases/latest/download/latest.json`。网络请求和签名校验都在 Rust 端完成，前端 CSP 不变。
+- Windows 只有**通过安装包安装**的实例能自动更新；第一个带更新功能的版本需要手动安装一次。
+- macOS 当前仅发布手动 DMG，不使用 Windows 的 `latest.json`。客户端通过 GitHub Releases API 检查发布列表，按语义版本选择高于当前版本、已经上传对应架构（`aarch64` / `x86_64` 或 `universal`）DMG 的最高正式版本，跳过草稿与预发布。即使 macOS Release 没有被标为 GitHub `latest`，也能被发现。
+- macOS 有新版本时，标题栏与设置页提供下载入口，打开检查到的具体版本页面。下载 DMG 后退出 Oris，将 Oris.app 拖入“应用程序”替换旧版；不后台下载或原地安装，不宣称有 Tauri 更新签名校验。
+- GitHub API 限流、网络或响应格式异常仍视为检查失败，不显示“已是最新”。macOS 检查每页 100 条，最多 10 页；达到上限仍未读完时报告未完成检查。
 
 ## 签名密钥
 

@@ -9,7 +9,7 @@ import type { UpdateInfo } from "./update-api";
 export type UpdatePhase =
   | { kind: "idle" }
   | { kind: "checking" }
-  /** 有新版本但不能原地安装（免安装版 / 开发构建），只能打开下载页。 */
+  /** 有新版本但需要手动安装（macOS DMG / 免安装版 / 开发构建），打开对应下载页。 */
   | { kind: "manual"; info: UpdateInfo }
   | { kind: "downloading"; info: UpdateInfo; downloaded: number; total: number | null }
   | { kind: "ready"; info: UpdateInfo }

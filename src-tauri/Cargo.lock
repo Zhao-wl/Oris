@@ -2606,6 +2606,7 @@ dependencies = [
  "notify",
  "notify-debouncer-full",
  "reqwest",
+ "semver",
  "serde",
  "serde_json",
  "sha2",

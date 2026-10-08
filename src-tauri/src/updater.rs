@@ -3,7 +3,9 @@
 use serde::Serialize;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, State};
-use tauri_plugin_updater::{Update, UpdaterExt};
+use tauri_plugin_updater::Update;
+#[cfg(not(target_os = "macos"))]
+use tauri_plugin_updater::UpdaterExt;
 
 /// Release 页面：不能自动安装（免安装版 / 开发构建）时引导用户手动下载。
 pub const RELEASES_PAGE: &str = "https://github.com/Zhao-wl/Oris/releases/latest";
@@ -12,6 +14,8 @@ pub const RELEASES_PAGE: &str = "https://github.com/Zhao-wl/Oris/releases/latest
 pub struct UpdaterState {
     pending: Mutex<Option<Update>>,
     downloaded: Mutex<Option<(String, Vec<u8>)>>,
+    /// macOS 手动更新须打开检查到的具体版本，releases/latest 可能仍指向 Windows 版本。
+    manual_release_page: Mutex<Option<String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -26,7 +30,7 @@ pub struct UpdateInfo {
 #[serde(rename_all = "camelCase")]
 pub struct UpdateCheck {
     pub current_version: String,
-    /// 通过安装包安装的实例才能原地更新；否则只提示并打开 Release 页面。
+    /// 支持原地更新的安装实例才能自动安装；macOS 当前只提供手动 DMG。
     pub installable: bool,
     pub available: Option<UpdateInfo>,
 }
@@ -40,6 +44,7 @@ struct DownloadProgress {
 }
 
 /// NSIS 安装目录中带有 uninstall.exe；直接运行的 target\release\oris.exe 没有，替换它会装出第二份副本。
+#[cfg(not(target_os = "macos"))]
 fn installed_copy() -> bool {
     if cfg!(debug_assertions) {
         return false;
@@ -51,26 +56,41 @@ fn installed_copy() -> bool {
 #[tauri::command]
 pub async fn check_update(app: AppHandle, state: State<'_, UpdaterState>) -> Result<UpdateCheck, String> {
     let current_version = app.package_info().version.to_string();
-    let update = app
-        .updater()
-        .map_err(|e| format!("更新组件不可用：{e}"))?
-        .check()
-        .await
-        .map_err(|e| format!("检查更新失败：{e}"))?;
-    let available = update.as_ref().map(|u| UpdateInfo {
-        version: u.version.clone(),
-        notes: u.body.clone().filter(|s| !s.trim().is_empty()),
-        date: u.date.map(|d| d.date().to_string()),
-    });
-    let mut pending = state.pending.lock().map_err(|_| "更新状态不可用")?;
-    // 新检查到的版本与已下载的不同，丢弃旧的下载。
-    if let Ok(mut downloaded) = state.downloaded.lock() {
-        if downloaded.as_ref().map(|(v, _)| v) != update.as_ref().map(|u| &u.version) {
-            *downloaded = None;
-        }
+    #[cfg(target_os = "macos")]
+    {
+        let update = crate::release_updates::check_macos_release(&app.package_info().version, std::env::consts::ARCH)
+            .await.map_err(|e| format!("检查更新失败：{e}"))?;
+        let available = update.as_ref().map(|u| UpdateInfo {
+            version: u.version.to_string(), notes: u.notes.clone(), date: u.date.clone(),
+        });
+        *state.manual_release_page.lock().map_err(|_| "更新状态不可用")? = update.map(|u| u.release_page);
+        *state.pending.lock().map_err(|_| "更新状态不可用")? = None;
+        *state.downloaded.lock().map_err(|_| "更新状态不可用")? = None;
+        Ok(UpdateCheck { current_version, installable: false, available })
     }
-    *pending = update;
-    Ok(UpdateCheck { current_version, installable: installed_copy(), available })
+    #[cfg(not(target_os = "macos"))]
+    {
+        let update = app
+            .updater()
+            .map_err(|e| format!("更新组件不可用：{e}"))?
+            .check()
+            .await
+            .map_err(|e| format!("检查更新失败：{e}"))?;
+        let available = update.as_ref().map(|u| UpdateInfo {
+            version: u.version.clone(),
+            notes: u.body.clone().filter(|s| !s.trim().is_empty()),
+            date: u.date.map(|d| d.date().to_string()),
+        });
+        let mut pending = state.pending.lock().map_err(|_| "更新状态不可用")?;
+        // 新检查到的版本与已下载的不同，丢弃旧的下载。
+        if let Ok(mut downloaded) = state.downloaded.lock() {
+            if downloaded.as_ref().map(|(v, _)| v) != update.as_ref().map(|u| &u.version) {
+                *downloaded = None;
+            }
+        }
+        *pending = update;
+        Ok(UpdateCheck { current_version, installable: installed_copy(), available })
+    }
 }
 
 /// 下载最近一次检查到的版本；进度通过 `update-progress` 事件推送。签名在下载完成时由插件校验。
@@ -114,14 +134,16 @@ pub fn install_update(app: AppHandle, state: State<'_, UpdaterState>) -> Result<
     app.restart()
 }
 
-/// 用系统默认浏览器打开 Release 页面（地址固定，不接受前端传入的 URL）。
+/// 用系统默认浏览器打开 Release 页面（地址由后端固定仓库生成，不接受前端传入的 URL）。
 #[tauri::command]
-pub fn open_releases_page() -> Result<(), String> {
+pub fn open_releases_page(state: State<'_, UpdaterState>) -> Result<(), String> {
+    let release_page = state.manual_release_page.lock().map_err(|_| "更新状态不可用")?
+        .clone().unwrap_or_else(|| RELEASES_PAGE.into());
     #[cfg(windows)]
-    let result = std::process::Command::new("explorer").arg(RELEASES_PAGE).spawn();
+    let result = std::process::Command::new("explorer").arg(&release_page).spawn();
     #[cfg(target_os = "macos")]
-    let result = std::process::Command::new("open").arg(RELEASES_PAGE).spawn();
+    let result = std::process::Command::new("open").arg(&release_page).spawn();
     #[cfg(all(unix, not(target_os = "macos")))]
-    let result = std::process::Command::new("xdg-open").arg(RELEASES_PAGE).spawn();
+    let result = std::process::Command::new("xdg-open").arg(&release_page).spawn();
     result.map(|_| ()).map_err(|e| format!("无法打开浏览器：{e}"))
 }
