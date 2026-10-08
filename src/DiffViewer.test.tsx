@@ -52,11 +52,11 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function render(file: { left: string; right: string }, document: DiffDocument, readingKey: string, hunkHeaders: HunkHeaders | null) {
+function render(file: { left: string; right: string }, document: DiffDocument, readingKey: string, hunkHeaders: HunkHeaders | null, mode: "split" | "unified" = "split") {
   const ref = createRef<DiffViewerHandle>();
   act(() => root.render(
     <DiffViewer ref={ref} readingKey={readingKey} presentation={{ kind: "compare" }} left={file.left} right={file.right} document={document}
-      mode="split" highlight="words" collapsed={false} wrap={false} alignChanges={false} hunkHeaders={hunkHeaders}
+      mode={mode} highlight="words" collapsed={false} wrap={false} alignChanges={false} hunkHeaders={hunkHeaders}
       onPositionChange={onPositionChange} onSplitLayoutChange={onSplitLayoutChange} />
   ));
   return ref;
@@ -102,7 +102,7 @@ describe("DiffViewer 已缓存文件切换", () => {
     expect(host.querySelectorAll(".hunk-title").length).toBe(0);
   });
 
-  it("切回同一文件时编辑器滚动从顶部开始、块导航正常", () => {
+  it("切回同一文件时恢复阅读位置、块导航正常（jsdom 无真实布局）", () => {
     render(fileA, docA, "repo:unstaged:a", null);
     render(fileB, docB, "repo:unstaged:b", null);
     const ref = render(fileA, docA, "repo:unstaged:a", null);
@@ -150,6 +150,99 @@ describe("DiffViewer 已缓存文件切换", () => {
     } finally {
       Object.defineProperty(Element.prototype, "clientHeight", clientHeight);
     }
+  });
+});
+
+describe("DiffViewer 新文件默认定位", () => {
+  let frames: Map<number, FrameRequestCallback>;
+  beforeEach(() => {
+    frames = new Map();
+    let id = 0;
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { frames.set(++id, callback); return id; });
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id));
+  });
+  const flushFrames = () => act(() => {
+    const pending = [...frames.values()];
+    frames.clear();
+    pending.forEach(callback => callback(0));
+  });
+  const mockGeometry = () => {
+    // 只验证定位请求与滚动计算；这些模拟尺寸不代表真实 Windows GUI 验证。
+    for (const view of editors()) {
+      Object.defineProperty(view.scrollDOM, "scrollHeight", { configurable: true, value: 5000 });
+      Object.defineProperty(view.scrollDOM, "clientHeight", { configurable: true, value: 300 });
+      const original = view.lineBlockAt.bind(view);
+      vi.spyOn(view, "lineBlockAt").mockImplementation(pos => {
+        const block = original(pos);
+        const top = (view.state.doc.lineAt(pos).number - 1) * 20;
+        return Object.create(block, { top: { value: top }, height: { value: 20 } });
+      });
+      vi.spyOn(view, "lineBlockAtHeight").mockImplementation(height => {
+        const line = view.state.doc.line(Math.min(view.state.doc.lines, Math.max(1, Math.floor(height / 20) + 1)));
+        return view.lineBlockAt(line.from);
+      });
+    }
+  };
+  const distant = { left: lines(200), right: lines(200, (i, l) => i === 150 || i === 180 ? `${l} // changed` : l) };
+  const distantDoc = documentFor(distant.left, distant.right, "distant");
+
+  it("首次打开及切到另一个新文件时，两侧滚到第一处差异且不改变 DOM 焦点", () => {
+    const button = document.createElement("button");
+    render(distant, distantDoc, "repo:distant", null);
+    host.append(button);
+    button.focus();
+    mockGeometry();
+    flushFrames();
+    for (const view of editors()) expect(view.scrollDOM.scrollTop).toBe(3000 + view.documentPadding.top - 100);
+    expect(document.activeElement).toBe(button);
+    render(fileB, docB, "repo:b", null);
+    flushFrames();
+    for (const view of editors()) expect(view.scrollDOM.scrollTop).toBe(140 + view.documentPadding.top - 100);
+    expect(document.activeElement).toBe(button);
+    button.remove();
+  });
+
+  it("统一视图请求滚到第一个差异，包含右侧无对应内容的纯删除", () => {
+    const scroll = vi.spyOn(EditorView, "scrollIntoView");
+    const deleted = { left: lines(200), right: lines(200).split("\n").filter((_, i) => i < 150).join("\n") + "\n" };
+    const doc = documentFor(deleted.left, deleted.right, "deleted");
+    render(deleted, doc, "repo:deleted", null, "unified");
+    flushFrames();
+    expect(scroll).toHaveBeenCalledWith(Math.min(doc.hunks[0].fromB, editors()[0].state.doc.length), { y: "center" });
+  });
+
+  it("无差异文件不发起导航", () => {
+    const file = { left: lines(200), right: lines(200) };
+    const doc = documentFor(file.left, file.right, "unchanged");
+    const scroll = vi.spyOn(EditorView, "scrollIntoView");
+    render(file, doc, "repo:unchanged", null, "unified");
+    flushFrames();
+    expect(scroll).not.toHaveBeenCalled();
+    expect(editors()[0].scrollDOM.scrollTop).toBe(0);
+  });
+
+  it("相同文件重新渲染和切回已浏览文件都保留阅读位置", () => {
+    render(distant, distantDoc, "repo:distant", null);
+    mockGeometry();
+    flushFrames();
+    for (const view of editors()) view.scrollDOM.scrollTop = 1234;
+    render(distant, distantDoc, "repo:distant", headersFor(distantDoc, "pending"));
+    flushFrames();
+    for (const view of editors()) expect(view.scrollDOM.scrollTop).toBe(1234);
+    render(fileB, docB, "repo:b", null);
+    flushFrames();
+    render(distant, distantDoc, "repo:distant", null);
+    flushFrames();
+    for (const view of editors()) expect(view.scrollDOM.scrollTop).toBe(1234);
+  });
+
+  it("快速切换文件会取消旧文件的定位，避免影响复用的编辑器", () => {
+    const scroll = vi.spyOn(EditorView, "scrollIntoView");
+    render(distant, distantDoc, "repo:distant", null, "unified");
+    render(fileB, docB, "repo:b", null, "unified");
+    flushFrames();
+    expect(scroll).toHaveBeenCalledTimes(1);
+    expect(scroll).toHaveBeenCalledWith(docB.hunks[0].fromB, { y: "center" });
   });
 });
 

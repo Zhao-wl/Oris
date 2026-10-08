@@ -57,7 +57,7 @@ interface SplitView {
 
 interface SplitController {
   view: SplitView;
-  navigate(index: number): void;
+  navigate(index: number, focus?: boolean): void;
   settleViewport(onComplete: () => void): void;
   /** 外观（字号、配色）reconfigure 后重新测量对齐、连接带与轨道。 */
   refreshLayout(): void;
@@ -70,7 +70,7 @@ interface SplitController {
 interface SingleController {
   view: EditorView;
   chunks: Change[];
-  navigate(index: number): void;
+  navigate(index: number, focus?: boolean): void;
   destroy(keepViews?: boolean): void;
 }
 
@@ -1834,7 +1834,7 @@ function createSplitView(
   let visualController: ReturnType<typeof installSplitVisuals> | undefined;
   let scrollController: ReturnType<typeof installScrollAndRails> | undefined;
   let alignmentController: ReturnType<typeof installChangeAlignment> | undefined;
-  const navigate = (index: number) => {
+  const navigate = (index: number, focus = true) => {
     if (!chunks.length) return;
     const safeIndex = (index + chunks.length) % chunks.length;
     const chunk = chunks[safeIndex];
@@ -1852,8 +1852,8 @@ function createSplitView(
         scrollController?.write(side, hunkTop - view.scrollDOM.clientHeight / 3, navigationEpoch);
       });
     };
-    positionTargets(true);
-    b.contentDOM.focus({ preventScroll: true });
+    positionTargets(focus);
+    if (focus) b.contentDOM.focus({ preventScroll: true });
     onPositionChange(safeIndex + 1, chunks.length);
     alignmentController?.schedule(() => {
       positionTargets(false);
@@ -1944,15 +1944,15 @@ function createSingleView(
   }
 
   const chunks = diffDocument.hunks.map((change) => new Change(change.fromA, change.toA, change.fromB, change.toB));
-  const navigate = (index: number) => {
+  const navigate = (index: number, focus = true) => {
     if (!chunks.length) return;
     const safeIndex = (index + chunks.length) % chunks.length;
     const chunk = chunks[safeIndex];
     const pos = Math.min(presentation.side === "a" ? chunk.fromA : chunk.fromB, view.state.doc.length);
-    view.dispatch({ selection: { anchor: pos } });
+    if (focus) view.dispatch({ selection: { anchor: pos } });
     const block = view.lineBlockAt(pos);
     view.scrollDOM.scrollTop = clampViewScroll(view, block.top - view.scrollDOM.clientHeight / 3);
-    view.contentDOM.focus({ preventScroll: true });
+    if (focus) view.contentDOM.focus({ preventScroll: true });
     onPositionChange(safeIndex + 1, chunks.length);
   };
   const markerChunks = chunks.length ? chunks : [new Change(0, 0, 0, 0)];
@@ -2187,25 +2187,44 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
     // 先放块标题行再恢复阅读位置：标题行会改变上方内容的高度，顺序反过来会让阅读位置下移（V2-05）。
     applyHunkHeaders.current();
     const saved = savedViewports.current.get(layoutKey);
+    let viewportFrame = 0;
+    let disposed = false;
     if (saved) {
-      const restore = () => searchViews.forEach(({ view }, index) => {
-        const anchor = saved[index]; if (!anchor) return;
-        let number = Math.min(anchor.line, view.state.doc.lines);
-        // Keep the visible text as anchor when lines were inserted/deleted above it.
-        if (view.state.doc.line(number).text !== anchor.text) {
-          for (let distance = 1; distance < view.state.doc.lines; distance++) {
-            const candidates = [number + distance, number - distance];
-            const match = candidates.find(n => n > 0 && n <= view.state.doc.lines && view.state.doc.line(n).text === anchor.text);
-            if (match) { number = match; break; }
+      const restore = () => {
+        if (disposed) return;
+        searchViews.forEach(({ view }, index) => {
+          const anchor = saved[index]; if (!anchor) return;
+          let number = Math.min(anchor.line, view.state.doc.lines);
+          // Keep the visible text as anchor when lines were inserted/deleted above it.
+          if (view.state.doc.line(number).text !== anchor.text) {
+            for (let distance = 1; distance < view.state.doc.lines; distance++) {
+              const candidates = [number + distance, number - distance];
+              const match = candidates.find(n => n > 0 && n <= view.state.doc.lines && view.state.doc.line(n).text === anchor.text);
+              if (match) { number = match; break; }
+            }
           }
+          view.scrollDOM.scrollTop = Math.max(0, view.lineBlockAt(view.state.doc.line(number).from).top + anchor.offset);
+          view.scrollDOM.scrollLeft = anchor.left;
+        });
+      };
+      if (split) split.settleViewport(restore); else viewportFrame = requestAnimationFrame(restore);
+    } else {
+      // 首次打开文件，在块标题行挂载和视口测量后定位到第一处差异；自动定位只滚动，不抢走文件列表焦点。
+      // 已有阅读快照时仍恢复原位置；无差异时保持文档顶部。
+      viewportFrame = requestAnimationFrame(() => {
+        if (disposed || runtime.current.position !== 0) return;
+        if (split) split.navigate(0, false);
+        else if (single) single.navigate(0, false);
+        else if (unified) {
+          const first = getChunks(unified.state)?.chunks[0];
+          if (first) unified.dispatch({ effects: EditorView.scrollIntoView(Math.min(first.fromB, unified.state.doc.length), { y: "center" }) });
         }
-        view.scrollDOM.scrollTop = Math.max(0, view.lineBlockAt(view.state.doc.line(number).from).top + anchor.offset);
-        view.scrollDOM.scrollLeft = anchor.left;
       });
-      if (split) split.settleViewport(restore); else requestAnimationFrame(restore);
     }
     readingSearch = installReadingSearch(host.current, searchViews, split ? (onComplete) => split?.settleViewport(onComplete) : undefined);
     return () => {
+      disposed = true;
+      if (viewportFrame) cancelAnimationFrame(viewportFrame);
       const viewports = savedViewports.current;
       viewports.delete(layoutKey);
       viewports.set(layoutKey, searchViews.map(({ view }) => {
