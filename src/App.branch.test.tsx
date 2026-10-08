@@ -152,6 +152,56 @@ describe("branch popover (B10)", () => {
     expect(requests()[1]).toEqual({ kind: "branchTrack", remote: "refs/remotes/origin/feature" });
   });
 
+  it.each([
+    ["放弃修改后切换", "discard"],
+    ["带着改动切换", "merge"],
+    ["取消", null],
+    ["Escape", null],
+  ] as const)("history branch menu: %s after Git refuses the switch", async (label, choice) => {
+    bridge.operation.mockImplementationOnce(async () => outcome("branchSwitch", {
+      status: "needsConfirmation", snapshot: null,
+      confirmation: { reason: "localChanges", message: "工作区改动会被覆盖", paths: ["src/deep/a.txt"] }
+    }));
+    await mount();
+    await openHistory();
+    await act(async () => { sideRow("local", "feature").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 })); });
+    await flush();
+    await click(button("切换到 feature"));
+    expect(q(".log-menu")).toBeNull();
+    expect(requests()).toEqual([{ kind: "branchSwitch", name: "refs/heads/feature" }]);
+    expect(q(".switch-dialog h3")?.textContent).toBe("切换到 feature");
+    expect(q(".switch-file-name")?.textContent).toBe("a.txt");
+    // 这是 jsdom 内的 DOM 焦点，不代表 Windows 原生焦点。
+    expect(document.activeElement?.textContent).toBe("取消");
+    if (label === "Escape") {
+      await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+      await flush();
+    } else {
+      await click(choice ? option(label) : button("取消", q(".switch-dialog")!));
+    }
+    expect(requests()).toEqual(choice ? [
+      { kind: "branchSwitch", name: "refs/heads/feature" },
+      { kind: "branchSwitch", name: "refs/heads/feature", localChanges: choice, includeUntracked: false }
+    ] : [{ kind: "branchSwitch", name: "refs/heads/feature" }]);
+    expect(q(".switch-dialog")).toBeNull();
+    expect(q(".log-layout")?.hasAttribute("hidden")).toBe(false);
+  });
+
+  it("history branch menu blocks carrying staged changes without sending a second write", async () => {
+    bridge.open.mockResolvedValue({ ...snap(), scopes: { unstaged: [change("a.txt")], staged: [change("b.txt")], all: [change("a.txt"), change("b.txt")] } });
+    bridge.operation.mockImplementationOnce(async () => outcome("branchSwitch", {
+      status: "needsConfirmation", snapshot: null,
+      confirmation: { reason: "localChanges", message: "工作区改动会被覆盖", paths: ["a.txt"] }
+    }));
+    await mount(); await openHistory();
+    await act(async () => { sideRow("local", "feature").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 })); });
+    await flush(); await click(button("切换到 feature"));
+    expect(option("带着改动切换").disabled).toBe(true);
+    expect(option("带着改动切换").textContent).toContain("已暂存");
+    await click(button("取消", q(".switch-dialog")!));
+    expect(requests()).toHaveLength(1);
+  });
+
   it("checks out a remote branch as a tracking branch and lets the user choose when the local name exists", async () => {
     bridge.operation.mockImplementationOnce(async () => outcome("branchTrack", { status: "needsConfirmation", snapshot: null, confirmation: { reason: "localExists", message: "已存在同名本地分支 feature", paths: ["feature"] } }));
     await mount();

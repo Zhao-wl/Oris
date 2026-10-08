@@ -1,4 +1,4 @@
-// V2-03 界面验收：B09（stash）、B10（分支与检出、放弃修改后切换）、B16（外部锁）、B17（只读回归）、切换后刷新（M4）。
+// V2-03 界面验收：B09（stash）、B10（分支与检出、放弃/带着改动/取消及历史菜单）、B16（外部锁）、B17（只读回归）、切换后刷新（M4）。
 // 只经 CDP 操作本轮启动并核验过的 Oris 实例（PID + 完整路径 + 主窗口句柄 + 端口归属），不调用任何窗口激活 API；
 // 点击与输入是 CDP 注入的页面事件，不是真实鼠标、键盘或系统焦点。
 // 每个写操作都记录操作前后的仓库指纹（index、HEAD 与本地分支、stash、远端跟踪引用、config、工作区；不含 .git/objects 与 .git/logs）。
@@ -398,7 +398,47 @@ async function main() {
     e = evidence("从分离 HEAD 新建分支并切换", work, before, fingerprint(work), ["head"]);
     check("B10 从分离 HEAD 新建分支并切换，横幅消失", e.unexpected.length === 0 && git(work, ["branch", "--show-current"]) === "from-detached" && git(work, ["rev-parse", "HEAD"]) === target, { e });
 
-    // ---------- 放弃修改后切换 ----------
+    // ---------- PR #23：标题栏和历史页菜单各自覆盖三种选择 ----------
+    const option = (label) => `[...document.querySelectorAll('.switch-option')].find((b) => b.querySelector('strong')?.textContent === ${JSON.stringify(label)})`;
+    const requestSwitch = async (entry) => {
+      if (entry === "标题栏") {
+        await ctx.openPopover(); await ctx.click(`window.__b.rowButton('feature', '切换')`);
+      } else {
+        await ctx.openTab("历史");
+        await ctx.waitUntil(`[...document.querySelectorAll('[data-group="local"] .log-branch')].some((r) => r.querySelector('.log-branch-name')?.textContent.replace(/^● /, '') === 'feature')`);
+        await ctx.evaluate(`window.__b.context([...document.querySelectorAll('[data-group="local"] .log-branch')].find((r) => r.querySelector('.log-branch-name')?.textContent.replace(/^● /, '') === 'feature'))`);
+        await ctx.click(`window.__b.menuItem('切换到 feature')`);
+      }
+      await ctx.waitUntil(`!!document.querySelector('.switch-dialog')`, 15000);
+    };
+    for (const entry of ["标题栏", "历史菜单"]) {
+      for (const choice of ["取消", "带着改动切换", "放弃修改后切换"]) {
+        // 仅重置本轮创建的 work 夹具，绝不触及用户仓库。
+        git(work, ["checkout", "-qf", "main"]);
+        put(work, "a.txt", "PR23 local conflict\n"); await ctx.refresh();
+        before = fingerprint(work);
+        const stashBefore = stashLines(work);
+        await requestSwitch(entry);
+        e = evidence(`${entry} Git 拒绝切换（尚未选择）`, work, before, fingerprint(work), []);
+        const defaultCancel = await ctx.evaluate(`document.activeElement?.textContent === '取消'`);
+        check(`PR23 ${entry} 拒绝后不改仓库，DOM 默认焦点为取消`, e.changedCount === 0 && defaultCancel, { e });
+        await ctx.click(choice === "取消" ? `window.__b.button('取消', document.querySelector('.switch-dialog'))` : option(choice));
+        await ctx.settle();
+        await ctx.waitUntil(`!document.querySelector('.switch-dialog')`);
+        const state = await ctx.evaluate(`window.__b.opStatus()`);
+        e = evidence(`${entry} ${choice}`, work, before, fingerprint(work), choice === "取消" ? [] : ["head", "index", "worktree", "stash"]);
+        const sameStash = JSON.stringify(stashBefore) === JSON.stringify(stashLines(work));
+        if (choice === "取消") {
+          check(`PR23 ${entry} 取消：HEAD/index/工作区/引用均不变`, e.changedCount === 0 && git(work, ["branch", "--show-current"]) === "main", { e });
+        } else if (choice === "带着改动切换") {
+          check(`PR23 ${entry} 带着改动切换：目标分支及真实 index 冲突，stash 不变`, e.unexpected.length === 0 && git(work, ["branch", "--show-current"]) === "feature" && !!git(work, ["ls-files", "-u", "--", "a.txt"]) && read(work, "a.txt").includes("<<<<<<<") && sameStash && state?.cls.includes("succeeded") && state.text.includes("冲突"), { e, state });
+        } else {
+          const backup = /git stash apply ([0-9a-f]{40})/.exec(state?.text ?? "")?.[1];
+          check(`PR23 ${entry} 放弃修改后切换：目标版本、备份原文及 stash 不变`, e.unexpected.length === 0 && git(work, ["branch", "--show-current"]) === "feature" && read(work, "a.txt") === "a on feature\n" && !!backup && git(work, ["show", `${backup}:a.txt`]) === "PR23 local conflict" && sameStash, { e, state });
+        }
+      }
+    }
+    // ---------- 放弃修改后切换与阅读位置回归 ----------
     git(work, ["switch", "-q", "main"]); await ctx.refresh();
     put(work, "a.txt", "local edit conflicting with feature\n");
     await ctx.refresh();
@@ -406,7 +446,6 @@ async function main() {
     before = fingerprint(work);
     await ctx.openPopover();
     await ctx.click(`window.__b.rowButton('feature', '切换')`);
-    const option = (label) => `[...document.querySelectorAll('.switch-option')].find((b) => b.querySelector('strong')?.textContent === ${JSON.stringify(label)})`;
     await ctx.waitUntil(`!!document.querySelector('.switch-dialog')`, 15000);
     const refuse = await ctx.evaluate(`document.querySelector('.switch-dialog').textContent`);
     const untouched = evidence("Git 拒绝切换（尚未选择）", work, before, fingerprint(work), []).changedCount === 0;

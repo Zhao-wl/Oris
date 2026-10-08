@@ -7,6 +7,9 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "test": "vitest run",
+    "test:branch-switch": "vitest run src/App.branch.test.tsx src/App.history.test.tsx src/App.initialization.test.tsx",
+    "test:gui-safety": "node --test scripts/task02-safety.test.mjs",
+    "test:branch-switch-ui": "node scripts/verify-branch-switch-ui.mjs",
     "tauri": "tauri",
     "package": "powershell -NoProfile -File scripts/build-release.ps1"
   },
