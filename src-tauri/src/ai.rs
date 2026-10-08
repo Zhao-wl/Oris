@@ -70,13 +70,26 @@ fn key(id: &str) -> Result<String, String> {
 }
 
 fn find_executable(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
+    // Finder 启动的 macOS 应用通常拿不到交互式 shell 的 PATH。
+    #[cfg(target_os = "macos")]
+    let dirs = {
+        let mut dirs = dirs;
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        dirs.extend(macos_tool_dirs(home.as_deref(), Path::new("/Applications")));
+        dirs
+    };
+    find_executable_in_dirs(name, &dirs)
+}
+
+fn find_executable_in_dirs(name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
     let names: Vec<String> = if cfg!(windows) {
         vec![format!("{name}.exe"), format!("{name}.cmd"), name.into()]
     } else {
         vec![name.into()]
     };
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    for dir in std::env::split_paths(&path) {
+    for dir in dirs {
         for name in &names {
             let path = dir.join(name);
             if path.is_file() {
@@ -84,28 +97,29 @@ fn find_executable(name: &str) -> Option<PathBuf> {
             }
         }
     }
-    // Finder 启动的 macOS 应用通常拿不到交互式 shell 的 PATH。
-    // Codex 桌面版还会将 CLI 放在应用包内，而不是安装为全局命令。
-    #[cfg(target_os = "macos")]
-    {
-        let mut dirs = vec![PathBuf::from("/opt/homebrew/bin"), PathBuf::from("/usr/local/bin")];
-        if let Some(home) = std::env::var_os("HOME") {
-            let home = PathBuf::from(home);
-            dirs.push(home.join(".local/bin"));
-            dirs.push(home.join(".npm-global/bin"));
-            dirs.push(home.join("Applications/ChatGPT.app/Contents/Resources"));
-            dirs.push(home.join("Applications/Codex.app/Contents/Resources"));
-        }
-        dirs.push(PathBuf::from("/Applications/ChatGPT.app/Contents/Resources"));
-        dirs.push(PathBuf::from("/Applications/Codex.app/Contents/Resources"));
-        for dir in dirs {
-            let path = dir.join(name);
-            if path.is_file() {
-                return fs::canonicalize(&path).ok().or(Some(path));
-            }
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn macos_tool_dirs(home: Option<&Path>, applications: &Path) -> Vec<PathBuf> {
+    let mut dirs = vec![PathBuf::from("/opt/homebrew/bin"), PathBuf::from("/usr/local/bin")];
+    let mut app_roots = Vec::new();
+    if let Some(home) = home {
+        dirs.push(home.join(".local/bin"));
+        dirs.push(home.join(".npm-global/bin"));
+        app_roots.push(home.join("Applications"));
+    }
+    app_roots.push(applications.to_owned());
+    for root in app_roots {
+        for app in ["ChatGPT.app", "Codex.app"] {
+            let resources = root.join(app).join("Contents/Resources");
+            // 兼容旧版直接放在 Resources 下的 CLI，以及新版内嵌的 CLI 应用和命令包装。
+            dirs.push(resources.clone());
+            dirs.push(resources.join("codex-cli/CodexCLI.app/Contents/MacOS"));
+            dirs.push(resources.join("codex-cli/bin"));
         }
     }
-    None
+    dirs
 }
 
 /// Codex 桌面版与各 CLI 共用的 `~/.codex/models_cache.json`；由最近运行的那个 Codex 写入。
@@ -429,11 +443,57 @@ mod failure_tests {
 #[cfg(all(test, target_os = "macos"))]
 mod detection_tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
-    fn detects_bundled_codex_when_installed() {
-        let bundled = Path::new("/Applications/ChatGPT.app/Contents/Resources/codex");
-        if bundled.is_file() {
+    fn finds_bundled_codex_without_shell_path() {
+        for root in ["Applications", "home/Applications"] {
+            for app in ["ChatGPT.app", "Codex.app"] {
+                for relative in ["codex", "codex-cli/CodexCLI.app/Contents/MacOS/codex", "codex-cli/bin/codex"] {
+                    let temp = tempfile::tempdir().unwrap();
+                    let bundled = temp.path().join(root).join(app).join("Contents/Resources").join(relative);
+                    fs::create_dir_all(bundled.parent().unwrap()).unwrap();
+                    fs::write(&bundled, "#!/bin/sh\necho codex-cli 1.2.3\n").unwrap();
+                    fs::set_permissions(&bundled, fs::Permissions::from_mode(0o755)).unwrap();
+                    // 只搜索模拟应用目录，避免终端 PATH 或本机已安装的工具掩盖漏检。
+                    let home = temp.path().join("home");
+                    let apps = temp.path().join("Applications");
+                    let dirs: Vec<_> = macos_tool_dirs(Some(&home), &apps).into_iter()
+                        .filter(|dir| dir.starts_with(temp.path())).collect();
+                    let found = find_executable_in_dirs("codex", &dirs).unwrap();
+                    assert_eq!(found, fs::canonicalize(&bundled).unwrap());
+                    assert_eq!(tool_version(&found).unwrap().trim(), "codex-cli 1.2.3");
+                    assert!(find_executable_in_dirs("claude", &dirs).is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn finds_path_tool_before_bundled_tool() {
+        let temp = tempfile::tempdir().unwrap();
+        let path_dir = temp.path().join("bin");
+        let bundled_dir = temp.path().join("Applications/ChatGPT.app/Contents/Resources/codex-cli/bin");
+        for dir in [&path_dir, &bundled_dir] {
+            fs::create_dir_all(dir).unwrap();
+            fs::write(dir.join("codex"), "test").unwrap();
+        }
+        let mut dirs = vec![path_dir.clone()];
+        dirs.extend(macos_tool_dirs(None, &temp.path().join("Applications")));
+        assert_eq!(find_executable_in_dirs("codex", &dirs), Some(fs::canonicalize(path_dir.join("codex")).unwrap()));
+    }
+
+    #[test]
+    fn detects_installed_bundled_codex_without_shell_path() {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let dirs = macos_tool_dirs(home.as_deref(), Path::new("/Applications"));
+        // 本机冒烟只验证应用包中的 CLI，不能由 PATH 上的全局 CLI 替代。
+        let app_dirs: Vec<_> = dirs.into_iter().filter(|dir| dir.components().any(|part| {
+            part.as_os_str() == "ChatGPT.app" || part.as_os_str() == "Codex.app"
+        })).collect();
+        if let Some(bundled) = find_executable_in_dirs("codex", &app_dirs) {
+            let version = tool_version(&bundled).expect("本机应用包中的 Codex CLI 应能返回版本");
+            eprintln!("本机应用包检测：{} ({})", bundled.display(), version.trim());
             assert!(detect_tools().iter().any(|tool| tool.provider == "codex"));
         }
     }
