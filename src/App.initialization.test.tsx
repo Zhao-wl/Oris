@@ -71,6 +71,53 @@ beforeEach(() => {
 });
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
+describe("empty repository loading state (no native windows)", () => {
+  const empty = (id: string): RepositorySnapshot => ({ ...snapshot(id), files: [], scopes: { unstaged: [], staged: [], all: [] } });
+
+  it("shows a loading indicator while opening, then a completed empty state", async () => {
+    const opening = deferred<RepositorySnapshot>();
+    bridge.open.mockReturnValueOnce(opening.promise);
+    await mount();
+    expect(host.querySelector('.state.loading[role="status"]')?.textContent).toContain("正在读取真实仓库");
+    expect(host.querySelector('.loading-spinner[aria-hidden="true"]')).not.toBeNull();
+    opening.resolve(empty("a")); await flush();
+    expect(host.querySelector('.state.loading')).toBeNull();
+    expect(host.querySelector('.content')?.textContent).toContain("当前比较范围没有变化");
+    expect(bridge.read).not.toHaveBeenCalled();
+  });
+
+  it("ends the pending read when switching to an empty local scope and ignores its late result", async () => {
+    const opening = snapshot("a");
+    bridge.open.mockResolvedValueOnce({ ...opening, scopes: { unstaged: opening.files, staged: [], all: opening.files } });
+    const reading = deferred<ContentPair>(); bridge.read.mockReturnValueOnce(reading.promise);
+    await mount();
+    expect(host.textContent).toContain("正在读取真实仓库");
+    await click('.scope:nth-child(2)');
+    expect(host.textContent).not.toContain("正在读取真实仓库");
+    expect(host.querySelector('.content')?.textContent).toContain("当前比较范围没有变化");
+    expect(host.textContent).not.toContain("取消读取");
+    reading.resolve(pair("a")); await flush();
+    expect(host.querySelector('[data-testid="readable"]')).toBeNull();
+    expect(bridge.diff).not.toHaveBeenCalled();
+  });
+
+  it("ends the pending read when returning to a cached empty project and ignores its late result", async () => {
+    bridge.open.mockResolvedValueOnce(empty("a"));
+    await mount(["a", "b"]);
+    const reading = deferred<ContentPair>(); bridge.read.mockReturnValueOnce(reading.promise);
+    await click('.project-tab:nth-child(2) .project-switch');
+    expect(host.textContent).toContain("正在读取真实仓库");
+    await click('.project-tab:nth-child(1) .project-switch');
+    expect(host.textContent).not.toContain("正在读取真实仓库");
+    expect(host.querySelector('.content')?.textContent).toContain("当前比较范围没有变化");
+    expect(host.textContent).not.toContain("取消读取");
+    expect((host.querySelector('.openbar button') as HTMLButtonElement).disabled).toBe(false);
+    reading.resolve(pair("b")); await flush();
+    expect(host.querySelector('[data-testid="readable"]')).toBeNull();
+    expect(bridge.diff).not.toHaveBeenCalled();
+  });
+});
+
 describe("controlled focus state integration (no native windows)", () => {
   it("persists tab aliases and drag order through remount; closing an inactive tab does not select it", async () => {
     await mount(["a", "b"]);
