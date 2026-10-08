@@ -35,6 +35,7 @@ interface Props {
   fileHistoryRequest: FileHistoryRequest | null;
   activeKey: string | null;
   onOpenFile(open: HistoryFileOpen): void;
+  onTrace?(file: FileHistoryRequest | null, refs: string[]): void;
   onRefs?(refs: RefsView): void;
   /** V2-03：提交右键“检出（分离 HEAD）”“从这里新建分支”。 */
   onCheckout?(oid: string): void;
@@ -431,6 +432,7 @@ export default function HistoryPanel(props: Props) {
       blocked={writeBlocked ?? null} onSwitch={onSwitch} onTrack={onTrack} onPruneGone={onPruneGone} onMenu={(x, y, endpoint) => setMenu({ x, y, endpoint })}/>
     {splitter("left")}
     <section className="log-commits-pane" aria-label={mode.kind === "file" ? "文件历史" : "提交历史"}>
+      {props.onTrace && <button type="button" onClick={() => props.onTrace?.(mode.kind === "file" ? mode.request : null, filter ? [filter] : ["HEAD"])}>{mode.kind === "file" ? "追溯此文件" : "历史内容搜索"}</button>}
       {mode.kind === "file" ? <FileHistoryList mode={mode} activeKey={activeKey} onBack={() => setMode({ kind: "commit" })} onMore={() => mode.history?.next && loadFileHistory(mode.request, mode.history.next, mode.history)} onOpen={(entry) => {
         setMode({ ...mode, selected: entry.commit.oid });
         const parentOid = entry.commit.parents[0] ?? null;

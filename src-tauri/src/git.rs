@@ -1,5 +1,9 @@
 mod content;
 pub mod blame;
+pub mod line_history;
+pub mod history_search;
+pub mod trace;
+pub mod trace_requests;
 pub mod group;
 pub mod history;
 pub mod stash;

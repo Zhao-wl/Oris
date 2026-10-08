@@ -103,3 +103,6 @@ export const checkBranchName = (repoId: string, name: string) => invoke<void>("c
 
 // ---------- V2-04：合并进行中的默认合并信息（只读） ----------
 export const mergeMessage = (repoId: string) => invoke<string | null>("merge_message", { repoId });
+
+// 拓展 02 的独立只读 API，旧查询契约保持原样。
+export { readFileBlame, readLineHistory, searchHistoryContent, cancelTraceQuery } from "./trace-api";

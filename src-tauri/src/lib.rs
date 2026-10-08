@@ -769,6 +769,43 @@ async fn read_line_change(repo_id: String, commit: String, path_id: String, line
     history_call(opened, HistoryKind::LineChange, true, move |adapter, _| adapter.line_change(&commit, &path_id, line)).await
 }
 
+/// 拓展 02 独立查询通道，既不使现有历史读取失效，也不占用写操作 runner。
+#[cfg(feature = "desktop")]
+async fn trace_call<T: Send + 'static>(
+    opened: OpenRepository, repo_id: String, request_id: String, requests: Arc<git::trace_requests::Requests>,
+    work: impl FnOnce(&GitAdapter, &dyn Fn() -> bool) -> Result<T, GitError> + Send + 'static,
+) -> Result<T, GitError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let guard = requests.begin(&repo_id, &request_id)?;
+        let stale = || guard.cancelled.load(Ordering::SeqCst);
+        // 追溯有独立的每仓库并发上限，不等待工作区阅读槽位；取消不会困在内容读取队列中。
+        if stale() { return Err(GitError::StaleRequest); }
+        let result = work(&opened.adapter, &stale)?;
+        if stale() { return Err(GitError::StaleRequest); }
+        Ok(result)
+    }).await.map_err(|e| GitError::Runtime(e.to_string()))?
+}
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn read_file_blame(repo_id: String, request_id: String, query: git::blame::BlameQuery, registry: State<'_, RepositoryRegistry>, requests: State<'_, Arc<git::trace_requests::Requests>>) -> Result<git::blame::BlamePage, GitError> {
+    trace_call(opened(&registry, &repo_id)?, repo_id, request_id, requests.inner().clone(), move |adapter, stale| adapter.file_blame(&query, stale)).await
+}
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn read_line_history(repo_id: String, request_id: String, query: git::line_history::LineHistoryQuery, cursor: Option<git::line_history::LineCursor>, registry: State<'_, RepositoryRegistry>, requests: State<'_, Arc<git::trace_requests::Requests>>) -> Result<git::line_history::LineHistoryPage, GitError> {
+    trace_call(opened(&registry, &repo_id)?, repo_id, request_id, requests.inner().clone(), move |adapter, stale| adapter.line_history(&query, cursor.as_ref(), stale)).await
+}
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn search_history_content(repo_id: String, request_id: String, query: git::history_search::SearchQuery, cursor: Option<git::history_search::SearchCursor>, registry: State<'_, RepositoryRegistry>, requests: State<'_, Arc<git::trace_requests::Requests>>) -> Result<git::history_search::SearchPage, GitError> {
+    trace_call(opened(&registry, &repo_id)?, repo_id, request_id, requests.inner().clone(), move |adapter, stale| adapter.search_history(&query, cursor.as_ref(), stale)).await
+}
+#[cfg(feature = "desktop")]
+#[tauri::command]
+fn cancel_trace_query(repo_id: String, request_id: String, requests: State<'_, Arc<git::trace_requests::Requests>>) {
+    requests.cancel(&repo_id, &request_id);
+}
+
 /// 某个提交相对所选父节点（默认第一个；根提交相对空树）的变化文件。
 #[cfg(feature = "desktop")]
 #[tauri::command]
@@ -956,6 +993,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(updater::UpdaterState::default())
         .manage(RepositoryRegistry::default())
+        .manage(Arc::new(git::trace_requests::Requests::default()))
         .manage(WatcherRegistry::default())
         .manage(ops::Runner::default())
         .manage(AiRequests::default())
@@ -1028,6 +1066,10 @@ pub fn run() {
             locate_log,
             read_line_attribution,
             read_line_change,
+            read_file_blame,
+            read_line_history,
+            search_history_content,
+            cancel_trace_query,
             commit_changes,
             compare_revisions,
             file_history,

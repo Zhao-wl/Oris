@@ -10,6 +10,7 @@ import { FETCH_LOG_KEY } from "./history-model";
 
 const bridge = vi.hoisted(() => ({
   open: vi.fn(), refresh: vi.fn(), read: vi.fn(), diff: vi.fn(), operation: vi.fn(),
+  traceBlame: vi.fn(), traceLines: vi.fn(), traceSearch: vi.fn(), capture: vi.fn(), restore: vi.fn(), reveal: vi.fn(),
   line: vi.fn(), lineChange: vi.fn(), locate: vi.fn(), log: vi.fn(), changes: vi.fn(), compare: vi.fn(), fileHistory: vi.fn(), refs: vi.fn(), revision: vi.fn()
 }));
 vi.mock("./api", () => ({ discoverGroup: vi.fn(async () => ({ isGroup: false, members: [], selectedRepoId: null, ignored: [] })), memberChangeCount: vi.fn(async () => 0), watchGroup: vi.fn(async () => {}), setSubmodulePointers: vi.fn(async () => {}), openRepository: bridge.open, refreshRepository: bridge.refresh, readContentPair: bridge.read, closeRepository: vi.fn(async () => {}), cancelContentRead: vi.fn(async () => {}),
@@ -20,11 +21,18 @@ vi.mock("./history-api", async (importOriginal) => ({ ...(await importOriginal<t
   readLineAttribution: bridge.line, readLineChange: bridge.lineChange, locateLog: bridge.locate, readLog: bridge.log, commitChanges: bridge.changes, compareRevisions: bridge.compare, fileHistory: bridge.fileHistory, readRefs: bridge.refs, readRevisionPair: bridge.revision,
   // 获取 ▾ 的轻量读取：取自同一份 refs 夹具。
   readRemotes: async (repoId: string) => { const view = await bridge.refs(repoId); return { remotes: view.remotes, defaultRemote: view.defaultRemote, fetchHeadAt: view.fetchHeadAt }; } }));
+vi.mock("./trace-api", async original => ({ ...(await original<typeof import("./trace-api")>()), readFileBlame: bridge.traceBlame, readLineHistory: bridge.traceLines, searchHistoryContent: bridge.traceSearch, cancelTraceQuery: vi.fn(async () => {}) }));
 vi.mock("./diff", () => ({ calculateDiff: bridge.diff }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ isFocused: async () => false, onFocusChanged: async () => () => {} }) }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => {} }));
-vi.mock("./DiffViewer", () => ({ default: ({ readingKey, onLineSelect }: { readingKey: string; onLineSelect?: (value: { side: "a" | "b"; line: number }) => void }) => <><div data-testid="readable">{readingKey}</div><button type="button" aria-label="测试选择右侧行" onClick={() => onLineSelect?.({ side: "b", line: 1 })}>测试选择行</button></> }));
+vi.mock("./DiffViewer", async () => {
+  const { useImperativeHandle } = await import("react");
+  return { default: ({ readingKey, onLineSelect, ref, presentation }: { presentation: import("./diff-presentation").DiffPresentation; readingKey: string; onLineSelect?: (value: { side: "a" | "b"; line: number }) => void; ref: import("react").Ref<import("./DiffViewer").DiffViewerHandle> }) => {
+    useImperativeHandle(ref, () => ({ captureViewport: bridge.capture, restoreViewport: bridge.restore, revealLine: bridge.reveal, navigate: () => {}, navigateTo: () => {}, expandAll: () => 0 }));
+    return <><div data-testid="readable" data-kind={presentation.kind}>{readingKey}</div><button type="button" aria-label="测试选择右侧行" onClick={() => onLineSelect?.({ side: "b", line: 1 })}>测试选择行</button></>;
+  } };
+});
 vi.mock("./ImageViewer", () => ({ default: () => <div/> }));
 import App from "./App";
 
@@ -72,6 +80,7 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ font: "", measureText: (text: string) => ({ width: text.length * 6 }) } as unknown as CanvasRenderingContext2D);
+  bridge.capture.mockReturnValue([{ line: 1, offset: 14, left: 33 }, { line: 1, offset: 19, left: 40 }]);
   bridge.open.mockResolvedValue(snap());
   bridge.refresh.mockResolvedValue(snap());
   bridge.read.mockImplementation(async (_r: string, _s: string, _v: string, pathId: string) => pair("index", pathId));
@@ -421,4 +430,34 @@ describe("从 diff 行跳转历史", () => {
     expect(bridge.log.mock.calls.at(-1)?.[1].search).toBeNull();
     expect(q('[aria-label="清除提交搜索"]')).toBeNull();
   });
+});
+
+
+it("代码追溯比较核验固定 OID/路径，返回恢复来源内容、选项及视口", async () => {
+  bridge.traceLines.mockResolvedValue({ entries: [{ oid: O("1"), parent: O("0"), path: "new.txt", pathId: "id-new.txt", oldPath: "old.txt", oldPathId: "id-old.txt", status: "renamed", newRange: { start: 1, end: 1 }, oldRange: { start: 1, end: 1 }, inferred: false, merge: false, patch: ["+r"] }], next: null, reason: "origin", note: "first parent", scanned: 2, elapsedMs: 5, outputBytes: 500, shallow: false });
+  await mount(); const sourceReading = reading();
+  await click(button("代码追溯", q(".toolbar")!));
+  await click(button("连续行历史", q(".trace-panel")!));
+  await click(button("追踪行段", q(".trace-panel")!));
+  expect(bridge.traceLines.mock.calls[0][2]).toMatchObject({ source: { revision: O("1"), pathId: "id-a.txt", contents: "r", line: 1 }, identity: { snapshotRevision: "x", contentId: "r-id-a.txt-index", side: "b" } });
+  await click(button("比较本次修改前后版本", q(".trace-panel")!));
+  expect(bridge.revision.mock.calls.at(-1)?.slice(0, 5)).toEqual(["a", O("0"), O("1"), "id-new.txt", "id-old.txt"]);
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 35)); });
+  expect(bridge.reveal).toHaveBeenCalledWith({ side: "b", line: 1 });
+  await click(button("返回阅读位置", q(".trace-panel")!));
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 35)); });
+  expect(reading()).toBe(sourceReading); expect(bridge.restore).toHaveBeenCalledWith([{ line: 1, offset: 14, left: 33 }, { line: 1, offset: 19, left: 40 }]);
+  expect(bridge.operation).not.toHaveBeenCalled();
+});
+
+it("搜索仅命中删除行的修改提交仍打开双侧比较，并定位旧侧", async () => {
+  bridge.traceSearch.mockResolvedValue({ entries: [{ oid: O("1"), parent: O("0"), path: "src/a.txt", pathId: "id-src/a.txt", oldPath: "src/a.txt", oldPathId: "id-src/a.txt", status: "modified", newRange: null, oldRange: { start: 1, end: 1 }, hits: [{ direction: "deleted", line: 1, text: "target" }], matchCount: 1 }], next: null, tips: [O("3")], reason: "complete", note: "actual diff", scanned: 3, elapsedMs: 5, outputBytes: 500, shallow: false });
+  await mount(); await openLog(); await click(button("历史内容搜索"));
+  const input = q<HTMLInputElement>('.trace-panel input[placeholder="区分大小写的单行字面文本"]')!;
+  await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "target"); input.dispatchEvent(new Event("input", { bubbles: true })); }); await flush();
+  await click(button("搜索历史内容", q(".trace-panel")!));
+  await click(button("比较命中修改前后版本", q(".trace-panel")!));
+  expect(q('[data-testid="readable"]')?.getAttribute("data-kind")).toBe("compare");
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 35)); });
+  expect(bridge.reveal).toHaveBeenCalledWith({ side: "a", line: 1 }); expect(bridge.operation).not.toHaveBeenCalled();
 });

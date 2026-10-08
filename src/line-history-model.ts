@@ -2,6 +2,7 @@ import type { ContentPair, FileChange } from "./types";
 import type { HistoryFileOpen } from "./HistoryPanel";
 import type { DiffLineSelection } from "./diff-line-selection";
 import type { LineQuery } from "./history-api";
+import type { TraceSource } from "./trace-api";
 
 export interface LineHistoryContext { pair: ContentPair; file: FileChange; history: HistoryFileOpen | null; head: string | null }
 export function lineHistoryKey(context: LineHistoryContext) {
@@ -33,4 +34,12 @@ export function relativeCommitTime(seconds: number, now = Date.now()) {
   if (days > 0) return `${days} 天前`;
   const minutes = Math.floor(Math.max(0, now - seconds * 1000) / 60_000);
   return minutes >= 60 ? `${Math.floor(minutes / 60)} 小时前` : minutes > 0 ? `${minutes} 分钟前` : "刚刚";
+}
+
+/** 只消费阅读器既有的单行选区；连续行段由追溯面板显式选择，不改动 DiffViewer 选区。 */
+export function traceSource(context: LineHistoryContext, selection: DiffLineSelection): TraceSource | string {
+  const query = lineQuery(context, selection);
+  if (typeof query === "string") return query;
+  const side = selection.side === "a" ? context.pair.left : context.pair.right;
+  return { query, endLine: selection.line, repoId: context.pair.repoId, contentId: side.contentId, snapshotRevision: context.pair.revision, side: selection.side };
 }

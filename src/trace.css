@@ -1,0 +1,18 @@
+.trace-panel { position: fixed; z-index: 40; top: 80px; bottom: 45px; right: 18px; width: min(560px, 70vw); display: flex; flex-direction: column; gap: 8px; padding: 14px; background: var(--panel, #242424); color: var(--text, #ddd); border: 1px solid var(--border, #666); box-shadow: 0 8px 24px #0006; border-radius: 8px; }
+.trace-panel header, .trace-panel nav, .trace-pagination { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.trace-panel header strong { flex: 1; }
+.trace-panel nav button[aria-pressed="true"] { outline: 2px solid var(--accent, #65a9ff); }
+.trace-panel p { margin: 4px 0; overflow-wrap: anywhere; }
+.trace-caption { font-size: 12px; opacity: .8; }
+.trace-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12px; }
+.trace-controls label { display: flex; gap: 4px; align-items: center; }
+.trace-controls input:not([type="checkbox"]) { min-width: 0; width: 150px; }
+.trace-controls input[type="number"] { width: 68px; }
+.trace-controls p { flex-basis: 100%; }
+.trace-results { overflow: auto; flex: 1; min-height: 0; font-size: 12px; }
+.trace-results article { padding: 10px 0; border-bottom: 1px solid var(--border, #666); }
+.trace-results pre { max-height: 200px; overflow: auto; white-space: pre; padding: 6px; background: #80808012; }
+.trace-blame-row { display: grid; grid-template-columns: 34px 76px 80px 40px 1fr; align-items: center; gap: 4px; min-width: 490px; min-height: 25px; }
+.trace-blame-row span, .trace-blame-row code { overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+.trace-blame-row.uncommitted { background: #b68b2633; }
+.trace-pagination { padding: 10px 0; }

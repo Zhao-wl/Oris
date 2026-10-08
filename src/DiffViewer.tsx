@@ -1996,7 +1996,12 @@ function createSingleView(
   };
 }
 
+export interface ReadingViewport { line: number; offset: number; left: number }
 export interface DiffViewerHandle {
+  /** 追溯往返的只读阅读位置接口；不改变选区安装或块操作。 */
+  captureViewport(): ReadingViewport[];
+  restoreViewport(anchors: ReadingViewport[]): void;
+  revealLine(selection: DiffLineSelection): void;
   navigate(direction: -1 | 1): void;
   navigateTo(index: number): void;
   /** “全部展开”：展开所有折叠的未变化内容，返回展开的区段数。 */
@@ -2065,6 +2070,32 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
   const layoutKey = `${readingKey}:${presentation.kind === "single" ? `single-${presentation.side}` : "compare"}`;
 
   useImperativeHandle(ref, () => ({
+    captureViewport() {
+      const current = runtime.current;
+      const views = current.split ? [current.split.view.a, current.split.view.b] : current.single ? [current.single.view] : current.unified ? [current.unified] : [];
+      return views.map(view => {
+        const block = view.lineBlockAtHeight(view.scrollDOM.scrollTop);
+        return { line: view.state.doc.lineAt(block.from).number, offset: view.scrollDOM.scrollTop - block.top, left: view.scrollDOM.scrollLeft };
+      });
+    },
+    restoreViewport(anchors) {
+      const current = runtime.current;
+      const views = current.split ? [current.split.view.a, current.split.view.b] : current.single ? [current.single.view] : current.unified ? [current.unified] : [];
+      const restore = () => views.forEach((view, i) => {
+        const anchor = anchors[i]; if (!anchor) return;
+        view.requestMeasure({ read: () => view.lineBlockAt(view.state.doc.line(Math.max(1, Math.min(anchor.line, view.state.doc.lines))).from).top,
+          write: top => { view.scrollDOM.scrollTop = Math.max(0, top + anchor.offset); view.scrollDOM.scrollLeft = anchor.left; } });
+      });
+      if (current.split) current.split.settleViewport(restore); else restore();
+    },
+    revealLine(selection) {
+      const current = runtime.current;
+      const view = current.split ? (selection.side === "a" ? current.split.view.a : current.split.view.b) : current.single?.view ?? current.unified;
+      if (!view || selection.line < 1 || selection.line > view.state.doc.lines) return;
+      const scroll = () => view.dispatch({ effects: EditorView.scrollIntoView(view.state.doc.line(selection.line).from, { y: "center" }) });
+      if (current.split) { current.split.revealLine(selection.side, selection.line); current.split.settleViewport(scroll); }
+      else { if (current.unified) expandUnified(current.unified, selection.line); scroll(); }
+    },
     expandAll() {
       const current = runtime.current;
       if (current.split) return current.split.expandAll();

@@ -360,3 +360,24 @@ describe("独立行跳转", () => {
     expect(editors()[0].state.selection.main.head).toBe(editors()[0].state.doc.line(30).from);
   });
 });
+
+it("追溯跨阅读器重建后恢复行锚点与水平位置，定位不触发 focus", () => {
+  const ref = render(fileA, docA, "repo:source", null);
+  const sourceViews = editors();
+  sourceViews.forEach(view => {
+    vi.spyOn(view, "lineBlockAtHeight").mockReturnValue({ from: view.state.doc.line(4).from, top: 40 } as ReturnType<EditorView["lineBlockAtHeight"]>);
+    view.scrollDOM.scrollTop = 47; view.scrollDOM.scrollLeft = 11;
+  });
+  const anchors = ref.current!.captureViewport();
+  expect(anchors).toEqual([{ line: 4, offset: 7, left: 11 }, { line: 4, offset: 7, left: 11 }]);
+  act(() => root.unmount()); root = createRoot(host);
+  const next = render(fileA, docA, "repo:source", null);
+  const views = editors(); const focus = views.map(view => vi.spyOn(view, "focus"));
+  views.forEach(view => vi.spyOn(view, "requestMeasure").mockImplementation(request => {
+    if (request) { const result = request.read(view); request.write?.(result, view); }
+  }));
+  act(() => next.current!.restoreViewport(anchors));
+  views.forEach(view => { expect(view.scrollDOM.scrollTop).toBe(view.lineBlockAt(view.state.doc.line(4).from).top + 7); expect(view.scrollDOM.scrollLeft).toBe(11); });
+  act(() => next.current!.revealLine({ side: "b", line: 9 }));
+  focus.forEach(spy => expect(spy).not.toHaveBeenCalled());
+});

@@ -10,12 +10,13 @@ interface Props {
   context: LineHistoryContext;
   selection: { key: string; value: DiffLineSelection } | null;
   onJump(attribution: LineAttribution, author: boolean): void;
+  onTrace?(): void;
 }
 
 type Result = { key: string; data?: LineAttribution; error?: string };
 const fullTime = (time: number) => new Date(time * 1000).toLocaleString(undefined, { timeZoneName: "short" });
 
-export default function LineHistoryBar({ context, selection, onJump }: Props) {
+export default function LineHistoryBar({ context, selection, onJump, onTrace }: Props) {
   const contextKey = lineHistoryKey(context);
   const selected = selection?.key === contextKey ? selection.value : null;
   const query = useMemo(() => selected ? lineQuery(context, selected) : null, [context, selected]);
@@ -103,6 +104,7 @@ export default function LineHistoryBar({ context, selection, onJump }: Props) {
   return <div className="line-history-bar" ref={bar} onMouseEnter={show} onMouseLeave={leave} onFocus={show}
     onBlur={event => { if (!(event.relatedTarget instanceof Node) || !popup.current?.contains(event.relatedTarget)) leave(); }}>
     <span className="line-history-location">{selected ? `${selected.side === "a" ? "左" : "右"}侧 · ${selected.line} 行` : "行提交信息"}</span>
+    {onTrace && <button type="button" onClick={onTrace}>代码追溯</button>}
     {!selected ? <span className="line-history-muted">选中一行查看提交记录</span>
       : typeof query === "string" ? <span className="line-history-muted">{query}</span>
       : error ? <span role="status" className="line-history-muted">无法读取行提交信息：{error}</span>
