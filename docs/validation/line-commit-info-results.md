@@ -61,3 +61,7 @@ UTF-16、孤立 CR、冲突 stage 和非文本 / 降级内容有明确的不可�
 原输出 exe 正被用户运行，构建脚本正确拒绝覆盖。新版改用独立输出目录 `artifacts/line-info-ui-20261008-1908`，保留用户已有实例。
 
 独立构建成功（exit 0），产物 `artifacts/line-info-ui-20261008-1908/target/release/oris.exe`，42.8 MiB，生成时间 2026-10-08 19:11:19，SHA-256：`DA48EE485230562AFC3DA784D336730DEFB265BA8B2FDEEBC1B2092EB1DF41B7`。入口与 26 个嵌入资源验证通过，包含 JS `index-Ccp-TBhv.js`、CSS `index-DllZb4Sq.css` 和 diff Worker。
+
+## 0.8.2 发布验收
+
+发布关口完整串行回归：46 个文件、364 项测试全部通过。Windows x64 NSIS 安装包、自动更新签名和公开更新清单已发布并回下载核验，详见 [0.8.2 发布收尾记录](v0.8.2-release-closeout.md)。发布过程未启动 GUI 或操作用户已有应用，真实 Windows 焦点切换仍未验证。
