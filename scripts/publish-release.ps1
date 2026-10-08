@@ -134,7 +134,8 @@ try {
 
     # 发布关口按文件顺序运行测试：部分 App 集成测试在并行高负载下会偶发失败。
     Invoke-Native '运行测试（按文件顺序）' { npx vitest run --no-file-parallelism }
-    Invoke-Native '签名构建 NSIS 安装包' { powershell -NoProfile -File (Join-Path $PSScriptRoot 'build-release.ps1') -Bundle -Bundles nsis -UpdaterArtifacts }
+    # 复用当前 PowerShell 的命令和模块环境，避免嵌套 shell 丢失 Get-FileHash 等构建依赖。
+    Invoke-Native '签名构建 NSIS 安装包' { & (Join-Path $PSScriptRoot 'build-release.ps1') -Bundle -Bundles nsis -UpdaterArtifacts }
 
     $targetDir = if ($env:CARGO_TARGET_DIR) { [IO.Path]::GetFullPath($env:CARGO_TARGET_DIR) } else { Join-Path $root 'src-tauri\target' }
     $nsisDir = Join-Path $targetDir 'release\bundle\nsis'
