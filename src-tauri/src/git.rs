@@ -1,4 +1,5 @@
 mod content;
+pub mod blame;
 pub mod group;
 pub mod history;
 pub mod stash;

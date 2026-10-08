@@ -1,12 +1,13 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { flatLayout, layoutGraph, type GraphLayout, type GraphRow } from "./history-graph";
-import { commitChanges, compareRevisions, fileHistory, readLog, readRefs, shortOid, shortRef, statusLetter, type Branch, type ChangedFile, type CommitChanges, type CommitInfo, type Comparison, type FileHistory, type LogCursor, type RefsView, type SearchKind, type StashEntry } from "./history-api";
+import { commitChanges, compareRevisions, fileHistory, readLog, locateLog, readRefs, shortOid, shortRef, statusLetter, type Branch, type ChangedFile, type CommitChanges, type CommitInfo, type Comparison, type FileHistory, type LogCursor, type RefsView, type SearchKind, type StashEntry } from "./history-api";
 import { ROW_HEIGHT, deferVersions, initialDeferred, isStale, movedEndpoint, nodeX, rowSegments, LANE_WIDTH, refOid, type DeferredVersions, type PinnedEndpoint } from "./history-model";
 import { errorText } from "./error-message";
 import HistorySidebar from "./HistorySidebar";
 import PathText from "./PathText";
 import { useMenuPosition } from "./menu-position";
-import FileList from "./ChangedFileList";
+import FileList, { filterChangedFiles } from "./ChangedFileList";
+import ClearableInput from "./ClearableInput";
 import { StashDetail, StashForm, useStashList, type StashPushOptions } from "./StashPanel";
 import type { FileChange } from "./types";
 
@@ -22,8 +23,12 @@ export interface HistoryFileOpen {
 
 export interface FileHistoryRequest { pathId: string; path: string; start: string; nonce: number }
 
+export interface LineHistoryJump { repoId: string; nonce: number; oid: string; author: string | null; path: string }
+
 interface Props {
   repoId: string;
+  lineJump?: LineHistoryJump | null;
+  onReturnFromLine?(): void;
   /** refs 变化（watcher 的 refs 事件、写操作结束）时递增：重读分支列表与日志。 */
   refsVersion: number;
   hidden: boolean;
@@ -93,9 +98,12 @@ interface Menu { x: number; y: number; endpoint: PinnedEndpoint }
  * 中间提交图与列表，右侧详情。单击引用只筛选历史，双击分支才切换；三栏宽度可拖动。
  */
 export default function HistoryPanel(props: Props) {
-  const { repoId, refsVersion, hidden, fileHistoryRequest, activeKey, onOpenFile, onRefs, onCheckout, onNewBranch, onMerge, writeBlocked, onSwitch, onTrack, onDeleteBranch, onPruneGone, stashVersion = 0, selectedFiles = [], onStashPush, onStashApply, onStashDrop, onSubmoduleCompare, compareRequest } = props;
+  const { repoId, refsVersion, hidden, fileHistoryRequest, activeKey, onOpenFile, onRefs, onCheckout, onNewBranch, onMerge, writeBlocked, onSwitch, onTrack, onDeleteBranch, onPruneGone, stashVersion = 0, selectedFiles = [], onStashPush, onStashApply, onStashDrop, onSubmoduleCompare, compareRequest, lineJump, onReturnFromLine } = props;
   const [refs, setRefs] = useState<RefsView | null>(null);
   const [refsError, setRefsError] = useState<string | null>(null);
+  const [lineJumpVersion, setLineJumpVersion] = useState(0);
+  const [lineAnchor, setLineAnchor] = useState<string | null>(null);
+  const [lineNote, setLineNote] = useState<string | null>(null);
   const [filter, setFilter] = useState<string | null>(null);
   const [searchKind, setSearchKind] = useState<SearchKind>("message");
   const [searchText, setSearchText] = useState("");
@@ -108,6 +116,8 @@ export default function HistoryPanel(props: Props) {
   const [parent, setParent] = useState<string | null>(null);
   const [changes, setChanges] = useState<CommitChanges | null>(null);
   const [changesError, setChangesError] = useState<string | null>(null);
+  const [fileFilter, setFileFilter] = useState({ oid: null as string | null, text: "" });
+  const selectedFileFilter = fileFilter.oid === selectedOid ? fileFilter.text : "";
   const [compareStart, setCompareStart] = useState<PinnedEndpoint | null>(null);
   const [mode, setMode] = useState<Mode>({ kind: "commit" });
   const [menu, setMenu] = useState<Menu | null>(null);
@@ -128,6 +138,10 @@ export default function HistoryPanel(props: Props) {
   const selectedRef = useRef(selectedOid);
   selectedRef.current = selectedOid;
 
+  const lineOrigin = useRef<{ filter: string | null; searchKind: SearchKind; searchText: string; search: typeof search; commits: CommitInfo[]; cursor: LogCursor | null; selected: string | null; fileFilter: typeof fileFilter; mode: Mode; scroll: number } | null>(null);
+  const skipRestoredLoad = useRef(false);
+  const appliedLineJump = useRef<number | null>(null);
+
   // ---------- 分支与日志 ----------
   const onRefsRef = useRef(onRefs);
   onRefsRef.current = onRefs;
@@ -140,18 +154,22 @@ export default function HistoryPanel(props: Props) {
 
   /** 读取第一页（重置已加载的结果）；已选中的提交仍在结果中时保持选择。 */
   const loadFirst = useCallback((version: number) => {
+    if (skipRestoredLoad.current) { skipRestoredLoad.current = false; return; }
     const request = ++logRequest.current;
     setLogLoading(true); setLogError(null);
-    void readLog(repoId, { refs: filter ? [filter] : [], search: search && search.text.trim() ? { kind: search.kind, text: search.text.trim() } : null, pageSize: PAGE_SIZE }, null).then((page) => {
+    const query = { refs: filter ? [filter] : [], search: search && search.text.trim() ? { kind: search.kind, text: search.text.trim() } : null, pageSize: PAGE_SIZE };
+    const reading = lineAnchor ? locateLog(repoId, query, lineAnchor) : readLog(repoId, query, null);
+    void reading.then((page) => {
       if (request !== logRequest.current) return;
       setCommits(page.commits); setCursor(page.next); setLogLoading(false); setLoadedLog(version);
       const keep = selectedRef.current && page.commits.some((c) => c.oid === selectedRef.current);
-      if (!keep) setSelectedOid(page.commits[0]?.oid ?? null);
+      if (lineAnchor && page.commits.some(c => c.oid === lineAnchor)) { setSelectedOid(lineAnchor); setScrollTarget(lineAnchor); }
+      else if (!keep) setSelectedOid(page.commits[0]?.oid ?? null);
     }, (error) => {
       if (request !== logRequest.current || isStale(error)) return;
       setLogLoading(false); setCommits([]); setCursor(null); setLogError(errorText(error)); setLoadedLog(version);
     });
-  }, [repoId, filter, search]);
+  }, [repoId, filter, search, lineAnchor, lineJumpVersion]);
 
   /** 正在续读的游标（同步标记）：滚动事件连续到达时，同一页只请求一次。 */
   const inflight = useRef<string | null>(null);
@@ -265,6 +283,7 @@ export default function HistoryPanel(props: Props) {
     setHeadNote(`${shortRef(filter)} 已不存在，已改为浏览全部分支`);
   }, [refs]);
   const jumpHead = () => {
+    setLineAnchor(null); setLineNote(null);
     const head = viewRefs?.head.oid;
     if (!viewRefs || !head) return;
     if (byOid.has(head)) { select(head, true); return; }
@@ -276,6 +295,42 @@ export default function HistoryPanel(props: Props) {
     setHeadNote(`HEAD 不在当前结果中，已改为浏览 ${target === "HEAD" ? "HEAD" : shortRef(target)}`);
     selectedRef.current = head; setSelectedOid(head); setScrollTarget(head);
   };
+  useEffect(() => {
+    if (!lineJump || lineJump.repoId !== repoId || appliedLineJump.current === lineJump.nonce) return;
+    appliedLineJump.current = lineJump.nonce;
+    setLineJumpVersion(lineJump.nonce);
+    if (!lineOrigin.current) lineOrigin.current = { filter, searchKind, searchText, search, commits, cursor, selected: selectedOid, fileFilter, mode, scroll: list.current?.scrollTop ?? 0 };
+    // 先作废旧查询，避免筛选变更后的 effect 开始之前，旧结果覆盖新目标。
+    ++logRequest.current;
+    setFilter(null); setMode({ kind: "commit" });
+    const nextSearch = lineJump.author ? { kind: "author" as const, text: lineJump.author } : null;
+    setSearch(nextSearch); setSearchKind(lineJump.author ? "author" : "message"); setSearchText(lineJump.author ?? "");
+    selectedRef.current = lineJump.oid; setSelectedOid(lineJump.oid); setScrollTarget(lineJump.oid);
+    setLineAnchor(lineJump.oid);
+    setFileFilter({ oid: lineJump.oid, text: lineJump.path });
+    setLineNote(`${lineJump.author ? "已按作者搜索并" : "已"}定位来源提交 ${shortOid(lineJump.oid)}，从该提交附近显示历史`);
+  }, [lineJump, repoId]);
+
+  const returnFromLine = () => {
+    const origin = lineOrigin.current;
+    if (!origin) return;
+    ++logRequest.current;
+    skipRestoredLoad.current = origin.commits.length > 0 && (lineAnchor !== null || filter !== origin.filter || search !== origin.search);
+    setFilter(origin.filter); setSearchKind(origin.searchKind); setSearchText(origin.searchText); setSearch(origin.search);
+    setLineAnchor(null); setLineNote(null); setMode(origin.mode);
+    setFileFilter(origin.fileFilter);
+    setCommits(origin.commits); setCursor(origin.cursor); setLogLoading(false); setLogError(null);
+    selectedRef.current = origin.selected; setSelectedOid(origin.selected);
+    // 在下一次绘制前恢复列表的原始滚动位置。
+    restoreListScroll.current = origin.scroll;
+    lineOrigin.current = null;
+    onReturnFromLine?.();
+  };
+  const restoreListScroll = useRef<number | null>(null);
+  useLayoutEffect(() => { if (list.current && restoreListScroll.current !== null) { list.current.scrollTop = restoreListScroll.current; restoreListScroll.current = null; } });
+  const applySearch = () => { setLineAnchor(null); setLineNote(null); setSearch(searchText.trim() ? { kind: searchKind, text: searchText } : null); };
+  const clearSearch = () => { setLineAnchor(null); setLineNote(null); setSearch(null); setSearchText(""); };
+
   const onListKey = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (!commits.length) return;
     const index = selectedOid ? byOid.get(selectedOid) ?? 0 : -1;
@@ -286,7 +341,7 @@ export default function HistoryPanel(props: Props) {
     else if (event.key === "PageUp") move(index - 10);
     else if (event.key === "Home") move(0);
     else if (event.key === "End") move(commits.length - 1);
-    else if (event.key === "Enter" && changes?.files[0] && selected) { event.preventDefault(); openCommitFile(selected, changes, changes.files[0]); }
+    else if (event.key === "Enter" && changes?.oid === selectedOid && selected) { const file = filterChangedFiles(changes.files, selectedFileFilter)[0]; if (file) { event.preventDefault(); openCommitFile(selected, changes, file); } }
   };
   const [view, setView] = useState({ top: 0, height: 240 });
   useLayoutEffect(() => {
@@ -371,7 +426,7 @@ export default function HistoryPanel(props: Props) {
   const stashEntry = mode.kind === "stash" ? stash.entries?.find((e) => e.oid === mode.oid) ?? null : null;
 
   return <div ref={root} className="git-body log-layout" hidden={hidden} style={{ gridTemplateColumns: `${columns.left}px ${SPLITTER}px minmax(0, 1fr) ${SPLITTER}px ${columns.right}px` }} onContextMenu={(event) => { if (!(event.target as Element).closest("[data-endpoint]")) setMenu(null); }}>
-    <HistorySidebar refs={viewRefs} refsError={refsError} headLabel={headLabel} current={current} hidden={hidden} filter={filter} onFilter={setFilter}
+    <HistorySidebar refs={viewRefs} refsError={refsError} headLabel={headLabel} current={current} hidden={hidden} filter={filter} onFilter={(value) => { setLineAnchor(null); setLineNote(null); setFilter(value); }}
       stashes={stashStale ? null : stash.entries} stashError={stash.error} selectedStash={mode.kind === "stash" ? mode.oid : null} onStash={(entry) => setMode({ kind: "stash", oid: entry.oid })} onNewStash={onStashPush ? () => setMode({ kind: "stashPush" }) : undefined}
       blocked={writeBlocked ?? null} onSwitch={onSwitch} onTrack={onTrack} onPruneGone={onPruneGone} onMenu={(x, y, endpoint) => setMenu({ x, y, endpoint })}/>
     {splitter("left")}
@@ -383,11 +438,12 @@ export default function HistoryPanel(props: Props) {
       }}/> : <>
         <div className="log-toolbar">
           <select aria-label="搜索类型" value={searchKind} onChange={(event) => setSearchKind(event.target.value as SearchKind)}>{(Object.keys(searchLabels) as SearchKind[]).map((kind) => <option key={kind} value={kind}>{searchLabels[kind]}</option>)}</select>
-          <input aria-label="搜索提交" placeholder={searchKind === "sha" ? "SHA 前缀（至少 4 位）" : `按${searchLabels[searchKind]}搜索（字面量）`} value={searchText} onChange={(event) => setSearchText(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); setSearch(searchText.trim() ? { kind: searchKind, text: searchText } : null); } }}/>
-          <button type="button" onClick={() => setSearch(searchText.trim() ? { kind: searchKind, text: searchText } : null)}>搜索</button>
-          {search && <button type="button" className="quiet" onClick={() => { setSearch(null); setSearchText(""); }}>清除</button>}
+          <ClearableInput aria-label="搜索提交" placeholder={searchKind === "sha" ? "SHA 前缀（至少 4 位）" : `按${searchLabels[searchKind]}搜索（字面量）`} value={searchText} onValueChange={setSearchText} canClear={!!search} onClear={clearSearch} clearLabel="清除提交搜索" onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); applySearch(); } }}/>
+          <button type="button" onClick={applySearch}>搜索</button>
           <button type="button" onClick={jumpHead} disabled={!viewRefs?.head.oid} title="定位到 HEAD（当前检出的提交）">跳到 HEAD</button>
+          {lineOrigin.current && <button type="button" className="quiet" onClick={returnFromLine}>返回来源 diff</button>}
           <span className="spacer"/>
+          {lineNote && <span className="log-jump-note" role="status">{lineNote}</span>}
           {headNote && <span className="log-jump-note" role="status">{headNote}</span>}
           <span className="log-count">{filter ? `浏览 ${shortRef(filter)} · ` : ""}{commits.length} 个提交{cursor ? " · 还有更多" : ""}{logLoading || refsStale ? " · 读取中…" : ""}</span>
         </div>
@@ -414,7 +470,7 @@ export default function HistoryPanel(props: Props) {
         runCompare(renew(mode.a), renew(mode.b));
       }} onClose={() => { setMode({ kind: "commit" }); setCompareStart(null); }} onOpen={(file) => mode.result && openCompareFile(mode.result, mode.a, mode.b, file)}/>
         : mode.kind === "file" ? <FileHistoryDetail mode={mode}/>
-        : selected ? <CommitDetail commit={selected} changes={changes} error={changesError} activeKey={activeKey} onParent={setParent} onOpen={(file) => changes && openCommitFile(selected, changes, file)} onHistory={(file) => loadFileHistory({ pathId: file.pathId, path: file.path, start: selected.oid, nonce: Date.now() }, null, null)} onSubmodule={onSubmoduleCompare}/>
+        : selected ? <CommitDetail commit={selected} changes={changes} error={changesError} fileFilter={selectedFileFilter} onFileFilter={text => setFileFilter({ oid: selectedOid, text })} activeKey={activeKey} onParent={setParent} onOpen={(file) => changes && openCommitFile(selected, changes, file)} onHistory={(file) => loadFileHistory({ pathId: file.pathId, path: file.path, start: selected.oid, nonce: Date.now() }, null, null)} onSubmodule={onSubmoduleCompare}/>
         : <div className="log-empty">选择一个提交查看元信息与变化文件</div>}
     </aside>
     {menu && <EndpointMenu menu={menu} hasStart={!!compareStart} blocked={writeBlocked ?? null} onClose={() => setMenu(null)} onStart={() => { setCompareStart(menu.endpoint); setMenu(null); }} onCompare={() => compareWith(menu.endpoint)}
@@ -453,7 +509,7 @@ const CommitRow = memo(function CommitRow({ row, commit, top, graphWidth, loaded
   </div>;
 });
 
-function CommitDetail({ commit, changes, error, activeKey, onParent, onOpen, onHistory, onSubmodule }: { commit: CommitInfo; changes: CommitChanges | null; error: string | null; activeKey: string | null; onParent(parent: string): void; onOpen(file: ChangedFile): void; onHistory(file: ChangedFile): void; onSubmodule?(file: ChangedFile): void }) {
+function CommitDetail({ commit, changes, error, fileFilter, onFileFilter, activeKey, onParent, onOpen, onHistory, onSubmodule }: { commit: CommitInfo; changes: CommitChanges | null; error: string | null; fileFilter: string; onFileFilter(text: string): void; activeKey: string | null; onParent(parent: string): void; onOpen(file: ChangedFile): void; onHistory(file: ChangedFile): void; onSubmodule?(file: ChangedFile): void }) {
   const current = changes?.oid === commit.oid ? changes : null;
   return <div className="log-detail-body">
     <strong className="log-detail-subject">{commit.subject || "（无提交信息）"}</strong>
@@ -464,7 +520,7 @@ function CommitDetail({ commit, changes, error, activeKey, onParent, onOpen, onH
     {commit.body && <pre className="log-body">{commit.body}</pre>}
     {error && <div className="log-error">{error}</div>}
     {current ? <><div className="log-group">变化文件 · {current.files.length}{current.parent ? ` · 相对 ${shortOid(current.parent)}` : " · 相对空树"}</div>
-      <FileList files={current.files} activeKey={activeKey} keyFor={(file) => `commit:${commit.oid}:${current.parent ?? "root"}:${file.pathId}`} onOpen={onOpen} onHistory={onHistory} onSubmodule={onSubmodule}/></> : !error && <div className="log-empty">正在读取变化文件…</div>}
+      <FileList files={current.files} filter={fileFilter} onFilterChange={onFileFilter} activeKey={activeKey} keyFor={(file) => `commit:${commit.oid}:${current.parent ?? "root"}:${file.pathId}`} onOpen={onOpen} onHistory={onHistory} onSubmodule={onSubmodule}/></> : !error && <div className="log-empty">正在读取变化文件…</div>}
   </div>;
 }
 

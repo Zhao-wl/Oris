@@ -9,6 +9,7 @@ import { Text } from "@codemirror/state";
 import { Change } from "@codemirror/merge";
 import DiffViewer, { buildSideDecorations, type DiffViewerHandle, type HunkHeaders } from "./DiffViewer";
 import { computeDiff } from "./diff-core";
+import { installLineSelection, lineAtNode } from "./diff-line-selection";
 import type { DiffDocument } from "./types";
 
 const lines = (count: number, edit: (index: number, line: string) => string = (_, line) => line) =>
@@ -52,11 +53,11 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function render(file: { left: string; right: string }, document: DiffDocument, readingKey: string, hunkHeaders: HunkHeaders | null, mode: "split" | "unified" = "split") {
+function render(file: { left: string; right: string }, document: DiffDocument, readingKey: string, hunkHeaders: HunkHeaders | null, mode: "split" | "unified" = "split", collapsed = false) {
   const ref = createRef<DiffViewerHandle>();
   act(() => root.render(
     <DiffViewer ref={ref} readingKey={readingKey} presentation={{ kind: "compare" }} left={file.left} right={file.right} document={document}
-      mode={mode} highlight="words" collapsed={false} wrap={false} alignChanges={false} hunkHeaders={hunkHeaders}
+      mode={mode} highlight="words" collapsed={collapsed} wrap={false} alignChanges={false} hunkHeaders={hunkHeaders}
       onPositionChange={onPositionChange} onSplitLayoutChange={onSplitLayoutChange} />
   ));
   return ref;
@@ -261,5 +262,101 @@ describe("buildSideDecorations", () => {
     // CRLF 在 Text 中按一个换行计：第 2 行从位置 2 开始
     expect(decorations(left.replace(/\r\n/g, "\n"), "a")).toEqual(decorations(left, "a"));
     expect(decorations(right, "b").map((d) => d.cls)).toEqual(expect.arrayContaining(["oris-modified-line", "oris-changed-text"]));
+  });
+});
+
+
+describe("行提交信息的实际阅读器行映射", () => {
+  it("并排视图的选中行保留左右侧身份，只派发一次行标记更新", () => {
+    const file = { left: "one\nold\nlast\n", right: "one\nnew\nlast\n" };
+    render(file, documentFor(file.left, file.right, "line"), "line", null);
+    const [a, b] = editors();
+    const callback = vi.fn();
+    const remove = installLineSelection([{ view: a, side: "left" }, { view: b, side: "right" }], callback);
+    const dispatch = vi.spyOn(b, "dispatch");
+    const rightRow = b.contentDOM.querySelectorAll(".cm-line")[1];
+    act(() => rightRow.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, button: 0 })));
+    expect(callback).toHaveBeenLastCalledWith({ side: "b", line: 2 });
+    expect(lineAtNode({ view: a, side: "left" }, a.contentDOM.querySelectorAll(".cm-line")[1])).toEqual({ side: "a", line: 2 });
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(b.contentDOM.querySelectorAll(".cm-line")[1].classList.contains("line-history-selected")).toBe(true);
+    act(() => b.contentDOM.querySelectorAll(".cm-line")[1].dispatchEvent(new MouseEvent("pointerup", { bubbles: true, button: 0 })));
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(b.contentDOM.querySelectorAll(".cm-line")[1].classList.contains("line-history-selected")).toBe(true);
+    const range = document.createRange();
+    const startRow = a.contentDOM.querySelectorAll(".cm-line")[0];
+    const endRow = a.contentDOM.querySelectorAll(".cm-line")[2];
+    range.setStart(startRow, 0);
+    range.setEnd(endRow, endRow.childNodes.length);
+    act(() => { const selection = window.getSelection()!; selection.removeAllRanges(); selection.addRange(range); document.dispatchEvent(new Event("selectionchange")); });
+    expect(callback).toHaveBeenLastCalledWith({ side: "a", line: 3 });
+    expect(b.contentDOM.querySelectorAll(".cm-line")[1].classList.contains("line-history-selected")).toBe(false);
+    remove();
+  });
+  it("统一视图中被删除的多行映射回旧版本行号", () => {
+    const file = { left: "same\nold one\nold two\nlast\n", right: "same\nnew\nlast\n" };
+    render(file, documentFor(file.left, file.right, "deleted"), "deleted", null, "unified");
+    const [view] = editors();
+    const deleted = [...view.contentDOM.querySelectorAll(".cm-deletedChunk div.cm-deletedLine")];
+    expect(deleted.length).toBeGreaterThanOrEqual(2);
+    expect(lineAtNode({ view, side: "unified" }, deleted[1])).toEqual({ side: "a", line: 3 });
+  });
+  it("统一视图同行删除片段仍归属旧版本", () => {
+    const file = { left: "one\nreturn old();\nlast\n", right: "one\nreturn new();\nlast\n" };
+    render(file, documentFor(file.left, file.right, "inline"), "inline", null, "unified");
+    const [view] = editors();
+    const deletion = view.contentDOM.querySelector("del.cm-deletedText")!;
+    expect(deletion).toBeTruthy();
+    expect(lineAtNode({ view, side: "unified" }, deletion)).toEqual({ side: "a", line: 2 });
+  });
+});
+
+describe("独立行跳转", () => {
+  const open = () => {
+    const event = new KeyboardEvent("keydown", { key: "g", ctrlKey: true, bubbles: true, cancelable: true });
+    act(() => document.dispatchEvent(event));
+    expect(event.defaultPrevented).toBe(true);
+    return document.querySelector<HTMLFormElement>(".oris-goto-panel")!;
+  };
+  const jump = (panel: HTMLFormElement, value: string) => act(() => {
+    panel.querySelector<HTMLInputElement>("input")!.value = value;
+    panel.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  });
+  it("Ctrl+G 阻止默认查找，仅跳转目标行；Ctrl+F 内容搜索保持独立", () => {
+    render(fileA, docA, "goto", null);
+    const panel = open();
+    expect(panel.hidden).toBe(false);
+    expect(panel.textContent).not.toMatch(/搜索|查找|下一|上一/);
+    expect(host.querySelector<HTMLDivElement>(".oris-search-panel")!.hidden).toBe(true);
+    jump(panel, "30");
+    expect(editors()[1].state.selection.main.head).toBe(editors()[1].state.doc.line(30).from);
+    expect(panel.hidden).toBe(true);
+    act(() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "f", ctrlKey: true, bubbles: true, cancelable: true })));
+    expect(host.querySelector<HTMLDivElement>(".oris-search-panel")!.hidden).toBe(false);
+    open(); expect(host.querySelector<HTMLDivElement>(".oris-search-panel")!.hidden).toBe(true);
+  });
+  it("按当前左侧定位，拒绝越界和非整数，Esc 只关闭面板", () => {
+    render(fileA, docA, "goto-left", null);
+    const a = editors()[0];
+    act(() => a.contentDOM.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })));
+    const panel = open();
+    for (const value of ["0", "99999", "30.5", "text"]) { jump(panel, value); expect(panel.hidden).toBe(false); expect(panel.textContent).toContain("请输入"); expect(a.state.selection.main.head).toBe(0); }
+    act(() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+    expect(panel.hidden).toBe(true);
+    open(); jump(panel, "20"); expect(a.state.selection.main.head).toBe(a.state.doc.line(20).from);
+  });
+  it("展开目标所在的并排折叠区段，并支持统一视图", () => {
+    const file = { left: lines(200), right: lines(200, (i, l) => i === 100 ? `${l} changed` : l) };
+    const doc = documentFor(file.left, file.right, "goto-folded");
+    render(file, doc, "folded", null, "split", true);
+    expect(Number(host.querySelector<HTMLElement>("[data-collapsed-regions]")!.dataset.collapsedRegions)).toBeGreaterThan(1);
+    jump(open(), "20");
+    expect(host.querySelector<HTMLElement>("[data-expanded-regions]")!.dataset.expandedRegions).toBe("1");
+    render(file, doc, "folded-unified", null, "unified", true);
+    const collapsedCount = host.querySelectorAll(".cm-collapsedLines").length;
+    expect(collapsedCount).toBeGreaterThan(0);
+    jump(open(), "30");
+    expect(host.querySelectorAll(".cm-collapsedLines").length).toBeLessThan(collapsedCount);
+    expect(editors()[0].state.selection.main.head).toBe(editors()[0].state.doc.line(30).from);
   });
 });

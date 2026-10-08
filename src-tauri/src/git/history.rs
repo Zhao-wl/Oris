@@ -53,6 +53,13 @@ pub fn validate_reference(reference: &str) -> Result<(), GitError> {
 }
 
 impl GitAdapter {
+    pub fn history_locate(&self, query: &LogQuery, commit: &str, stale: &dyn Fn() -> bool) -> Result<LogPage, GitError> {
+        validate_reference(commit)?;
+        if query.refs.len() > MAX_FILTER_REFS { return Err(GitError::CommandFailed("筛选引用过多".into())); }
+        for reference in &query.refs { validate_reference(reference)?; }
+        log::locate_log(&self.git, &self.worktree, query, commit, stale)
+    }
+
     pub fn history_log(&self, query: &LogQuery, cursor: Option<&LogCursor>) -> Result<LogPage, GitError> {
         if query.refs.len() > MAX_FILTER_REFS {
             return Err(GitError::CommandFailed(format!("一次最多筛选 {MAX_FILTER_REFS} 个引用")));

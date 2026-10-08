@@ -70,7 +70,7 @@ struct OpenRepository {
 }
 
 #[cfg(feature = "desktop")]
-const HISTORY_KINDS: usize = 8;
+const HISTORY_KINDS: usize = 10;
 
 /// 历史类只读请求的种类（各自独立的代次）。
 #[cfg(feature = "desktop")]
@@ -84,6 +84,8 @@ enum HistoryKind {
     Content = 5,
     StashList = 6,
     StashChanges = 7,
+    LineAttribution = 8,
+    LineChange = 9,
 }
 
 /// 在后台线程执行一个历史类读取；`fresh` 为 true 时使同种类的旧请求过期（分页续读传 false，沿用当前代次）。
@@ -742,6 +744,31 @@ async fn read_log(repo_id: String, query: git::log::LogQuery, cursor: Option<git
     history_call(opened, HistoryKind::Log, fresh, move |adapter, _| adapter.history_log(&query, cursor.as_ref())).await
 }
 
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn locate_log(repo_id: String, query: git::log::LogQuery, commit: String, registry: State<'_, RepositoryRegistry>) -> Result<git::log::LogPage, GitError> {
+    let opened = opened(&registry, &repo_id)?;
+    history_call(opened, HistoryKind::Log, true, move |adapter, stale| adapter.history_locate(&query, &commit, stale)).await
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn read_line_attribution(repo_id: String, query: git::blame::LineQuery, registry: State<'_, RepositoryRegistry>) -> Result<git::blame::LineAttribution, GitError> {
+    let opened = opened(&registry, &repo_id)?;
+    let slots = opened.slots.clone();
+    history_call(opened, HistoryKind::LineAttribution, true, move |adapter, stale| {
+        let _slot = slots.acquire();
+        adapter.line_attribution(&query, stale)
+    }).await
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn read_line_change(repo_id: String, commit: String, path_id: String, line: usize, registry: State<'_, RepositoryRegistry>) -> Result<Vec<String>, GitError> {
+    let opened = opened(&registry, &repo_id)?;
+    history_call(opened, HistoryKind::LineChange, true, move |adapter, _| adapter.line_change(&commit, &path_id, line)).await
+}
+
 /// 某个提交相对所选父节点（默认第一个；根提交相对空树）的变化文件。
 #[cfg(feature = "desktop")]
 #[tauri::command]
@@ -998,6 +1025,9 @@ pub fn run() {
             discard_backups,
             head_commit_info,
             read_log,
+            locate_log,
+            read_line_attribution,
+            read_line_change,
             commit_changes,
             compare_revisions,
             file_history,

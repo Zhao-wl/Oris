@@ -96,6 +96,68 @@ fn linear_history_pages_keep_identity_when_refs_move() {
 }
 
 #[test]
+fn line_attribution_uses_each_revision_and_snapshot_without_writes() {
+    use super::blame::LineQuery;
+    let dir = init();
+    let p = dir.path();
+    let first = commit(p, "源 文件.txt", "first\nold\nlast\n", "original\n\nfull body", 1);
+    let second = commit(p, "源 文件.txt", "first\nnew\nlast\n", "change second line", 2);
+    let adapter = GitAdapter::open(p.to_string_lossy().into_owned(), None).unwrap();
+    let query = |oid: &str, line, contents: Option<&str>| LineQuery { path_id: URL_SAFE_NO_PAD.encode("源 文件.txt"), revision: Some(oid.into()), contents: contents.map(str::to_owned), line };
+    let before = state(p);
+    let unchanged = adapter.line_attribution(&query(&second, 1, None), &|| false).unwrap();
+    assert_eq!(unchanged.commit.unwrap().oid, first);
+    let changed = adapter.line_attribution(&query(&second, 2, None), &|| false).unwrap();
+    assert_eq!(changed.commit.unwrap().oid, second);
+    let old = adapter.line_attribution(&query(&first, 2, None), &|| false).unwrap();
+    assert_eq!(old.commit.as_ref().unwrap().oid, first);
+    assert_eq!(old.commit.unwrap().body, "full body");
+    assert_eq!(old.path, "源 文件.txt");
+    let contents = "first\nuncommitted\nnew\nlast\n";
+    assert!(adapter.line_attribution(&query(&second, 2, Some(contents)), &|| false).unwrap().commit.is_none());
+    let shifted = adapter.line_attribution(&query(&second, 3, Some(contents)), &|| false).unwrap();
+    assert_eq!(shifted.original_line, 2);
+    assert_eq!(shifted.commit.unwrap().oid, second);
+    assert!(adapter.line_change(&second, &query(&second, 2, None).path_id, 2).unwrap().iter().any(|row| row == "-old"));
+    assert!(adapter.line_change(&first, &query(&first, 2, None).path_id, 2).unwrap().iter().any(|row| row == "+old"));
+    assert_eq!(state(p), before);
+    assert!(matches!(adapter.line_attribution(&query(&first, 2, Some(contents)), &|| false), Err(GitError::StaleRequest)));
+    assert!(matches!(adapter.line_attribution(&query(&second, 1, None), &|| true), Err(GitError::StaleRequest)));
+    assert!(adapter.line_attribution(&LineQuery { path_id: URL_SAFE_NO_PAD.encode("../outside"), ..query(&second, 1, None) }, &|| false).is_err());
+}
+
+#[test]
+fn line_attribution_follows_rename_and_new_files_are_uncommitted() {
+    use super::blame::LineQuery;
+    let dir = init(); let p = dir.path();
+    let original = commit(p, "old.txt", "one\ntwo\n", "original", 1);
+    git(p, &["mv", "old.txt", "new.txt"]); git(p, &["commit", "-qm", "rename"]);
+    let head = git(p, &["rev-parse", "HEAD"]);
+    let adapter = GitAdapter::open(p.to_string_lossy().into_owned(), None).unwrap();
+    let query = LineQuery { path_id: URL_SAFE_NO_PAD.encode("new.txt"), revision: Some(head), contents: None, line: 2 };
+    let result = adapter.line_attribution(&query, &|| false).unwrap();
+    assert_eq!(result.commit.unwrap().oid, original); assert_eq!(result.path, "old.txt");
+    let new = LineQuery { path_id: URL_SAFE_NO_PAD.encode("untracked.txt"), contents: Some("new\n".into()), ..query };
+    assert!(adapter.line_attribution(&new, &|| false).unwrap().commit.is_none());
+    let unborn = LineQuery { revision: None, ..new };
+    assert!(adapter.line_attribution(&unborn, &|| false).unwrap().commit.is_none());
+}
+
+#[test]
+fn locate_history_finds_a_commit_beyond_the_first_page_and_keeps_author_search() {
+    let dir = init(); let p = dir.path();
+    let target = commit(p, "f.txt", "0\n", "target", 0);
+    for n in 1..14 { commit(p, "f.txt", &format!("{n}\n"), &format!("update {n}"), n); }
+    let before = state(p);
+    let query = LogQuery { refs: vec![], search: Some(SearchQuery::Author("<alice@example.invalid>".into())), page_size: 4 };
+    let page = log::locate_log(gp(), p, &query, &target, &|| false).unwrap();
+    assert!(page.commits.iter().any(|c| c.oid == target));
+    assert!(page.commits.iter().all(|c| c.author_email == "alice@example.invalid"));
+    assert_eq!(state(p), before);
+    assert!(matches!(log::locate_log(gp(), p, &query, &target, &|| true), Err(GitError::StaleRequest)));
+}
+
+#[test]
 fn fork_merge_root_changes_and_parent_selection() {
     let dir = init();
     let p = dir.path();

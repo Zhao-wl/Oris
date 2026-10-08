@@ -61,6 +61,11 @@ export interface RefsView {
 }
 
 export const readLog = (repoId: string, query: LogQuery, cursor: LogCursor | null) => invoke<LogPage>("read_log", { repoId, query, cursor });
+export const locateLog = (repoId: string, query: LogQuery, commit: string) => invoke<LogPage>("locate_log", { repoId, query, commit });
+export interface LineQuery { pathId: string; revision: string | null; contents: string | null; line: number }
+export interface LineAttribution { commit: CommitInfo | null; originalLine: number; path: string; pathId: string; shallow: boolean }
+export const readLineAttribution = (repoId: string, query: LineQuery) => invoke<LineAttribution>("read_line_attribution", { repoId, query });
+export const readLineChange = (repoId: string, commit: string, pathId: string, line: number) => invoke<string[]>("read_line_change", { repoId, commit, pathId, line });
 export const commitChanges = (repoId: string, commit: string, parent: string | null) => invoke<CommitChanges>("commit_changes", { repoId, commit, parent });
 export const compareRevisions = (repoId: string, left: string, right: string) => invoke<Comparison>("compare_revisions", { repoId, left, right });
 export const fileHistory = (repoId: string, start: string, pathId: string, pageSize: number, cursor: LogCursor | null) => invoke<FileHistory>("file_history", { repoId, start, pathId, pageSize, cursor });

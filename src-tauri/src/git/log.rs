@@ -313,6 +313,47 @@ fn parse_name_status(tokens: &[&[u8]]) -> Result<Vec<ChangedFile>, GitError> {
 
 const LOG_BASE: [&str; 5] = ["log", "--no-show-signature", "--no-color", "--decorate=full", "--topo-order"];
 
+/// 定位行归属提交：流式寻找结果中的位置，仅返回目标附近一页；不把整段历史搬到前端。
+pub fn locate_log(git: &Path, worktree: &Path, query: &LogQuery, commit: &str, stale: &dyn Fn() -> bool) -> Result<LogPage, GitError> {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+    let target = resolve_commit(git, worktree, commit)?;
+    let mut tips = if query.refs.is_empty() { default_tips(git, worktree)? } else { query.refs.iter().map(|r| resolve_commit(git, worktree, r)).collect::<Result<Vec<_>, _>>()? };
+    if !tips.contains(&target) { tips.push(target.clone()); }
+    let mut args: Vec<String> = vec!["log".into(), "--no-show-signature".into(), "--no-color".into(), "--topo-order".into(), "--format=%H".into()];
+    match &query.search {
+        Some(SearchQuery::Author(text)) => args.extend(["--regexp-ignore-case".into(), "--fixed-strings".into(), format!("--author={text}")]),
+        Some(SearchQuery::Message(text)) => args.extend(["--regexp-ignore-case".into(), "--fixed-strings".into(), format!("--grep={text}")]),
+        Some(SearchQuery::Sha(_)) => return read_log(git, worktree, query, None),
+        None => {}
+    }
+    args.extend(tips.iter().cloned());
+    args.push("--".into());
+    let refs: Vec<_> = args.iter().map(String::as_str).collect();
+    let mut child = super::readonly_command(git, worktree, &refs).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| GitError::GitUnavailable(e.to_string()))?;
+    let stdout = child.stdout.take().ok_or_else(|| GitError::Io("历史定位缺少输出管道".into()))?;
+    let mut found = None;
+    let mut read_error = None;
+    for (index, row) in BufReader::new(stdout).lines().enumerate() {
+        if stale() { read_error = Some(GitError::StaleRequest); break; }
+        match row {
+            Ok(oid) if oid.trim() == target => { found = Some(index); break; }
+            Ok(_) => {}
+            Err(e) => { read_error = Some(GitError::Io(e.to_string())); break; }
+        }
+    }
+    // 提前结束或取消时仍回收本次创建的 Git 子进程。
+    if found.is_some() || read_error.is_some() { let _ = child.kill(); }
+    let output = child.wait_with_output().map_err(|e| GitError::Io(e.to_string()))?;
+    if let Some(error) = read_error { return Err(error); }
+    let Some(index) = found else {
+        return Err(GitError::CommandFailed(if output.status.success() { "当前搜索没有包含来源提交".into() } else { super::stderr_summary(&output) }));
+    };
+    if stale() { return Err(GitError::StaleRequest); }
+    let before = (query.page_size.clamp(1, MAX_PAGE) / 2).min(20);
+    read_log(git, worktree, query, Some(&LogCursor { tips, skip: index.saturating_sub(before) }))
+}
+
 /// 读取一页提交。第一页（cursor 为 None）按 query 解析起点并固定；之后传回上一页的游标。
 pub fn read_log(git: &Path, worktree: &Path, query: &LogQuery, cursor: Option<&LogCursor>) -> Result<LogPage, GitError> {
     let page_size = query.page_size.clamp(1, MAX_PAGE);

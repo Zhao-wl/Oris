@@ -26,6 +26,8 @@ import { useStore } from "./store";
 import { collectQueryMatches, createReadingQuery, type ReadingSearchOptions, type TextMatch } from "./search-model";
 import type { DiffDocument } from "./types";
 import type { HunkItem } from "./hunk-model";
+import { highlightLineSelection, installLineSelection, lineSelectionMarker, type DiffLineSelection } from "./diff-line-selection";
+import { installGoToLine } from "./go-to-line";
 
 const DIFF_SEPARATOR_WIDTH = 56;
 const DIFF_RAIL_WIDTH = 24;
@@ -63,6 +65,7 @@ interface SplitController {
   refreshLayout(): void;
   /** 展开全部折叠的未变化内容；返回本次展开的区段数。 */
   expandAll(): number;
+  revealLine(side: DiffSide, line: number): void;
   /** keepViews 为 true 时只拆除控制器与外层 DOM，EditorView 留给下一个文件复用。 */
   destroy(keepViews?: boolean): void;
 }
@@ -1086,6 +1089,10 @@ function installPairedCollapse(split: SplitView) {
   };
   update();
   return {
+    reveal(side: DiffSide, position: number) {
+      const region = regions.find(region => !expanded.has(region.id) && position >= region[side].from && position < region[side].to);
+      if (region) { expanded.add(region.id); update(); }
+    },
     expandAll() {
       const hidden = regions.filter((region) => !expanded.has(region.id)).length;
       regions.forEach((region) => expanded.add(region.id));
@@ -1103,7 +1110,7 @@ function installPairedCollapse(split: SplitView) {
  * 统一视图的“全部展开”：按 @codemirror/merge `buildCollapsedRanges` 的同一规则（margin 3、至少 5 行）
  * 找出折叠区段的起点，逐个派发公开的 `uncollapseUnchanged` 效果。
  */
-function expandAllUnified(view: EditorView, margin = 3, minLines = 5) {
+function expandUnified(view: EditorView, targetLine?: number, margin = 3, minLines = 5) {
   const chunks = getChunks(view.state)?.chunks ?? [];
   const doc = view.state.doc;
   const starts: number[] = [];
@@ -1112,7 +1119,7 @@ function expandAllUnified(view: EditorView, margin = 3, minLines = 5) {
     const chunk = index < chunks.length ? chunks[index] : null;
     const from = index ? previousLine + margin : 1;
     const to = chunk ? doc.lineAt(chunk.fromB).number - 1 - margin : doc.lines;
-    if (to - from + 1 >= minLines) starts.push(doc.line(from).from);
+    if (to - from + 1 >= minLines && (targetLine === undefined || (targetLine >= from && targetLine <= to))) starts.push(doc.line(from).from);
     if (!chunk) break;
     previousLine = doc.lineAt(Math.min(doc.length, chunk.toB)).number;
   }
@@ -1876,6 +1883,11 @@ function createSplitView(
       if (alignmentController) alignmentController.schedule(onComplete);
       else onComplete();
     },
+    revealLine(side, line) {
+      const view = side === "a" ? split.a : split.b;
+      collapse?.reveal(side, view.state.doc.line(line).from);
+      alignmentController?.schedule(); visualController?.scheduleMeasure(); scrollController?.updateRails();
+    },
     expandAll() {
       const expanded = collapse?.expandAll() ?? 0;
       if (expanded) {
@@ -2006,13 +2018,17 @@ interface Props {
   onSplitLayoutChange(ratio: number, leftWidth: number): void;
   /** 块操作标题行（V2-05）；为 null 时不显示（“全部”范围、历史阅读、不可操作的文件）。 */
   hunkHeaders?: HunkHeaders | null;
+  onLineSelect?(selection: DiffLineSelection): void;
+  selectedLine?: DiffLineSelection | null;
 }
 
 const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
-  { readingKey, presentation, left, right, document, mode, highlight, collapsed, wrap, alignChanges, onPositionChange, onSplitLayoutChange, hunkHeaders = null },
+  { readingKey, presentation, left, right, document, mode, highlight, collapsed, wrap, alignChanges, onPositionChange, onSplitLayoutChange, hunkHeaders = null, onLineSelect, selectedLine = null },
   ref
 ) {
   const host = useRef<HTMLDivElement>(null);
+  const lineSelect = useRef(onLineSelect);
+  lineSelect.current = onLineSelect;
   const hunkRef = useRef(hunkHeaders);
   hunkRef.current = hunkHeaders;
   /** 把块标题行放到右侧（并排）或统一视图编辑器中每个差异块的起点之前。 */
@@ -2052,7 +2068,7 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
     expandAll() {
       const current = runtime.current;
       if (current.split) return current.split.expandAll();
-      if (current.unified) return expandAllUnified(current.unified);
+      if (current.unified) return expandUnified(current.unified);
       return 0;
     },
     navigateTo(index) {
@@ -2116,6 +2132,7 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
       collapsedRanges,
       searchHighlights,
       selectionHighlights,
+      lineSelectionMarker,
       EditorView.editable.of(false),
       EditorView.contentAttributes.of({ tabindex: "0" }),
       EditorView.domEventHandlers({
@@ -2222,7 +2239,14 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
       });
     }
     readingSearch = installReadingSearch(host.current, searchViews, split ? (onComplete) => split?.settleViewport(onComplete) : undefined);
+    const removeLineSelection = installLineSelection(searchViews, selection => lineSelect.current?.(selection));
+    const removeGoToLine = installGoToLine(host.current, searchViews, (entry, line) => {
+      if (split) split.revealLine(entry.side === "left" ? "a" : "b", line);
+      else if (unified) expandUnified(unified, line);
+    }, selection => { highlightLineSelection(searchViews, selection); lineSelect.current?.(selection); });
     return () => {
+      removeGoToLine();
+      removeLineSelection();
       disposed = true;
       if (viewportFrame) cancelAnimationFrame(viewportFrame);
       const viewports = savedViewports.current;
@@ -2243,6 +2267,13 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
   }, [layoutKey, left, right, document, mode, highlight, collapsed, wrap, alignChanges, onPositionChange, onSplitLayoutChange, presentation]);
 
   useEffect(() => { applyHunkHeaders.current(); }, [hunkHeaders]);
+  useEffect(() => {
+    const current = runtime.current;
+    const entries = current.split ? [{ view: current.split.view.a, side: "left" as const }, { view: current.split.view.b, side: "right" as const }]
+      : current.single ? [{ view: current.single.view, side: presentation.kind === "single" && presentation.side === "a" ? "left" as const : "right" as const }]
+      : current.unified ? [{ view: current.unified, side: "unified" as const }] : [];
+    highlightLineSelection(entries, selectedLine);
+  }, [selectedLine, layoutKey, document, mode, presentation]);
   // 指针移入或键盘聚焦阅读器时按需读取块映射。
   useEffect(() => {
     const element = host.current;

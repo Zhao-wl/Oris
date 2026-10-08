@@ -10,21 +10,21 @@ import { FETCH_LOG_KEY } from "./history-model";
 
 const bridge = vi.hoisted(() => ({
   open: vi.fn(), refresh: vi.fn(), read: vi.fn(), diff: vi.fn(), operation: vi.fn(),
-  log: vi.fn(), changes: vi.fn(), compare: vi.fn(), fileHistory: vi.fn(), refs: vi.fn(), revision: vi.fn()
+  line: vi.fn(), lineChange: vi.fn(), locate: vi.fn(), log: vi.fn(), changes: vi.fn(), compare: vi.fn(), fileHistory: vi.fn(), refs: vi.fn(), revision: vi.fn()
 }));
 vi.mock("./api", () => ({ discoverGroup: vi.fn(async () => ({ isGroup: false, members: [], selectedRepoId: null, ignored: [] })), memberChangeCount: vi.fn(async () => 0), watchGroup: vi.fn(async () => {}), setSubmodulePointers: vi.fn(async () => {}), openRepository: bridge.open, refreshRepository: bridge.refresh, readContentPair: bridge.read, closeRepository: vi.fn(async () => {}), cancelContentRead: vi.fn(async () => {}),
   repositoryDetails: vi.fn(async () => null), activateRepository: vi.fn(async () => true), loadSnapshot: vi.fn(async () => null), saveSnapshot: vi.fn(async () => true), removeSnapshot: vi.fn(async () => {}), decodeContentFrame: (x: unknown) => x }));
 vi.mock("./operations-api", () => ({ runOperation: bridge.operation, cancelOperation: vi.fn(async () => true), lastOperation: vi.fn(async () => null),
   prepareDiscard: vi.fn(), discardBackups: vi.fn(async () => []), headCommitInfo: vi.fn(async () => null) }));
 vi.mock("./history-api", async (importOriginal) => ({ ...(await importOriginal<typeof import("./history-api")>()),
-  readLog: bridge.log, commitChanges: bridge.changes, compareRevisions: bridge.compare, fileHistory: bridge.fileHistory, readRefs: bridge.refs, readRevisionPair: bridge.revision,
+  readLineAttribution: bridge.line, readLineChange: bridge.lineChange, locateLog: bridge.locate, readLog: bridge.log, commitChanges: bridge.changes, compareRevisions: bridge.compare, fileHistory: bridge.fileHistory, readRefs: bridge.refs, readRevisionPair: bridge.revision,
   // 获取 ▾ 的轻量读取：取自同一份 refs 夹具。
   readRemotes: async (repoId: string) => { const view = await bridge.refs(repoId); return { remotes: view.remotes, defaultRemote: view.defaultRemote, fetchHeadAt: view.fetchHeadAt }; } }));
 vi.mock("./diff", () => ({ calculateDiff: bridge.diff }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ isFocused: async () => false, onFocusChanged: async () => () => {} }) }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => {} }));
-vi.mock("./DiffViewer", () => ({ default: ({ readingKey }: { readingKey: string }) => <div data-testid="readable">{readingKey}</div> }));
+vi.mock("./DiffViewer", () => ({ default: ({ readingKey, onLineSelect }: { readingKey: string; onLineSelect?: (value: { side: "a" | "b"; line: number }) => void }) => <><div data-testid="readable">{readingKey}</div><button type="button" aria-label="测试选择右侧行" onClick={() => onLineSelect?.({ side: "b", line: 1 })}>测试选择行</button></> }));
 vi.mock("./ImageViewer", () => ({ default: () => <div/> }));
 import App from "./App";
 
@@ -96,6 +96,9 @@ beforeEach(() => {
     { commit: history[3], path: "old.txt", pathId: "id-old.txt", status: "added", renamedFrom: null, renamedFromId: null }
   ], next: null, reachedOrigin: true });
   bridge.revision.mockImplementation(async (_repo: string, left: string | null, _right: string, pathId: string) => pair(left ? "commit" : "emptyTree", pathId, !left));
+  bridge.line.mockResolvedValue({ commit: history[3], originalLine: 1, path: "root.txt", pathId: "id-root.txt", shallow: false });
+  bridge.lineChange.mockResolvedValue(["@@ -0,0 +1 @@", "+root"]);
+  bridge.locate.mockResolvedValue({ commits: [history[3]], next: null, tips: [history[0].oid] });
   localStorage.setItem(WORKSPACE_KEY, JSON.stringify({ version: 2, activeRepoId: "a", projects: [{ repo, gitExecutable: "", pinned: false, lastOpenedAt: 0, anchor: defaultAnchor() }] }));
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
@@ -358,5 +361,64 @@ describe("V2-D60：写操作后的历史重读", () => {
     expect(bridge.refs).toHaveBeenCalledWith("b");
     expect(bridge.log.mock.calls.some(([id]) => id === "b")).toBe(true);
     expect(q(".log-current")?.textContent).toContain("● main");
+  });
+});
+
+
+describe("从 diff 行跳转历史", () => {
+  const selectLine = async () => {
+    await click(button("测试选择行"));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 190)); });
+  };
+  it("点击作者按邮箱身份搜索并定位，返回后恢复原筛选与来源 diff", async () => {
+    await mount(); await openLog();
+    const input = q<HTMLInputElement>('[aria-label="搜索提交"]')!;
+    await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "main"); input.dispatchEvent(new Event("input", { bubbles: true })); }); await flush(); await click(button("搜索"));
+    await selectLine();
+    await click(button("Alice", q(".line-history-bar")!));
+    expect(bridge.locate).toHaveBeenLastCalledWith("a", { refs: [], search: { kind: "author", text: "<a@x>" }, pageSize: 200 }, O("0"));
+    expect(q('.log-row[aria-selected="true"]')?.getAttribute("data-oid")).toBe(O("0"));
+    expect(q<HTMLInputElement>('[aria-label="搜索提交"]')!.value).toBe("<a@x>");
+    expect(q<HTMLInputElement>('[aria-label="搜索变化文件"]')!.value).toBe("root.txt");
+    expect(q('[aria-label="清除提交搜索"]')?.closest(".clearable-input")).toBeTruthy();
+    expect(all(".log-toolbar button").some(b => b.textContent === "清除")).toBe(false);
+    await click(all(".log-file").find((b) => b.textContent?.includes("root.txt"))!);
+    expect(reading()).toContain("history:commit:");
+    await click(button("返回来源 diff"));
+    expect(q<HTMLInputElement>('[aria-label="搜索提交"]')!.value).toBe("main");
+    expect(q('[data-testid="readable"]')?.textContent).toContain("a:unstaged:id-a.txt");
+    expect(q(".line-history-bar")?.textContent).toContain("右侧 · 1 行");
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 190)); });
+    expect(q(".line-history-bar")?.textContent).toContain("Alice");
+  });
+  it("点击 SHA 清除历史筛选，定位完整 OID，而不改写仓库", async () => {
+    await mount(); await selectLine();
+    await click(button("00000000", q(".line-history-bar")!));
+    expect(bridge.locate).toHaveBeenLastCalledWith("a", { refs: [], search: null, pageSize: 200 }, O("0"));
+    expect(q<HTMLInputElement>('[aria-label="搜索提交"]')!.value).toBe("");
+    expect(bridge.operation).not.toHaveBeenCalled();
+  });
+  it("大提交自动筛选来源路径，匹配重命名前路径；清除与手动搜索不重读 Git", async () => {
+    bridge.changes.mockImplementation(async (_repo: string, oid: string) => ({ oid, parents: [], parent: null, files: [
+      ...Array.from({ length: 600 }, (_, i) => ({ path: `many/file-${i}.txt`, pathId: `id-${i}`, oldPath: null, oldPathId: null, status: "added" })),
+      { path: "Renamed.txt", pathId: "id-renamed", oldPath: "root.txt", oldPathId: "id-root", status: "renamed" }
+    ] }));
+    await mount(); await selectLine(); await click(button("00000000", q(".line-history-bar")!));
+    expect(all(".log-detail .log-file")).toHaveLength(1);
+    expect(all(".log-detail .log-file")[0].textContent).toContain("Renamed.txt");
+    const reads = bridge.changes.mock.calls.length;
+    await click(q('[aria-label="清除文件搜索"]'));
+    expect(q('[data-virtual-count="601"]')).toBeTruthy();
+    const input = q<HTMLInputElement>('[aria-label="搜索变化文件"]')!;
+    await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "RENAMED"); input.dispatchEvent(new Event("input", { bubbles: true })); }); await flush();
+    expect(all(".log-detail .log-file")).toHaveLength(1);
+    expect(bridge.changes).toHaveBeenCalledTimes(reads);
+  });
+  it("输入框内的 × 同时清除已应用的提交搜索和输入内容", async () => {
+    await mount(); await selectLine(); await click(button("Alice", q(".line-history-bar")!));
+    await click(q('[aria-label="清除提交搜索"]'));
+    expect(q<HTMLInputElement>('[aria-label="搜索提交"]')!.value).toBe("");
+    expect(bridge.log.mock.calls.at(-1)?.[1].search).toBeNull();
+    expect(q('[aria-label="清除提交搜索"]')).toBeNull();
   });
 });

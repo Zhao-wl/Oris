@@ -15,6 +15,14 @@ V1 已确认的平台、Git 最低版本、只读浏览边界都保持不变。�
 
 ## 2. 需求
 
+### R-LINEHISTORY：当前行提交信息（2026-10-08 补充）
+
+- diff 选中一行后，在底部信息栏显示该版本中该行的最后修改作者、相对时间、提交摘要与 SHA；悬浮查看完整提交日志、精确时间、来源路径 / 行号及该提交的变化片段。
+- 点击作者按邮箱身份在历史中搜索并定位来源提交；点击 SHA 直接定位。浮层不添加重复的“定位提交 / 查看提交变化”按钮。
+- 左右两端分别追溯；统一视图中的删除内容属于旧版本。未提交修改明确标记，不提供提交跳转。
+- 历史支持定位尚未加载的来源提交，提供“返回来源 diff”，恢复阅读上下文与原历史筛选。支持开关，不改写仓库。
+- 具体边界见 [当前行提交信息](../design/08-line-commit-info.md)。这是对原 blame 排除项的有限补充，整文件 blame 与更深的行历史仍不纳入。
+
 ### R-STAGE：暂存
 
 - 未暂存范围内的文件可以暂存，已暂存范围内的文件可以取消暂存；支持多选批量操作。新增、删除、rename、未跟踪文件都能正确暂存。
@@ -170,7 +178,7 @@ V1 已确认的平台、Git 最低版本、只读浏览边界都保持不变。�
 
 ## 4. 明确不支持
 
-自定义单个颜色、导入外部 VS Code 主题或扩展、图标主题、界面字体选择（以上为 V2-06 的排除项）；rebase（任何形式）、force push、冲突解决编辑器、行级 stage、tag、cherry-pick、revert、reset 到指定提交、删除或重命名远端分支、remote 管理、submodule / worktree / LFS / sparse-checkout 操作、`git clean`、bisect、blame、reflog 界面、patch 导入导出、hooks 管理、签名配置界面、clone / init、PR / Issue、终端。V1 已排除的内容继续排除。
+自定义单个颜色、导入外部 VS Code 主题或扩展、图标主题、界面字体选择（以上为 V2-06 的排除项）；rebase（任何形式）、force push、冲突解决编辑器、行级 stage、tag、cherry-pick、revert、reset 到指定提交、删除或重命名远端分支、remote 管理、submodule / worktree / LFS / sparse-checkout 操作、`git clean`、bisect、整文件 blame / 连续行历史追溯（R-LINEHISTORY 之外）、reflog 界面、patch 导入导出、hooks 管理、签名配置界面、clone / init、PR / Issue、终端。V1 已排除的内容继续排除。
 
 R-WORKSPACE 只识别、切换、分仓库显示，不属于上面排除的“submodule / worktree 操作”：submodule add / init / update / sync / deinit、worktree add / remove / prune、批量跨仓库操作（一次对多个仓库暂存、提交、切换分支、拉取）仍然不做。
 
