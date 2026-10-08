@@ -5,9 +5,9 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import SettingsDialog from "./SettingsDialog";
 import { createSettingsRegistry, DEFAULT_AI_PROMPTS, SettingsStore } from "./settings";
 import { schemeIndex } from "./themes/runtime";
-import { detectAiTools, listAiModels } from "./ai-api";
+import { detectAiTools, listAiModels, setAiKey, testAiConnection } from "./ai-api";
 
-vi.mock("./ai-api", () => ({ detectAiTools: vi.fn(), listAiModels: vi.fn(), setAiKey: vi.fn() }));
+vi.mock("./ai-api", () => ({ detectAiTools: vi.fn(), listAiModels: vi.fn(), setAiKey: vi.fn(), testAiConnection: vi.fn() }));
 
 let host: HTMLDivElement;
 let root: Root;
@@ -15,6 +15,7 @@ let settings: SettingsStore;
 const click = async (element: Element) => { await act(async () => { (element as HTMLElement).click(); }); };
 
 beforeEach(async () => {
+  vi.clearAllMocks();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
   const values = new Map<string, string>();
@@ -68,4 +69,76 @@ it("说明 AI 会发送哪些数据，未配置时不检测也不联网（V2-D72
   for (const text of ["不会在后台自动发送", "已暂存的改动", "未跟踪文件开头最多 2 KB", "当前打开文件两侧的内容", "API Key 只随请求发送"]) expect(note).toContain(text);
   expect(detectAiTools).not.toHaveBeenCalled();
   expect(listAiModels).not.toHaveBeenCalled();
+  expect(testAiConnection).not.toHaveBeenCalled();
+});
+
+const setInput = async (selector: string, value: string) => {
+  await act(async () => {
+    const input = host.querySelector<HTMLInputElement>(selector)!;
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+};
+
+const addReadyProfile = async (kind: "api" | "cli" = "api") => {
+  await click([...host.querySelectorAll("button")].find((button) => button.textContent === (kind === "api" ? "添加 API" : "手动添加工具"))!);
+  await act(async () => settings.update("ai", "profiles", settings.get().ai.profiles.map((profile) => ({ ...profile, baseUrl: kind === "api" ? "https://example.com/v1" : "", model: "test-model", hasKey: kind === "api" }))));
+  return host.querySelector<HTMLButtonElement>('[aria-label^="测试 "]')!;
+};
+
+it("requires a model and saved API key; CLI profiles can test without a key", async () => {
+  await click([...host.querySelectorAll("button")].find((button) => button.textContent === "添加 API")!);
+  const button = host.querySelector<HTMLButtonElement>('[aria-label^="测试 "]')!;
+  expect(button.disabled).toBe(true);
+  await setInput("#ai-model-manual", "test-model");
+  expect(button.disabled).toBe(true);
+  await act(async () => settings.update("ai", "profiles", []));
+  expect((await addReadyProfile("cli")).disabled).toBe(false);
+  expect(testAiConnection).not.toHaveBeenCalled();
+});
+
+it("tests the chosen profile once, shows progress and success, and hides stale results after edits", async () => {
+  const button = await addReadyProfile();
+  let finish!: () => void;
+  vi.mocked(testAiConnection).mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+  const profile = settings.get().ai.profiles[0];
+  const activeId = settings.get().ai.activeId;
+  await click(button);
+  expect(button.disabled).toBe(true);
+  expect(button.textContent).toBe("测试中…");
+  expect(host.querySelector(".ai-profile-item [role=status]")?.textContent).toContain("正在测试");
+  await click(button);
+  expect(testAiConnection).toHaveBeenCalledExactlyOnceWith(profile);
+  await act(async () => finish());
+  expect(button.disabled).toBe(false);
+  expect(host.querySelector(".ai-profile-item .settings-ok")?.textContent).toContain("连接成功");
+  expect(settings.get().ai.activeId).toBe(activeId);
+  expect(listAiModels).not.toHaveBeenCalled();
+  await setInput("#ai-base-url", "https://other.example.com/v1");
+  expect(host.querySelector(".ai-profile-item .settings-ok")).toBeNull();
+});
+
+it("shows the connection failure on that profile and allows retry", async () => {
+  const button = await addReadyProfile();
+  vi.mocked(testAiConnection).mockRejectedValueOnce("AI 服务拒绝了请求（HTTP 401）").mockResolvedValueOnce();
+  await click(button);
+  expect(host.querySelector(".ai-profile-item [role=alert]")?.textContent).toContain("连接失败：AI 服务拒绝了请求（HTTP 401）");
+  expect(button.disabled).toBe(false);
+  await click(button);
+  expect(host.querySelector(".ai-profile-item [role=alert]")).toBeNull();
+  expect(host.querySelector(".ai-profile-item .settings-ok")).not.toBeNull();
+});
+
+it("requires saving a draft key and clears the previous test result when replacing it", async () => {
+  const button = await addReadyProfile();
+  vi.mocked(testAiConnection).mockResolvedValue();
+  vi.mocked(setAiKey).mockResolvedValue();
+  await click(button);
+  await setInput("#ai-key", "new-key");
+  expect(button.disabled).toBe(true);
+  expect(button.title).toBe("请先保存密钥");
+  await click([...host.querySelectorAll("button")].find((item) => item.textContent === "保存密钥")!);
+  expect(setAiKey).toHaveBeenCalledWith(settings.get().ai.profiles[0].id, "new-key");
+  expect(host.querySelector(".ai-profile-item .settings-ok")).toBeNull();
+  expect(button.disabled).toBe(false);
 });

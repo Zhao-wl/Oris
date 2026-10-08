@@ -3,7 +3,7 @@ import { validateGit, type GitValidation } from "./api";
 import { DEFAULT_AI_PROMPTS, DEFAULT_SCHEMES, FONT_SIZE_MAX, FONT_SIZE_MIN, useSettings, type SettingsStore } from "./settings";
 import { schemeIndex, type SchemeIndexEntry } from "./themes/runtime";
 import notices from "./themes/generated/NOTICES.txt?raw";
-import { detectAiTools, listAiModels, setAiKey, type ToolCandidate } from "./ai-api";
+import { detectAiTools, listAiModels, setAiKey, testAiConnection, type ToolCandidate } from "./ai-api";
 import type { AiProfile } from "./settings";
 import { displayAiShortcut } from "./ai-shortcut";
 import { getVersion } from "@tauri-apps/api/app";
@@ -114,6 +114,8 @@ function AiPage({ settings }: { settings: SettingsStore }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [warning, setWarning] = useState("");
+  const [testingId, setTestingId] = useState("");
+  const [connections, setConnections] = useState<Record<string, { profile: string; ok: boolean; message: string }>>({});
   const [editingId, setEditingId] = useState(() => ai.activeId || ai.profiles[0]?.id || "");
   const selected = ai.profiles.find((profile) => profile.id === editingId) ?? ai.profiles[0];
   const unusedDrafts = ai.profiles.filter((profile) => !profile.model.trim() && !profile.hasKey && !profile.executable.trim() && !profile.baseUrl.trim());
@@ -148,9 +150,20 @@ function AiPage({ settings }: { settings: SettingsStore }) {
   const saveKey = async () => {
     if (!selected) return;
     setBusy(true); setError("");
-    try { await setAiKey(selected.id, keyDraft || null); change({ hasKey: !!keyDraft }); setKeyDraft(""); }
+    try { await setAiKey(selected.id, keyDraft || null); change({ hasKey: !!keyDraft }); setKeyDraft(""); setConnections((current) => { const next = { ...current }; delete next[selected.id]; return next; }); }
     catch (failure) { setError(String(failure)); }
     finally { setBusy(false); }
+  };
+  const testConnection = async (profile: AiProfile) => {
+    setBusy(true); setTestingId(profile.id);
+    setConnections((current) => { const next = { ...current }; delete next[profile.id]; return next; });
+    const snapshot = JSON.stringify(profile);
+    try {
+      await testAiConnection(profile);
+      setConnections((current) => ({ ...current, [profile.id]: { profile: snapshot, ok: true, message: "连接成功：模型已返回响应" } }));
+    } catch (failure) {
+      setConnections((current) => ({ ...current, [profile.id]: { profile: snapshot, ok: false, message: `连接失败：${String(failure)}` } }));
+    } finally { setBusy(false); setTestingId(""); }
   };
   const remove = async (target: AiProfile) => {
     if (target.kind === "api" && target.hasKey) await setAiKey(target.id, null).catch(() => {});
@@ -177,12 +190,18 @@ function AiPage({ settings }: { settings: SettingsStore }) {
       {ai.profiles.length > 0 && <div className="ai-profile-list">{ai.profiles.map((profile) => {
         const models = modelsById[profile.id] ?? [];
         const available = !!profile.model.trim() && (profile.kind === "cli" || profile.hasKey);
-        return <div className={profile.id === selected?.id ? "ai-profile-card editing" : "ai-profile-card"} key={profile.id}>
+        const unsavedKey = profile.kind === "api" && profile.id === selected?.id && !!keyDraft;
+        const connection = connections[profile.id]?.profile === JSON.stringify(profile) ? connections[profile.id] : undefined;
+        return <div className="ai-profile-item" key={profile.id}><div className={profile.id === selected?.id ? "ai-profile-card editing" : "ai-profile-card"}>
           <button type="button" className="ai-profile-edit" aria-label={`编辑 ${profile.name}`} onClick={() => { setEditingId(profile.id); setKeyDraft(""); }}><strong>{providerLabel(profile)}{profile.kind === "api" ? " API" : ""}</strong><span>{profile.model || "未选择模型"}</span></button>
           <select aria-label={`${profile.name} 模型`} value={models.includes(profile.model) ? profile.model : ""} onChange={(event) => settings.update("ai", "profiles", ai.profiles.map((item) => item.id === profile.id ? { ...item, model: event.target.value } : item))}><option value="">{profile.model && !models.includes(profile.model) ? profile.model : "选择模型"}</option>{models.map((model) => <option key={model} value={model}>{model}</option>)}</select>
           <button type="button" disabled={busy} onClick={() => void fetchModels(profile)}>检测模型</button>
+          <button type="button" disabled={busy || !available || unsavedKey} aria-label={`测试 ${profile.name} 连接`} title={unsavedKey ? "请先保存密钥" : !available ? "请先选择模型，API 配置还需保存密钥" : "发送简短请求测试连接（最长约 30 秒）"} onClick={() => void testConnection(profile)}>{testingId === profile.id ? "测试中…" : "测试连接"}</button>
           <button type="button" className={ai.activeId === profile.id ? "primary" : ""} disabled={!available} aria-label={`使用 ${profile.name}`} aria-pressed={ai.activeId === profile.id} onClick={() => settings.update("ai", "activeId", profile.id)}>{ai.activeId === profile.id ? "使用中" : "使用"}</button>
           <button type="button" className="ai-profile-remove" aria-label={`删除 ${profile.name} 配置`} title="删除此配置" onClick={() => void remove(profile)}>×</button>
+        </div>
+          {testingId === profile.id && <p className="settings-note" role="status">正在测试连接…</p>}
+          {connection && <p className={connection.ok ? "settings-ok" : "settings-error"} role={connection.ok ? "status" : "alert"}>{connection.message}</p>}
         </div>;
       })}</div>}
     </div>
@@ -196,6 +215,7 @@ function AiPage({ settings }: { settings: SettingsStore }) {
         <div className="settings-row"><label htmlFor="ai-key">API Key</label><input id="ai-key" type="password" value={keyDraft} placeholder={selected.hasKey ? "已保存；输入新值可替换" : "输入 API Key"} onChange={(event) => setKeyDraft(event.target.value)}/><button type="button" disabled={busy} onClick={() => void saveKey()}>{keyDraft ? "保存密钥" : "清除密钥"}</button></div>
       </>}
       <div className="settings-row"><label htmlFor="ai-model-manual">模型 ID</label><input id="ai-model-manual" value={selected.model} placeholder="也可手动输入模型 ID" onChange={(event) => change({ model: event.target.value })}/></div>
+      <p className="settings-note">测试连接会向该模型发送一次简短请求，可能产生少量用量费用；最长等待约 30 秒。{selected.kind === "api" && "使用已保存的 API Key；输入新密钥后请先保存。"}</p>
     </>}
     <section className="ai-prompt-settings" aria-label="操作系统提示词">
       <h4>操作系统提示词</h4>
@@ -217,8 +237,9 @@ function AiPage({ settings }: { settings: SettingsStore }) {
     {error && <p className="settings-error" role="alert">{error}</p>}
     <p className="settings-note">列表只显示已添加的配置，新增项会自动保存。API Key 保存在系统凭据存储中；模型查询失败时可手动输入模型 ID。</p>
     <div className="settings-note ai-data-note" aria-label="AI 发送的数据">
-      <p>AI 为可选功能：只有在你生成提交信息、发送 AI 指令或查询模型时，Oris 才会把下列内容发送给当前 AI 组合（API 服务或本机的 codex / claude 工具），不会在后台自动发送。</p>
+      <p>AI 为可选功能：只有在你生成提交信息、发送 AI 指令、查询模型或测试连接时，Oris 才会把下列内容发送给当前 AI 组合（API 服务或本机的 codex / claude 工具），不会在后台自动发送。</p>
       <ul>
+        <li>测试连接：仅发送固定的简短测试文本，不发送项目文件内容。</li>
         <li>生成提交信息：已暂存的文件列表与已暂存的改动（最多约 90 KB）。</li>
         <li>按描述选择文件提交：候选文件列表、已暂存与未暂存的改动（各最多约 90 KB）、未跟踪文件开头最多 2 KB（最多 40 个），合计最多约 18 万字符。</li>
         <li>AI 指令：项目与分支名、未暂存 / 已暂存文件列表、分支与远端名称、当前打开文件两侧的内容（各最多 12,000 字符）、外观设置与已保存 AI 组合的名称和模型；指令提到 stash、丢弃记录、撤销提交或历史时，另附 stash 说明、丢弃记录的文件路径、HEAD 提交或最近 20 条提交的标题与作者。</li>

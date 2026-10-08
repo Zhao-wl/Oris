@@ -207,6 +207,10 @@ async fn list_ai_models(profile: ai::AiProfile) -> Result<ai::ModelList, String>
 
 #[cfg(feature = "desktop")]
 #[tauri::command]
+async fn test_ai_connection(profile: ai::AiProfile) -> Result<(), String> { ai::test_connection(&profile).await }
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
 async fn generate_ai_commit(repo_id: String, profile: ai::AiProfile, description: Option<String>, system_prompt: String, request_id: Option<String>, registry: State<'_, RepositoryRegistry>, requests: State<'_, AiRequests>) -> Result<AiPlan, String> {
     if system_prompt.len() > 30_000 { return Err("系统提示词过长".into()); }
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -950,6 +954,7 @@ pub fn run() {
             detect_ai_tools,
             set_ai_key,
             list_ai_models,
+            test_ai_connection,
             generate_ai_commit,
             plan_ai_action,
             cancel_ai_generation,

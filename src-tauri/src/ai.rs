@@ -355,6 +355,24 @@ mod failure_tests {
         assert_eq!(parse_version("no version"), None);
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn connection_cli_returns_text_and_honours_its_own_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("claude.cmd");
+        fs::write(&fake, "@echo off\r\necho OK\r\n").unwrap();
+        let profile = AiProfile { id: "connection-test".into(), kind: "cli".into(), provider: "claude".into(), executable: fake.to_string_lossy().into_owned(), base_url: String::new(), model: "fake-model".into() };
+        let output = run_cli_with_timeout(&profile, CONNECTION_SYSTEM_PROMPT, CONNECTION_PROMPT, &AtomicBool::new(false), CONNECTION_TIMEOUT).unwrap();
+        connection_response(&output).unwrap();
+        assert_eq!(output.trim(), "OK");
+
+        fs::write(&fake, "@echo off\r\nping -n 10 127.0.0.1 > nul\r\n").unwrap();
+        let started = Instant::now();
+        let error = run_cli_with_timeout(&profile, CONNECTION_SYSTEM_PROMPT, CONNECTION_PROMPT, &AtomicBool::new(false), Duration::from_secs(1)).unwrap_err();
+        assert!(error.contains("超过 1 秒"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
     #[test]
     fn warns_only_when_cli_is_older_than_model_cache() {
         let cache = json!({ "client_version": "0.158.0" });
@@ -369,7 +387,7 @@ mod failure_tests {
     #[test]
     fn failure_shows_claude_stdout_error_and_login_hint() {
         let output = "\"claude-haiku-4.5\" isn't described by this version's model catalog\n\nFailed to authenticate. API Error: 401 OAuth access token is invalid.\n";
-        let message = cli_failure(output, false, Some(1), None);
+        let message = cli_failure(output, None, Some(1), None);
         assert!(message.starts_with("AI 工具退出码 1；请在终端重新登录该 AI 工具"));
         assert!(message.ends_with("工具输出：\nFailed to authenticate. API Error: 401 OAuth access token is invalid."));
     }
@@ -378,14 +396,14 @@ mod failure_tests {
     fn failure_dedupes_codex_errors_and_appends_version_warning() {
         let error = r#"ERROR: {"type":"error","status":400,"error":{"message":"The 'gpt-6-astra' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again."}}"#;
         let output = format!("OpenAI Codex v0.144.6\nmodel: gpt-6-astra\n{error}\n{error}\n");
-        let message = cli_failure(&output, false, Some(1), Some("版本提示".into()));
+        let message = cli_failure(&output, None, Some(1), Some("版本提示".into()));
         assert_eq!(message, format!("AI 工具退出码 1；请升级该 AI 工具，或改用较新的可执行文件\n工具输出：\n{error}\n版本提示"));
     }
 
     #[test]
     fn failure_asks_to_update_claude_for_newer_models() {
         let output = "\nAPI Error: 400 Claude Code 2.1.263 does not support this model; version 2.1.280 or newer is required. Run 'claude update', or update the Claude desktop app, then try again.\n";
-        assert!(cli_failure(output, false, Some(1), None).starts_with("AI 工具退出码 1；请升级该 AI 工具，或改用较新的可执行文件\n工具输出：\nAPI Error: 400"));
+        assert!(cli_failure(output, None, Some(1), None).starts_with("AI 工具退出码 1；请升级该 AI 工具，或改用较新的可执行文件\n工具输出：\nAPI Error: 400"));
         assert!(CLAUDE_MODELS.iter().all(|model| model.starts_with("claude-")));
     }
 
@@ -393,7 +411,7 @@ mod failure_tests {
     fn failure_recognises_unknown_claude_model() {
         let output = "\"claude-haiku-4.5\" isn't described by this version's model catalog; update Claude Code\n[claude-code:unrecognized_model] {\"model\":\"claude-haiku-4.5\"}\nThere's an issue with the selected model (claude-haiku-4.5). It may not exist or you may not have access to it.\n";
         assert_eq!(
-            cli_failure(output, false, Some(1), None),
+            cli_failure(output, None, Some(1), None),
             "AI 工具退出码 1；请检查所选模型是否可用\n工具输出：\nThere's an issue with the selected model (claude-haiku-4.5). It may not exist or you may not have access to it."
         );
     }
@@ -403,7 +421,8 @@ mod failure_tests {
         assert_eq!(error_excerpt("a\n\nb\nc\nd\n"), "b\nc\nd");
         assert_eq!(error_excerpt("  \n"), "");
         assert_eq!(error_excerpt(&"x".repeat(900)).chars().count(), 801);
-        assert_eq!(cli_failure("", true, None, None), format!("AI 工具超过 {} 秒，已终止；请在终端运行该 AI 工具检查详细错误", CLI_TIMEOUT.as_secs()));
+        assert_eq!(cli_failure("", Some(CLI_TIMEOUT), None, None), format!("AI 工具超过 {} 秒，已终止；请在终端运行该 AI 工具检查详细错误", CLI_TIMEOUT.as_secs()));
+        assert!(cli_failure("", Some(CONNECTION_TIMEOUT), None, None).contains("超过 30 秒"));
     }
 }
 
@@ -600,7 +619,7 @@ fn error_excerpt(output: &str) -> String {
 }
 
 /// `output` 为 stderr 与 stdout 的合并内容：Claude Code 的 `-p` 模式把认证等错误写到 stdout。
-fn cli_failure(output: &str, timed_out: bool, code: Option<i32>, warning: Option<String>) -> String {
+fn cli_failure(output: &str, timed_out: Option<Duration>, code: Option<i32>, warning: Option<String>) -> String {
     let lower = output.to_ascii_lowercase();
     let hint = if ["newer version", "or newer", "please upgrade", "claude update"].iter().any(|word| lower.contains(word)) {
         "请升级该 AI 工具，或改用较新的可执行文件"
@@ -613,8 +632,8 @@ fn cli_failure(output: &str, timed_out: bool, code: Option<i32>, warning: Option
     } else {
         "请在终端运行该 AI 工具检查详细错误"
     };
-    let mut message = if timed_out {
-        format!("AI 工具超过 {} 秒，已终止；{hint}", CLI_TIMEOUT.as_secs())
+    let mut message = if let Some(timeout) = timed_out {
+        format!("AI 工具超过 {} 秒，已终止；{hint}", timeout.as_secs())
     } else {
         format!("AI 工具退出码 {}；{hint}", code.unwrap_or(-1))
     };
@@ -631,6 +650,10 @@ fn cli_failure(output: &str, timed_out: bool, code: Option<i32>, warning: Option
 }
 
 fn run_cli(profile: &AiProfile, _cwd: &Path, system_prompt: &str, prompt: &str, cancelled: &AtomicBool) -> Result<String, String> {
+    run_cli_with_timeout(profile, system_prompt, prompt, cancelled, CLI_TIMEOUT)
+}
+
+fn run_cli_with_timeout(profile: &AiProfile, system_prompt: &str, prompt: &str, cancelled: &AtomicBool, timeout: Duration) -> Result<String, String> {
     let executable = cli_executable(profile).ok_or_else(|| "未找到 AI 工具，请在设置中指定可执行文件".to_owned())?;
     let failure_output = |stderr_path: &Path, output_path: &Path| {
         let stderr = fs::read_to_string(stderr_path).unwrap_or_default();
@@ -700,18 +723,52 @@ fn run_cli(profile: &AiProfile, _cwd: &Path, system_prompt: &str, prompt: &str, 
         }
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
             if !status.success() {
-                return Err(cli_failure(&failure_output(&stderr_path, &output_path), false, status.code(), version_warning()));
+                return Err(cli_failure(&failure_output(&stderr_path, &output_path), None, status.code(), version_warning()));
             }
             let output = fs::read_to_string(output_path)
                 .map_err(|e| format!("读取 AI 工具结果失败：{e}"))?;
             return Ok(output.chars().take(100_000).collect());
         }
-        if start.elapsed() > CLI_TIMEOUT {
+        if start.elapsed() > timeout {
             end_tree(&tree, &mut child);
-            return Err(cli_failure(&failure_output(&stderr_path, &output_path), true, None, version_warning()));
+            return Err(cli_failure(&failure_output(&stderr_path, &output_path), Some(timeout), None, version_warning()));
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+const CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
+const CONNECTION_SYSTEM_PROMPT: &str = "这是连通性测试。只回复 OK，不使用工具。";
+const CONNECTION_PROMPT: &str = "请回复 OK。";
+
+fn connection_response(output: &str) -> Result<(), String> {
+    if output.trim().is_empty() {
+        Err("AI 返回了空响应，请检查模型与服务配置".into())
+    } else {
+        Ok(())
+    }
+}
+
+async fn http_test_connection(profile: &AiProfile, api_key: &str, timeout: Duration) -> Result<(), String> {
+    let output = http_generate(profile, api_key, CONNECTION_SYSTEM_PROMPT, CONNECTION_PROMPT, &AtomicBool::new(false), timeout).await?;
+    connection_response(&output)
+}
+
+/// 使用与正式生成相同的请求链路，只发送固定测试文本，不读取项目数据。
+#[cfg(feature = "desktop")]
+pub async fn test_connection(profile: &AiProfile) -> Result<(), String> {
+    if profile.model.trim().is_empty() {
+        return Err("请先为 AI 配置选择模型".into());
+    }
+    if profile.kind == "cli" {
+        let profile = profile.clone();
+        let output = tauri::async_runtime::spawn_blocking(move || {
+            run_cli_with_timeout(&profile, CONNECTION_SYSTEM_PROMPT, CONNECTION_PROMPT, &AtomicBool::new(false), CONNECTION_TIMEOUT)
+        }).await.map_err(|e| e.to_string())??;
+        return connection_response(&output);
+    }
+    base_url(profile)?;
+    http_test_connection(profile, &key(&profile.id)?, CONNECTION_TIMEOUT).await
 }
 
 #[cfg(feature = "desktop")]
@@ -925,6 +982,42 @@ mod http_tests {
         let unused = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let result = run(http_generate(&profile("compatible", &format!("http://127.0.0.1:{unused}")), "k", "s", "p", &AtomicBool::new(false), HTTP_TIMEOUT));
         assert!(result.unwrap_err().contains("无法连接 AI 服务"));
+    }
+
+    #[test]
+    fn connection_test_uses_generation_routes_and_only_fixed_test_text() {
+        for (provider, path, body) in [
+            ("compatible", "/v1/chat/completions", json!({ "choices": [{ "message": { "content": "OK" } }] })),
+            ("deepseek", "/v1/chat/completions", json!({ "choices": [{ "message": { "content": "OK" } }] })),
+            ("openai", "/v1/responses", json!({ "output_text": "OK" })),
+            ("anthropic", "/v1/messages", json!({ "content": [{ "type": "text", "text": "OK" }] })),
+        ] {
+            let (base, seen, _) = serve(ok(body));
+            run(http_test_connection(&profile(provider, &base), "test-key", CONNECTION_TIMEOUT)).unwrap();
+            let request = seen.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert_eq!(request.path, path);
+            let body: Value = serde_json::from_str(&request.body).unwrap();
+            assert_eq!(body["model"], "fake-model");
+            match provider {
+                "openai" => { assert_eq!(body["input"], CONNECTION_PROMPT); assert_eq!(body["instructions"], CONNECTION_SYSTEM_PROMPT); }
+                "anthropic" => { assert_eq!(body["messages"][0]["content"], CONNECTION_PROMPT); assert_eq!(body["system"], CONNECTION_SYSTEM_PROMPT); }
+                _ => { assert_eq!(body["messages"][1]["content"], CONNECTION_PROMPT); assert_eq!(body["messages"][0]["content"], CONNECTION_SYSTEM_PROMPT); }
+            }
+        }
+    }
+
+    #[test]
+    fn connection_test_rejects_auth_errors_empty_output_and_times_out() {
+        for (reply, expected) in [
+            (Reply { status: 401, body: "{}".into(), delay: Duration::ZERO }, "HTTP 401"),
+            (ok(json!({ "choices": [{ "message": { "content": "  " } }] })), "空响应"),
+            (ok(json!({ "choices": [] })), "没有返回文本"),
+            (Reply { status: 200, body: "{}".into(), delay: Duration::from_secs(10) }, "没有响应"),
+        ] {
+            let (base, _, _) = serve(reply);
+            let error = run(http_test_connection(&profile("compatible", &base), "test-key", Duration::from_millis(500))).unwrap_err();
+            assert!(error.contains(expected), "{error}");
+        }
     }
 
     #[test]

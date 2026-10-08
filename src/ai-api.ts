@@ -9,6 +9,7 @@ export interface AiPlan { message: string; pathIds: string[]; revision: string; 
 export const detectAiTools = () => invoke<ToolCandidate[]>("detect_ai_tools");
 export const setAiKey = (id: string, key: string | null) => invoke<void>("set_ai_key", { id, key });
 export const listAiModels = (profile: AiProfile) => invoke<ModelList>("list_ai_models", { profile });
+export const testAiConnection = (profile: AiProfile) => invoke<void>("test_ai_connection", { profile });
 export const generateAiCommit = (repoId: string, profile: AiProfile, description: string | null, systemPrompt: string, requestId?: string) =>
   invoke<AiPlan>("generate_ai_commit", { repoId, profile, description, systemPrompt, requestId });
 export const cancelAiGeneration = (requestId: string) => invoke<void>("cancel_ai_generation", { requestId });
