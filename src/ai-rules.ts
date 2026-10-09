@@ -13,7 +13,8 @@ export interface AiRoute { id: string; commandId: string; profileId: string | nu
 /** null 跟随当前默认组合；空字符串表示导入后尚未绑定，不允许执行。 */
 export interface AiRuleSet {
   version: 1; commands: AiCommand[]; routes: AiRoute[];
-  defaultProfileId: string | null; stagedMessageProfileId: string | null;
+  defaultProfileId: string | null; stagedMessageProfileId: string | null; selectionProfileId?: string | null;
+  contextWindowTokens?: number; contextTaskTokens?: number;
 }
 const command = (id: string, tag: string, description: string, mode: AiCommand["mode"], contexts: AiContext[], prompt: string): AiCommand =>
   ({ id, tag, name: description, description, mode, contexts, prompt, enabled: true });
@@ -30,7 +31,7 @@ export const RECOMMENDED_AI_COMMANDS: AiCommand[] = [
 export const defaultAiRuleSet = (): AiRuleSet => ({
   version: 1, commands: structuredClone(RECOMMENDED_AI_COMMANDS),
   routes: RECOMMENDED_AI_COMMANDS.map(c => ({ id: `route-${c.id}`, commandId: c.id, profileId: null, enabled: true })),
-  defaultProfileId: null, stagedMessageProfileId: null
+  defaultProfileId: null, stagedMessageProfileId: null, selectionProfileId: null
 });
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const id = (v: unknown): v is string => typeof v === "string" && /^[a-zA-Z0-9_-]{1,80}$/.test(v);
@@ -55,7 +56,9 @@ export function validateAiRuleSet(v: unknown): AiRuleSet | undefined {
     routes.push({ id: r.id, commandId: r.commandId, profileId: r.profileId, enabled: r.enabled });
   }
   if (new Set(routes.map(r => r.id)).size !== routes.length || new Set(routes.map(r => r.commandId)).size !== routes.length) return undefined;
-  return { version: 1, commands, routes, defaultProfileId: v.defaultProfileId, stagedMessageProfileId: v.stagedMessageProfileId };
+  for (const key of ["contextWindowTokens", "contextTaskTokens"] as const) if(v[key] !== undefined && (!Number.isInteger(v[key]) || Number(v[key]) < 16384 || Number(v[key]) > 1048576)) return undefined;
+  if (v.selectionProfileId !== undefined && !binding(v.selectionProfileId)) return undefined;
+  return { version: 1, commands, routes, defaultProfileId: v.defaultProfileId, stagedMessageProfileId: v.stagedMessageProfileId, selectionProfileId: v.selectionProfileId as string | null | undefined, ...(v.contextWindowTokens===undefined?{}:{contextWindowTokens:Number(v.contextWindowTokens)}), ...(v.contextTaskTokens===undefined?{}:{contextTaskTokens:Number(v.contextTaskTokens)}) };
 }
 export interface AiResolvedRoute {
   commandId: string | null; commandTag: string | null; ruleId: string; ruleName: string;
@@ -84,6 +87,7 @@ export function resolveStagedProfile(ai: AiSettings): AiProfile {
 }
 export interface AiConversationMessage { role: "user" | "assistant" | "operation" | "tool"; content: string }
 export interface AiTurn {
+  attachments?: import("./context-selection/model").Attachment[];
   reviewRequest?: import("./ai-review/model").ReviewRequest;
   route: AiResolvedRoute; history: AiConversationMessage[]; historyTruncated: boolean;
   repoId: string | null; branch: string | null; systemPrompt: string; commitPrompt: string;
@@ -105,7 +109,7 @@ interface PortableTarget { id: string; name: string; provider: string; model: st
 export interface AiRuleBundle {
   format: "oris-ai-rules"; version: 1; name: string; commands: AiCommand[];
   routes: { id: string; commandId: string; target: string | null; enabled: boolean }[];
-  targets: PortableTarget[]; defaultTarget: string | null; stagedMessageTarget: string | null;
+  targets: PortableTarget[]; defaultTarget: string | null; stagedMessageTarget: string | null; selectionTarget?: string | null;
 }
 export function exportAiRules(rules: AiRuleSet, profiles: AiProfile[], name: string): AiRuleBundle {
   const clean = validateAiRuleSet(rules); if (!clean) throw new Error("当前规则集无效");
@@ -118,14 +122,14 @@ export function exportAiRules(rules: AiRuleSet, profiles: AiProfile[], name: str
     return targetId;
   };
   const routes = clean.routes.map(({ profileId, ...r }) => ({ ...r, target: slot(profileId) }));
-  const defaultTarget = slot(clean.defaultProfileId), stagedMessageTarget = slot(clean.stagedMessageProfileId);
-  return { format: "oris-ai-rules", version: 1, name: name.trim().slice(0, 100) || "我的 AI 规则", commands: clean.commands, routes, targets, defaultTarget, stagedMessageTarget };
+  const defaultTarget = slot(clean.defaultProfileId), stagedMessageTarget = slot(clean.stagedMessageProfileId), selectionTarget = slot(clean.selectionProfileId ?? null);
+  return { format: "oris-ai-rules", version: 1, name: name.trim().slice(0, 100) || "我的 AI 规则", commands: clean.commands, routes, targets, defaultTarget, stagedMessageTarget, selectionTarget };
 }
 export function parseAiRuleBundle(source: string): AiRuleBundle {
   if (source.length > 1_000_000) throw new Error("规则文件不能超过 1 MB");
   let v: unknown; try { v = JSON.parse(source.replace(/^\uFEFF/, "")); } catch { throw new Error("规则文件不是有效的 JSON"); }
   if (!object(v) || v.format !== "oris-ai-rules" || v.version !== 1) throw new Error("不支持的规则文件格式或版本");
-  if (!text(v.name, 100) || !Array.isArray(v.targets) || v.targets.length > 102 || !Array.isArray(v.routes)) throw new Error("规则文件结构无效");
+  if (!text(v.name, 100) || !Array.isArray(v.targets) || v.targets.length > 103 || !Array.isArray(v.routes)) throw new Error("规则文件结构无效");
   const targets: PortableTarget[] = [];
   for (const t of v.targets) {
     if (!object(t) || !id(t.id) || !text(t.name, 100) || !text(t.provider, 40) || !text(t.model, 4096)) throw new Error("规则目标结构无效");
@@ -133,22 +137,22 @@ export function parseAiRuleBundle(source: string): AiRuleBundle {
   }
   if (new Set(targets.map(t => t.id)).size !== targets.length) throw new Error("规则目标标识重复");
   const targetValid = (t: unknown) => t === null || targets.some(x => x.id === t);
-  if (!targetValid(v.defaultTarget) || !targetValid(v.stagedMessageTarget)) throw new Error("默认规则引用了不存在的目标");
+  if (!targetValid(v.defaultTarget) || !targetValid(v.stagedMessageTarget) || (v.selectionTarget !== undefined && !targetValid(v.selectionTarget))) throw new Error("默认规则引用了不存在的目标");
   const routes = v.routes.map(r => {
     if (!object(r) || !targetValid(r.target)) throw new Error("路由引用了不存在的目标");
     return { id: r.id, commandId: r.commandId, profileId: r.target, enabled: r.enabled };
   });
-  const clean = validateAiRuleSet({ version: 1, commands: v.commands, routes, defaultProfileId: v.defaultTarget, stagedMessageProfileId: v.stagedMessageTarget });
+  const clean = validateAiRuleSet({ version: 1, commands: v.commands, routes, defaultProfileId: v.defaultTarget, stagedMessageProfileId: v.stagedMessageTarget, selectionProfileId: v.selectionTarget ?? null });
   if (!clean) throw new Error("指令或路由无效：请检查重复标识、匹配指令和字段范围");
   return { format: "oris-ai-rules", version: 1, name: v.name, commands: clean.commands, targets,
-    routes: clean.routes.map(({ profileId, ...r }) => ({ ...r, target: profileId })), defaultTarget: clean.defaultProfileId, stagedMessageTarget: clean.stagedMessageProfileId };
+    routes: clean.routes.map(({ profileId, ...r }) => ({ ...r, target: profileId })), defaultTarget: clean.defaultProfileId, stagedMessageTarget: clean.stagedMessageProfileId, selectionTarget: clean.selectionProfileId };
 }
 export type ImportConflict = "keep" | "replace" | "rename";
 /** 构造完整新值后统一提交；解析或冲突失败时不修改设置。 */
 export function importAiRules(current: AiRuleSet, bundle: AiRuleBundle, mappings: Record<string, string>, mode: "merge" | "replace", conflict: ImportConflict): AiRuleSet {
   const next: AiRuleSet = mode === "replace" ? { version: 1, commands: [], routes: [], defaultProfileId: null, stagedMessageProfileId: null } : structuredClone(current);
   const mapped = (target: string | null) => target === null ? null : Object.hasOwn(mappings, target) ? mappings[target] : "";
-  if (mode === "replace") { next.defaultProfileId = mapped(bundle.defaultTarget); next.stagedMessageProfileId = mapped(bundle.stagedMessageTarget); }
+  if (mode === "replace") { next.defaultProfileId = mapped(bundle.defaultTarget); next.stagedMessageProfileId = mapped(bundle.stagedMessageTarget); next.selectionProfileId = mapped(bundle.selectionTarget ?? null); }
   const freshId = (used: string[]) => { let nextId: string; do { nextId = crypto.randomUUID(); } while (used.includes(nextId)); return nextId; };
   for (const imported of bundle.commands) {
     const existing = next.commands.find(c => c.tag.toLowerCase() === imported.tag.toLowerCase());

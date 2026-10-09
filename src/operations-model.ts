@@ -63,7 +63,7 @@ export function rowActions(scope: CompareScope, file: FileChange): { primary: "s
 }
 
 export const operationLabels: Record<OperationKind, string> = {
-  stage: "暂存", unstage: "取消暂存", markResolved: "标记已解决", discard: "丢弃", undoDiscard: "撤销丢弃",
+  stageSelected: "暂存所选文件", stage: "暂存", unstage: "取消暂存", markResolved: "标记已解决", discard: "丢弃", undoDiscard: "撤销丢弃",
   hunkStage: "暂存差异块", hunkUnstage: "取消暂存差异块", hunkDiscard: "丢弃差异块",
   commit: "提交", commitSelected: "AI 提交", undoCommit: "撤销最近提交", fetch: "获取远端状态",
   stashPush: "储藏", stashApply: "应用 stash", stashPop: "弹出 stash", stashDrop: "删除 stash",

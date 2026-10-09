@@ -3,7 +3,7 @@ import AiMessage from "../AiMessage";
 export default function ReviewResults({ result, onLocate }: { result: ReviewResult; onLocate?: (result: ReviewResult, finding: ReviewFinding) => void }) {
   const c = result.context, i = c.inventory;
   return <section className="ai-review-results" aria-label="变更集审查结果">
-    <small>范围：{i.range.kind} · {i.left?.slice(0, 8) ?? "空树"} → {i.right} · revision {i.revision.slice(0, 8)} · 上下文 {c.used}/{c.budget} 字节{c.truncated ? " · 已截断，审查不完整" : ""}</small>
+    <small>范围：{c.ranges ? c.ranges.map(r=>`${r.kind} ${r.left?.slice(0,8)??"空树"} → ${r.right.slice(0,10)}`).join("；") : `${i.range.kind} · ${i.left?.slice(0,8)??"空树"} → ${i.right}`} · revision {i.revision.slice(0, 8)} · 上下文 {c.used}/{c.budget} 字节{c.truncated ? " · 已截断，审查不完整" : ""}</small>
     {c.warnings.map((warning, index) => <p key={index} className="settings-warning">{warning}</p>)}
     <AiMessage text={result.summary + "\n\n" + result.impact}/>
     <details><summary>实际读取来源（{c.sources.length}）</summary>{c.sources.map(s => <p key={s.id}>{s.file.path} · {s.side} · {s.endpoint} · 内容 {s.contentId.slice(0, 10)} · 行 {s.lines.map(l => l.line).join(", ")}{s.supplemental ? " · 显式补充" : ""}{s.truncated ? " · 截断" : ""}</p>)}</details>

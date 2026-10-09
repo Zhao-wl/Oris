@@ -67,7 +67,7 @@ export const compareFiles = (a: FileChange, b: FileChange) => {
   return rank(a) - rank(b) || (a.displayPath < b.displayPath ? -1 : a.displayPath > b.displayPath ? 1 : 0);
 };
 
-interface DirectoryNode {
+export interface DirectoryNode {
   name: string;
   path: string;
   directories: Map<string, DirectoryNode>;
@@ -192,7 +192,7 @@ function FileMenu({ menu, files, onClose }: { menu: { file: FileChange; x: numbe
   </MenuShell>;
 }
 
-function buildTree(files: FileChange[]): DirectoryNode {
+export function buildTree(files: FileChange[]): DirectoryNode {
   const root: DirectoryNode = { name: "", path: "", directories: new Map(), files: [] };
   for (const file of files) {
     const segments = file.displayPath.split("/");

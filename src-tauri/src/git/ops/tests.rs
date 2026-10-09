@@ -42,6 +42,20 @@ fn adapter(root: &Path) -> GitAdapter {
 
 static OPS: AtomicUsize = AtomicUsize::new(0);
 
+#[test]
+fn selected_stage_checks_revision_inside_write_channel() {
+    let dir=init();
+    write(dir.path(),"a.txt",b"old\n");git(dir.path(), &["add","."]);git(dir.path(), &["commit","-qm","base"]);
+    write(dir.path(),"a.txt",b"selected\n");
+    let h=Harness::new(dir.path());let revision=h.adapter.scan(false).unwrap().revision.clone();
+    write(dir.path(),"a.txt",b"changed after selection\n");let before=fingerprint(dir.path());
+    assert!(h.try_run(OperationRequest::StageSelected{path_ids:vec![id("a.txt")],expected_revision:revision}).is_err());
+    assert_eq!(before,fingerprint(dir.path()));
+    let fresh=h.adapter.scan(false).unwrap().revision.clone();
+    assert_eq!(h.run(OperationRequest::StageSelected{path_ids:vec![id("a.txt")],expected_revision:fresh}).status,OpStatus::Succeeded);
+    assert_eq!(git_text(dir.path(), &["show",":a.txt"]),"changed after selection");
+}
+
 struct Harness {
     adapter: GitAdapter,
     store: BackupStore,

@@ -9,6 +9,7 @@ const MAX_FILES: usize = 16;
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ReviewRange {
     Workspace,
+    Unstaged,
     Staged,
     Commit { commit: String },
     Branch { left: String, right: String },
@@ -78,6 +79,7 @@ pub struct ReviewSource {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewContext {
+    pub next_offset: Option<usize>,
     pub inventory: Inventory,
     pub sources: Vec<ReviewSource>,
     pub diff: String,
@@ -91,10 +93,12 @@ impl GitAdapter {
     pub fn review_inventory(&self, range: ReviewRange) -> Result<Inventory, GitError> {
         let state = self.scan(false)?;
         let (left, right, files): (_, _, Vec<ReviewFile>) = match &range {
-            ReviewRange::Workspace | ReviewRange::Staged => {
+            ReviewRange::Workspace | ReviewRange::Staged | ReviewRange::Unstaged => {
                 let staged = matches!(range, ReviewRange::Staged);
                 let files = if staged {
                     state.lists.staged.clone()
+                } else if matches!(range, ReviewRange::Unstaged) {
+                    state.lists.unstaged.clone()
                 } else {
                     self.details_for(&state)?.all.clone()
                 };
@@ -114,7 +118,7 @@ impl GitAdapter {
                     .collect();
                 let head = self.history_refs()?.refs.head.oid;
                 (
-                    head,
+                    if matches!(range, ReviewRange::Unstaged) { Some("index".into()) } else { head },
                     if staged { "index" } else { "workingTree" }.into(),
                     files,
                 )
@@ -147,7 +151,7 @@ impl GitAdapter {
             identity,
             left,
             right,
-            files: files.into_iter().take(1000).collect(),
+            files,
             total_files,
         })
     }
@@ -159,11 +163,13 @@ impl GitAdapter {
         supplemental: bool,
     ) -> Result<ContentPair, GitError> {
         match inv.range {
-            ReviewRange::Workspace | ReviewRange::Staged if !supplemental => self
+            ReviewRange::Workspace | ReviewRange::Staged | ReviewRange::Unstaged if !supplemental => self
                 .read_content_pair_cancellable(
                     "review".into(),
                     if matches!(inv.range, ReviewRange::Staged) {
                         CompareScope::Staged
+                    } else if matches!(inv.range, ReviewRange::Unstaged) {
+                        CompareScope::Unstaged
                     } else {
                         CompareScope::All
                     },
@@ -172,7 +178,7 @@ impl GitAdapter {
                     None,
                     || false,
                 ),
-            ReviewRange::Workspace | ReviewRange::Staged => {
+            ReviewRange::Workspace | ReviewRange::Staged | ReviewRange::Unstaged => {
                 // 显式补充文件只读，不调用过滤器或跟随符号链接。
                 let relative = content::decode_path(&file.path_id)?;
                 let mut budget = media::ImageBudget::default();
@@ -283,6 +289,12 @@ impl GitAdapter {
     }
 
     pub fn review_context(&self, request: ReviewRequest) -> Result<ReviewContext, GitError> {
+        self.review_context_at(request, None)
+    }
+    pub fn review_context_page(&self, request: ReviewRequest, offset: usize) -> Result<ReviewContext, GitError> {
+        self.review_context_at(request, Some(offset))
+    }
+    fn review_context_at(&self, request: ReviewRequest, offset: Option<usize>) -> Result<ReviewContext, GitError> {
         if request.path_ids.is_empty()
             || request.path_ids.len() + request.context_paths.len() > MAX_FILES
         {
@@ -337,7 +349,9 @@ impl GitAdapter {
         provided
             .files
             .retain(|f| request.path_ids.contains(&f.path_id));
+        let mut position = 0usize;
         let mut result = ReviewContext {
+            next_offset: None,
             inventory: provided,
             sources: vec![],
             diff: String::new(),
@@ -361,7 +375,7 @@ impl GitAdapter {
                     continue;
                 }
             };
-            let incomplete = pair.left.text.is_none() || pair.right.text.is_none();
+            let incomplete = (pair.left.text.is_none() && pair.left.kind != "missing") || (pair.right.text.is_none() && pair.right.kind != "missing");
             result.truncated |= incomplete;
             let patch = if supplemental || incomplete {
                 String::new()
@@ -370,8 +384,8 @@ impl GitAdapter {
             };
             // 差异最多占用一半预算，剩余用于可核验的原文及补充上下文。
             let remaining = (BUDGET / 2).saturating_sub(result.diff.len());
-            let snippet = utf8_prefix(&patch, remaining.min(5000));
-            result.truncated |= snippet.len() < patch.len();
+            let snippet = if offset.is_some() { "" } else { utf8_prefix(&patch, remaining.min(5000)) };
+            if offset.is_none() { result.truncated |= snippet.len() < patch.len(); }
             result.diff.push_str(snippet);
             result.used += snippet.len();
             for (side, data, endpoint) in [
@@ -397,7 +411,7 @@ impl GitAdapter {
                 };
                 let mut lines = vec![];
                 let mut bytes = 0;
-                let limit = (BUDGET - result.used).min(5000);
+                let limit = if offset.is_some() { 6000usize.saturating_sub(result.used) } else { (BUDGET - result.used).min(5000) };
                 let mut truncated = false;
                 for (index, line) in text.split('\n').enumerate() {
                     if !ranges
@@ -406,9 +420,19 @@ impl GitAdapter {
                     {
                         continue;
                     }
-                    // 只传完整原文行，截断行不能成为有效引用。
+                    // 分页游标按所有差异上下文原文行计数；绝不拆断一行。
+                    let current_position = position;
+                    position += 1;
+                    if offset.is_some_and(|start| current_position < start) { continue; }
                     let size = line.len() + 16;
+                    if offset.is_some() && size > 6000 {
+                        result.truncated = true;
+                        result.warnings.push(format!("{} {side}:{} 超长原文行未读取", file.path, index + 1));
+                        continue;
+                    }
+                    if offset.is_some() && result.next_offset.is_some() { continue; }
                     if bytes + size > limit {
+                        if offset.is_some() { result.next_offset = Some(current_position); continue; }
                         truncated = true;
                         break;
                     }
@@ -449,7 +473,7 @@ impl GitAdapter {
                 return Err(GitError::StaleRequest);
             }
         }
-        if result.sources.iter().all(|s| s.lines.is_empty()) {
+        if offset.is_none() && result.sources.iter().all(|s| s.lines.is_empty()) {
             return Err(GitError::Io(
                 "所选文件没有预算内可读取的文本，请检查文件类型或缩小范围".into(),
             ));
@@ -487,6 +511,7 @@ impl GitAdapter {
         ];
         match &inv.range {
             ReviewRange::Staged => args.push("--cached".into()),
+            ReviewRange::Unstaged => {},
             ReviewRange::Workspace => args.push(inv.left.clone().unwrap()),
             _ => {
                 if let Some(left) = &inv.left {

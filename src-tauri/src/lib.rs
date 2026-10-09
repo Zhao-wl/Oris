@@ -241,9 +241,21 @@ async fn review_inventory(repo_id: String, range: git::ai_review::ReviewRange, r
 }
 #[cfg(feature = "desktop")]
 #[tauri::command]
+async fn selection_commits(repo_id: String, query: git::log::SelectionQuery, cursor: Option<git::log::LogCursor>, registry: State<'_, RepositoryRegistry>) -> Result<git::log::LogPage, String> {
+    let adapter = opened(&registry, &repo_id).map_err(|e| e.to_string())?.adapter.clone();
+    tauri::async_runtime::spawn_blocking(move || adapter.selection_commits(query, cursor)).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())
+}
+#[cfg(feature = "desktop")]
+#[tauri::command]
 async fn review_context(repo_id: String, request: git::ai_review::ReviewRequest, registry: State<'_, RepositoryRegistry>) -> Result<git::ai_review::ReviewContext, String> {
     let adapter = opened(&registry, &repo_id).map_err(|e| e.to_string())?.adapter.clone();
     tauri::async_runtime::spawn_blocking(move || adapter.review_context(request)).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())
+}
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn review_context_page(repo_id: String, request: git::ai_review::ReviewRequest, offset: usize, registry: State<'_, RepositoryRegistry>) -> Result<git::ai_review::ReviewContext, String> {
+    let adapter = opened(&registry, &repo_id).map_err(|e| e.to_string())?.adapter.clone();
+    tauri::async_runtime::spawn_blocking(move || adapter.review_context_page(request, offset)).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())
 }
 #[cfg(feature = "desktop")]
 #[tauri::command]
@@ -318,6 +330,19 @@ async fn plan_ai_action(profile: ai::AiProfile, description: String, context: se
     if read_only.unwrap_or(false) && value.get("kind").and_then(|v| v.as_str()) != Some("answer") {
         return Err("当前指令只允许回答，已阻止模型提出的应用操作".into());
     }
+    Ok(value)
+}
+
+/// Selection never exposes the action planner or repository to a tool-enabled CLI.
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn select_context(profile: ai::AiProfile, description: String, context: serde_json::Value, system_prompt: String, request_id: String, requests: State<'_, AiRequests>) -> Result<serde_json::Value, String> {
+    if profile.kind == "cli" && profile.provider != "claude" {
+        return Err("辅助选择需要无工具模型连接。请在规则路由中选择 API 模型或 Claude（禁用全部工具）；当前 Codex CLI 不用于辅助选择".into());
+    }
+    // API sends no tool definitions; Claude transport explicitly disables tools and MCP.
+    let value = plan_ai_action(profile, description, context, system_prompt, request_id, Some(true), None, requests).await?;
+    if value.get("selection").and_then(|v| v.as_object()).is_none() { return Err("模型未返回附件选择结果".into()); }
     Ok(value)
 }
 
@@ -1039,7 +1064,10 @@ pub fn run() {
             write_ai_rules_file,
             read_ai_changes,
             review_inventory,
+            selection_commits,
+            select_context,
             review_context,
+            review_context_page,
             review_location,
             cancel_ai_generation,
             run_operation,

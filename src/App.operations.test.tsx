@@ -17,7 +17,7 @@ vi.mock("./operations-api", () => ({ runOperation: bridge.operation, cancelOpera
   prepareDiscard: bridge.prepareDiscard, discardBackups: bridge.backups, headCommitInfo: bridge.head }));
 vi.mock("./diff", () => ({ calculateDiff: bridge.diff }));
 vi.mock("./ai-api", () => ({ planAiAction: bridge.planAi, generateAiCommit: vi.fn(), cancelAiGeneration: vi.fn(async () => {}) }));
-vi.mock("./ai-review/model", async original => ({ ...(await original<typeof import("./ai-review/model")>()), reviewContext: bridge.reviewContext, reviewInventory: bridge.reviewInventory, reviewLocation: bridge.reviewLocation }));
+vi.mock("./ai-review/model", async original => ({ ...(await original<typeof import("./ai-review/model")>()), reviewContext: bridge.reviewContext, reviewContextPage: bridge.reviewContext, reviewInventory: bridge.reviewInventory, reviewLocation: bridge.reviewLocation }));
 vi.mock("./history-api", async (importOriginal) => ({ ...(await importOriginal<typeof import("./history-api")>()), readRefs: bridge.refs }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ isFocused: async () => false, onFocusChanged: async () => () => {} }) }));
@@ -70,6 +70,7 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ font: "", measureText: (text: string) => ({ width: text.length * 6 }) } as unknown as CanvasRenderingContext2D);
+  bridge.reviewInventory.mockImplementation(async (repoId,range)=>({repoId,range,identity:"empty",revision:"r1",files:[],totalFiles:0,left:null,right:"index"}));
   bridge.details.mockResolvedValue(null); bridge.activate.mockResolvedValue(true); bridge.loadSnapshot.mockResolvedValue(null);
   bridge.backups.mockResolvedValue([]); bridge.head.mockResolvedValue(null);
   bridge.refs.mockResolvedValue({ head: { branch: "main", oid: "h".repeat(40), detached: false, unborn: false }, local: [], remote: [], tags: [], shallow: false, remotes: [], defaultRemote: null, fetchHeadAt: null });
@@ -419,7 +420,29 @@ it("keeps the main request prefix stable around a routed one-shot command and re
 });
 const reviewSource = { id: "src-id", file: { pathId: "id-a.txt", path: "a.txt", oldPathId: null, oldPath: null, status: "modified" }, side: "right" as const, endpoint: "index", contentId: "r-id-a.txt", lines: [{ line: 1, text: "y" }], truncated: false, supplemental: false };
 const reviewFixture = { inventory: { repoId: "a", range: { kind: "staged" as const }, identity: "review-id", revision: "r1", left: "h".repeat(40), right: "index", files: [reviewSource.file], totalFiles: 1 }, sources: [reviewSource], diff: "+y", budget: 40000, used: 20, truncated: false, warnings: [] };
-const modelReview = { kind: "answer", message: "reviewed", review: { summary: "reviewed", impact: "impact", findings: [{ title: "Issue", sourceId: "src-id", line: 1, evidence: "y", trigger: "trigger", impact: "impact", suggestion: "suggestion" }], commits: [] } };
+const modelReview = { kind: "answer", message: "reviewed", review: { summary: "reviewed", impact: "impact", findings: [{ title: "Issue", sourceId: "0:src-id", line: 1, evidence: "y", trigger: "trigger", impact: "impact", suggestion: "suggestion" }], commits: [] } };
+async function chooseOperationFiles(purpose:"stage"|"commit") {
+  bridge.reviewInventory.mockImplementation(async(repoId,range)=>({...reviewFixture.inventory,repoId,range,identity:range.kind,files:range.kind==="unstaged"?[reviewSource.file]:[]}));
+  await mount();
+  if(purpose==="stage")await click(button("辅助选择…"));
+  else {await click(commitTab());await click(button("选择文件 / AI 辅助…"));}
+  await click(button("加入全部匹配"));
+  await click([...host.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent?.startsWith("应用文件选择"))!);
+  expect(bridge.operation).not.toHaveBeenCalled();
+}
+it("selection only applies a file set; explicit stage uses a revision guarded operation",async()=>{
+  await chooseOperationFiles("stage");bridge.operation.mockResolvedValue(outcome("stage",snap([],[change("a.txt")])));
+  await click(button("暂存已选文件"));expect(bridge.operation.mock.calls[0][3]).toEqual({kind:"stageSelected",expectedRevision:"r1",pathIds:["id-a.txt"]});
+});
+it("commit selection reuses the selector and submits only on the commit button",async()=>{
+  await chooseOperationFiles("commit");bridge.operation.mockResolvedValue(outcome("commit",snap([],[])));
+  await type(host.querySelector<HTMLTextAreaElement>('[aria-label="提交信息"]')!,"selected changes");await click(button("提交"));
+  expect(bridge.operation.mock.calls[0][3]).toEqual({kind:"commitSelected",expectedRevision:"r1",pathIds:["id-a.txt"],message:"selected changes"});
+});
+it("stale selected files never reach the write runner",async()=>{
+  await chooseOperationFiles("stage");bridge.reviewInventory.mockResolvedValue({...reviewFixture.inventory,identity:"changed"});
+  await click(button("暂存已选文件"));expect(bridge.operation).not.toHaveBeenCalled();expect(host.textContent).toContain("文件选择已过期");
+});
 async function reviewStart() {
   settings.update("ai", "profiles", [{ id: "test-ai", name: "模型", kind: "cli", provider: "codex", executable: "", baseUrl: "", model: "model", hasKey: false }]); settings.update("ai", "activeId", "test-ai");
   bridge.reviewInventory.mockResolvedValue(reviewFixture.inventory); bridge.reviewContext.mockResolvedValue(reviewFixture);
@@ -430,7 +453,8 @@ async function reviewStart() {
 it("review uses routed answer-only transport, validates the result and locates exact content without Git writes", async () => {
   bridge.planAi.mockResolvedValue(modelReview);
   await reviewStart(); await click(host.querySelector('[aria-label="确认 AI 指令"]')!);
-  expect(bridge.planAi.mock.calls[0][5]).toBe(true); expect(bridge.planAi.mock.calls[0][2].review).toEqual(reviewFixture);
+  expect(bridge.planAi.mock.calls[0][5]).toBe(true); expect(bridge.planAi.mock.calls[0][2].review.sources[0]).toMatchObject({id:"0:src-id",file:{path:"a.txt"},side:"right",lines:reviewSource.lines});
+  expect(bridge.planAi.mock.calls[0][2].review.sources[0].request).toBeUndefined();
   expect(bridge.reviewContext).toHaveBeenCalledTimes(2);
   expect(host.querySelector('[aria-label="变更集审查结果"]')?.textContent).toContain("Issue");
   bridge.reviewLocation.mockResolvedValue(pair("id-a.txt", "r1"));
