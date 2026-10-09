@@ -1,6 +1,7 @@
 import { booleanSetting, enumSetting, integerSetting, SettingsRegistry, stringSetting, type SettingsValues } from "./registry";
 import { DEFAULT_AI_SHORTCUT } from "../ai-shortcut";
 import { defaultAiRuleSet, validateAiRuleSet, type AiRuleSet } from "../ai-rules";
+import { validateFileIgnoreRules, type FileIgnoreRule } from "../file-ignore";
 
 /** 设置模型版本；读取到其他版本时回退默认值并提示（不覆盖原文件，直到用户修改）。 */
 export const SETTINGS_VERSION = 1;
@@ -68,6 +69,7 @@ export interface Settings {
   git: GitSettings;
   ai: AiSettings;
   update: UpdateSettings;
+  fileIgnore: { rules: FileIgnoreRule[] };
 }
 
 export const FONT_SIZE_MIN = 11;
@@ -123,6 +125,10 @@ export function createSettingsRegistry({ schemes, defaults = DEFAULT_SCHEMES, de
       ]
     })
     .register({
+      id: "fileIgnore", label: "忽略文件", order: 25,
+      settings: [{ key: "rules", type: "object", defaultValue: [], validate: validateFileIgnoreRules, ui: { label: "变更文件忽略规则", control: "text" } }]
+    })
+    .register({
       id: "ai",
       label: "AI",
       order: 30,
@@ -159,5 +165,5 @@ export function createSettingsRegistry({ schemes, defaults = DEFAULT_SCHEMES, de
 }
 
 export function toSettings(values: SettingsValues): Settings {
-  return { version: SETTINGS_VERSION, appearance: values.appearance as unknown as AppearanceSettings, git: values.git as unknown as GitSettings, ai: values.ai as unknown as AiSettings, update: values.update as unknown as UpdateSettings };
+  return { version: SETTINGS_VERSION, appearance: values.appearance as unknown as AppearanceSettings, git: values.git as unknown as GitSettings, ai: values.ai as unknown as AiSettings, update: values.update as unknown as UpdateSettings, fileIgnore: values.fileIgnore as unknown as Settings["fileIgnore"] };
 }
