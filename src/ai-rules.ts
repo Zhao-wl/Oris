@@ -14,6 +14,7 @@ export interface AiRoute { id: string; commandId: string; profileId: string | nu
 export interface AiRuleSet {
   version: 1; commands: AiCommand[]; routes: AiRoute[];
   defaultProfileId: string | null; stagedMessageProfileId: string | null; selectionProfileId?: string | null;
+  contextWindowTokens?: number; contextTaskTokens?: number;
 }
 const command = (id: string, tag: string, description: string, mode: AiCommand["mode"], contexts: AiContext[], prompt: string): AiCommand =>
   ({ id, tag, name: description, description, mode, contexts, prompt, enabled: true });
@@ -55,8 +56,9 @@ export function validateAiRuleSet(v: unknown): AiRuleSet | undefined {
     routes.push({ id: r.id, commandId: r.commandId, profileId: r.profileId, enabled: r.enabled });
   }
   if (new Set(routes.map(r => r.id)).size !== routes.length || new Set(routes.map(r => r.commandId)).size !== routes.length) return undefined;
+  for (const key of ["contextWindowTokens", "contextTaskTokens"] as const) if(v[key] !== undefined && (!Number.isInteger(v[key]) || Number(v[key]) < 16384 || Number(v[key]) > 1048576)) return undefined;
   if (v.selectionProfileId !== undefined && !binding(v.selectionProfileId)) return undefined;
-  return { version: 1, commands, routes, defaultProfileId: v.defaultProfileId, stagedMessageProfileId: v.stagedMessageProfileId, selectionProfileId: v.selectionProfileId as string | null | undefined };
+  return { version: 1, commands, routes, defaultProfileId: v.defaultProfileId, stagedMessageProfileId: v.stagedMessageProfileId, selectionProfileId: v.selectionProfileId as string | null | undefined, ...(v.contextWindowTokens===undefined?{}:{contextWindowTokens:Number(v.contextWindowTokens)}), ...(v.contextTaskTokens===undefined?{}:{contextTaskTokens:Number(v.contextTaskTokens)}) };
 }
 export interface AiResolvedRoute {
   commandId: string | null; commandTag: string | null; ruleId: string; ruleName: string;

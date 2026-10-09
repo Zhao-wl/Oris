@@ -1,6 +1,31 @@
 use super::*;
 use std::process::Command;
 #[test]
+fn paged_evidence_reaches_the_end_without_splitting_lines_or_writing() {
+    let (dir, adapter, _, _) = fixture();
+    let text = (0..600).map(|i| format!("export const football_{i} = {i};\n")).collect::<String>();
+    fs::write(dir.path().join("large.ts"), &text).unwrap();
+    let inv = adapter.review_inventory(ReviewRange::Unstaged).unwrap();
+    let file = inv.files.iter().find(|f| f.path == "large.ts").unwrap();
+    let index_before = fs::read(dir.path().join(".git/index")).unwrap();
+    let mut offset = 0; let mut lines = Vec::new(); let mut pages = 0;
+    loop {
+        let page = adapter.review_context_page(ReviewRequest {range: inv.range.clone(),identity: inv.identity.clone(),path_ids:vec![file.path_id.clone()],context_paths:vec![]},offset).unwrap();
+        assert!(page.used <= 6000);
+        assert!(page.diff.is_empty());
+        lines.extend(page.sources.iter().filter(|s| s.side == "right").flat_map(|s| s.lines.iter().map(|l| (l.line,l.text.clone()))));
+        pages += 1;
+        match page.next_offset { Some(next) => { assert!(next > offset); offset=next; }, None => break }
+        assert!(pages < 20);
+    }
+    assert!(pages > 1);
+    assert_eq!(lines.iter().filter(|(_,text)| !text.is_empty()).count(),600);
+    assert!(lines.iter().any(|(line,text)| *line == 600 && text == "export const football_599 = 599;"));
+    assert_eq!(lines.iter().map(|(line,_)| *line).collect::<HashSet<_>>().len(), lines.len());
+    assert_eq!(index_before,fs::read(dir.path().join(".git/index")).unwrap());
+    assert_eq!(text,fs::read_to_string(dir.path().join("large.ts")).unwrap());
+}
+#[test]
 fn staged_and_unstaged_sources_are_distinct_and_selection_log_is_read_only() {
     let (dir, a, base, tip) = fixture();
     fs::write(dir.path().join("config.json"), "{\"factor\":3}\n").unwrap();

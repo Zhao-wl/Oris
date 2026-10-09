@@ -1,5 +1,7 @@
+import { attachmentEvidence } from "./evidence";
 import { invoke } from "@tauri-apps/api/core";
-import { cancelAiGeneration } from "../ai-api";
+import { cancelAiGeneration, planAiAction } from "../ai-api";
+import { CONTEXT_BUDGET, compactEvidence, contextIndex, describeNode, evidencePages, tokenEstimate, type IndexNode } from "./compression";
 import { reviewContext, reviewInventory, type ReviewContext, type ReviewRequest } from "../ai-review/model";
 import type { CommitInfo, LogCursor, LogPage } from "../history-api";
 import type { AiProfile } from "../settings";
@@ -42,23 +44,76 @@ export const SELECTION_PROMPT = `你是只读附件选择助手。只能返回 k
 输出 {"kind":"answer","message":"简短依据","selection":{"target":"files 或 commits，必须等于提供的 target","mode":"add 或 remove 或 replace","ids":["实际 candidates.id"],"reason":"选取依据与未核实限制"}}。
 仅在当前 target 与候选范围内选择。默认追加，用户明确移除则 remove，明确替换才 replace。保持其他类别不变。不匹配返回空 ids，说明原因；不猜测 ID。diff 未提供时只能据元数据判断，不能声称检查了实现。`;
 
-export async function assistSelection(profile: AiProfile, prompt: string, candidates: Attachment[], selected: Attachment[], kind: SelectionKind, requestId: string, valid: () => boolean) {
-  if (!candidates.length) throw new Error("当前前提范围没有候选内容");
-  const metadata = candidates.map(x => ({ id: x.id, path: x.path, source: x.source, subject: x.commit?.subject, author: x.commit?.authorName, oid: x.commit?.oid }));
-  if (JSON.stringify(metadata).length > 70000 || metadata.length > 400) throw new Error("候选超过单轮 AI 预算（400 项 / 70,000 字符），请先用搜索或筛选缩小前提范围；未发送任何候选");
-  // 两次有界调用：模型先识别候选，再核对候选的真实 diff；全程仅调用 answer 传输。
-  const context = { target: kind, candidates: metadata, selectedIds: selected.filter(x => x.kind === kind).map(x => x.id), diff: "尚未读取，先选取值得核对的候选；按预算分批核对差异，未覆盖对象只能依据元数据选择" };
-  const preliminary = parseSelection(await selectContext(profile, prompt, context, SELECTION_PROMPT, requestId, true), candidates, kind);
-  if (!valid()) throw new Error("已取消辅助选择");
-  if (!preliminary.ids.length) return preliminary;
-  const chosen = candidates.filter(x => preliminary.ids.includes(x.id));
-  const evidence = await loadAttachmentContext(chosen[0].repoId, chosen, valid);
-  if (!valid()) throw new Error("已取消辅助选择");
-  const result = parseSelection(await selectContext(profile, prompt, { ...context, candidates: metadata.filter(x => preliminary.ids.includes(x.id)), evidence: evidence.context, coverage: evidence.warnings }, SELECTION_PROMPT, requestId, true), chosen, kind);
-  if (!valid()) throw new Error("已取消辅助选择");
-  await evidence.validate();
-  return result;
+export interface ContextLimits { contextWindowTokens?:number; contextTaskTokens?:number }
+export interface ContextMeter { calls: number; tokens: number; window:number; task:number }
+export const newContextMeter = (limits:ContextLimits={}): ContextMeter => ({ calls:0,tokens:0,window:limits.contextWindowTokens??16384,task:limits.contextTaskTokens??CONTEXT_BUDGET.task });
+export async function budgetedAnswer(meter: ContextMeter, payload: unknown, call: () => Promise<unknown>) {
+  const cost=tokenEstimate(payload);
+  if(cost+2000>meter.window)throw new Error("本轮上下文超过模型单次预算，请缩短问题或提高与模型容量相符的上限");
+  if(meter.calls>=CONTEXT_BUDGET.calls || meter.tokens+cost+2000>meter.task) throw new Error("已达到本轮累计上下文预算；未完成的内容不能视为已检查，请缩小任务后继续");
+  meter.calls++;meter.tokens+=cost;
+  const answer=await call();meter.tokens+=tokenEstimate(answer);return answer;
 }
+const check = (valid:()=>boolean) => { if(!valid())throw new Error("已取消辅助选择"); };
+
+/** Navigate groups before exposing individual entries. Long IDs never leave the local map. */
+export async function routeCandidates(profile:AiProfile,prompt:string,candidates:Attachment[],selected:Attachment[],kind:SelectionKind,requestId:string,valid:()=>boolean,
+  progress:(text:string)=>void=()=>{},meter:ContextMeter=newContextMeter(),answerTransport=false) {
+  check(valid);
+  const roots=contextIndex(candidates), chosen:Attachment[]=[], selectedIds=new Set(selected.map(a=>a.id));
+  const queue:{nodes:IndexNode[];parent:string}[]=[{nodes:roots,parent:"完整候选范围"}];
+  let mode:"add"|"remove"|"replace"|undefined;let examined=0;
+  while(queue.length) {
+    check(valid);const {nodes,parent}=queue.shift()!;
+    const aliases=nodes.map(n=>({...(n.item ?? {kind,repoId:candidates[0]?.repoId,label:n.label}),id:n.id})) as Attachment[];
+    const index={target:kind,parent,candidates:nodes.map(n=>({...describeNode(n),selected:n.item?selectedIds.has(n.item.id):undefined})),
+      instruction:"选择需要展开的分组或相关条目。分组区间仅用于导航，不代表已检查内容；不确定的分组应展开。不得把未展开分组声称为已审查。返回当前短编号，不返回路径或真实 ID。"};
+    const system=SELECTION_PROMPT+"\n本阶段只导航索引，不读正文。每轮 mode 必须保持本次用户指定的追加、移除或替换意图。";
+    progress(`索引导航 ${meter.calls+1} 轮 · 已检查 ${examined}/${candidates.length} 个条目元数据`);
+    const response=await budgetedAnswer(meter,{prompt,index,system},()=>answerTransport?planAiAction(profile,prompt,index,system,requestId,true):selectContext(profile,prompt,index,system,requestId,true));
+    check(valid);const result=parseSelection(response,aliases,kind);
+    if(mode&&mode!==result.mode)throw new Error("模型在分批处理中改变了追加／移除意图，选择未修改");mode=result.mode;
+    const picked=new Set(result.ids);examined+=nodes.filter(n=>n.item).length;
+    for(const node of nodes)if(picked.has(node.id)){if(node.children)queue.push({nodes:node.children,parent:node.label});else if(node.item)chosen.push(node.item);}
+  }
+  return {items:chosen,mode:mode??"add",reason:`已查看 ${examined}/${candidates.length} 项元数据；其余仅经分组导航，未逐项检查`};
+}
+
+export async function assistSelection(profile: AiProfile, prompt: string, candidates: Attachment[], selected: Attachment[], kind: SelectionKind, requestId: string, valid: () => boolean, progress:(text:string)=>void=()=>{},limits:ContextLimits={}) {
+  if (!candidates.length) throw new Error("当前前提范围没有候选内容");
+  const meter=newContextMeter(limits);
+  const routed=await routeCandidates(profile,prompt,candidates,selected,kind,requestId,valid,progress,meter);
+  const resultIds=new Set<string>(routed.items.map(item=>item.id));const reasons=[routed.reason];const validators:(()=>Promise<void>)[]=[];
+  // Evidence is read only for routed candidates, in independent bounded packets.
+  evidenceLoop:for(let i=0;i<routed.items.length;i++) {
+    if(meter.calls>=CONTEXT_BUDGET.calls || meter.tokens>meter.task-12000){reasons.push(`差异核对达到预算，剩余 ${routed.items.length-i} 项仅按元数据初选，未核实正文`);break;}
+    check(valid);const item=routed.items[i];progress(`核对差异 ${i+1}/${routed.items.length} · ${item.label}`);
+    let matched=false, incomplete=false;
+    for await (const evidence of attachmentEvidence(item.repoId,item,valid)) {
+      validators.push(evidence.validate);reasons.push(...evidence.context.warnings);
+      incomplete ||= evidence.context.truncated;
+      const pages=evidencePages(evidence.context);
+      if(!pages.length)incomplete=true;
+      for(const page of pages){
+        const alias={...item,id:"f0"};
+        const payload={target:kind,candidates:[{id:"f0",path:item.path,subject:item.commit?.subject}],evidence:compactEvidence(page),mode:routed.mode,
+          note:"只判断这一证据片段是否支持选择本条目；其他片段可能尚未读取。必须保持 mode。"};
+        if(meter.calls>=CONTEXT_BUDGET.calls || meter.tokens+tokenEstimate({prompt,payload,system:SELECTION_PROMPT})+2000>meter.task){reasons.push(`差异核对达到预算，剩余 ${routed.items.length-i} 项仅按元数据初选，未核实正文`);break evidenceLoop;}
+        const response=await budgetedAnswer(meter,{prompt,payload,system:SELECTION_PROMPT},()=>selectContext(profile,prompt,payload,SELECTION_PROMPT,requestId,true));
+        check(valid);const refined=parseSelection(response,[alias],kind);
+        if(refined.mode!==routed.mode)throw new Error("模型核对时改变了选择意图，选择未修改");
+        matched ||= refined.ids.length>0;
+      }
+      if(matched)break; // Positive evidence suffices for selection; this is not a full review.
+    }
+    if(!matched && !incomplete)resultIds.delete(item.id);
+    if(incomplete)reasons.push(`${item.label} 含未核实文本，保留元数据初选，不能据此排除`);
+  }
+  for(const validate of validators){check(valid);await validate();}
+  check(valid);
+  return {ids:[...resultIds],mode:routed.mode,reason:[...new Set(reasons)].join("；").slice(0,1600)+`；请求 ${meter.calls} 次，保守 token 估算 ${meter.tokens}`};
+}
+
 export { cancelAiGeneration };
 
 /** 选择不设 16 文件上限；内容读取按有界批次进行，并准确报告未覆盖附件。 */

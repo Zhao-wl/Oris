@@ -33,6 +33,12 @@ fn real_selection_model_smoke() {
     let profile=AiProfile{id:"selection-smoke".into(),kind:"cli".into(),provider:"claude".into(),executable:std::env::var("ORIS_SELECTION_EXECUTABLE").unwrap_or_default(),base_url:"".into(),model:std::env::var("ORIS_SELECTION_MODEL").expect("set ORIS_SELECTION_MODEL")};
     let contract=include_str!("../../../../src/context-selection/model.ts").split("export const SELECTION_PROMPT = `").nth(1).unwrap().split("`;").next().unwrap();
     let mut selected:Vec<String>=vec![];let mut responses=vec![];
+    let compact_index=json!({"target":"files","candidates":[{"id":"g1","label":"Football/Logic","count":100,"type":"group"},{"id":"g2","label":"Audio","count":900,"type":"group"}]});
+    let output=run_cli(&profile,dir.path(),&action_system(contract,true),&format!("用户请求：加入 football 逻辑层相关文件。本轮仅选择需要展开的分组。上下文：{compact_index}"),&AtomicBool::new(false)).unwrap();
+    let response=parse_json_output(&output).unwrap();assert_eq!(response["selection"]["ids"],json!(["g1"]));responses.push(response);
+    let read_contract=include_str!("../../../../src/context-selection/reader.ts").split("export const CONTEXT_READ_CONTRACT = `").nth(1).unwrap().split("`;").next().unwrap();
+    let output=run_cli(&profile,dir.path(),&action_system(read_contract,true),"用户请求：请先读取实际改动，然后解释 football 逻辑变更。附件目录：{\"index\":[{\"id\":\"g1\",\"label\":\"Football/Logic\",\"count\":100,\"type\":\"group\"}],\"evidence\":[]}",&AtomicBool::new(false)).unwrap();
+    let response=parse_json_output(&output).unwrap();assert_eq!(response["kind"],"answer");assert_eq!(response["contextRead"]["action"],"expand");assert_eq!(response["contextRead"]["ids"],json!(["g1"]));responses.push(response);
     for (prompt,expected,mode) in [("加入 football 逻辑层文件",logic.clone(),"add"),("再加入 football 渲染层文件",render.clone(),"add"),("移除 football 逻辑层文件",logic.clone(),"remove")] {
         let input=json!({"target":"files","candidates":candidates,"selectedIds":selected,"evidence":context});
         let output=run_cli(&profile,dir.path(),&action_system(contract,true),&format!("用户请求：{prompt}\n上下文：{input}"),&AtomicBool::new(false)).unwrap();
@@ -51,7 +57,7 @@ fn real_selection_model_smoke() {
     assert_eq!(before,git(&["status", "--porcelain=v1"]));assert_eq!(index,fs::read(dir.path().join(".git/index")).unwrap());assert_eq!(refs,git(&["show-ref"]));
     for (i,path) in ["FootballLogic.ts","FootballRender.ts","Audio.ts"].iter().enumerate(){assert_eq!(contents[i],fs::read(dir.path().join(path)).unwrap());}
     if let Ok(path)=std::env::var("ORIS_SELECTION_EVIDENCE"){fs::write(path,serde_json::to_string_pretty(&json!({"model":profile.model,"provider":"claude","responses":responses,"workingTreeIndexRefsUnchanged":true,"coverage":"真实 Git 与 diff -> 生产无工具 CLI -> 模型选择；前端双调用编排另由测试覆盖；未测试原生 Windows 焦点"})).unwrap()).unwrap();}
-    println!("REAL_SELECTION_MODEL_PASS rounds=4 files+commits injection_rejected git_state_unchanged");
+    println!("REAL_SELECTION_MODEL_PASS rounds=6 compact_index+lazy_read+files+commits injection_rejected git_state_unchanged");
 }
 #[test]
 #[ignore = "requires an authenticated Codex CLI and explicitly selected model"]

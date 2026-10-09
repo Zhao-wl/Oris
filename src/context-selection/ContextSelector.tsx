@@ -2,11 +2,11 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { readRefs, type LogCursor } from "../history-api";
 import { errorText } from "../error-message";
 import type { AiProfile } from "../settings";
-import { assistSelection, cancelAiGeneration, changeSelection, commitAttachment, emptyFilter, fileAttachments, selectionCommits, type Attachment, type CommitFilter, type SelectionKind } from "./model";
+import { assistSelection, cancelAiGeneration, changeSelection, commitAttachment, emptyFilter, fileAttachments, selectionCommits, type Attachment, type CommitFilter, type SelectionKind, type ContextLimits } from "./model";
 import "./selection.css";
 
 interface Props {
-  repoId: string; value: Attachment[]; profile: AiProfile | null;
+  limits?:ContextLimits; repoId: string; value: Attachment[]; profile: AiProfile | null;
   purpose?: "context" | "stage" | "commit";
   onApply(value: Attachment[]): void; onClose(): void;
 }
@@ -21,7 +21,7 @@ function WindowedList({ rows, render, onEnd, label }: { rows: Row[]; render(row:
   </div>;
 }
 const sourceLabel = (item: Attachment) => item.kind === "commits" ? item.commit!.oid.slice(0,8) : item.source === "staged" ? "已暂存" : "未暂存";
-export default function ContextSelector({ repoId, value, profile, purpose = "context", onApply, onClose }: Props) {
+export default function ContextSelector({ repoId, value, profile, limits, purpose = "context", onApply, onClose }: Props) {
   const dialog = useRef<HTMLElement>(null);
   const [selected,setSelected] = useState(value), [tab,setTab] = useState<SelectionKind>("files");
   const [files,setFiles] = useState<Attachment[]>([]), [commits,setCommits] = useState<Attachment[]>([]), [cursor,setCursor] = useState<LogCursor|null>(null);
@@ -75,7 +75,7 @@ export default function ContextSelector({ repoId, value, profile, purpose = "con
     const valid=()=>active.current&&generation.current===seq&&pending.current===requestId;
     try{
       const candidates=await allMatches();if(!valid())return;
-      const result=await assistSelection(profile,prompt,candidates,selected,tab,requestId,valid);
+      const result=await assistSelection(profile,prompt,candidates,selected,tab,requestId,valid,setFeedback,limits);
       if(valid())update(candidates,result.ids,result.mode,result.reason,tab);
     }catch(e){if(valid())setError(errorText(e));}finally{if(valid()){setBusy(false);pending.current=null;}}
   };
@@ -105,7 +105,7 @@ export default function ContextSelector({ repoId, value, profile, purpose = "con
       <div className="cs-columns"><span>{tab==="files"?"文件 / 目录":"提交摘要"}</span>{tab==="commits"&&<><span className="cs-author">作者</span><span>提交日期</span></>}<span>{tab==="files"?"来源":"OID"}</span></div><WindowedList key={`${tab}:${query}:${source}:${JSON.stringify(filter)}`} rows={rows} render={r=>row(r)} label="候选内容" onEnd={tab==="commits"?()=>void loadMore():undefined}/>{tab==="commits"&&cursor&&<button className="cs-more" disabled={loading||busy} onClick={()=>void loadMore()}>继续读取（滚动时自动加载）</button>}
     </section><section><div className="cs-pane-head"><strong>已加入 {selected.length} 项</strong><button disabled={busy||!selected.length} onClick={()=>update(selected,selected.map(x=>x.id),"remove","清空全部")}>清空全部</button></div><div className="cs-actions"><input aria-label="搜索已加入" placeholder="搜索已加入" value={selectedQuery} onChange={e=>setSelectedQuery(e.target.value)}/><select aria-label="已加入类别" value={selectedKind} onChange={e=>setSelectedKind(e.target.value)}><option value="all">全部</option><option value="files">文件</option><option value="commits">提交</option></select><button disabled={busy||!picked.length} onClick={()=>update(picked,picked.map(x=>x.id),"remove","移除匹配")}>移除匹配</button></div><div className="cs-columns"><span>附件</span><span>来源</span></div><WindowedList rows={chosenRows} render={r=>row(r,true)} label="已加入内容"/></section></div>
     <div className="cs-ai"><label>AI 操作对象<select aria-label="AI 操作对象" disabled={busy||purpose!=="context"} value={tab} onChange={e=>{setTab(e.target.value as SelectionKind);setQuery("");}}><option value="files">文件</option>{purpose==="context"&&<option value="commits">提交</option>}</select></label><input aria-label="AI 选择指令" disabled={busy} value={prompt} onChange={e=>setPrompt(e.target.value)} placeholder="追加逻辑层；再加入渲染层；移除测试…" onKeyDown={e=>{if(e.key==="Enter"&&!e.nativeEvent.isComposing)void ai();}}/><button disabled={busy||loading||!prompt.trim()} onClick={()=>void ai()}>调整选择</button><button disabled={busy||!undo.length} onClick={()=>{setSelected(undo[undo.length-1]);setUndo(v=>v.slice(0,-1));setFeedback("已撤销上一步");}}>撤销</button>{busy&&<button onClick={stop}>停止</button>}</div>
-    <div className="cs-notices" aria-live="polite">{loading&&<span>读取中… </span>}{busy&&<span>处理中… </span>}<span>{feedback||`AI 前提范围：${tab==="files"?"文件":"提交"}的全部筛选匹配项；最多 400 个候选、两次模型调用；差异按预算分批，未覆盖部分会标明。`}</span>{error&&<p role="alert">{error}</p>}</div>
+    <div className="cs-notices" aria-live="polite">{loading&&<span>读取中… </span>}{busy&&<span>处理中… </span>}<span>{feedback||`AI 前提范围：${tab==="files"?"文件":"提交"}的全部筛选匹配项；按目录／日期分层展开，按需读取差异；显示处理进度，未覆盖内容不会视为已检查。`}</span>{error&&<p role="alert">{error}</p>}</div>
     <footer><small>{purpose==="commit"?"提交将包含所选文件的全部工作区内容（含未暂存改动），不按某一份 diff 提交。":"选择数量不限 · 发送按差异预算分批，结果标明未覆盖部分"}</small><button onClick={close}>取消</button><button className="primary" disabled={busy||loading} onClick={()=>onApply(selected)}>{purpose==="context"?"应用附件":"应用文件选择"} · {selected.length}</button></footer>
   </section></div>;
 }

@@ -17,7 +17,7 @@ vi.mock("./operations-api", () => ({ runOperation: bridge.operation, cancelOpera
   prepareDiscard: bridge.prepareDiscard, discardBackups: bridge.backups, headCommitInfo: bridge.head }));
 vi.mock("./diff", () => ({ calculateDiff: bridge.diff }));
 vi.mock("./ai-api", () => ({ planAiAction: bridge.planAi, generateAiCommit: vi.fn(), cancelAiGeneration: vi.fn(async () => {}) }));
-vi.mock("./ai-review/model", async original => ({ ...(await original<typeof import("./ai-review/model")>()), reviewContext: bridge.reviewContext, reviewInventory: bridge.reviewInventory, reviewLocation: bridge.reviewLocation }));
+vi.mock("./ai-review/model", async original => ({ ...(await original<typeof import("./ai-review/model")>()), reviewContext: bridge.reviewContext, reviewContextPage: bridge.reviewContext, reviewInventory: bridge.reviewInventory, reviewLocation: bridge.reviewLocation }));
 vi.mock("./history-api", async (importOriginal) => ({ ...(await importOriginal<typeof import("./history-api")>()), readRefs: bridge.refs }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ isFocused: async () => false, onFocusChanged: async () => () => {} }) }));
@@ -453,7 +453,8 @@ async function reviewStart() {
 it("review uses routed answer-only transport, validates the result and locates exact content without Git writes", async () => {
   bridge.planAi.mockResolvedValue(modelReview);
   await reviewStart(); await click(host.querySelector('[aria-label="确认 AI 指令"]')!);
-  expect(bridge.planAi.mock.calls[0][5]).toBe(true); expect(bridge.planAi.mock.calls[0][2].review.sources[0]).toMatchObject({...reviewSource,id:"0:src-id",request:expect.objectContaining({identity:"review-id"})});
+  expect(bridge.planAi.mock.calls[0][5]).toBe(true); expect(bridge.planAi.mock.calls[0][2].review.sources[0]).toMatchObject({id:"0:src-id",file:{path:"a.txt"},side:"right",lines:reviewSource.lines});
+  expect(bridge.planAi.mock.calls[0][2].review.sources[0].request).toBeUndefined();
   expect(bridge.reviewContext).toHaveBeenCalledTimes(2);
   expect(host.querySelector('[aria-label="变更集审查结果"]')?.textContent).toContain("Issue");
   bridge.reviewLocation.mockResolvedValue(pair("id-a.txt", "r1"));
