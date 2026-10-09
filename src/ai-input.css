@@ -2,8 +2,15 @@
 .ai-input-frame:focus-within{border-color:var(--blue);outline:1px solid var(--blue)}
 .ai-entry-mark{position:absolute;left:10px;top:10px;display:grid;place-items:center;width:22px;height:22px;color:var(--blue);pointer-events:none}
 .ai-entry-mark svg{width:21px;height:21px}
+.ai-entry-prefix{display:flex;align-items:center;align-self:stretch;flex-shrink:0;margin-left:38px}
+.ai-entry-prefix::after{content:"";width:1px;height:20px;background:var(--border);margin:0 2px 0 8px}
+.ai-input-frame .ai-entry-prefix>select{height:32px;min-width:64px;margin:0;padding:4px 6px;border:0;border-radius:4px;background:transparent;color:var(--text);font:inherit;cursor:pointer}
+.ai-input-frame .ai-entry-prefix>select:hover{background:var(--hover)}
+.ai-input-frame .ai-entry-prefix>select:focus-visible{outline:1px solid var(--blue);outline-offset:-1px}
+.ai-input-frame .ai-entry-prefix>select:disabled{cursor:default}
 .ai-input-frame>input,.ai-input-frame>textarea,.ai-conversation .ai-input-frame>textarea,.commit-editor .ai-input-frame>textarea,.cs-dialog .ai-input-frame>input{box-sizing:border-box;width:100%;min-width:0;min-height:42px;margin:0;padding:10px 50px 10px 42px;border:0;border-radius:6px;background:transparent;box-shadow:none;outline:none;font:inherit;color:var(--text)}
 .ai-input-frame>textarea{resize:vertical;line-height:20px}
+.ai-input-frame.ai-input-with-prefix>input{padding-left:10px}
 .ai-input-frame .ai-entry-send{position:absolute;right:6px;bottom:6px;display:grid;place-items:center;width:30px;height:30px;padding:4px;border:0;border-radius:5px;background:var(--blue);color:white}
 .ai-entry-send:disabled{opacity:.45}.ai-entry-send svg{width:20px;height:20px}
 .ai-entry-send .ai-spinner{border-color:#ffffff60;border-top-color:#fff;width:18px;height:18px}
