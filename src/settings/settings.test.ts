@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import schemeIndex from "../themes/generated/index.json";
 import { defaultAiRuleSet } from "../ai-rules";
+import type { FileIgnoreRule } from "../file-ignore";
 import { createSettingsRegistry, DEFAULT_AI_PROMPTS, DEFAULT_SCHEMES, FONT_SIZE_MAX, FONT_SIZE_MIN, integerSetting, loadSettings, migrateGitExecutable, SETTINGS_KEY, SETTINGS_VERSION, SettingsStore } from "./index";
 
 const memory = (initial: Record<string, string> = {}) => {
@@ -11,6 +12,20 @@ const registry = (defaults?: { lightScheme: string; darkScheme: string }) => cre
 const workspace = (projects: { gitExecutable: string; lastOpenedAt: number }[]) => JSON.stringify({ version: 2, activeRepoId: null, projects: projects.map((p, i) => ({ repo: { repoId: `r${i}` }, pinned: false, anchor: {}, ...p })) });
 
 describe("settings model, registry and persistence", () => {
+  it("忽略规则兼容旧设置，成功后持久化，校验或保存失败不改变规则", () => {
+    const storage = memory({ [SETTINGS_KEY]: JSON.stringify({ version: 1, appearance: { fontSize: 16 } }) });
+    const store = new SettingsStore(storage, registry());
+    expect(store.get().fileIgnore.rules).toEqual([]);
+    expect(store.get().appearance.fontSize).toBe(16);
+    const rules: FileIgnoreRule[] = [{ id: "ds", kind: "glob", pattern: "**/.DS_Store", repoId: "client", enabled: true, caseSensitive: true }];
+    expect(store.update("fileIgnore", "rules", rules)).toBe(true);
+    expect(new SettingsStore(storage, registry()).get().fileIgnore.rules).toEqual(rules);
+    expect(store.update("fileIgnore", "rules", [{ ...rules[0], pattern: "../bad" }])).toBe(false);
+    storage.setItem.mockImplementationOnce(() => { throw new Error("quota"); });
+    expect(store.update("fileIgnore", "rules", [])).toBe(false);
+    expect(store.get().fileIgnore.rules).toEqual(rules);
+    expect(new SettingsStore(storage, registry()).get().fileIgnore.rules).toEqual(rules);
+  });
   it("defaults to the Oris schemes (V2-D32) and still accepts other valid default ids", () => {
     const oris = loadSettings(memory(), registry()).settings;
     expect(DEFAULT_SCHEMES).toEqual({ lightScheme: "oris-light", darkScheme: "oris-dark" });
@@ -45,9 +60,9 @@ describe("settings model, registry and persistence", () => {
 
   it("registry: categories are ordered, a new category needs no framework change, invalid fields fall back per item", () => {
     const reg = registry();
-    expect(reg.list().map((c) => c.id)).toEqual(["appearance", "git", "ai", "update"]);
+    expect(reg.list().map((c) => c.id)).toEqual(["appearance", "git", "fileIgnore", "ai", "update"]);
     reg.register({ id: "reading", label: "Diff 阅读", order: 15, settings: [integerSetting("tabSize", 1, 8, 4, { label: "Tab 宽度", control: "slider" })] });
-    expect(reg.list().map((c) => c.id)).toEqual(["appearance", "reading", "git", "ai", "update"]);
+    expect(reg.list().map((c) => c.id)).toEqual(["appearance", "reading", "git", "fileIgnore", "ai", "update"]);
     expect(reg.defaults().reading).toEqual({ tabSize: 4 });
     const { values, corrected } = reg.normalize({ appearance: { fontSize: 99, themeMode: "system", lightScheme: "dark-2026" }, git: { executable: "C:/Git/bin/git.exe" }, unknown: { x: 1 } });
     expect(values.appearance.fontSize).toBe(13);

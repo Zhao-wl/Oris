@@ -26,6 +26,7 @@ vi.mock("./DiffViewer", async () => { const { forwardRef, useImperativeHandle } 
 vi.mock("./ImageViewer", () => ({ default: () => <div/> }));
 import App from "./App";
 import { settings } from "./appearance";
+import type { FileIgnoreRule } from "./file-ignore";
 
 const repo = { repoId: "a", displayName: "a", worktreePath: "C:/a", gitDir: "C:/a/.git", commonDir: "C:/a/.git", branch: "main" };
 const change = (path: string, status: FileChange["status"] = "modified"): FileChange => ({ pathId: `id-${path}`, displayPath: path, oldPathId: null, oldDisplayPath: null, status, additions: 1, deletions: 0 });
@@ -64,9 +65,183 @@ const mount = async () => {
   await act(async () => { root.render(<App />); }); await flush();
 };
 
+// 可选导出真实 React 标记供无窗口 Chromium 复测 CSS；仓库/内容仍为本文件的替身。
+const captureLayout = (name: string) => {
+  const capture = (globalThis as { orisLayoutCapture?: (name: string, html: string) => void }).orisLayoutCapture;
+  if (!capture) return;
+  const clone = document.documentElement.cloneNode(true) as HTMLElement;
+  const originals = document.querySelectorAll("input, select, textarea");
+  clone.querySelectorAll("input, select, textarea").forEach((element, index) => {
+    const original = originals[index];
+    if (element instanceof HTMLInputElement && original instanceof HTMLInputElement) {
+      element.setAttribute("value", original.value); element.toggleAttribute("checked", original.checked);
+    } else if (element instanceof HTMLSelectElement && original instanceof HTMLSelectElement) {
+      [...element.options].forEach((option, index) => option.toggleAttribute("selected", original.options[index].selected));
+    } else if (element instanceof HTMLTextAreaElement && original instanceof HTMLTextAreaElement) element.textContent = original.value;
+  });
+  capture(name, `<!doctype html>${clone.outerHTML}`);
+};
+
+describe("工单 #36：忽略规则与 AI 配置（DOM，不调用原生窗口）", () => {
+  const dsRule = (extra: Partial<FileIgnoreRule> = {}): FileIgnoreRule => ({ id: "ds", repoId: "a", kind: "glob", pattern: "**/.DS_Store", enabled: true, caseSensitive: true, ...extra });
+  const aiReady = () => {
+    settings.update("ai", "profiles", [{ id: "test-ai", name: "Test AI", kind: "cli", provider: "codex", executable: "/bin/false", baseUrl: "", model: "test-model", hasKey: false }]);
+    settings.update("ai", "activeId", "test-ai");
+  };
+  const send = async (text: string) => {
+    await type(host.querySelector<HTMLTextAreaElement>('textarea[aria-label="输入 AI 指令"]')!, text);
+    await click(host.querySelector<HTMLButtonElement>('[aria-label="确认 AI 指令"]')!);
+  };
+  const openIgnore = async () => {
+    await click(host.querySelector<HTMLButtonElement>('[aria-label="设置"]')!);
+    await click(host.querySelector<HTMLButtonElement>('[aria-controls="settings-git-subnav"]')!);
+    await click(button("忽略文件"));
+  };
+  const setPattern = async (text: string) => {
+    const input = host.querySelector<HTMLInputElement>('[aria-label="忽略规则模式"]')!;
+    await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, text); input.dispatchEvent(new Event("input", { bubbles: true })); }); await flush();
+  };
+  it("初次加载、三个范围、临时显示与停用规则；真实 Git 计数不受隐藏影响", async () => {
+    settings.update("fileIgnore", "rules", [dsRule()]);
+    bridge.open.mockResolvedValue(snap([change(".DS_Store", "untracked"), change("json/.DS_Store"), change("src/app.ts")], [change("deep/.DS_Store")]));
+    await mount();
+    expect(rows()).toEqual(["src/app.ts"]);
+    expect(bridge.read.mock.calls[0][3]).toBe("id-src/app.ts");
+    expect(host.querySelector(".ignore-status")).toBeNull();
+    // 文件列表必须仍是侧栏的第四个网格项，占用 1fr；不能再插入控制区。
+    expect(host.querySelector(".sidebar")?.children[3]).toBe(host.querySelector(".files"));
+    expect(host.querySelector(".sidebar")?.textContent).not.toContain("忽略规则");
+    captureLayout("sidebar");
+    expect(button("提交 · 1")).toBeTruthy();
+    await click(button("已暂存"));
+    expect(rows()).toEqual([]);
+    expect(host.querySelector(".files")?.textContent).toContain("已全部忽略");
+    await openIgnore();
+    captureLayout("settings");
+    expect(host.querySelector(".ignore-preview [role=status]")?.textContent).toContain("匹配 1 个文件");
+    await click(host.querySelector('[aria-label="临时显示被忽略文件"]')!);
+    await click(host.querySelector('[aria-label="关闭设置"]')!);
+    expect(rows()).toEqual(["deep/.DS_Store"]);
+    await click(button("全部"));
+    expect(rows()).toHaveLength(4);
+    await openIgnore();
+    await click(host.querySelector('[aria-label="临时显示被忽略文件"]')!);
+    await click(host.querySelector('[aria-label="关闭设置"]')!);
+    expect(rows()).toEqual(["src/app.ts"]);
+    await act(async () => { settings.update("fileIgnore", "rules", [dsRule({ enabled: false })]); }); await flush();
+    expect(rows()).toHaveLength(4);
+    expect(bridge.operation).not.toHaveBeenCalled();
+  });
+  it("忽略操作全部位于 Git 设置子项，规则生效后切换阅读并可删除", async () => {
+    bridge.open.mockResolvedValue(snap([change(".DS_Store"), change("json/.DS_Store"), change("src/app.ts")], []));
+    await mount(); await contextMenu(".DS_Store");
+    expect(menuItem("忽略")).toBeUndefined();
+    await openIgnore();
+    expect(host.querySelector('.settings-dialog h3')?.textContent).toBe("忽略文件");
+    expect(button("忽略文件").closest("#settings-git-subnav")).toBeTruthy();
+    await setPattern(".DS_Store"); await click(button("添加规则"));
+    expect(rows()).toEqual(["src/app.ts"]);
+    expect(host.querySelector(".file.selected")?.getAttribute("aria-label")).toBe("src/app.ts");
+    await setPattern("src/app.ts"); await click(button("添加规则"));
+    expect(rows()).toEqual([]); expect(host.querySelector('[data-testid="readable"]')).toBeNull();
+    await click(host.querySelector('[aria-label="删除 .DS_Store"]')!);
+    expect(rows()).toEqual([".DS_Store", "json/.DS_Store"]);
+    expect(bridge.operation).not.toHaveBeenCalled();
+  });
+  it("AI 配置通过真实设置链生效，并向模型提供当前规则；非法目标不写入", async () => {
+    aiReady(); bridge.open.mockResolvedValue(snap([change(".DS_Store"), change("src/app.ts")], []));
+    bridge.planAi.mockResolvedValue({ kind: "fileIgnore", operation: { action: "add", rule: { id: ".DS_Store", pattern: ".DS_Store" } } });
+    await mount(); await click(host.querySelector(".titlebar .commit-entry")!);
+    await send("@设置 当前项目忽略所有目录下的 .DS_Store");
+    expect(rows()).toEqual(["src/app.ts"]);
+    expect(settings.get().fileIgnore.rules).toHaveLength(1);
+    expect(settings.get().fileIgnore.rules[0]).toMatchObject({ pattern: ".DS_Store", kind: "name", repoId: "a", enabled: true, caseSensitive: true });
+    const saved = settings.get().fileIgnore.rules[0];
+    expect(host.querySelector(".ai-commit-dialog")?.textContent).toContain("忽略规则已保存");
+    const context = bridge.planAi.mock.calls[0][2] as { fileIgnore: { currentRepoId: string; rules: unknown[] }; capability: { fileIgnore: unknown } };
+    expect(context.fileIgnore).toEqual(expect.objectContaining({ currentRepoId: "a", rules: [] }));
+    expect(context.capability.fileIgnore).toBeTruthy();
+    bridge.planAi.mockResolvedValue({ kind: "fileIgnore", operation: { action: "add", rule: dsRule({ id: "wrong", repoId: "battle" }) } });
+    await send("@设置 忽略另一个项目的文件");
+    expect(settings.get().fileIgnore.rules).toEqual([saved]);
+    expect(host.querySelector(".ai-commit-dialog [role=alert]")?.textContent).toContain("目标仓库");
+    bridge.planAi.mockResolvedValue({ kind: "fileIgnore", operation: { action: "delete", id: saved.id } });
+    await send("@设置 取消当前项目对 .DS_Store 的忽略");
+    expect(settings.get().fileIgnore.rules).toEqual([]); expect(rows()).toHaveLength(2);
+    expect(bridge.operation).not.toHaveBeenCalled();
+  });
+  it("AI 规划期间规则改变时拒绝旧计划", async () => {
+    aiReady(); await mount(); await click(host.querySelector(".titlebar .commit-entry")!);
+    const pending = deferred<unknown>(); bridge.planAi.mockReturnValue(pending.promise);
+    await send("@设置 忽略 .DS_Store");
+    await act(async () => { settings.update("fileIgnore", "rules", [dsRule({ id: "newer" })]); });
+    pending.resolve({ kind: "fileIgnore", operation: { action: "add", rule: dsRule() } }); await flush();
+    expect(settings.get().fileIgnore.rules.map(r => r.id)).toEqual(["newer"]);
+    expect(host.querySelector(".ai-commit-dialog [role=alert]")?.textContent).toContain("规则已变化");
+  });
+  it("AI 全部暂存排除忽略文件；不能静默操作指定的隐藏文件", async () => {
+    aiReady(); settings.update("fileIgnore", "rules", [dsRule()]);
+    const original = snap([change(".DS_Store"), change("a.txt"), change("b.txt")], []);
+    bridge.open.mockResolvedValue(original); bridge.refresh.mockResolvedValue(original);
+    bridge.planAi.mockResolvedValue({ kind: "git", operation: { kind: "stage", pathIds: "all" } });
+    bridge.operation.mockResolvedValue(outcome("stage", original));
+    await mount(); await click(host.querySelector(".titlebar .commit-entry")!); await send("暂存全部");
+    expect(bridge.operation.mock.calls[0][3]).toEqual({ kind: "stage", pathIds: ["id-a.txt", "id-b.txt"] });
+    bridge.operation.mockClear(); bridge.planAi.mockResolvedValue({ kind: "git", operation: { kind: "stage", pathIds: ["id-.DS_Store"] } });
+    await send("暂存 .DS_Store");
+    expect(bridge.operation).not.toHaveBeenCalled();
+    expect(host.querySelector(".ai-commit-dialog [role=alert]")?.textContent).toContain("被忽略的文件");
+  });
+  it("提交面板列出忽略但已暂存的文件，不擅自取消暂存", async () => {
+    settings.update("fileIgnore", "rules", [dsRule()]);
+    bridge.open.mockResolvedValue(snap([change("a.txt")], [change("json/.DS_Store"), change("b.txt")]));
+    await mount(); await click(commitTab());
+    expect(host.querySelector(".ignore-commit-warning")?.textContent).toContain("仍会提交");
+    expect(host.querySelector(".ignore-commit-warning")?.textContent).toContain("json/.DS_Store");
+    expect(button("提交 · 2")).toBeTruthy(); expect(bridge.operation).not.toHaveBeenCalled();
+  });
+  it("设置页手动添加与编辑规则，非法模式报错；启停立即恢复列表", async () => {
+    bridge.open.mockResolvedValue(snap([change("json/.DS_Store"), change("a.txt")], []));
+    await mount(); await openIgnore();
+    const input = host.querySelector<HTMLInputElement>('[aria-label="忽略规则模式"]')!;
+    const setInput = async (text: string) => {
+      await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, text); input.dispatchEvent(new Event("input", { bubbles: true })); }); await flush();
+    };
+    await setInput("**/.DS_Store"); await click(button("添加规则"));
+    expect(rows()).toEqual(["a.txt"]);
+    expect(settings.get().fileIgnore.rules[0]).toMatchObject({ repoId: "a", pattern: "**/.DS_Store" });
+    await click(host.querySelector('[aria-label="编辑 **/.DS_Store"]')!);
+    await setInput("../bad"); await click(button("保存规则"));
+    expect(host.querySelector(".file-ignore-settings [role=alert]")?.textContent).toContain("无效");
+    expect(rows()).toEqual(["a.txt"]);
+    await setInput("*.txt"); await click(button("保存规则"));
+    expect(rows()).toEqual(["json/.DS_Store"]);
+    await click(host.querySelector('[aria-label="启用 *.txt"]')!);
+    expect(rows()).toHaveLength(2);
+    expect(settings.get().fileIgnore.rules[0].enabled).toBe(false);
+  });
+  it("AI 更新和启停规则即时生效；已有忽略暂存内容时拒绝直接 AI 提交", async () => {
+    aiReady(); settings.update("fileIgnore", "rules", [dsRule()]);
+    const original = snap([change("a.txt"), change("json/.DS_Store")], [change(".DS_Store")]);
+    bridge.open.mockResolvedValue(original); bridge.refresh.mockResolvedValue(original);
+    await mount(); await click(host.querySelector(".titlebar .commit-entry")!);
+    bridge.planAi.mockResolvedValue({ kind: "fileIgnore", operation: { action: "update", rule: dsRule({ pattern: "*.txt" }) } });
+    await send("@设置 将规则改为忽略 txt 文件");
+    expect(rows()).toEqual(["json/.DS_Store"]);
+    bridge.planAi.mockResolvedValue({ kind: "fileIgnore", operation: { action: "setEnabled", id: "ds", repoId: "a", enabled: false } });
+    await send("@设置 停用规则"); expect(rows()).toHaveLength(2);
+    bridge.planAi.mockResolvedValue({ kind: "fileIgnore", operation: { action: "update", rule: dsRule() } });
+    await send("@设置 恢复忽略 .DS_Store");
+    bridge.planAi.mockResolvedValue({ kind: "git", operation: { kind: "commit", message: "test" } });
+    await send("提交暂存内容");
+    expect(host.querySelector(".ai-commit-dialog [role=alert]")?.textContent).toContain("仍会进入提交");
+    expect(bridge.operation).not.toHaveBeenCalled();
+  });
+});
+
 beforeEach(() => {
   vi.resetAllMocks(); localStorage.clear();
-  settings.update("ai", "profiles", []); settings.update("ai", "activeId", "");
+  settings.update("ai", "profiles", []); settings.update("ai", "activeId", ""); settings.update("fileIgnore", "rules", []);
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ font: "", measureText: (text: string) => ({ width: text.length * 6 }) } as unknown as CanvasRenderingContext2D);
@@ -80,7 +255,7 @@ beforeEach(() => {
   bridge.diff.mockImplementation(async (requestId: string, contentIds: [string, string]) => ({ requestId, contentIds, changes: [], hunks: [], elapsedMs: 0 }));
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
-afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+afterEach(async () => { await act(async () => root.unmount()); settings.update("fileIgnore", "rules", []); host.remove(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("stage / unstage (B05, B16)", () => {
   it("moves the file optimistically before Git confirms, disables other writes meanwhile, then applies the confirmed snapshot", async () => {

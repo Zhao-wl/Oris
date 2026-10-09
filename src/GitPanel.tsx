@@ -14,6 +14,7 @@ interface Props {
   tab: GitTab | null;
   onTab(tab: GitTab | null): void;
   stagedCount: number;
+  ignoredStagedPaths?: string[];
   /** HEAD / 上游变化的键：变化时重新读取 HEAD 信息。 */
   headKey: string;
   /** 当前快照中的 HEAD OID；HEAD 信息与之不一致时视为正在读取，撤销暂不可用。 */
@@ -58,7 +59,7 @@ export default function GitPanel(props: Props) {
   </section>;
 }
 
-function CommitTab({ repoId, stagedCount, headKey, headOid, mergeInProgress, blockedReason, running, lines, lastCommit, onCommit, onUndoCommit, onCancel, onGenerateMessage, selectedCount, onChooseFiles, onClearFiles }: Props & { repoId: string }) {
+function CommitTab({ repoId, stagedCount, ignoredStagedPaths = [], headKey, headOid, mergeInProgress, blockedReason, running, lines, lastCommit, onCommit, onUndoCommit, onCancel, onGenerateMessage, selectedCount, onChooseFiles, onClearFiles }: Props & { repoId: string }) {
   const [message, setMessage] = useState(() => loadDraft(localStorage, repoId));
   const [push, setPush] = useState(false);
   const [aiGenerating, setAiGenerating] = useState(false);
@@ -107,6 +108,7 @@ function CommitTab({ repoId, stagedCount, headKey, headOid, mergeInProgress, blo
       <strong>{selectedCount === undefined ? `提交暂存区 · ${stagedCount} 个文件` : `提交所选工作区整文件 · ${selectedCount} 个`}</strong>
       {onChooseFiles && <button disabled={!!running} onClick={onChooseFiles}>选择文件 / AI 辅助…</button>}
       {selectedCount !== undefined && <button onClick={onClearFiles}>恢复提交暂存区</button>}
+      {selectedCount === undefined && ignoredStagedPaths.length > 0 && <details className="ignore-commit-warning" open><summary>包含 {ignoredStagedPaths.length} 个被忽略的已暂存文件，仍会提交</summary><ul>{ignoredStagedPaths.map(path => <li key={path}>{path}</li>)}</ul><small>忽略只影响列表，不会自动取消暂存。</small></details>}
       <label title={pushReason ?? "提交成功后推送当前分支；没有上游时先选择 remote"}><input type="checkbox" aria-label="提交并推送" checked={push && !pushReason} disabled={!!pushReason || !!committing} onChange={(event) => setPush(event.target.checked)}/> 提交并推送</label>
       <div className="commit-buttons">
         <button type="button" className="primary" disabled={!!commitBlocked || !!committing} title={commitBlocked ?? "Ctrl+Enter"} onClick={() => void submit()}>{push && !pushReason ? "提交并推送" : "提交"}</button>

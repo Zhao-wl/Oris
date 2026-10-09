@@ -39,6 +39,12 @@ export class SettingsStore {
     const current = this.store.get();
     if (Object.is(current[category][key], valid)) return true;
     const next: Settings = { ...current, [category]: { ...current[category], [key]: valid } };
+    // 忽略规则必须真实保存成功；失败时既不隐藏文件，也不向 AI 报告成功。
+    if (category === "fileIgnore") {
+      try { saveSettings(this.storage, next); } catch { return false; }
+      this.store.set(next);
+      return true;
+    }
     this.store.set(next);
     try { saveSettings(this.storage, next); } catch { /* 持久化可选，不影响即时生效 */ }
     return true;

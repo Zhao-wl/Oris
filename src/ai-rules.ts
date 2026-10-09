@@ -26,7 +26,7 @@ export const RECOMMENDED_AI_COMMANDS: AiCommand[] = [
   command("pull", "拉取", "更新当前分支到上游", "action", ["status", "refs"], "以当前分支已配置上游为默认目标，默认仅快进拉取。上游缺失、目标不明确或状态不满足条件时说明原因，不擅自切换分支、储藏改动或改用其他整合方式。"),
   command("merge", "合并", "将指定分支合入当前分支", "action", ["status", "refs"], "将用户指定分支合入当前分支，明确来源与接收分支。使用真实存在的引用，名称歧义或目标缺失时先澄清。遵循应用执行校验；冲突时说明当前状态，不自动选择一侧覆盖。"),
   command("history", "历史", "梳理最近提交的变化脉络", "answer", ["history"], "围绕用户关注的功能、作者或时间整理提供的提交记录，标明相关提交。区分标题描述与核实的代码变化；只有标题和作者时不推断实现细节、测试结果或是否彻底解决问题。记录不足时说明限制。"),
-  command("settings", "设置", "调整外观、快捷键与 AI 配置", "action", ["settings"], "将用户需求映射到支持的设置项和值，使用已有配色和 AI 配置。目标明确时生成对应操作，模糊要求先澄清。新增配置、凭据或不支持的设置，引导到设置界面，不虚构配置。")
+  command("settings", "设置", "调整外观、快捷键、文件忽略规则与 AI 配置", "action", ["settings"], "将用户需求映射到支持的设置项和值，使用已有配色和 AI 配置。目标明确时生成对应操作，模糊要求先澄清。变更文件忽略使用 fileIgnore 动作，目标未明确全局时仅配置当前仓库，读取规则用 answer。新增配置、凭据或不支持的设置，引导到设置界面，不虚构配置。")
 ];
 export const defaultAiRuleSet = (): AiRuleSet => ({
   version: 1, commands: structuredClone(RECOMMENDED_AI_COMMANDS),
