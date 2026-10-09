@@ -1,6 +1,6 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { contextIndex, describeNode, evidencePages, compactEvidence, tokenEstimate, CONTEXT_BUDGET, type IndexNode } from "./compression";
-import { assistSelection, newContextMeter, routeCandidates, type Attachment } from "./model";
+import { assistSelection, commitAttachment, newContextMeter, routeCandidates, type Attachment } from "./model";
 import { withAttachmentReads } from "./reader";
 import { reviewAttachments } from "./review";
 import { context } from "../ai-review/fixtures";
@@ -87,4 +87,20 @@ it("packs expanded directories together within the complete request budget",asyn
   const meter=newContextMeter();
   const result=await routeCandidates(profile,"文档",candidates,[],"files","r",()=>true,()=>{},meter);
   expect(result.items).toHaveLength(160);expect(invoke.mock.calls.length).toBeLessThan(6);expect(meter.timings).toHaveLength(meter.calls);
+});
+
+it("examines every commit title across date groups, including relevant commits in later batches",async()=>{
+  const candidates=Array.from({length:280},(_,i)=>commitAttachment("repo",{oid:String(i),subject:i===275?"整理足球场景层级与美术资源目录":"更新构建脚本",authorName:"author",authorTime:1791504000-i*86400,parents:[],body:"",refs:[],authorEmail:"",committerName:"",committerEmail:"",committerTime:0}));
+  const seen:string[]=[];
+  invoke.mockImplementation(async(command,args)=>{
+    expect(command).toBe("select_context");
+    expect(args.context.candidates.every((c:any)=>c.type==="item")).toBe(true);
+    expect(tokenEstimate({prompt:"足球相关的美术资源",index:args.context,system:args.systemPrompt})+2000).toBeLessThanOrEqual(16384);
+    seen.push(...args.context.candidates.map((c:any)=>c.id));
+    return {kind:"answer",selection:{target:"commits",mode:"add",ids:args.context.candidates.filter((c:any)=>c.label.includes("足球")).map((c:any)=>c.id),evidenceIds:[],reason:"按提交标题匹配足球美术资源"}};
+  });
+  const result=await assistSelection(profile,"足球相关的美术资源",candidates,[],"commits","r",()=>true);
+  expect(seen).toHaveLength(280);expect(new Set(seen).size).toBe(280);
+  expect(result.ids).toEqual([candidates[275].id]);expect(result.reason).toContain("280/280");
+  expect(invoke.mock.calls.length).toBeGreaterThan(1);expect(invoke.mock.calls.length).toBeLessThan(8);
 });

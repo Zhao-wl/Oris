@@ -67,10 +67,11 @@ export async function routeCandidates(profile:AiProfile,prompt:string,candidates
   const chosen:Attachment[]=[], selectedIds=new Set(selected.map(a=>a.id));
   const system=SELECTION_PROMPT+"\n只读元数据选择：文件名、完整路径、目录、作者或提交标题已足以满足条件时直接选中；例如测试用例文件按 Tests 目录及文件名识别。只有必须核实实现语义的已选条目才放入 selection.evidenceIds（当前短编号数组）；无需正文时返回空数组。不得把未读正文声称为已检查。分组只用于展开，不确定的分组应展开。每轮 mode 保持同一追加、移除或替换意图。";
   const describe=(n:IndexNode)=>n.item?{id:n.id,type:"item",label:n.item.path??n.item.label,source:n.item.source,author:n.item.commit?.authorName,date:n.item.commit?.authorTime,selected:selectedIds.has(n.item.id)}:describeNode(n);
-  const indexFor=(nodes:IndexNode[])=>({target:kind,candidates:nodes.map(describe),instruction:"选择相关条目或需要展开的分组，返回当前短编号。"});
+  const indexFor=(nodes:IndexNode[])=>({target:kind,candidates:nodes.map(describe),instruction:kind==="commits"?"这是当前筛选范围的一批实际提交。根据提交标题和作者判断相关性，不得因为缺少 diff 一律返回空。需要确认含糊标题时，选为候选并通过 evidenceIds 请求正文核对。只返回本批短编号。":"选择相关条目或需要展开的分组，返回当前短编号。"});
   const fits=(nodes:IndexNode[])=>nodes.length<=128&&tokenEstimate({prompt,index:indexFor(nodes),system})+2000<=meter.window;
   const flat=candidates.map((item,i)=>({id:`f${i}`,label:item.label,count:1,item}));
-  const queue:IndexNode[]=fits(flat)?flat:contextIndex(candidates);
+  // Dates do not carry semantic relevance: every commit title must reach the model.
+  const queue:IndexNode[]=kind==="commits"||fits(flat)?flat:contextIndex(candidates);
   let mode:"add"|"remove"|"replace"|undefined;let examined=0;const evidenceIds=new Set<string>(), reasons:string[]=[];
   while(queue.length) {
     check(valid);const nodes:IndexNode[]=[];
@@ -85,7 +86,7 @@ export async function routeCandidates(profile:AiProfile,prompt:string,candidates
     reasons.push(result.reason);const picked=new Set(result.ids);examined+=nodes.filter(n=>n.item).length;
     for(const node of nodes)if(picked.has(node.id)){if(node.children)queue.push(...node.children);else if(node.item){chosen.push(node.item);if(result.evidenceIds?.includes(node.id))evidenceIds.add(node.item.id);}}
   }
-  return {items:chosen,evidenceIds,mode:mode??"add",reason:[...new Set(reasons)].join("；").slice(0,1000)+"；"+`已查看 ${examined}/${candidates.length} 项元数据；其余仅经分组导航，未逐项检查`};
+  return {items:chosen,evidenceIds,mode:mode??"add",reason:[...new Set(reasons)].join("；").slice(0,1000)+"；"+`已查看 ${examined}/${candidates.length} 项元数据${examined<candidates.length?"；其余仅经分组导航，未逐项检查":"；未请求正文的条目仅按元数据判断"}`};
 }
 
 export async function assistSelection(profile: AiProfile, prompt: string, candidates: Attachment[], selected: Attachment[], kind: SelectionKind, requestId: string, valid: () => boolean, progress:(text:string)=>void=()=>{},limits:ContextLimits={}) {
