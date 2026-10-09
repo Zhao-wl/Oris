@@ -94,7 +94,11 @@ export default function ContextSelector({ repoId, value, profile, limits, purpos
     try{
       const candidates=await allMatches(true);if(!valid())return;
       const result=await assistSelection(profile,prompt,candidates,selected,tab,requestId,valid,setFeedback,limits);
-      if(valid())update(candidates,result.ids,result.mode,result.reason,tab);
+      if(valid()){
+        update(candidates,result.ids,result.mode,result.reason,tab);
+        setPrompt("");
+        if(!result.ids.length)setFeedback(`未找到匹配项：${result.reason}`);
+      }
     }catch(e){if(valid())setError(errorText(e));}finally{if(valid()){setBusy(false);pending.current=null;}}
   };
   const clickItem=(e:React.MouseEvent,item:Attachment,chosen:boolean)=>{

@@ -29,14 +29,15 @@ export function changeSelection(current: Attachment[], candidates: Attachment[],
   for (const id of ids) { if (mode === "remove") next.delete(id); else next.set(id, allowed.get(id)!); }
   return [...next.values()];
 }
-export function parseSelection(value: unknown, candidates: Attachment[], kind: SelectionKind): { ids: string[]; mode: "add" | "remove" | "replace"; reason: string } {
-  const v = value as { kind?: string; selection?: { ids?: unknown; mode?: unknown; reason?: unknown; target?: unknown } };
+export function parseSelection(value: unknown, candidates: Attachment[], kind: SelectionKind): { ids: string[]; mode: "add" | "remove" | "replace"; reason: string; evidenceIds?: string[] } {
+  const v = value as { kind?: string; selection?: { ids?: unknown; mode?: unknown; reason?: unknown; target?: unknown; evidenceIds?: unknown } };
   const s = v?.selection;
   if (v?.kind !== "answer" || !s || s.target !== kind || !["add", "remove", "replace"].includes(String(s.mode)) || !Array.isArray(s.ids) || s.ids.some(id => typeof id !== "string") || typeof s.reason !== "string") throw new Error("辅助选择返回格式无效，未修改附件");
   const ids = [...new Set(s.ids as string[])];
   const allowed = new Set(candidates.filter(x => x.kind === kind).map(x => x.id));
   if (ids.some(id => !allowed.has(id))) throw new Error("模型返回范围外对象，未修改附件");
-  return { ids, mode: s.mode as "add" | "remove" | "replace", reason: s.reason.slice(0, 2000) };
+  if (s.evidenceIds !== undefined && (!Array.isArray(s.evidenceIds) || s.evidenceIds.some(id => typeof id !== "string" || !ids.includes(id)))) throw new Error("辅助选择的正文核对对象无效，未修改附件");
+  return { ids, evidenceIds: s.evidenceIds as string[] | undefined, mode: s.mode as "add" | "remove" | "replace", reason: s.reason.slice(0, 2000) };
 }
 
 const selectContext = (profile: AiProfile, description: string, context: unknown, systemPrompt: string, requestId: string, _readOnly: boolean) => invoke<unknown>("select_context", { profile, description, context, systemPrompt, requestId });
@@ -62,21 +63,21 @@ export async function routeCandidates(profile:AiProfile,prompt:string,candidates
   check(valid);
   const roots=contextIndex(candidates), chosen:Attachment[]=[], selectedIds=new Set(selected.map(a=>a.id));
   const queue:{nodes:IndexNode[];parent:string}[]=[{nodes:roots,parent:"完整候选范围"}];
-  let mode:"add"|"remove"|"replace"|undefined;let examined=0;
+  let mode:"add"|"remove"|"replace"|undefined;let examined=0;const evidenceIds=new Set<string>(), reasons:string[]=[];
   while(queue.length) {
     check(valid);const {nodes,parent}=queue.shift()!;
     const aliases=nodes.map(n=>({...(n.item ?? {kind,repoId:candidates[0]?.repoId,label:n.label}),id:n.id})) as Attachment[];
     const index={target:kind,parent,candidates:nodes.map(n=>({...describeNode(n),selected:n.item?selectedIds.has(n.item.id):undefined})),
       instruction:"选择需要展开的分组或相关条目。分组区间仅用于导航，不代表已检查内容；不确定的分组应展开。不得把未展开分组声称为已审查。返回当前短编号，不返回路径或真实 ID。"};
-    const system=SELECTION_PROMPT+"\n本阶段只导航索引，不读正文。每轮 mode 必须保持本次用户指定的追加、移除或替换意图。";
+    const system=SELECTION_PROMPT+"\n本阶段只导航索引，不读正文。文件名、路径、目录、作者或提交标题已足以满足条件时直接选中；例如“测试用例文件”按 Tests 目录及测试文件名识别，不要求 diff 新增测试。只有必须核实实现语义的已选条目才放入 selection.evidenceIds（当前短编号数组）；其余无需正文，返回空数组。分组用于继续展开，不需要正文。每轮 mode 必须保持本次用户指定的追加、移除或替换意图。";
     progress(`索引导航 ${meter.calls+1} 轮 · 已检查 ${examined}/${candidates.length} 个条目元数据`);
     const response=await budgetedAnswer(meter,{prompt,index,system},()=>answerTransport?planAiAction(profile,prompt,index,system,requestId,true):selectContext(profile,prompt,index,system,requestId,true));
     check(valid);const result=parseSelection(response,aliases,kind);
     if(mode&&mode!==result.mode)throw new Error("模型在分批处理中改变了追加／移除意图，选择未修改");mode=result.mode;
-    const picked=new Set(result.ids);examined+=nodes.filter(n=>n.item).length;
-    for(const node of nodes)if(picked.has(node.id)){if(node.children)queue.push({nodes:node.children,parent:node.label});else if(node.item)chosen.push(node.item);}
+    reasons.push(result.reason);const picked=new Set(result.ids);examined+=nodes.filter(n=>n.item).length;
+    for(const node of nodes)if(picked.has(node.id)){if(node.children)queue.push({nodes:node.children,parent:node.label});else if(node.item){chosen.push(node.item);if(result.evidenceIds===undefined||result.evidenceIds.includes(node.id))evidenceIds.add(node.item.id);}}
   }
-  return {items:chosen,mode:mode??"add",reason:`已查看 ${examined}/${candidates.length} 项元数据；其余仅经分组导航，未逐项检查`};
+  return {items:chosen,evidenceIds,mode:mode??"add",reason:[...new Set(reasons)].join("；").slice(0,1000)+"；"+`已查看 ${examined}/${candidates.length} 项元数据；其余仅经分组导航，未逐项检查`};
 }
 
 export async function assistSelection(profile: AiProfile, prompt: string, candidates: Attachment[], selected: Attachment[], kind: SelectionKind, requestId: string, valid: () => boolean, progress:(text:string)=>void=()=>{},limits:ContextLimits={}) {
@@ -87,7 +88,7 @@ export async function assistSelection(profile: AiProfile, prompt: string, candid
   // Evidence is read only for routed candidates, in independent bounded packets.
   evidenceLoop:for(let i=0;i<routed.items.length;i++) {
     if(meter.calls>=CONTEXT_BUDGET.calls || meter.tokens>meter.task-12000){reasons.push(`差异核对达到预算，剩余 ${routed.items.length-i} 项仅按元数据初选，未核实正文`);break;}
-    check(valid);const item=routed.items[i];progress(`核对差异 ${i+1}/${routed.items.length} · ${item.label}`);
+    check(valid);const item=routed.items[i];if(!routed.evidenceIds.has(item.id))continue;progress(`核对差异 ${i+1}/${routed.items.length} · ${item.label}`);
     let matched=false, incomplete=false;
     for await (const evidence of attachmentEvidence(item.repoId,item,valid)) {
       validators.push(evidence.validate);reasons.push(...evidence.context.warnings);
@@ -102,7 +103,7 @@ export async function assistSelection(profile: AiProfile, prompt: string, candid
         const response=await budgetedAnswer(meter,{prompt,payload,system:SELECTION_PROMPT},()=>selectContext(profile,prompt,payload,SELECTION_PROMPT,requestId,true));
         check(valid);const refined=parseSelection(response,[alias],kind);
         if(refined.mode!==routed.mode)throw new Error("模型核对时改变了选择意图，选择未修改");
-        matched ||= refined.ids.length>0;
+        reasons.push(refined.reason);matched ||= refined.ids.length>0;
       }
       if(matched)break; // Positive evidence suffices for selection; this is not a full review.
     }

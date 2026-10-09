@@ -74,6 +74,7 @@ it("AI removal still receives joined candidates even though they are hidden from
     const input=host.querySelector<HTMLInputElement>('[aria-label="AI 选择指令"]')!;
     await act(async()=>{Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value")!.set!.call(input,"移除 File0");input.dispatchEvent(new Event("input",{bubbles:true}));});
     await click(host.querySelector('[aria-label="调整选择"]')!);
+    expect(input.value).toBe("");
     expect(assist.mock.calls[0][2].some(a=>a.id==="unstaged:f0")).toBe(true);
     await click(button("应用附件"));expect(apply.mock.calls[0][0]).toHaveLength(0);
   }finally{assist.mockRestore();}

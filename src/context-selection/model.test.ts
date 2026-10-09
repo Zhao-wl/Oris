@@ -45,3 +45,19 @@ it("model selection uses the no-tools endpoint, checks real diff, and ignores ca
   expect(result.ids).toEqual([a.id]);expect(invoke.mock.calls.filter(c=>c[0]==="select_context")).toHaveLength(3);expect(invoke.mock.calls.some(c=>c[0]==="plan_ai_action")).toBe(false);
   await expect(assistSelection(profile,"加入逻辑",[a],[],"files","cancel",()=>false)).rejects.toThrow("取消");
 });
+
+it("selects test files using metadata without requiring their diff to introduce tests",async()=>{
+  const a=file("Assets/Tests/AnimationKickTests.cs"),profile={id:"api",name:"API",kind:"api" as const,provider:"openai" as const,baseUrl:"",model:"m",hasKey:true,executable:""};
+  invoke.mockImplementation(async(command,args)=>{
+    expect(command).toBe("select_context");
+    return {kind:"answer",selection:{target:"files",mode:"add",ids:[args.context.candidates[0].id],evidenceIds:[],reason:"Tests 目录中的测试用例"}};
+  });
+  const result=await assistSelection(profile,"测试用例文件",[a],[],"files","request",()=>true);
+  expect(result.ids).toEqual([a.id]);expect(result.reason).toContain("Tests 目录");expect(invoke).toHaveBeenCalledTimes(2);
+  expect(()=>parseSelection({kind:"answer",selection:{target:"files",mode:"add",ids:[a.id],evidenceIds:["outside"],reason:""}},[a],"files")).toThrow("正文核对对象");
+});
+it("retains the model explanation when index navigation finds no match",async()=>{
+  invoke.mockResolvedValue({kind:"answer",selection:{target:"files",mode:"add",ids:[],reason:"当前范围只有文档，没有测试文件"}});
+  const result=await assistSelection({id:"api",name:"API",kind:"api",provider:"openai",baseUrl:"",model:"m",hasKey:true,executable:""},"测试用例文件",[file("docs/readme.md")],[],"files","request",()=>true);
+  expect(result.ids).toEqual([]);expect(result.reason).toContain("没有测试文件");
+});
