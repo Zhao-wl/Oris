@@ -72,3 +72,5 @@ PowerShell `scripts/build-release.ps1` 编译及无窗口入口检查通过：`E
 
 
 反馈修正版试用包：artifacts/issue26/Oris-issue26-context-fix-20261009.zip（14,067,137 字节），包含 oris.exe 与 WebView2Loader.dll；ZIP 内 exe 的 SHA256 已重读核对。exe SHA256：42CAA874ED33700F19DF88F83F9F8009B87BFE3FC65533DFCD8FD7A060E241C5。保留上一版 ZIP；版本号仍为 0.8.4，本轮未启动原生窗口。
+
+PowerShell release 构建及无窗口入口检查全部通过，耗时 281.7 秒；ENTRY_ASSETS_PASS，26 个嵌入资源，JS/CSS/Worker 存在，校验输出 SHA256 与 ZIP 内 exe 一致。真实模型补充链路最新运行 102.90 秒（含桥接启动和两次实际模型请求）。
