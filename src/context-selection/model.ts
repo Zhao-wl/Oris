@@ -46,14 +46,17 @@ export const SELECTION_PROMPT = `你是只读附件选择助手。只能返回 k
 仅在当前 target 与候选范围内选择。默认追加，用户明确移除则 remove，明确替换才 replace。保持其他类别不变。不匹配返回空 ids，说明原因；不猜测 ID。diff 未提供时只能据元数据判断，不能声称检查了实现。`;
 
 export interface ContextLimits { contextWindowTokens?:number; contextTaskTokens?:number }
-export interface ContextMeter { calls: number; tokens: number; window:number; task:number }
-export const newContextMeter = (limits:ContextLimits={}): ContextMeter => ({ calls:0,tokens:0,window:limits.contextWindowTokens??16384,task:limits.contextTaskTokens??CONTEXT_BUDGET.task });
+export interface ContextMeter { calls: number; tokens: number; window:number; task:number; timings:{round:number;ms:number;ok:boolean}[] }
+export const newContextMeter = (limits:ContextLimits={}): ContextMeter => ({ calls:0,tokens:0,window:limits.contextWindowTokens??16384,task:limits.contextTaskTokens??CONTEXT_BUDGET.task,timings:[] });
 export async function budgetedAnswer(meter: ContextMeter, payload: unknown, call: () => Promise<unknown>) {
   const cost=tokenEstimate(payload);
   if(cost+2000>meter.window)throw new Error("本轮上下文超过模型单次预算，请缩短问题或提高与模型容量相符的上限");
   if(meter.calls>=CONTEXT_BUDGET.calls || meter.tokens+cost+2000>meter.task) throw new Error("已达到本轮累计上下文预算；未完成的内容不能视为已检查，请缩小任务后继续");
   meter.calls++;meter.tokens+=cost;
-  const answer=await call();meter.tokens+=tokenEstimate(answer);return answer;
+  const started=performance.now(),round=meter.calls;let ok=false;
+  try{const answer=await call();meter.tokens+=tokenEstimate(answer);ok=true;return answer;}
+  finally{const timing={round,ms:Math.round(performance.now()-started),ok};meter.timings.push(timing);console.info("[Oris AI context request]",timing);}
+
 }
 const check = (valid:()=>boolean) => { if(!valid())throw new Error("已取消辅助选择"); };
 
@@ -61,28 +64,33 @@ const check = (valid:()=>boolean) => { if(!valid())throw new Error("已取消辅
 export async function routeCandidates(profile:AiProfile,prompt:string,candidates:Attachment[],selected:Attachment[],kind:SelectionKind,requestId:string,valid:()=>boolean,
   progress:(text:string)=>void=()=>{},meter:ContextMeter=newContextMeter(),answerTransport=false) {
   check(valid);
-  const roots=contextIndex(candidates), chosen:Attachment[]=[], selectedIds=new Set(selected.map(a=>a.id));
-  const queue:{nodes:IndexNode[];parent:string}[]=[{nodes:roots,parent:"完整候选范围"}];
+  const chosen:Attachment[]=[], selectedIds=new Set(selected.map(a=>a.id));
+  const system=SELECTION_PROMPT+"\n只读元数据选择：文件名、完整路径、目录、作者或提交标题已足以满足条件时直接选中；例如测试用例文件按 Tests 目录及文件名识别。只有必须核实实现语义的已选条目才放入 selection.evidenceIds（当前短编号数组）；无需正文时返回空数组。不得把未读正文声称为已检查。分组只用于展开，不确定的分组应展开。每轮 mode 保持同一追加、移除或替换意图。";
+  const describe=(n:IndexNode)=>n.item?{id:n.id,type:"item",label:n.item.path??n.item.label,source:n.item.source,author:n.item.commit?.authorName,date:n.item.commit?.authorTime,selected:selectedIds.has(n.item.id)}:describeNode(n);
+  const indexFor=(nodes:IndexNode[])=>({target:kind,candidates:nodes.map(describe),instruction:"选择相关条目或需要展开的分组，返回当前短编号。"});
+  const fits=(nodes:IndexNode[])=>nodes.length<=128&&tokenEstimate({prompt,index:indexFor(nodes),system})+2000<=meter.window;
+  const flat=candidates.map((item,i)=>({id:`f${i}`,label:item.label,count:1,item}));
+  const queue:IndexNode[]=fits(flat)?flat:contextIndex(candidates);
   let mode:"add"|"remove"|"replace"|undefined;let examined=0;const evidenceIds=new Set<string>(), reasons:string[]=[];
   while(queue.length) {
-    check(valid);const {nodes,parent}=queue.shift()!;
+    check(valid);const nodes:IndexNode[]=[];
+    while(queue.length&&fits([...nodes,queue[0]]))nodes.push(queue.shift()!);
+    if(!nodes.length)throw new Error("单个候选元数据超过模型预算，请提高上下文上限或缩短指令");
     const aliases=nodes.map(n=>({...(n.item ?? {kind,repoId:candidates[0]?.repoId,label:n.label}),id:n.id})) as Attachment[];
-    const index={target:kind,parent,candidates:nodes.map(n=>({...describeNode(n),selected:n.item?selectedIds.has(n.item.id):undefined})),
-      instruction:"选择需要展开的分组或相关条目。分组区间仅用于导航，不代表已检查内容；不确定的分组应展开。不得把未展开分组声称为已审查。返回当前短编号，不返回路径或真实 ID。"};
-    const system=SELECTION_PROMPT+"\n本阶段只导航索引，不读正文。文件名、路径、目录、作者或提交标题已足以满足条件时直接选中；例如“测试用例文件”按 Tests 目录及测试文件名识别，不要求 diff 新增测试。只有必须核实实现语义的已选条目才放入 selection.evidenceIds（当前短编号数组）；其余无需正文，返回空数组。分组用于继续展开，不需要正文。每轮 mode 必须保持本次用户指定的追加、移除或替换意图。";
-    progress(`索引导航 ${meter.calls+1} 轮 · 已检查 ${examined}/${candidates.length} 个条目元数据`);
+    const index=indexFor(nodes);
+    progress(`筛选元数据 · 第 ${meter.calls+1} 次请求 · 已查看 ${examined}/${candidates.length} 项`);
     const response=await budgetedAnswer(meter,{prompt,index,system},()=>answerTransport?planAiAction(profile,prompt,index,system,requestId,true):selectContext(profile,prompt,index,system,requestId,true));
     check(valid);const result=parseSelection(response,aliases,kind);
     if(mode&&mode!==result.mode)throw new Error("模型在分批处理中改变了追加／移除意图，选择未修改");mode=result.mode;
     reasons.push(result.reason);const picked=new Set(result.ids);examined+=nodes.filter(n=>n.item).length;
-    for(const node of nodes)if(picked.has(node.id)){if(node.children)queue.push({nodes:node.children,parent:node.label});else if(node.item){chosen.push(node.item);if(result.evidenceIds===undefined||result.evidenceIds.includes(node.id))evidenceIds.add(node.item.id);}}
+    for(const node of nodes)if(picked.has(node.id)){if(node.children)queue.push(...node.children);else if(node.item){chosen.push(node.item);if(result.evidenceIds?.includes(node.id))evidenceIds.add(node.item.id);}}
   }
   return {items:chosen,evidenceIds,mode:mode??"add",reason:[...new Set(reasons)].join("；").slice(0,1000)+"；"+`已查看 ${examined}/${candidates.length} 项元数据；其余仅经分组导航，未逐项检查`};
 }
 
 export async function assistSelection(profile: AiProfile, prompt: string, candidates: Attachment[], selected: Attachment[], kind: SelectionKind, requestId: string, valid: () => boolean, progress:(text:string)=>void=()=>{},limits:ContextLimits={}) {
   if (!candidates.length) throw new Error("当前前提范围没有候选内容");
-  const meter=newContextMeter(limits);
+  const meter=newContextMeter(limits),started=performance.now();
   const routed=await routeCandidates(profile,prompt,candidates,selected,kind,requestId,valid,progress,meter);
   const resultIds=new Set<string>(routed.items.map(item=>item.id));const reasons=[routed.reason];const validators:(()=>Promise<void>)[]=[];
   // Evidence is read only for routed candidates, in independent bounded packets.
@@ -100,6 +108,7 @@ export async function assistSelection(profile: AiProfile, prompt: string, candid
         const payload={target:kind,candidates:[{id:"f0",path:item.path,subject:item.commit?.subject}],evidence:compactEvidence(page),mode:routed.mode,
           note:"只判断这一证据片段是否支持选择本条目；其他片段可能尚未读取。必须保持 mode。"};
         if(meter.calls>=CONTEXT_BUDGET.calls || meter.tokens+tokenEstimate({prompt,payload,system:SELECTION_PROMPT})+2000>meter.task){reasons.push(`差异核对达到预算，剩余 ${routed.items.length-i} 项仅按元数据初选，未核实正文`);break evidenceLoop;}
+        progress(`核对正文 · 第 ${meter.calls+1} 次请求 · ${i+1}/${routed.items.length} 项`);
         const response=await budgetedAnswer(meter,{prompt,payload,system:SELECTION_PROMPT},()=>selectContext(profile,prompt,payload,SELECTION_PROMPT,requestId,true));
         check(valid);const refined=parseSelection(response,[alias],kind);
         if(refined.mode!==routed.mode)throw new Error("模型核对时改变了选择意图，选择未修改");
@@ -110,9 +119,10 @@ export async function assistSelection(profile: AiProfile, prompt: string, candid
     if(!matched && !incomplete)resultIds.delete(item.id);
     if(incomplete)reasons.push(`${item.label} 含未核实文本，保留元数据初选，不能据此排除`);
   }
+  if(validators.length)progress(`校验差异版本 · ${validators.length} 个片段`);
   for(const validate of validators){check(valid);await validate();}
   check(valid);
-  return {ids:[...resultIds],mode:routed.mode,reason:[...new Set(reasons)].join("；").slice(0,1600)+`；请求 ${meter.calls} 次，保守 token 估算 ${meter.tokens}`};
+  return {ids:[...resultIds],mode:routed.mode,reason:[...new Set(reasons)].join("；").slice(0,1600)+`；请求 ${meter.calls} 次，总耗时 ${((performance.now()-started)/1000).toFixed(1)} 秒；逐轮耗时 ${meter.timings.map(t=>`${t.round}: ${(t.ms/1000).toFixed(1)}s`).join("、")}；保守 token 估算 ${meter.tokens}`};
 }
 
 export { cancelAiGeneration };

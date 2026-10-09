@@ -40,9 +40,9 @@ it("selection over 16 files is batched and never silently claims all diff was re
 });
 it("model selection uses the no-tools endpoint, checks real diff, and ignores cancellation",async()=>{
   const a=file("logic"),profile={id:"api",name:"API",kind:"api" as const,provider:"openai" as const,baseUrl:"",model:"m",hasKey:true,executable:""};
-  invoke.mockImplementation(async (command,args)=>command==="select_context"?{kind:"answer",selection:{target:"files",mode:"add",ids:[args.context.candidates[0].id],reason:"logic"}}:command==="review_inventory"?{...context.inventory,identity:"unstaged",files:[{...context.sources[0].file,pathId:"logic"}]}:{...context,inventory:{...context.inventory,identity:"unstaged"}});
+  invoke.mockImplementation(async (command,args)=>command==="select_context"?{kind:"answer",selection:{target:"files",mode:"add",ids:[args.context.candidates[0].id],evidenceIds:[args.context.candidates[0].id],reason:"logic"}}:command==="review_inventory"?{...context.inventory,identity:"unstaged",files:[{...context.sources[0].file,pathId:"logic"}]}:{...context,inventory:{...context.inventory,identity:"unstaged"}});
   const result=await assistSelection(profile,"加入逻辑",[a],[],"files","request",()=>true);
-  expect(result.ids).toEqual([a.id]);expect(invoke.mock.calls.filter(c=>c[0]==="select_context")).toHaveLength(3);expect(invoke.mock.calls.some(c=>c[0]==="plan_ai_action")).toBe(false);
+  expect(result.ids).toEqual([a.id]);expect(invoke.mock.calls.filter(c=>c[0]==="select_context")).toHaveLength(2);expect(invoke.mock.calls.some(c=>c[0]==="plan_ai_action")).toBe(false);
   await expect(assistSelection(profile,"加入逻辑",[a],[],"files","cancel",()=>false)).rejects.toThrow("取消");
 });
 
@@ -53,7 +53,7 @@ it("selects test files using metadata without requiring their diff to introduce 
     return {kind:"answer",selection:{target:"files",mode:"add",ids:[args.context.candidates[0].id],evidenceIds:[],reason:"Tests 目录中的测试用例"}};
   });
   const result=await assistSelection(profile,"测试用例文件",[a],[],"files","request",()=>true);
-  expect(result.ids).toEqual([a.id]);expect(result.reason).toContain("Tests 目录");expect(invoke).toHaveBeenCalledTimes(2);
+  expect(result.ids).toEqual([a.id]);expect(result.reason).toContain("Tests 目录");expect(invoke).toHaveBeenCalledTimes(1);
   expect(()=>parseSelection({kind:"answer",selection:{target:"files",mode:"add",ids:[a.id],evidenceIds:["outside"],reason:""}},[a],"files")).toThrow("正文核对对象");
 });
 it("retains the model explanation when index navigation finds no match",async()=>{

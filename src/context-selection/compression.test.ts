@@ -1,6 +1,6 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { contextIndex, describeNode, evidencePages, compactEvidence, tokenEstimate, CONTEXT_BUDGET, type IndexNode } from "./compression";
-import { routeCandidates, type Attachment } from "./model";
+import { assistSelection, newContextMeter, routeCandidates, type Attachment } from "./model";
 import { withAttachmentReads } from "./reader";
 import { reviewAttachments } from "./review";
 import { context } from "../ai-review/fixtures";
@@ -64,4 +64,27 @@ it("full review follows continuation to late-file evidence and does not publish 
   let reads=0;
   invoke.mockImplementation(async command=>command==="review_inventory"?fixture().inventory:{...fixture(),sources:fixture().sources.map(s=>({...s,contentId:++reads>1?"changed":s.contentId}))});
   await expect(reviewAttachments("repo",[file(0)],()=>true,answer,"")).rejects.toThrow("仓库发生变化");
+});
+
+it("selects 64 files across directories in one call and omitted evidenceIds does not trigger diff reads",async()=>{
+  const candidates=Array.from({length:64},(_,i)=>file(i,`Football/Docs/Group${i%8}`));
+  invoke.mockImplementation(async(command,args)=>{
+    expect(command).toBe("select_context");
+    expect(args.context.candidates).toHaveLength(64);
+    expect(args.context.candidates.every((c:any)=>c.label.startsWith("Football/Docs/"))).toBe(true);
+    return {kind:"answer",selection:{target:"files",mode:"add",ids:args.context.candidates.map((c:any)=>c.id),reason:"足球文档"}};
+  });
+  const result=await assistSelection(profile,"足球文档相关",candidates,[],"files","r",()=>true);
+  expect(result.ids).toHaveLength(64);expect(invoke).toHaveBeenCalledTimes(1);expect(result.reason).toContain("逐轮耗时 1:");
+});
+it("packs expanded directories together within the complete request budget",async()=>{
+  const candidates=Array.from({length:160},(_,i)=>file(i,`Football/Docs/G${i%10}`));
+  invoke.mockImplementation(async(command,args)=>{
+    expect(command).toBe("select_context");
+    expect(tokenEstimate({prompt:"文档",index:args.context,system:args.systemPrompt})+2000).toBeLessThanOrEqual(16384);
+    return {kind:"answer",selection:{target:"files",mode:"add",ids:args.context.candidates.map((c:any)=>c.id),evidenceIds:[],reason:"文档"}};
+  });
+  const meter=newContextMeter();
+  const result=await routeCandidates(profile,"文档",candidates,[],"files","r",()=>true,()=>{},meter);
+  expect(result.items).toHaveLength(160);expect(invoke.mock.calls.length).toBeLessThan(6);expect(meter.timings).toHaveLength(meter.calls);
 });
