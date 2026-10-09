@@ -20,3 +20,12 @@
 .cs-columns{height:24px;display:flex;align-items:center;gap:12px;padding:0 32px 0 12px;background:var(--chrome);color:var(--dim);font-size:11px}.cs-columns>span:first-child{flex:1}
 
 .cs-columns{gap:6px}.cs-columns:has(.cs-author)>span:last-child{width:56px}.cs-columns:has(.cs-author)>span:nth-last-child(2){width:72px}
+
+.cs-pagination{height:34px;display:flex;align-items:center;justify-content:center;gap:14px;border-top:1px solid var(--border)}
+.cs-list.cs-paged{height:280px;overflow:hidden}
+.cs-search-field{display:flex;flex:1;min-width:180px;gap:0}.cs-search-field select{border-radius:4px 0 0 4px}.cs-search-field input{border-radius:0 4px 4px 0}
+.cs-date{position:relative;flex-shrink:0}.cs-date-popover{position:absolute;right:0;top:calc(100% + 5px);z-index:4;min-width:285px;padding:12px;background:var(--panel);border:1px solid var(--border);border-radius:6px;box-shadow:0 8px 24px #0006;display:flex;flex-direction:column;gap:10px}
+.cs-date-popover label{display:flex;align-items:center;justify-content:space-between;gap:12px}.cs-date-popover>div{display:flex;gap:6px;justify-content:flex-end}.cs-date-popover [role=alert]{color:#df7575}
+.cs-ai>.ai-input-frame{flex:1;min-width:180px}.cs-ai .ai-input-frame input{min-width:0}.cs-ai{padding:10px;align-items:center}
+.cs-spacer{flex:1}.cs-notices{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.cs-notices>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.cs-info{border:0;background:transparent;color:var(--dim);cursor:help}
+.cs-dialog .file-view-select{width:38px;min-width:38px;font-size:16px}.cs-row .cs-main{overflow:hidden}

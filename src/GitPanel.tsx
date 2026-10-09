@@ -1,3 +1,4 @@
+import AiInputFrame from "./AiInputFrame";
 import { useEffect, useState, type ReactNode } from "react";
 import { headCommitInfo, type BackupSummary, type HeadCommitInfo, type OperationKind, type OperationOutcome, type OperationStatus } from "./operations-api";
 import { loadDraft, operationLabels, saveDraft } from "./operations-model";
@@ -99,9 +100,8 @@ function CommitTab({ repoId, stagedCount, headKey, headOid, mergeInProgress, blo
     finally { setAiGenerating(false); }
   };
   return <div className="git-body commit-layout">
-    <div className="commit-editor"><textarea aria-label="提交信息" placeholder={"提交摘要（必填）\n\n详细说明…"} value={message} readOnly={aiGenerating} onChange={(event) => update(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); void submit(); } }}/>
-      {aiGenerating && <div className="ai-input-progress" role="status" aria-label="AI 正在处理"><span className="ai-spinner"/></div>}
-      <button type="button" className="magic-button" aria-label="根据暂存内容生成提交信息" title={aiGenerating ? "正在生成…" : "根据暂存内容生成提交信息"} disabled={!onGenerateMessage || stagedCount === 0 || aiGenerating || !!running} onClick={() => void generateMessage()}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m4 20 11-11"/><path d="m14 4 .6 2.4L17 7l-2.4.6L14 10l-.6-2.4L11 7l2.4-.6L14 4Z"/><path d="m20 11 .4 1.6L22 13l-1.6.4L20 15l-.4-1.6L18 13l1.6-.4L20 11Z"/><path d="m6 3 .4 1.6L8 5l-1.6.4L6 7l-.4-1.6L4 5l1.6-.4L6 3Z"/></svg></button>
+    <div className="commit-editor"><AiInputFrame busy={aiGenerating} disabled={!onGenerateMessage||stagedCount===0||!!running} label="根据暂存内容生成提交信息" onSend={()=>void generateMessage()}><textarea aria-label="提交信息" placeholder={"提交摘要（必填）\n\n详细说明…"} value={message} readOnly={aiGenerating} onChange={(event) => update(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); void submit(); } }}/>
+      </AiInputFrame>
     </div>
     <div className="commit-side">
       <strong>{selectedCount === undefined ? `提交暂存区 · ${stagedCount} 个文件` : `提交所选工作区整文件 · ${selectedCount} 个`}</strong>
