@@ -595,7 +595,7 @@ it("keeps the main request prefix stable around a routed one-shot command and re
 });
 const reviewSource = { id: "src-id", file: { pathId: "id-a.txt", path: "a.txt", oldPathId: null, oldPath: null, status: "modified" }, side: "right" as const, endpoint: "index", contentId: "r-id-a.txt", lines: [{ line: 1, text: "y" }], truncated: false, supplemental: false };
 const reviewFixture = { inventory: { repoId: "a", range: { kind: "staged" as const }, identity: "review-id", revision: "r1", left: "h".repeat(40), right: "index", files: [reviewSource.file], totalFiles: 1 }, sources: [reviewSource], diff: "+y", budget: 40000, used: 20, truncated: false, warnings: [] };
-const modelReview = { kind: "answer", message: "reviewed", review: { summary: "reviewed", impact: "impact", findings: [{ title: "Issue", sourceId: "0:src-id", line: 1, evidence: "y", trigger: "trigger", impact: "impact", suggestion: "suggestion" }], commits: [] } };
+const modelReview = { kind: "answer", message: "reviewed", review: { summary: "reviewed", impact: "impact", findings: [{ title: "Issue", sourceId: "e1-0:0:src-id", line: 1, evidence: "y", trigger: "trigger", impact: "impact", suggestion: "suggestion" }], commits: [] } };
 async function chooseOperationFiles(purpose:"stage"|"commit") {
   bridge.reviewInventory.mockImplementation(async(repoId,range)=>({...reviewFixture.inventory,repoId,range,identity:range.kind,files:range.kind==="unstaged"?[reviewSource.file]:[]}));
   await mount();
@@ -628,7 +628,7 @@ async function reviewStart() {
 it("review uses routed answer-only transport, validates the result and locates exact content without Git writes", async () => {
   bridge.planAi.mockResolvedValue(modelReview);
   await reviewStart(); await click(host.querySelector('[aria-label="确认 AI 指令"]')!);
-  expect(bridge.planAi.mock.calls[0][5]).toBe(true); expect(bridge.planAi.mock.calls[0][2].review.sources[0]).toMatchObject({id:"0:src-id",file:{path:"a.txt"},side:"right",lines:reviewSource.lines});
+  expect(bridge.planAi.mock.calls[0][5]).toBe(true); expect(bridge.planAi.mock.calls[0][2].review.sources[0]).toMatchObject({id:"e1-0:0:src-id",file:{path:"a.txt"},side:"right",lines:reviewSource.lines});
   expect(bridge.planAi.mock.calls[0][2].review.sources[0].request).toBeUndefined();
   expect(bridge.reviewContext).toHaveBeenCalledTimes(2);
   expect(host.querySelector('[aria-label="变更集审查结果"]')?.textContent).toContain("Issue");

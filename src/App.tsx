@@ -31,7 +31,7 @@ import { applyFileIgnoreOperation, createFileIgnoreMatcher, filterReadableFiles,
 import AiCommitDialog from "./AiCommitDialog";
 import ContextSelector from "./context-selection/ContextSelector";
 import { withAttachmentReads, CONTEXT_READ_CONTRACT } from "./context-selection/reader";
-import { reviewAttachments } from "./context-selection/review";
+import { reviewAttachments } from "./ai-review/review";
 import { defaultAttachments, loadAttachmentContext, type Attachment } from "./context-selection/model";
 import { reviewContext, reviewInventory, reviewLocation, parseReview, locationMatches, REVIEW_CONTRACT, type ReviewResult, type ReviewFinding, type ReviewSource } from "./ai-review/model";
 import { matchesAiShortcut } from "./ai-shortcut";
@@ -1208,6 +1208,7 @@ export default function App() {
     return outcome;
   };
   const assertAiTurn = (turn: AiTurn) => {
+    if (turn.isActive && !turn.isActive()) throw new Error("AI 生成已取消");
     const repoId = currentRead.current.repo;
     const current = repoId ? projects.get(repoId)?.snapshot : null;
     if (repoId !== turn.repoId || (current?.repo.branch ?? null) !== turn.branch) throw new Error("项目或分支已切换，请重新打开对话");
@@ -1596,8 +1597,8 @@ export default function App() {
         const attachments=[...new Map(defaults.attachments.map(a=>[a.id,a])).values()];
         const system=[turn.systemPrompt,turn.route.prompt,turn.route.commandId==="review"?REVIEW_CONTRACT:CONTEXT_READ_CONTRACT].join("\n\n");
         if(turn.route.commandId==="review"){
-          const reviewed=await reviewAttachments(turn.repoId,attachments,valid,review=>planAiAction(turn.route.profile,description,{review,coverage:defaults.warnings,capability:{answer:true}},system,requestId,true),{description,system},settings.get().ai.ruleSet);
-          valid();return {kind:"answer",message:[reviewed.result?.summary??"范围内没有可审查的文本差异",reviewed.coverage,...defaults.warnings].join("\n"),...(reviewed.result?{review:reviewed.result}:{})};
+          const reviewed=await reviewAttachments(turn.repoId,attachments,valid,review=>planAiAction(turn.route.profile,description,{review,coverage:defaults.warnings,conversation:conversation.messages,capability:{answer:true}},system,requestId,true),{description,system,conversation:conversation.messages},settings.get().ai.ruleSet);
+          valid();return {kind:"answer",message:[reviewed.result?.summary??"本轮没有完成可核验的文本审查",reviewed.coverage,...defaults.warnings].join("\n"),...(reviewed.result?{review:reviewed.result}:{})};
         }
         const read=await withAttachmentReads(turn.repoId,attachments,valid,attachmentContext=>planAiAction(turn.route.profile,description,{attachments:attachmentContext,coverage:defaults.warnings,conversation:conversation.messages,capability:{answer:true}},system,requestId,true),{description,system,conversation:conversation.messages},settings.get().ai.ruleSet);
         valid();const answer=parseAiAction(read.response);if(answer.kind!=="answer")throw new Error("分析指令只允许回答");

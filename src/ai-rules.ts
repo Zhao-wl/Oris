@@ -87,6 +87,7 @@ export function resolveStagedProfile(ai: AiSettings): AiProfile {
 }
 export interface AiConversationMessage { role: "user" | "assistant" | "operation" | "tool"; content: string }
 export interface AiTurn {
+  isActive?: () => boolean;
   attachments?: import("./context-selection/model").Attachment[];
   reviewRequest?: import("./ai-review/model").ReviewRequest;
   route: AiResolvedRoute; history: AiConversationMessage[]; historyTruncated: boolean;

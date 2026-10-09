@@ -1,3 +1,5 @@
+> 此记录为 #38 前的首版验证，未通过当时的产品验收。前置完成后的当前实现与验证见 [continuation.md](continuation.md)。
+
 # #26 验收记录
 
 日期：2026-10-09（Asia/Shanghai）。功能基线：0.8.4 `61a5dca1d4b32a3f3edee90e3b817bcd6a9a8683`；交付前同步 `origin/main` 的发布文档提交 `02f1a578ae222572961087fd658c678e2a61589d`，该提交不修改功能代码。

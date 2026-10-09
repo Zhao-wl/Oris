@@ -70,6 +70,6 @@ export function evidencePages(context: ReviewContext, budget:number = CONTEXT_BU
 /** Wire projection only. Full IDs, requests, hashes stay local for navigation/validation. */
 export function compactEvidence(context: ReviewContext) {
   return { ranges:context.ranges ?? [{kind:context.inventory.range.kind,left:context.inventory.left,right:context.inventory.right}],
-    sources:context.sources.map(s=>({id:s.id,file:{path:s.file.path,status:s.file.status},side:s.side,lines:s.lines})),
+    sources:context.sources.map(s=>({id:s.id,file:{path:s.file.path,status:s.file.status},side:s.side,endpoint:s.endpoint,range:s.request?.range??context.inventory.range,lines:s.lines})),
     coverage:{truncated:context.truncated,warnings:context.warnings}, note:context.diff };
 }

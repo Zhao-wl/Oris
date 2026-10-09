@@ -58,9 +58,9 @@ it("preserves complete numbered lines, reports oversized lines and never duplica
 });
 it("full review follows continuation to late-file evidence and does not publish partial results on stale validation",async()=>{
   invoke.mockImplementation(async(command,args)=>command==="review_inventory"?fixture().inventory:{...fixture(args.offset===0?90:null),sources:[{...fixture().sources[0],lines:[{line:args.offset===0?1:900,text:args.offset===0?"early":"late bug"}]}]});
-  const answer=vi.fn(async(value)=>{const c=value as any;return {kind:"answer",review:{summary:c.sources[0].lines[0].text,impact:"",findings:[],commits:[]}};});
+  const answer=vi.fn(async(value)=>{const c=value as any;return {kind:"answer",review:{summary:c.sources.flatMap((s:any)=>s.lines.map((l:any)=>l.text)).join(";"),impact:"",findings:[],commits:[]}};});
   const result=await reviewAttachments("repo",[file(0)],()=>true,answer,"");
-  expect(answer).toHaveBeenCalledTimes(2);expect(result.result?.summary).toContain("late bug");expect(result.result?.context.sources.some(s=>s.lines.some(l=>l.line===900))).toBe(true);
+  expect(answer).toHaveBeenCalledTimes(1);expect(result.result?.summary).toContain("late bug");expect(result.result?.context.sources.some(s=>s.lines.some(l=>l.line===900))).toBe(true);
   let reads=0;
   invoke.mockImplementation(async command=>command==="review_inventory"?fixture().inventory:{...fixture(),sources:fixture().sources.map(s=>({...s,contentId:++reads>1?"changed":s.contentId}))});
   await expect(reviewAttachments("repo",[file(0)],()=>true,answer,"")).rejects.toThrow("仓库发生变化");

@@ -102,6 +102,7 @@ export default function AiCommitDialog({ settings, project, onClose, onGenerate,
       attachments };
     const text = description.trim(), requestId = crypto.randomUUID(), generation = ++epoch.current;
     const valid = () => !closed.current && generation === epoch.current;
+    turn.isActive = valid;
     busy.current = true; pendingRequest.current = requestId; setRunningRoute(route); setPhase("generating"); setError(""); setContextTrimmed(route.commandId ? turn.historyTruncated : transcriptTrimmed.current); nearBottom.current = true; append("user", text, route);
     setDescription(""); setCaret(0); setActiveTagIndex(0); setMenuDismissed(true);
     if (!route.commandId) turn.sessionTranscript = transcript.current.join("");

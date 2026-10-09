@@ -26,4 +26,13 @@ describe("review evidence", () => {
   it("fails rather than treating malformed model output as a successful review", () => {
     expect(() => parseReview({ summary: "fine" }, context)).toThrow("结构化");
   });
+  it("binds each related file reference and invalidates the entire issue on fabricated evidence", () => {
+    const related = { ...context.sources[0], id: "test", file: { ...context.sources[0].file, path: "test.ts" }, lines: [{ line: 3, text: "expect(result).toBe(4);" }] };
+    const references = [{ sourceId: "test", line: 3, evidence: "toBe(4)" }];
+    const ctx = { ...context, sources: [...context.sources, related] };
+    const valid = parseReview({ summary: "s", findings: [{ ...finding, references }], commits: [] }, ctx).findings[0];
+    expect(valid.references?.[0].source).toBe(related); expect(valid.invalid).toBeUndefined();
+    const bad = parseReview({ summary: "s", findings: [{ ...finding, references: [{ ...references[0], line: "3" }] }], commits: [] }, ctx).findings[0];
+    expect(bad.invalid).toContain("关联引用"); expect(bad.source).toBeUndefined(); expect(bad.references?.[0].source).toBeUndefined();
+  });
 });
