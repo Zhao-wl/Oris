@@ -24,6 +24,29 @@ it("reports unavailable upstream rather than treating it as zero unpushed commit
   invoke.mockImplementation(async(command,{range})=>{if(command==="selection_commits")throw Error("no upstream");return {...context.inventory,range,files:[]};});
   const result=await defaultAttachments("repo");expect(result.warnings.join()).toContain("no upstream");
 });
+it("default scope includes staged/unstaged files and every unpushed commit beyond the first 200", async () => {
+  invoke.mockImplementation(async (command, { range, cursor, query }) => {
+    if (command === "review_inventory") return { ...context.inventory, range, files: [context.sources[0].file] };
+    expect(query.unpushed).toBe(true);
+    const start = cursor?.skip ?? 0, end = Math.min(start + 200, 451);
+    return { commits: Array.from({ length: end - start }, (_, i) => ({ ...commit.commit!, oid: String(start + i) })), tips: ["tip"], next: end < 451 ? { tips: ["tip"], skip: end } : null };
+  });
+  const result = await defaultAttachments("repo");
+  expect(result.attachments.filter(a => a.kind === "commits")).toHaveLength(451);
+  expect(result.attachments.filter(a => a.kind === "files").map(a => a.source)).toEqual(["unstaged", "staged"]);
+  expect(result.warnings).toEqual([]);
+});
+it("does not publish a partial default scope after later-page failure or cancellation", async () => {
+  let active = true;
+  invoke.mockImplementation(async (command, { range, cursor }) => {
+    if (command === "review_inventory") return { ...context.inventory, range, files: [] };
+    if (cursor) throw new Error("upstream changed");
+    return { commits: [commit.commit], tips: ["tip"], next: { tips: ["tip"], skip: 200 } };
+  });
+  await expect(defaultAttachments("repo")).rejects.toThrow("upstream changed");
+  invoke.mockImplementation(async () => { active = false; return { ...context.inventory, files: [] }; });
+  await expect(defaultAttachments("repo", () => active)).rejects.toThrow("取消");
+});
 it("preserves origin request and refuses content changed during model execution",async()=>{
   invoke.mockResolvedValue(context);
   const loaded=await loadAttachmentContext("repo",[file("a"),file("b","staged")]);

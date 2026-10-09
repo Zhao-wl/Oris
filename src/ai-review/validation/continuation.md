@@ -55,3 +55,20 @@ GUI 验证前检查了 `scripts/focus-task02-window.ps1`、全部 `task02-feedba
 PowerShell `scripts/build-release.ps1` 编译及无窗口入口检查通过：`ENTRY_ASSETS_PASS`，26 个嵌入资源，JS/CSS/Worker 均存在。脚本执行耗时约 194.7 秒。此环境缺少 Get-FileHash，当前命令进程提供了等效 .NET SHA256 函数供脚本最后输出校验值，没有修改构建脚本或系统环境。
 
 产物：`artifacts/issue26/Oris-issue26-joint-review-20261009.zip`，包含 oris.exe 与同目录 WebView2Loader.dll；已重读 ZIP 内的 exe 校验与构建结果一致。exe SHA256：`B103797D5D42A2FB507B77B9D3252C5E717CBDA25DBF7C73EA78971026FDED24`。这是当前 #26 的本地试用版本，版本号仍为 0.8.4，需要系统 WebView2 Runtime 与 Git，不是远程正式发行。没有启动该 exe 或操作原生窗口。
+
+## 附件解释与默认范围反馈修正（2026-10-09）
+
+用户截图显示 59 个文件附件、0 个正文片段。根因是 @解释 使用目录导航协议，模型可在没有发出 contextRead 时直接给出最终回答；这允许只看到目录便反问文件范围。
+
+本轮让 @解释 和 @审查 共用 context-selection/windows.ts 的主动原文分页与有界窗口：在模型调用前读取附件的真实左右侧原文，只有 @解释 也直接解释实际范围，不再要求二次选择。普通对话的目录按需读取能力保留。更新推荐解释规则，避免默认提示词将范围描述为单个当前文件；已有自定义规则保持原值，运行时解释合同明确以本轮附件和用户描述为范围。
+
+无附件时默认范围包括未暂存、已暂存及当前分支相对本地上游的全部未推送提交。提交逐页收集到末尾，删除首批 200 条截断；分页后续失败或取消时停止，不发布半份默认范围。上游不能确定时明确提示，不执行 fetch、不把未知提交数量当零条。附件范围全部收集与实际原文覆盖分开：正文仍受单次/累计模型预算约束，截断、非文本与未覆盖内容明确报告。
+
+验证：前端全量 447 项通过、1 项真实模型测试默认跳过；59 文件附件 UI -> App -> 模型原文投影 -> 回答覆盖统计集成测试通过。451 条默认未推送提交跨三页收集通过；续页晚段、内容过期、空范围、取消、预算耗尽和非回答结果均有回归覆盖。生产构建通过。
+
+真实模型补充证据见 explain-real-model.json：真实临时 Git -> 生产 TypeScript 共用窗口编排 -> 生产 CLI 与实际 gpt-6.1-sol -> 解释回答，直接输入 @解释，四个文件/八侧原文进入模型；解释指出 price(2) 从 4 变 1，以及调用方和测试未同步。审查关联引用链路同时再次核验。文件/index/HEAD/refs/status 不变；原文伪指令没有产生写操作。不把模型推断当作项目测试执行结果。
+
+本轮再次检查 focus-task02-window.ps1 及全部 task02-feedback-*.mjs 调用方：危险入口仍为直接 throw，或首先导入 task02-gui-disabled.mjs；未修改或调用任何危险窗口 API，没有操作其他应用窗口。新增 UI 回归为 jsdom DOM，真实 Windows 焦点切换及原生 WebView 布局/点击仍未验证。真实 Git 临时目录、桥接与 CLI 子进程由本轮测试清理。
+
+
+反馈修正版试用包：artifacts/issue26/Oris-issue26-context-fix-20261009.zip（14,067,137 字节），包含 oris.exe 与 WebView2Loader.dll；ZIP 内 exe 的 SHA256 已重读核对。exe SHA256：42CAA874ED33700F19DF88F83F9F8009B87BFE3FC65533DFCD8FD7A060E241C5。保留上一版 ZIP；版本号仍为 0.8.4，本轮未启动原生窗口。

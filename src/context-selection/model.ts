@@ -48,7 +48,7 @@ export const SELECTION_PROMPT = `你是只读附件选择助手。只能返回 k
 export interface ContextLimits { contextWindowTokens?:number; contextTaskTokens?:number }
 export interface ContextMeter { calls: number; tokens: number; window:number; task:number; timings:{round:number;ms:number;ok:boolean}[] }
 export const newContextMeter = (limits:ContextLimits={}): ContextMeter => ({ calls:0,tokens:0,window:limits.contextWindowTokens??16384,task:limits.contextTaskTokens??CONTEXT_BUDGET.task,timings:[] });
-export async function budgetedAnswer(meter: ContextMeter, payload: unknown, call: () => Promise<unknown>) {
+export async function budgetedAnswer<T>(meter: ContextMeter, payload: unknown, call: () => Promise<T>) {
   const cost=tokenEstimate(payload);
   if(cost+2000>meter.window)throw new Error("本轮上下文超过模型单次预算，请缩短问题或提高与模型容量相符的上限");
   if(meter.calls>=CONTEXT_BUDGET.calls || meter.tokens+cost+2000>meter.task) throw new Error("已达到本轮累计上下文预算；未完成的内容不能视为已检查，请缩小任务后继续");
@@ -170,11 +170,21 @@ export async function loadAttachmentContext(repoId: string, attachments: Attachm
   } };
 }
 
-export async function defaultAttachments(repoId: string) {
-  const files = await fileAttachments(repoId), warnings: string[] = [];
-  try {
-    const page = await selectionCommits(repoId, { ...emptyFilter(), unpushed: true }, null);
-    if (page.next) warnings.push("未推送提交超过首批 200 条，本轮未覆盖其余提交");
-    return { attachments: [...files, ...page.commits.map(c => commitAttachment(repoId,c))], warnings };
-  } catch (e) { return { attachments: files, warnings: [`未推送提交范围无法确定：${String(e)}`] }; }
+export async function defaultAttachments(repoId: string, valid: () => boolean = () => true) {
+  const check = () => { if (!valid()) throw new Error("默认范围读取已取消"); };
+  check(); const files = await fileAttachments(repoId); check();
+  const query = { ...emptyFilter(), unpushed: true };
+  let page: LogPage;
+  try { page = await selectionCommits(repoId, query, null); }
+  catch (e) { check(); return { attachments: files, warnings: [`未推送提交范围无法确定：${String(e)}`] }; }
+  const commits = new Map<string, Attachment>();
+  while (true) {
+    check();
+    for (const commit of page.commits) commits.set(commit.oid, commitAttachment(repoId, commit));
+    if (!page.next) break;
+    const cursor = page.next;
+    page = await selectionCommits(repoId, query, cursor); check();
+    if (page.next && page.next.skip <= cursor.skip) throw new Error("未推送提交分页游标未前进，默认范围未应用");
+  }
+  return { attachments: [...files, ...commits.values()], warnings: [] as string[] };
 }

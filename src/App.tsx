@@ -30,6 +30,7 @@ import SettingsDialog from "./SettingsDialog";
 import { applyFileIgnoreOperation, createFileIgnoreMatcher, filterReadableFiles, fileIgnoreOperationSummary, type FileIgnoreRule } from "./file-ignore";
 import AiCommitDialog from "./AiCommitDialog";
 import ContextSelector from "./context-selection/ContextSelector";
+import { explainAttachments, EXPLAIN_CONTRACT } from "./context-selection/explain";
 import { withAttachmentReads, CONTEXT_READ_CONTRACT } from "./context-selection/reader";
 import { reviewAttachments } from "./ai-review/review";
 import { defaultAttachments, loadAttachmentContext, type Attachment } from "./context-selection/model";
@@ -1592,17 +1593,16 @@ export default function App() {
     if (["review", "explain"].includes(turn.route.commandId ?? "")) {
       if (!turn.repoId) throw new Error("请先打开项目");
       const valid = () => { assertAiTurn(turn); return true; };
-      const defaults = turn.attachments?.length ? { attachments: turn.attachments, warnings: [] as string[] } : await defaultAttachments(turn.repoId);
+      const defaults = turn.attachments?.length ? { attachments: turn.attachments, warnings: [] as string[] } : await defaultAttachments(turn.repoId, valid);
       if (!turn.reviewRequest) {
         const attachments=[...new Map(defaults.attachments.map(a=>[a.id,a])).values()];
-        const system=[turn.systemPrompt,turn.route.prompt,turn.route.commandId==="review"?REVIEW_CONTRACT:CONTEXT_READ_CONTRACT].join("\n\n");
+        const system=[turn.systemPrompt,turn.route.prompt,turn.route.commandId==="review"?REVIEW_CONTRACT:EXPLAIN_CONTRACT].join("\n\n");
         if(turn.route.commandId==="review"){
           const reviewed=await reviewAttachments(turn.repoId,attachments,valid,review=>planAiAction(turn.route.profile,description,{review,coverage:defaults.warnings,conversation:conversation.messages,capability:{answer:true}},system,requestId,true),{description,system,conversation:conversation.messages},settings.get().ai.ruleSet);
           valid();return {kind:"answer",message:[reviewed.result?.summary??"本轮没有完成可核验的文本审查",reviewed.coverage,...defaults.warnings].join("\n"),...(reviewed.result?{review:reviewed.result}:{})};
         }
-        const read=await withAttachmentReads(turn.repoId,attachments,valid,attachmentContext=>planAiAction(turn.route.profile,description,{attachments:attachmentContext,coverage:defaults.warnings,conversation:conversation.messages,capability:{answer:true}},system,requestId,true),{description,system,conversation:conversation.messages},settings.get().ai.ruleSet);
-        valid();const answer=parseAiAction(read.response);if(answer.kind!=="answer")throw new Error("分析指令只允许回答");
-        return {...answer,message:answer.message+`\n\n附件 ${read.coverage.attached} 项；展开 ${read.coverage.opened} 项，提供 ${read.coverage.readChunks}/${read.coverage.knownChunks} 个已知证据片段；未展开 ${read.coverage.unopened} 项，尚有 ${read.coverage.pendingContinuations} 个后续差异入口。`+[...defaults.warnings,...read.coverage.warnings].join("\n")};
+        const explained=await explainAttachments(turn.repoId,attachments,valid,attachmentContext=>planAiAction(turn.route.profile,description,{attachments:attachmentContext,coverage:defaults.warnings,conversation:conversation.messages,capability:{answer:true}},system,requestId,true),{description,system,conversation:conversation.messages},settings.get().ai.ruleSet);
+        valid();return {...explained,message:[explained.message,...defaults.warnings].join("\n")};
       }
       const loaded = turn.reviewRequest ? { context: await reviewContext(turn.repoId, turn.reviewRequest), warnings: [] as string[], validate: async () => { await reviewContext(turn.repoId!, turn.reviewRequest!); } } : await loadAttachmentContext(turn.repoId, defaults.attachments, valid);
       valid();

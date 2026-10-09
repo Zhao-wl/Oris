@@ -5,6 +5,7 @@ import { expect, it, vi } from "vitest";
 import { reviewAttachments } from "./review";
 import { planAiAction } from "../ai-api";
 import { REVIEW_CONTRACT } from "./model";
+import { explainAttachments, EXPLAIN_CONTRACT } from "../context-selection/explain";
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 
@@ -51,7 +52,16 @@ it.runIf(process.env.ORIS_REAL_REVIEW === "1")("real Git pages -> production joi
     expect(result?.findings.every(f => f.source && !f.invalid)).toBe(true);
     expect(result?.findings.some(f => f.source?.file.path === "price.ts" && f.references?.some(r => ["caller.ts", "price.test.ts"].includes(r.source?.file.path ?? "")))).toBe(true);
     expect(new Set(result?.context.sources.map(s => s.file.path))).toEqual(new Set(["price.ts", "caller.ts", "price.test.ts", "config.json"]));
+    const reviewCalls = modelCalls.slice();
+    const explanation = await explainAttachments(inventory.repoId, attachments, () => true,
+      attachments => planAiAction(profile, "@解释", { attachments, capability: { answer: true } }, EXPLAIN_CONTRACT, "real-explain", true), { description: "@解释", system: EXPLAIN_CONTRACT });
+    const explanationCalls = modelCalls.slice(reviewCalls.length);
+    expect(explanationCalls).toHaveLength(1);
+    expect(new Set(explanationCalls[0].context.attachments.sources.map(s => s.file.path))).toEqual(new Set(["price.ts", "caller.ts", "price.test.ts", "config.json"]));
+    expect(explanation.message).toContain("price"); expect(explanation.message).toContain("caller");
+    expect(explanation.message).toContain("已遍历 4 项");
+    expect(explanation.message).not.toMatch(/请(?:指定|选择|提供).{0,10}(?:文件|范围)/);
     child.stdin.end(); await completed; expect(stateUnchanged).toBe(true);
-    if (process.env.ORIS_REVIEW_PIPELINE_EVIDENCE) writeFileSync(process.env.ORIS_REVIEW_PIPELINE_EVIDENCE, JSON.stringify({ model: profile.model, provider: "codex", modelCalls, result, stateUnchanged, coverage: "生产 TS 编排 -> 真实 Git 只读 API -> 生产 CLI -> 真实模型 -> 前端来源校验；不含原生 GUI" }, null, 2));
+    if (process.env.ORIS_REVIEW_PIPELINE_EVIDENCE) writeFileSync(process.env.ORIS_REVIEW_PIPELINE_EVIDENCE, JSON.stringify({ model: profile.model, provider: "codex", reviewCalls, result, explanationCalls, explanation, stateUnchanged, coverage: "生产 TS 审查和解释编排 -> 真实 Git 只读 API -> 生产 CLI -> 真实模型 -> 前端来源校验；不含原生 GUI" }, null, 2));
   } finally { child.stdin.end(); lines.close(); if (child.exitCode === null) child.kill(); invoke.mockReset(); }
 }, 300000);

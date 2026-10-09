@@ -578,6 +578,8 @@ it("keeps the main request prefix stable around a routed one-shot command and re
   const originalRules = settings.get().ai.ruleSet;
   settings.update("ai", "ruleSet", { ...originalRules, routes: originalRules.routes.map(r => r.commandId === "explain" ? { ...r, profileId: "tool-ai" } : r) });
   bridge.planAi.mockResolvedValue({ kind: "answer", message: "已检查当前状态" });
+  bridge.reviewInventory.mockImplementation(async (repoId, range) => ({ ...reviewFixture.inventory, repoId, range, files: range.kind === "staged" ? [reviewSource.file] : [] }));
+  bridge.reviewContext.mockResolvedValue(reviewFixture);
   try {
     await mount(); await click(host.querySelector(".titlebar .commit-entry")!);
     const input = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="输入 AI 指令"]')!;
@@ -596,6 +598,25 @@ it("keeps the main request prefix stable around a routed one-shot command and re
 const reviewSource = { id: "src-id", file: { pathId: "id-a.txt", path: "a.txt", oldPathId: null, oldPath: null, status: "modified" }, side: "right" as const, endpoint: "index", contentId: "r-id-a.txt", lines: [{ line: 1, text: "y" }], truncated: false, supplemental: false };
 const reviewFixture = { inventory: { repoId: "a", range: { kind: "staged" as const }, identity: "review-id", revision: "r1", left: "h".repeat(40), right: "index", files: [reviewSource.file], totalFiles: 1 }, sources: [reviewSource], diff: "+y", budget: 40000, used: 20, truncated: false, warnings: [] };
 const modelReview = { kind: "answer", message: "reviewed", review: { summary: "reviewed", impact: "impact", findings: [{ title: "Issue", sourceId: "e1-0:0:src-id", line: 1, evidence: "y", trigger: "trigger", impact: "impact", suggestion: "suggestion" }], commits: [] } };
+it("bare explain sends the 59 UI-selected file diffs as original text and publishes coverage without extra selection", async () => {
+  settings.update("ai", "profiles", [{ id: "test-ai", name: "模型", kind: "cli", provider: "codex", executable: "", baseUrl: "", model: "model", hasKey: false }]); settings.update("ai", "activeId", "test-ai");
+  const files = Array.from({ length: 59 }, (_, i) => ({ ...reviewSource.file, pathId: `id-${i}`, path: `Football/Player${i}.ts` }));
+  bridge.reviewInventory.mockImplementation(async (repoId, range) => ({ ...reviewFixture.inventory, repoId, range, files: range.kind === "unstaged" ? files : [] }));
+  bridge.reviewContext.mockImplementation(async (_repoId, request) => ({ ...reviewFixture, sources: [{ ...reviewSource, file: files.find(f => f.pathId === request.pathIds[0]), endpoint: "workingTree", lines: [{ line: 1, text: `changed ${request.pathIds[0]}` }] }] }));
+  const seen: string[] = [];
+  bridge.planAi.mockImplementation(async (_profile, description, payload, _system, _id, readOnly) => {
+    expect(description).toBe("@解释"); expect(readOnly).toBe(true);
+    for (const source of payload.attachments.sources) { seen.push(source.file.path); expect(source.lines[0].text).toMatch(/^changed id-/); }
+    return { kind: "answer", message: "足球改动解释" };
+  });
+  await mount(); await click(host.querySelector(".titlebar .commit-entry")!);
+  await click(host.querySelector('[aria-label="添加上下文附件"]')!); await click(button("加入全部匹配"));
+  await click([...host.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent?.startsWith("应用附件"))!);
+  await type(host.querySelector<HTMLTextAreaElement>('textarea[aria-label="输入 AI 指令"]')!, "@解释");
+  await click(host.querySelector('[aria-label="确认 AI 指令"]')!);
+  expect(new Set(seen)).toEqual(new Set(files.map(f => f.path)));
+  expect(host.textContent).toContain("已遍历 59 项"); expect(host.textContent).toContain("足球改动解释"); expect(bridge.operation).not.toHaveBeenCalled();
+});
 async function chooseOperationFiles(purpose:"stage"|"commit") {
   bridge.reviewInventory.mockImplementation(async(repoId,range)=>({...reviewFixture.inventory,repoId,range,identity:range.kind,files:range.kind==="unstaged"?[reviewSource.file]:[]}));
   await mount();
