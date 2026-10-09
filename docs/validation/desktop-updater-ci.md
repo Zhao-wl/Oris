@@ -24,7 +24,8 @@
 
 - SettingsDialog 与更新状态机：2 个文件、12 项通过；Mac 安装目录策略：1 项通过；发布版本准备及密码学签名回归：2 项通过。
 - Windows PowerShell 下 MSVC desktop `cargo check`、TypeScript/Vite 和 actionlint 均通过。使用内置公钥独立验证了既有正式 0.8.4 安装包及首轮 GitHub Windows 安装包的实际签名。
-- Mac 包的签名验证由最终 GitHub runner 完成；补充的本地 Mac 附件下载在 Azure 存储连接长时间无进展，已终止本轮专用下载进程。没有完成本地 Mac 二次签名复核或实际双平台附件汇总，本轮不将这两项计为通过。正式发布汇总步骤仍待首次 publish 验证。
+- Mac 附件下载经过较长等待后完成，未执行进程终止。使用内置公钥独立验证下载后的 Mac 更新归档、签名中的版本和 trusted comment；签名通过。Mac 更新归档为 9,930,779 字节，SHA-256 为 `4afb00261f6b3c709788477f2de211b90777975ad8d36fbf6b78ddb996a182fc`。
+- 本地试汇总使用首轮 Windows 与最终 Mac 下载产物（两轮间生产代码与版本一致，仅修改工作流和文档），复用实际发布汇总脚本生成清单并核验双平台签名。清单包含 `windows-x86_64`、`darwin-aarch64`，版本为测试构建的 0.8.4，未上传到公开 Release。版本提交、标签推送与正式公开步骤仍待首次 publish 验证。
 - 构建、测试和下载证据保存在忽略目录 `artifacts/release-v0.9.0/`。
 - 本轮未执行真实 Mac 自动更新下载→应用替换→重启、Windows 安装/卸载或已安装客户端的实际更新链路；没有 Developer ID/Apple 公证或 Windows Authenticode。应用代码签名与 Tauri 更新签名分别核验，不混为一项。
 - 危险原生 helper 及六个旧反馈入口继续保持立即拒绝执行，未恢复抢焦点调用；安全测试仅检查和运行这些拒绝入口。没有操作其他应用窗口，也未启动可见测试 Oris。真实 Windows 焦点测试范围为空；jsdom 状态/界面测试及无 GUI 嵌入资源验证不代表真实焦点测试通过。
