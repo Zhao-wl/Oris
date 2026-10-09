@@ -65,6 +65,11 @@ jobs:
       - name: macOS Apple Silicon 工具链
         if: matrix.platform == 'macos'
         run: rustup toolchain install stable --profile minimal --target aarch64-apple-darwin
+      - name: 缓存 Rust 依赖和构建产物
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: src-tauri -> target
+          cache-on-failure: true
       - name: 安装依赖
         run: npm ci
       - name: 前端回归
@@ -96,7 +101,8 @@ jobs:
           mkdir -p artifacts/ci-release
           node scripts/release/third-party-licenses.mjs --md artifacts/ci-release/licenses.md --notices artifacts/ci-release/THIRD-PARTY-NOTICES.txt
           node -e "require('fs').writeFileSync('artifacts/ci-release/macos-config.json', JSON.stringify({bundle:{createUpdaterArtifacts:true,macOS:{minimumSystemVersion:'14.0',signingIdentity:'-'},resources:{[process.cwd()+'/artifacts/ci-release/THIRD-PARTY-NOTICES.txt']:'THIRD-PARTY-NOTICES.txt'}}}))"
-          npm run tauri -- build --target aarch64-apple-darwin --features tauri/custom-protocol --bundles dmg --config artifacts/ci-release/macos-config.json
+          npm run tauri -- build --target aarch64-apple-darwin --features tauri/custom-protocol --bundles app,dmg --config artifacts/ci-release/macos-config.json
+          codesign --verify --deep --strict src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Oris.app
           cargo run --manifest-path src-tauri/Cargo.toml --release --target aarch64-apple-darwin --example verify_release_entry --features tauri/custom-protocol
       - name: 验证更新签名并收集产物
         env:

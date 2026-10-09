@@ -18,7 +18,7 @@ Oris 在 Windows 上使用 Tauri 官方 `tauri-plugin-updater`，交互参考 VS
 - Windows 更新源：`https://github.com/Zhao-wl/Oris/releases/latest/download/latest.json`。网络请求和签名校验都在 Rust 端完成，前端 CSP 不变。
 - Windows 只有**通过安装包安装**的实例能自动更新；第一个带更新功能的版本需要手动安装一次。
 - Windows 和 macOS 共用签名更新源。清单必须同时包含 windows-x86_64 与 darwin-aarch64；Mac 更新包为 Oris.app.tar.gz 与对应 .sig，DMG 用于首次手动安装。
-- Mac 正式应用必须位于 /Applications 或用户的 ~/Applications。DMG、App Translocation 和开发构建不允许原地更新；安装权限不足时报告失败，不提权。
+- Mac 正式应用必须位于 /Applications 或用户的 ~/Applications。DMG、App Translocation 和开发构建不允许原地更新；安装权限不足时插件可能请求系统管理员授权；取消授权或安装失败时报告错误。
 - 已安装 0.8.4 及更早 Mac 用户须手动安装一次支持自动更新的版本，之后即可使用后台签名更新。旧版仍可从该版本 DMG 手动升级。
 
 ## 签名密钥
