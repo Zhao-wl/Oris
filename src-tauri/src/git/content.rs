@@ -144,13 +144,24 @@ impl GitAdapter {
         versions: Option<[ConflictVersion; 2]>,
         cancelled: impl Fn() -> bool,
     ) -> Result<ContentPair, GitError> {
+        self.read_content_pair_mode(request_id, scope, requested_revision, path_id, versions, cancelled, false)
+    }
+
+    /// Read immutable index/HEAD objects and capture working-tree bytes once for analysis.
+    /// Only this read-only snapshot path bypasses live-view freshness guards.
+    pub(super) fn read_content_pair_snapshot(&self, scope: CompareScope, revision: String, path_id: String) -> Result<ContentPair, GitError> {
+        self.read_content_pair_mode("review-snapshot".into(), scope, revision, path_id, None, || false, true)
+    }
+
+    fn read_content_pair_mode(&self, request_id: String, scope: CompareScope, requested_revision: String,
+        path_id: String, versions: Option<[ConflictVersion; 2]>, cancelled: impl Fn() -> bool, snapshot: bool) -> Result<ContentPair, GitError> {
         if cancelled() {
             return Err(GitError::StaleRequest);
         }
         let relative = decode_path(&path_id)?;
         let state = self.scan_state(&requested_revision).ok_or(GitError::StaleRequest)?;
         let change = state.change(scope, &path_id).ok_or(GitError::StaleRequest)?;
-        self.guard(&state, scope, &change)?;
+        if !snapshot { self.guard(&state, scope, &change)?; }
         let entry = state.entries.get(&path_id);
         let worktree = Source::Worktree {
             mode: entry.and_then(|e| e.worktree_mode.as_deref()),
@@ -204,7 +215,7 @@ impl GitAdapter {
             (left, self.side_from(scope.right_endpoint(), &relative, right_source, &mut budget))
         };
         // 读取后的代次检查由调用方负责（lib.rs）；这里只做内容守卫，不重试。
-        self.guard(&state, scope, &change)?;
+        if !snapshot { self.guard(&state, scope, &change)?; }
         let degradation = [left.details.as_ref(), right.details.as_ref()]
             .into_iter()
             .flatten()

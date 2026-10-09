@@ -4,7 +4,7 @@
 //! 另加 `--no-show-signature` 避免 `log.showSignature` 配置触发 GPG 等外部程序。
 //! 起点 ref 在第一页解析为 OID 并固定在游标里，后续分页不受 ref 移动影响，已显示提交的身份不变。
 #![cfg_attr(not(test), allow(dead_code))]
-use super::{run_required, GitError};
+use super::{run_required, validate_relative, GitAdapter, GitError};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -356,6 +356,63 @@ pub fn locate_log(git: &Path, worktree: &Path, query: &LogQuery, commit: &str, s
 
 /// 读取一页提交。第一页（cursor 为 None）按 query 解析起点并固定；之后传回上一页的游标。
 pub fn read_log(git: &Path, worktree: &Path, query: &LogQuery, cursor: Option<&LogCursor>) -> Result<LogPage, GitError> {
+    read_log_filtered(git, worktree, query, cursor, &[], None, None)
+}
+
+/// 附件选择使用的组合筛选。选项由应用构造，用户文本永不作为 Git 选项。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SelectionQuery {
+    pub branch: Option<String>,
+    pub keyword: String,
+    pub author: String,
+    pub since: String,
+    pub until: String,
+    pub path: String,
+    pub unpushed: bool,
+}
+
+impl GitAdapter {
+    pub fn selection_commits(&self, query: SelectionQuery, cursor: Option<LogCursor>) -> Result<LogPage, GitError> {
+        let mut extra = vec!["--regexp-ignore-case".into(), "--fixed-strings".into()];
+        for value in [&query.keyword, &query.author, &query.since, &query.until, &query.path] {
+            if value.len() > 4096 || value.contains('\0') { return Err(GitError::UnsafePath); }
+        }
+        if !query.author.is_empty() { extra.push(format!("--author={}", query.author)); }
+        for (name, date) in [("since", &query.since), ("until", &query.until)] {
+            if !date.is_empty() {
+                if date.len() != 10 || !date.bytes().enumerate().all(|(i,c)| if i == 4 || i == 7 { c == b'-' } else { c.is_ascii_digit() }) { return Err(GitError::UnsafePath); }
+                extra.push(format!("--{name}={date} {}", if name == "until" {"23:59:59"} else {"00:00:00"}));
+            }
+        }
+        let branch = query.branch.as_deref().filter(|s| !s.is_empty()).unwrap_or("HEAD");
+        let excluded = if query.unpushed {
+            Some(resolve_commit(&self.git, &self.worktree, &format!("{branch}@{{upstream}}"))
+                .map_err(|_| GitError::CommandFailed("无法确定未推送提交：当前分支没有可验证的上游引用；未执行 fetch".into()))?)
+        } else { None };
+        if !query.path.is_empty() { validate_relative(&query.path)?; }
+        // OID 搜索仍与作者、日期、路径组合过滤，不能走 read_log 的单提交快捷通道。
+        let sha = query.keyword.len() >= 4 && query.keyword.bytes().all(|b| b.is_ascii_hexdigit());
+        if sha {
+            let oid = resolve_commit(&self.git, &self.worktree, &query.keyword)?;
+            let branch_oid = resolve_commit(&self.git, &self.worktree, branch)?;
+            run_required(&self.git, &self.worktree, &["merge-base", "--is-ancestor", &oid, &branch_oid])
+                .map_err(|_| GitError::CommandFailed("该提交不在所选分支历史中".into()))?;
+            extra.push("--no-walk".into());
+        }
+        if !query.keyword.is_empty() && !sha { extra.push(format!("--grep={}", query.keyword)); }
+        let refs = if sha { vec![query.keyword.clone()] } else { vec![branch.into()] };
+        let mut cursor = cursor;
+        if let (Some(cursor), Some(excluded)) = (&mut cursor, &excluded) {
+            if cursor.tips.pop() != Some(format!("exclude:{excluded}")) { return Err(GitError::StaleRequest); }
+        }
+        let mut page = read_log_filtered(&self.git, &self.worktree, &LogQuery { refs, search: None, page_size: 200 }, cursor.as_ref(), &extra, excluded.as_deref(), Some(&query.path))?;
+        if let (Some(next), Some(excluded)) = (&mut page.next, excluded) { next.tips.push(format!("exclude:{excluded}")); }
+        Ok(page)
+    }
+}
+
+fn read_log_filtered(git: &Path, worktree: &Path, query: &LogQuery, cursor: Option<&LogCursor>, extra: &[String], exclude: Option<&str>, path: Option<&str>) -> Result<LogPage, GitError> {
     let page_size = query.page_size.clamp(1, MAX_PAGE);
     if let Some(SearchQuery::Sha(prefix)) = &query.search {
         let prefix = prefix.trim();
@@ -401,7 +458,10 @@ pub fn read_log(git: &Path, worktree: &Path, query: &LogQuery, cursor: Option<&L
         _ => {}
     }
     args.extend(tips.iter().cloned());
+    args.extend_from_slice(extra);
+    if let Some(oid) = exclude { args.push(format!("^{oid}")); }
     args.push("--".into());
+    if let Some(path) = path.filter(|p| !p.is_empty()) { args.push(path.into()); }
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let raw = run_required(git, worktree, &refs)?.stdout;
     let mut commits: Vec<CommitInfo> = parse_records(&raw)?.into_iter().map(|(c, _)| c).collect();

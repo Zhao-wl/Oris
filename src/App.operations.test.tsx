@@ -8,7 +8,7 @@ import { DRAFTS_KEY } from "./operations-model";
 import { defaultAnchor, WORKSPACE_KEY } from "./workspace-model";
 
 const bridge = vi.hoisted(() => ({
-  open: vi.fn(), refresh: vi.fn(), read: vi.fn(), diff: vi.fn(), details: vi.fn(), activate: vi.fn(), loadSnapshot: vi.fn(),
+  reviewSnapshot: vi.fn(), reviewContext: vi.fn(), reviewInventory: vi.fn(), reviewLocation: vi.fn(), goToLine: vi.fn(), open: vi.fn(), refresh: vi.fn(), read: vi.fn(), diff: vi.fn(), details: vi.fn(), activate: vi.fn(), loadSnapshot: vi.fn(),
   operation: vi.fn(), prepareDiscard: vi.fn(), head: vi.fn(), backups: vi.fn(), planAi: vi.fn(), refs: vi.fn(), reveal: vi.fn(async () => {}),
 }));
 vi.mock("./api", () => ({ discoverGroup: vi.fn(async () => ({ isGroup: false, members: [], selectedRepoId: null, ignored: [] })), memberChangeCount: vi.fn(async () => 0), watchGroup: vi.fn(async () => {}), setSubmodulePointers: vi.fn(async () => {}), openRepository: bridge.open, refreshRepository: bridge.refresh, readContentPair: bridge.read, closeRepository: vi.fn(async () => {}), cancelContentRead: vi.fn(async () => {}),
@@ -17,11 +17,12 @@ vi.mock("./operations-api", () => ({ runOperation: bridge.operation, cancelOpera
   prepareDiscard: bridge.prepareDiscard, discardBackups: bridge.backups, headCommitInfo: bridge.head }));
 vi.mock("./diff", () => ({ calculateDiff: bridge.diff }));
 vi.mock("./ai-api", () => ({ planAiAction: bridge.planAi, generateAiCommit: vi.fn(), cancelAiGeneration: vi.fn(async () => {}) }));
+vi.mock("./ai-review/model", async original => ({ ...(await original<typeof import("./ai-review/model")>()), reviewContext: bridge.reviewContext, reviewContextPage: bridge.reviewContext, reviewSnapshot: bridge.reviewSnapshot, reviewInventory: bridge.reviewInventory, reviewLocation: bridge.reviewLocation }));
 vi.mock("./history-api", async (importOriginal) => ({ ...(await importOriginal<typeof import("./history-api")>()), readRefs: bridge.refs }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ isFocused: async () => false, onFocusChanged: async () => () => {} }) }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => {} }));
-vi.mock("./DiffViewer", () => ({ default: ({ readingKey }: { readingKey: string }) => <div data-testid="readable">{readingKey}</div> }));
+vi.mock("./DiffViewer", async () => { const { forwardRef, useImperativeHandle } = await import("react"); return { default: forwardRef(({ readingKey }: { readingKey: string }, ref) => { useImperativeHandle(ref, () => ({ goToLine: bridge.goToLine })); return <div data-testid="readable">{readingKey}</div>; }) }; });
 vi.mock("./ImageViewer", () => ({ default: () => <div/> }));
 import App from "./App";
 import { settings } from "./appearance";
@@ -244,6 +245,8 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ font: "", measureText: (text: string) => ({ width: text.length * 6 }) } as unknown as CanvasRenderingContext2D);
+  bridge.reviewSnapshot.mockImplementation((...args) => bridge.reviewContext(...args));
+  bridge.reviewInventory.mockImplementation(async (repoId,range)=>({repoId,range,identity:"empty",revision:"r1",files:[],totalFiles:0,left:null,right:"index"}));
   bridge.details.mockResolvedValue(null); bridge.activate.mockResolvedValue(true); bridge.loadSnapshot.mockResolvedValue(null);
   bridge.backups.mockResolvedValue([]); bridge.head.mockResolvedValue(null);
   bridge.refs.mockResolvedValue({ head: { branch: "main", oid: "h".repeat(40), detached: false, unborn: false }, local: [], remote: [], tags: [], shallow: false, remotes: [], defaultRemote: null, fetchHeadAt: null });
@@ -574,12 +577,14 @@ it("keeps the main request prefix stable around a routed one-shot command and re
   ]);
   settings.update("ai", "activeId", "test-ai");
   const originalRules = settings.get().ai.ruleSet;
-  settings.update("ai", "ruleSet", { ...originalRules, routes: originalRules.routes.map(r => r.commandId === "review" ? { ...r, profileId: "tool-ai" } : r) });
+  settings.update("ai", "ruleSet", { ...originalRules, routes: originalRules.routes.map(r => r.commandId === "explain" ? { ...r, profileId: "tool-ai" } : r) });
   bridge.planAi.mockResolvedValue({ kind: "answer", message: "已检查当前状态" });
+  bridge.reviewInventory.mockImplementation(async (repoId, range) => ({ ...reviewFixture.inventory, repoId, range, files: range.kind === "staged" ? [reviewSource.file] : [] }));
+  bridge.reviewContext.mockResolvedValue(reviewFixture);
   try {
     await mount(); await click(host.querySelector(".titlebar .commit-entry")!);
     const input = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="输入 AI 指令"]')!;
-    for (const text of ["解释当前改动", "@审查 检查改动", "说明审查结果"]) {
+    for (const text of ["解释当前改动", "@解释 检查改动", "说明审查结果"]) {
       await type(input, text); await click(host.querySelector<HTMLButtonElement>('[aria-label="确认 AI 指令"]')!);
     }
     expect(bridge.planAi).toHaveBeenCalledTimes(3);
@@ -590,4 +595,111 @@ it("keeps the main request prefix stable around a routed one-shot command and re
     expect(last[6]).toContain('"role":"tool"'); expect(last[3]).not.toContain("只报告有代码依据的问题");
     expect(bridge.read.mock.calls.every(call => call[6] === undefined)).toBe(true);
   } finally { settings.update("ai", "ruleSet", originalRules); }
+});
+const reviewSource = { id: "src-id", file: { pathId: "id-a.txt", path: "a.txt", oldPathId: null, oldPath: null, status: "modified" }, side: "right" as const, endpoint: "index", contentId: "r-id-a.txt", lines: [{ line: 1, text: "y" }], truncated: false, supplemental: false };
+const reviewFixture = { inventory: { repoId: "a", range: { kind: "staged" as const }, identity: "review-id", revision: "r1", left: "h".repeat(40), right: "index", files: [reviewSource.file], totalFiles: 1 }, sources: [reviewSource], diff: "+y", budget: 40000, used: 20, truncated: false, warnings: [] };
+const modelReview = { kind: "answer", message: "reviewed", review: { summary: "reviewed", impact: "impact", findings: [{ title: "Issue", sourceId: "e1-0:0:src-id", line: 1, evidence: "y", trigger: "trigger", impact: "impact", suggestion: "suggestion" }], commits: [] } };
+it("bare explain sends the 59 UI-selected file diffs as original text and publishes coverage without extra selection", async () => {
+  settings.update("ai", "profiles", [{ id: "test-ai", name: "模型", kind: "cli", provider: "codex", executable: "", baseUrl: "", model: "model", hasKey: false }]); settings.update("ai", "activeId", "test-ai");
+  const files = Array.from({ length: 59 }, (_, i) => ({ ...reviewSource.file, pathId: `id-${i}`, path: `Football/Player${i}.ts` }));
+  bridge.reviewInventory.mockImplementation(async (repoId, range) => ({ ...reviewFixture.inventory, repoId, range, files: range.kind === "unstaged" ? files : [] }));
+  bridge.reviewContext.mockImplementation(async (_repoId, request) => ({ ...reviewFixture, sources: [{ ...reviewSource, file: files.find(f => f.pathId === request.pathIds[0]), endpoint: "workingTree", lines: [{ line: 1, text: `changed ${request.pathIds[0]}` }] }] }));
+  const seen: string[] = [];
+  bridge.planAi.mockImplementation(async (_profile, description, payload, _system, _id, readOnly) => {
+    expect(description).toBe("@解释"); expect(readOnly).toBe(true);
+    for (const source of payload.attachments.sources) { seen.push(source.file.path); expect(source.lines[0].text).toMatch(/^changed id-/); }
+    return { kind: "answer", message: "足球改动解释" };
+  });
+  await mount(); await click(host.querySelector(".titlebar .commit-entry")!);
+  await click(host.querySelector('[aria-label="添加上下文附件"]')!); await click(button("加入全部匹配"));
+  await click([...host.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent?.startsWith("应用附件"))!);
+  await type(host.querySelector<HTMLTextAreaElement>('textarea[aria-label="输入 AI 指令"]')!, "@解释");
+  await click(host.querySelector('[aria-label="确认 AI 指令"]')!);
+  expect(new Set(seen)).toEqual(new Set(files.map(f => f.path)));
+  expect(host.textContent).toContain("已遍历 59 项"); expect(host.textContent).toContain("足球改动解释"); expect(bridge.operation).not.toHaveBeenCalled();
+});
+async function chooseOperationFiles(purpose:"stage"|"commit") {
+  bridge.reviewInventory.mockImplementation(async(repoId,range)=>({...reviewFixture.inventory,repoId,range,identity:range.kind,files:range.kind==="unstaged"?[reviewSource.file]:[]}));
+  await mount();
+  if(purpose==="stage")await click(button("辅助选择…"));
+  else {await click(commitTab());await click(button("选择文件 / AI 辅助…"));}
+  await click(button("加入全部匹配"));
+  await click([...host.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent?.startsWith("应用文件选择"))!);
+  expect(bridge.operation).not.toHaveBeenCalled();
+}
+it("selection only applies a file set; explicit stage uses a revision guarded operation",async()=>{
+  await chooseOperationFiles("stage");bridge.operation.mockResolvedValue(outcome("stage",snap([],[change("a.txt")])));
+  await click(button("暂存已选文件"));expect(bridge.operation.mock.calls[0][3]).toEqual({kind:"stageSelected",expectedRevision:"r1",pathIds:["id-a.txt"]});
+});
+it("commit selection reuses the selector and submits only on the commit button",async()=>{
+  await chooseOperationFiles("commit");bridge.operation.mockResolvedValue(outcome("commit",snap([],[])));
+  await type(host.querySelector<HTMLTextAreaElement>('[aria-label="提交信息"]')!,"selected changes");await click(button("提交"));
+  expect(bridge.operation.mock.calls[0][3]).toEqual({kind:"commitSelected",expectedRevision:"r1",pathIds:["id-a.txt"],message:"selected changes"});
+});
+it("stale selected files never reach the write runner",async()=>{
+  await chooseOperationFiles("stage");bridge.reviewInventory.mockResolvedValue({...reviewFixture.inventory,identity:"changed"});
+  await click(button("暂存已选文件"));expect(bridge.operation).not.toHaveBeenCalled();expect(host.textContent).toContain("文件选择已过期");
+});
+async function reviewStart() {
+  settings.update("ai", "profiles", [{ id: "test-ai", name: "模型", kind: "cli", provider: "codex", executable: "", baseUrl: "", model: "model", hasKey: false }]); settings.update("ai", "activeId", "test-ai");
+  bridge.reviewInventory.mockResolvedValue(reviewFixture.inventory); bridge.reviewContext.mockResolvedValue(reviewFixture);
+  await mount(); await click(host.querySelector(".titlebar .commit-entry")!);
+  const input = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="输入 AI 指令"]')!;
+  await type(input, "@审查 检查变更集"); return input;
+}
+it("review uses routed answer-only transport, validates the result and locates exact content without Git writes", async () => {
+  bridge.planAi.mockResolvedValue(modelReview);
+  await reviewStart(); await click(host.querySelector('[aria-label="确认 AI 指令"]')!);
+  expect(bridge.planAi.mock.calls[0][5]).toBe(true); expect(bridge.planAi.mock.calls[0][2].review.sources[0]).toMatchObject({id:"e1-0:0:src-id",file:{path:"a.txt"},side:"right",lines:reviewSource.lines});
+  expect(bridge.planAi.mock.calls[0][2].review.sources[0].request).toBeUndefined();
+  expect(bridge.reviewContext).toHaveBeenCalledTimes(2);
+  expect(host.querySelector('[aria-label="变更集审查结果"]')?.textContent).toContain("Issue");
+  bridge.reviewLocation.mockResolvedValue(pair("id-a.txt", "r1"));
+  await click([...host.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent === "定位问题")!);
+  await new Promise(resolve => setTimeout(resolve, 25));
+  expect(host.querySelector('[aria-label="AI 临时对话"]')).toBeNull();
+  expect(host.querySelector('.history-badge')?.textContent).toContain("审查定位");
+  expect(bridge.goToLine).toHaveBeenCalledWith("right", 1); expect(bridge.operation).not.toHaveBeenCalled();
+});
+it.each(["provider", "action"])("review fails accurately for %s and never executes operations", async failure => {
+  if (failure === "provider") bridge.planAi.mockRejectedValue(new Error("提供方连接失败"));
+  else if (failure === "action") bridge.planAi.mockResolvedValue({ kind: "git", operation: { kind: "stage", pathIds: ["id-a.txt"] } });
+  else { bridge.planAi.mockResolvedValue(modelReview); }
+  await reviewStart();
+  if (failure === "stale") bridge.reviewContext.mockResolvedValueOnce(reviewFixture).mockRejectedValueOnce(new Error("仓库状态已变化"));
+  await click(host.querySelector('[aria-label="确认 AI 指令"]')!);
+  expect(host.querySelector('[role=alert]')?.textContent).toContain(failure === "provider" ? "提供方连接失败" : failure === "stale" ? "仓库状态已变化" : "只允许回答");
+  expect(host.querySelector('[aria-label="变更集审查结果"]')).toBeNull(); expect(bridge.operation).not.toHaveBeenCalled();
+});
+it("review keeps the captured result when files change during the model call and still rejects stale navigation", async () => {
+  bridge.planAi.mockImplementation(async () => {
+    bridge.reviewContext.mockRejectedValue(new Error("仓库状态已变化"));
+    return modelReview;
+  });
+  await reviewStart(); await click(host.querySelector('[aria-label="确认 AI 指令"]')!);
+  expect(host.querySelector('[aria-label="变更集审查结果"]')).not.toBeNull();
+  expect(host.textContent).toContain("本轮结论保留");
+  bridge.reviewLocation.mockRejectedValue(new Error("仓库已发生变化，请刷新"));
+  await click([...host.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent === "定位问题")!);
+  expect(bridge.goToLine).not.toHaveBeenCalled(); expect(bridge.operation).not.toHaveBeenCalled();
+});
+it("review cancellation discards a late answer and does not publish a partial result", async () => {
+  const waiting = deferred<unknown>(); bridge.planAi.mockReturnValue(waiting.promise);
+  await reviewStart(); await click(host.querySelector('[aria-label="确认 AI 指令"]')!);
+  await click([...host.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent === "停止生成")!);
+  waiting.resolve(modelReview); await flush();
+  expect(host.querySelector('[aria-label="变更集审查结果"]')).toBeNull(); expect(bridge.operation).not.toHaveBeenCalled();
+  expect(host.querySelector('[role=log]')?.textContent).toContain("已停止生成");
+});
+it("locates a verified text side when the other side is binary using the partial reader", async () => {
+  const source = { ...reviewSource, side: "left" as const, contentId: "l-id-a.txt", endpoint: "base", lines: [{ line: 1, text: "x" }] };
+  bridge.planAi.mockResolvedValue({ ...modelReview, review: { ...modelReview.review, findings: [{ ...modelReview.review.findings[0], evidence: "x" }] } });
+  await reviewStart(); bridge.reviewContext.mockResolvedValue({ ...reviewFixture, sources: [source] });
+  await click(host.querySelector('[aria-label="确认 AI 指令"]')!);
+  const target = pair("id-a.txt", "r1"); target.right = { ...target.right, text: null, kind: "binary" };
+  bridge.reviewLocation.mockResolvedValue(target);
+  await click([...host.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent === "定位问题")!);
+  await new Promise(resolve => setTimeout(resolve, 25));
+  expect(host.querySelector('.partial-notice')).not.toBeNull();
+  expect(bridge.goToLine).toHaveBeenCalledWith("left", 1); expect(bridge.operation).not.toHaveBeenCalled();
 });

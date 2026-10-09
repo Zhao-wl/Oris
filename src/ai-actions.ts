@@ -31,7 +31,7 @@ export type AiAction =
   | { kind: "fileIgnore"; summary: string; operation: FileIgnoreOperation }
   | { kind: "settings"; summary: string; setting: "themeMode" | "fontSize" | "lightScheme" | "darkScheme" | "aiActiveId" | "aiShortcut"; value: string | number }
   | { kind: "view"; summary: string; view: { action: AiViewAction; value?: string | boolean } }
-  | { kind: "answer"; message: string }
+  | { kind: "answer"; message: string; review?: import("./ai-review/model").ReviewResult }
   | { kind: "commitSelected"; summary: string };
 
 const record = (value: unknown): Record<string, unknown> | null => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;

@@ -1,4 +1,5 @@
 mod content;
+pub mod ai_review;
 pub mod blame;
 pub mod group;
 pub mod history;

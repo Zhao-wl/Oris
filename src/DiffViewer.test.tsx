@@ -360,3 +360,15 @@ describe("独立行跳转", () => {
     expect(editors()[0].state.selection.main.head).toBe(editors()[0].state.doc.line(30).from);
   });
 });
+it("review line navigation selects the requested side and original line including collapsed context", () => {
+  const ref = render(fileA, docA, "repo:review:source", null, "split", true);
+  const [left, right] = editors();
+  const active = document.activeElement;
+  act(() => ref.current!.goToLine("left", 22));
+  expect(left.state.doc.lineAt(left.state.selection.main.from).number).toBe(22);
+  act(() => ref.current!.goToLine("right", 41));
+  expect(right.state.doc.lineAt(right.state.selection.main.from).number).toBe(41);
+  expect(document.activeElement).toBe(active);
+  act(() => ref.current!.goToLine("right", 99999));
+  expect(right.state.doc.lineAt(right.state.selection.main.from).number).toBe(41);
+});

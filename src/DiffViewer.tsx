@@ -1997,6 +1997,7 @@ function createSingleView(
 }
 
 export interface DiffViewerHandle {
+  goToLine(side: "left" | "right", line: number): void;
   navigate(direction: -1 | 1): void;
   navigateTo(index: number): void;
   /** “全部展开”：展开所有折叠的未变化内容，返回展开的区段数。 */
@@ -2065,6 +2066,15 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
   const layoutKey = `${readingKey}:${presentation.kind === "single" ? `single-${presentation.side}` : "compare"}`;
 
   useImperativeHandle(ref, () => ({
+    goToLine(side, line) {
+      const current = runtime.current;
+      const view = current.split ? (side === "left" ? current.split.view.a : current.split.view.b) : current.single?.view ?? current.unified;
+      if (!view || !Number.isInteger(line) || line < 1 || line > view.state.doc.lines) return;
+      if (current.split) current.split.revealLine(side === "left" ? "a" : "b", line);
+      else if (current.unified) expandUnified(current.unified, line);
+      const target = view.state.doc.line(line);
+      view.dispatch({ selection: { anchor: target.from, head: target.to }, effects: EditorView.scrollIntoView(target.from, { y: "center" }) });
+    },
     expandAll() {
       const current = runtime.current;
       if (current.split) return current.split.expandAll();

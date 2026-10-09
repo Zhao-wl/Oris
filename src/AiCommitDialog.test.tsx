@@ -9,6 +9,10 @@ import { createSettingsRegistry, SettingsStore } from "./settings";
 import { schemeIndex } from "./themes/runtime";
 import type { AiTurn } from "./ai-rules";
 
+vi.mock("./ai-review/model", async (original) => ({ ...(await original<typeof import("./ai-review/model")>()),
+  reviewInventory: vi.fn(async (repoId: string, range: unknown) => ({ repoId, range, identity: "review-id", revision: "rev", left: "oid", right: "workingTree", totalFiles: 1,
+    files: [{ pathId: "a", path: "a.txt", oldPathId: null, oldPath: null, status: "modified" }] }))
+}));
 let host: HTMLDivElement;
 let root: Root;
 let settings: SettingsStore;
