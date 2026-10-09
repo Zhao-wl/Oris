@@ -10,12 +10,17 @@ import { getVersion } from "@tauri-apps/api/app";
 import { useStore } from "./store";
 import { updater } from "./update-model";
 import { AiCommandsPage, AiRoutesPage } from "./AiRulesSettings";
+import FileIgnoreSettings from "./FileIgnoreSettings";
 
 interface Props {
   settings: SettingsStore;
   onClose(): void;
   /** 当前项目实际使用的 Git（来自最近一次快照）。 */
   gitInUse: { executable: string; version: string; minimumVersion: string } | null;
+  repoId?: string | null;
+  repoName?: string;
+  initialCategory?: string;
+  ignorePreview?: { showIgnored: boolean; ignoredCount: number; onChange(value: boolean): void };
 }
 
 function SchemeList({ title, entries, value, onChange }: { title: string; entries: SchemeIndexEntry[]; value: string; onChange(id: string): void }) {
@@ -295,10 +300,11 @@ function ShortcutsPage({ settings }: { settings: SettingsStore }) {
   </div>;
 }
 
-export default function SettingsDialog({ settings, onClose, gitInUse }: Props) {
+export default function SettingsDialog({ settings, onClose, gitInUse, repoId = null, repoName = "", initialCategory, ignorePreview }: Props) {
   const categories = [...settings.registry.list(), { id: "shortcuts", label: "快捷键", order: 40, settings: [] }];
-  const [active, setActive] = useState(categories[0]?.id ?? "appearance");
+  const [active, setActive] = useState(initialCategory ?? categories[0]?.id ?? "appearance");
   const [aiExpanded, setAiExpanded] = useState(false);
+  const [gitExpanded, setGitExpanded] = useState(initialCategory === "git" || initialCategory === "fileIgnore");
   const [aiCommandId, setAiCommandId] = useState<string>();
   const dialog = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -310,7 +316,10 @@ export default function SettingsDialog({ settings, onClose, gitInUse }: Props) {
   return <div className="settings-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <div className="settings-dialog" role="dialog" aria-modal="true" aria-label="设置" tabIndex={-1} ref={dialog}>
       <nav className="settings-nav" aria-label="设置分类">
-        {categories.map((category) => category.id === "ai" ? <div className="settings-ai-group" key="ai">
+        {categories.filter(category => category.id !== "fileIgnore").map((category) => category.id === "git" ? <div className="settings-git-group" key="git">
+          <button className={active === "git" ? "active" : ""} aria-current={active === "git"} aria-expanded={gitExpanded} aria-controls="settings-git-subnav" onClick={() => { setGitExpanded(active === "git" ? !gitExpanded : true); setActive("git"); }}>Git<span aria-hidden="true">{gitExpanded ? "⌄" : "›"}</span></button>
+          <div id="settings-git-subnav" className="settings-git-subnav" hidden={!gitExpanded}><button className={active === "fileIgnore" ? "active" : ""} aria-current={active === "fileIgnore"} onClick={() => setActive("fileIgnore")}>忽略文件</button></div>
+        </div> : category.id === "ai" ? <div className="settings-ai-group" key="ai">
           <button aria-expanded={aiExpanded} aria-controls="settings-ai-subnav" onClick={() => { setAiExpanded(v => !v); if (!aiExpanded && !["ai", "ai-commands", "ai-routes"].includes(active)) setActive("ai"); }}>AI<span aria-hidden="true">{aiExpanded ? "⌄" : "›"}</span></button>
           <div id="settings-ai-subnav" className="settings-ai-subnav" hidden={!aiExpanded}>{[["ai", "连接与模型"], ["ai-commands", "指令"], ["ai-routes", "规则路由"]].map(([id, label]) => <button key={id} className={active === id ? "active" : ""} aria-current={active === id} onClick={() => setActive(id)}>{label}</button>)}</div>
         </div> : <button key={category.id} className={category.id === active ? "active" : ""} aria-current={category.id === active} onClick={() => setActive(category.id)}>{category.label}</button>)}
@@ -320,7 +329,7 @@ export default function SettingsDialog({ settings, onClose, gitInUse }: Props) {
         <header><h3>{active === "ai-commands" ? "AI 指令" : active === "ai-routes" ? "规则路由" : active === "ai" ? "AI · 连接与模型" : categories.find((c) => c.id === active)?.label}</h3><button aria-label="关闭设置" onClick={onClose}>×</button></header>
         {settings.notice === "corrupted" && <p className="settings-error">设置文件已损坏，已使用默认值（项目列表不受影响）。</p>}
         {settings.notice === "incompatible" && <p className="settings-error">设置文件版本不兼容，已使用默认值。</p>}
-        {active === "appearance" ? <AppearancePage settings={settings} /> : active === "git" ? <GitPage settings={settings} gitInUse={gitInUse} /> : active === "shortcuts" ? <ShortcutsPage settings={settings} /> : active === "update" ? <UpdatePage settings={settings} /> : active === "ai-commands" ? <AiCommandsPage settings={settings} initialCommandId={aiCommandId} onRoutes={() => setActive("ai-routes")}/> : active === "ai-routes" ? <AiRoutesPage settings={settings} onCommands={id => { setAiCommandId(id); setActive("ai-commands"); }}/> : <AiPage settings={settings} />}
+        {active === "fileIgnore" ? <FileIgnoreSettings key={repoId} settings={settings} repoId={repoId} repoName={repoName} preview={ignorePreview}/> : active === "appearance" ? <AppearancePage settings={settings} /> : active === "git" ? <GitPage settings={settings} gitInUse={gitInUse} /> : active === "shortcuts" ? <ShortcutsPage settings={settings} /> : active === "update" ? <UpdatePage settings={settings} /> : active === "ai-commands" ? <AiCommandsPage settings={settings} initialCommandId={aiCommandId} onRoutes={() => setActive("ai-routes")}/> : active === "ai-routes" ? <AiRoutesPage settings={settings} onCommands={id => { setAiCommandId(id); setActive("ai-commands"); }}/> : <AiPage settings={settings} />}
       </div>
     </div>
   </div>;
