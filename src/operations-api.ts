@@ -4,6 +4,7 @@ import type { CompareScope, RepositorySnapshot } from "./types";
 /** 前端只提交操作描述；参数与路径校验在 Rust 端完成（技术方案 §3、§8）。 */
 export type OperationRequest =
   | { kind: "stage"; pathIds: string[] }
+  | { kind: "stageSelected"; pathIds: string[]; expectedRevision: string }
   | { kind: "unstage"; pathIds: string[] }
   | { kind: "markResolved"; pathIds: string[]; confirmed?: boolean }
   | { kind: "discard"; scope: CompareScope; pathIds: string[]; confirmedUnrecoverable?: boolean }
@@ -36,7 +37,7 @@ export interface StashFirst { stashFirst?: boolean; stashUntracked?: boolean }
 /** Git 因本地改动拒绝切换、用户选择后再次请求：放弃修改后切换（先备份）或带着改动切换（switch --merge）。 */
 export interface SwitchLocalChanges { localChanges?: "keep" | "discard" | "merge"; includeUntracked?: boolean }
 
-export type OperationKind = "stage" | "unstage" | "markResolved" | "discard" | "undoDiscard" | "commit" | "commitSelected" | "undoCommit" | "fetch"
+export type OperationKind = "stageSelected" | "stage" | "unstage" | "markResolved" | "discard" | "undoDiscard" | "commit" | "commitSelected" | "undoCommit" | "fetch"
   | "hunkStage" | "hunkUnstage" | "hunkDiscard"
   | "stashPush" | "stashApply" | "stashPop" | "stashDrop"
   | "branchCreate" | "branchSwitch" | "branchTrack" | "checkout" | "branchRename" | "branchDelete" | "setUpstream"

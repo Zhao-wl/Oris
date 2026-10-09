@@ -30,6 +30,9 @@ interface Props {
   onUndoDiscard(backupId: string): void;
   onCancel(): void;
   onGenerateMessage?(): Promise<string>;
+  selectedCount?: number;
+  onChooseFiles?(): void;
+  onClearFiles?(): void;
   /** “历史”页内容（任务 04；V2-03 的 Stash 已并入其左侧）：挂载后保持，切换页签时只隐藏，保留已加载的历史与选择。 */
   logContent?: ReactNode;
 }
@@ -54,7 +57,7 @@ export default function GitPanel(props: Props) {
   </section>;
 }
 
-function CommitTab({ repoId, stagedCount, headKey, headOid, mergeInProgress, blockedReason, running, lines, lastCommit, onCommit, onUndoCommit, onCancel, onGenerateMessage }: Props & { repoId: string }) {
+function CommitTab({ repoId, stagedCount, headKey, headOid, mergeInProgress, blockedReason, running, lines, lastCommit, onCommit, onUndoCommit, onCancel, onGenerateMessage, selectedCount, onChooseFiles, onClearFiles }: Props & { repoId: string }) {
   const [message, setMessage] = useState(() => loadDraft(localStorage, repoId));
   const [push, setPush] = useState(false);
   const [aiGenerating, setAiGenerating] = useState(false);
@@ -77,7 +80,7 @@ function CommitTab({ repoId, stagedCount, headKey, headOid, mergeInProgress, blo
   const pushedReason = head?.pushed ? `HEAD 已包含在上游 ${head.upstream ?? ""} 中：撤销需要强制推送，Oris 不支持，请在命令行处理` : null;
   const pushReason = head?.detached ? "分离 HEAD：不能推送" : null;
   const commitBlocked = blockedReason
-    ?? (stagedCount === 0 ? "没有已暂存的内容：先在“未暂存”范围暂存文件" : null)
+    ?? ((selectedCount ?? stagedCount) === 0 ? selectedCount === undefined ? "没有已暂存的内容，请选择文件或暂存改动" : "没有待提交文件，请调整选择" : null)
     ?? (!message.trim() ? "请填写提交信息（首行为摘要）" : null);
   const undoBlocked = blockedReason ?? (headLoading ? "正在读取 HEAD…" : null) ?? (!head ? "还没有提交" : null) ?? pushedReason ?? (mergeInProgress ? "合并进行中不能撤销提交" : null) ?? (head?.detached && head.parents.length === 0 ? "分离 HEAD 上的根提交不能撤销" : null);
   const submit = async () => {
@@ -101,7 +104,9 @@ function CommitTab({ repoId, stagedCount, headKey, headOid, mergeInProgress, blo
       <button type="button" className="magic-button" aria-label="根据暂存内容生成提交信息" title={aiGenerating ? "正在生成…" : "根据暂存内容生成提交信息"} disabled={!onGenerateMessage || stagedCount === 0 || aiGenerating || !!running} onClick={() => void generateMessage()}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m4 20 11-11"/><path d="m14 4 .6 2.4L17 7l-2.4.6L14 10l-.6-2.4L11 7l2.4-.6L14 4Z"/><path d="m20 11 .4 1.6L22 13l-1.6.4L20 15l-.4-1.6L18 13l1.6-.4L20 11Z"/><path d="m6 3 .4 1.6L8 5l-1.6.4L6 7l-.4-1.6L4 5l1.6-.4L6 3Z"/></svg></button>
     </div>
     <div className="commit-side">
-      <strong>{`提交暂存区 · ${stagedCount} 个文件`}</strong>
+      <strong>{selectedCount === undefined ? `提交暂存区 · ${stagedCount} 个文件` : `提交所选工作区整文件 · ${selectedCount} 个`}</strong>
+      {onChooseFiles && <button disabled={!!running} onClick={onChooseFiles}>选择文件 / AI 辅助…</button>}
+      {selectedCount !== undefined && <button onClick={onClearFiles}>恢复提交暂存区</button>}
       <label title={pushReason ?? "提交成功后推送当前分支；没有上游时先选择 remote"}><input type="checkbox" aria-label="提交并推送" checked={push && !pushReason} disabled={!!pushReason || !!committing} onChange={(event) => setPush(event.target.checked)}/> 提交并推送</label>
       <div className="commit-buttons">
         <button type="button" className="primary" disabled={!!commitBlocked || !!committing} title={commitBlocked ?? "Ctrl+Enter"} onClick={() => void submit()}>{push && !pushReason ? "提交并推送" : "提交"}</button>

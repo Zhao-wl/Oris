@@ -9,6 +9,7 @@ const MAX_FILES: usize = 16;
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ReviewRange {
     Workspace,
+    Unstaged,
     Staged,
     Commit { commit: String },
     Branch { left: String, right: String },
@@ -91,10 +92,12 @@ impl GitAdapter {
     pub fn review_inventory(&self, range: ReviewRange) -> Result<Inventory, GitError> {
         let state = self.scan(false)?;
         let (left, right, files): (_, _, Vec<ReviewFile>) = match &range {
-            ReviewRange::Workspace | ReviewRange::Staged => {
+            ReviewRange::Workspace | ReviewRange::Staged | ReviewRange::Unstaged => {
                 let staged = matches!(range, ReviewRange::Staged);
                 let files = if staged {
                     state.lists.staged.clone()
+                } else if matches!(range, ReviewRange::Unstaged) {
+                    state.lists.unstaged.clone()
                 } else {
                     self.details_for(&state)?.all.clone()
                 };
@@ -114,7 +117,7 @@ impl GitAdapter {
                     .collect();
                 let head = self.history_refs()?.refs.head.oid;
                 (
-                    head,
+                    if matches!(range, ReviewRange::Unstaged) { Some("index".into()) } else { head },
                     if staged { "index" } else { "workingTree" }.into(),
                     files,
                 )
@@ -147,7 +150,7 @@ impl GitAdapter {
             identity,
             left,
             right,
-            files: files.into_iter().take(1000).collect(),
+            files,
             total_files,
         })
     }
@@ -159,11 +162,13 @@ impl GitAdapter {
         supplemental: bool,
     ) -> Result<ContentPair, GitError> {
         match inv.range {
-            ReviewRange::Workspace | ReviewRange::Staged if !supplemental => self
+            ReviewRange::Workspace | ReviewRange::Staged | ReviewRange::Unstaged if !supplemental => self
                 .read_content_pair_cancellable(
                     "review".into(),
                     if matches!(inv.range, ReviewRange::Staged) {
                         CompareScope::Staged
+                    } else if matches!(inv.range, ReviewRange::Unstaged) {
+                        CompareScope::Unstaged
                     } else {
                         CompareScope::All
                     },
@@ -172,7 +177,7 @@ impl GitAdapter {
                     None,
                     || false,
                 ),
-            ReviewRange::Workspace | ReviewRange::Staged => {
+            ReviewRange::Workspace | ReviewRange::Staged | ReviewRange::Unstaged => {
                 // 显式补充文件只读，不调用过滤器或跟随符号链接。
                 let relative = content::decode_path(&file.path_id)?;
                 let mut budget = media::ImageBudget::default();
@@ -487,6 +492,7 @@ impl GitAdapter {
         ];
         match &inv.range {
             ReviewRange::Staged => args.push("--cached".into()),
+            ReviewRange::Unstaged => {},
             ReviewRange::Workspace => args.push(inv.left.clone().unwrap()),
             _ => {
                 if let Some(left) = &inv.left {

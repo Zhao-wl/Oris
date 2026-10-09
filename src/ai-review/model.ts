@@ -1,12 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { decodeContentFrame } from "../api";
 import type { ContentPair } from "../types";
-export type ReviewRange = { kind: "workspace" } | { kind: "staged" } | { kind: "commit"; commit: string } | { kind: "branch"; left: string; right: string };
+export type ReviewRange = { kind: "workspace" } | { kind: "unstaged" } | { kind: "staged" } | { kind: "commit"; commit: string } | { kind: "branch"; left: string; right: string };
 export interface ReviewFile { pathId: string; path: string; oldPathId: string | null; oldPath: string | null; status: string }
 export interface ReviewInventory { repoId: string; range: ReviewRange; identity: string; revision: string; left: string | null; right: string; files: ReviewFile[]; totalFiles: number }
 export interface ReviewRequest { range: ReviewRange; identity: string; pathIds: string[]; contextPaths: string[] }
-export interface ReviewSource { id: string; file: ReviewFile; side: "left" | "right"; endpoint: string; contentId: string; lines: { line: number; text: string }[]; truncated: boolean; supplemental: boolean }
-export interface ReviewContext { inventory: ReviewInventory; sources: ReviewSource[]; diff: string; budget: number; used: number; truncated: boolean; warnings: string[] }
+export interface ReviewSource { id: string; file: ReviewFile; side: "left" | "right"; endpoint: string; contentId: string; lines: { line: number; text: string }[]; truncated: boolean; supplemental: boolean; request?: ReviewRequest }
+export interface ReviewContext { inventory: ReviewInventory; ranges?: { kind: string; left: string | null; right: string }[]; sources: ReviewSource[]; diff: string; budget: number; used: number; truncated: boolean; warnings: string[] }
 export interface ReviewFinding { title: string; trigger: string; impact: string; suggestion: string; evidence: string; sourceId: string; line: number; source?: ReviewSource; invalid?: string }
 export interface ReviewResult { context: ReviewContext; summary: string; impact: string; findings: ReviewFinding[]; commits: { title: string; paths: string[]; reason: string }[]; limitations: string }
 export const reviewInventory = (repoId: string, range: ReviewRange) => invoke<ReviewInventory>("review_inventory", { repoId, range });
@@ -45,7 +45,7 @@ export function locationMatches(source: ReviewSource, pair: { repoId: string; pa
 /** 结构化结果也回到原有会话与复制入口，后续主模型能理解已核实的问题。 */
 export function reviewText(result: ReviewResult): string {
   const c = result.context, i = c.inventory;
-  return [`${result.summary}\n\n${result.impact}`, `范围 ${i.range.kind}：${i.left ?? "空树"} → ${i.right}；revision ${i.revision}；差异与原文预算 ${c.used}/${c.budget}${c.truncated ? "，已截断，结论不完整" : ""}`,
+  return [`${result.summary}\n\n${result.impact}`, `范围 ${(c.ranges ?? [{kind:i.range.kind,left:i.left,right:i.right}]).map(r=>`${r.kind}：${r.left ?? "空树"} → ${r.right}`).join("；")}；revision ${i.revision}；差异与原文预算 ${c.used}/${c.budget}${c.truncated ? "，已截断，结论不完整" : ""}`,
     ...c.warnings, ...result.findings.map(f => `${f.invalid ? "未核实：" : ""}${f.title}\n${f.source ? `${f.source.file.path} ${f.source.side}:${f.line} contentId=${f.source.contentId}` : f.invalid}\n触发：${f.trigger}\n影响：${f.impact}\n原文：${f.evidence}\n建议：${f.suggestion}`),
     "提交组织建议（只读，同一文件混合改动需手动整理）：", ...result.commits.map(c => `${c.title}：${c.paths.join("、")}；${c.reason}`), `未核实：${result.limitations || "未运行测试"}`].join("\n\n");
 }

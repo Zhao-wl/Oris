@@ -56,6 +56,7 @@ pub enum LocalChanges {
 pub enum OperationRequest {
     /// 暂存（未暂存范围）。
     Stage { path_ids: Vec<String> },
+    StageSelected { path_ids: Vec<String>, expected_revision: String },
     /// 取消暂存（已暂存范围）；rename 需同时给出原路径。
     Unstage { path_ids: Vec<String> },
     /// 冲突文件“标记已解决”：暂存的变体，文件仍含冲突标记时先要求确认。
@@ -189,6 +190,7 @@ impl OperationRequest {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Stage { .. } => "stage",
+            Self::StageSelected { .. } => "stage",
             Self::Unstage { .. } => "unstage",
             Self::MarkResolved { .. } => "markResolved",
             Self::Discard { .. } => "discard",
@@ -459,6 +461,10 @@ impl GitAdapter {
     fn dispatch(&self, request: &OperationRequest, ctx: &OpContext) -> Result<Step, GitError> {
         match request {
             OperationRequest::Stage { path_ids } => self.op_stage(path_ids, false, true, ctx),
+            OperationRequest::StageSelected { path_ids, expected_revision } => {
+                if self.scan(false)?.revision != *expected_revision { return Err(GitError::StaleRequest); }
+                self.op_stage(path_ids, false, true, ctx)
+            },
             OperationRequest::MarkResolved { path_ids, confirmed } => self.op_stage(path_ids, true, *confirmed, ctx),
             OperationRequest::Unstage { path_ids } => self.op_unstage(path_ids, ctx),
             OperationRequest::Discard { scope, path_ids, confirmed_unrecoverable } => self.op_discard(*scope, path_ids, *confirmed_unrecoverable, ctx),
