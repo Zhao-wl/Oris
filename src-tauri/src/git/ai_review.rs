@@ -116,7 +116,7 @@ impl GitAdapter {
                             .into(),
                     })
                     .collect();
-                let head = self.history_refs()?.refs.head.oid;
+                let head = state.branch.oid.clone();
                 (
                     if matches!(range, ReviewRange::Unstaged) { Some("index".into()) } else { head },
                     if staged { "index" } else { "workingTree" }.into(),
@@ -289,12 +289,21 @@ impl GitAdapter {
     }
 
     pub fn review_context(&self, request: ReviewRequest) -> Result<ReviewContext, GitError> {
-        self.review_context_at(request, None)
+        self.review_context_at(request, None, None)
     }
     pub fn review_context_page(&self, request: ReviewRequest, offset: usize) -> Result<ReviewContext, GitError> {
-        self.review_context_at(request, Some(offset))
+        self.review_context_at(request, Some(offset), None)
     }
-    fn review_context_at(&self, request: ReviewRequest, offset: Option<usize>) -> Result<ReviewContext, GitError> {
+    pub fn review_snapshot(&self, request: ReviewRequest, max_bytes: usize) -> Result<ReviewContext, GitError> {
+        let mut result = self.review_context_at(request, Some(0), Some(max_bytes.clamp(1000, 96_000)))?;
+        if result.next_offset.is_some() {
+            result.truncated = true;
+            result.warnings.push("本文件超过快照原文预算，后续原文未采集".into());
+        }
+        result.next_offset = None;
+        Ok(result)
+    }
+    fn review_context_at(&self, request: ReviewRequest, offset: Option<usize>, snapshot_budget: Option<usize>) -> Result<ReviewContext, GitError> {
         if request.path_ids.is_empty()
             || request.path_ids.len() + request.context_paths.len() > MAX_FILES
         {
@@ -303,7 +312,7 @@ impl GitAdapter {
             )));
         }
         let inv = self.review_inventory(request.range.clone())?;
-        if inv.identity != request.identity {
+        if snapshot_budget.is_none() && inv.identity != request.identity {
             return Err(GitError::StaleRequest);
         }
         let mut picked = Vec::new();
@@ -355,7 +364,7 @@ impl GitAdapter {
             inventory: provided,
             sources: vec![],
             diff: String::new(),
-            budget: BUDGET,
+            budget: snapshot_budget.unwrap_or(BUDGET),
             used: 0,
             truncated: false,
             warnings: vec![],
@@ -367,7 +376,9 @@ impl GitAdapter {
                     .push(format!("{}：冲突未解决，本轮跳过", file.path));
                 continue;
             }
-            let pair = match self.review_pair(&inv, &file, supplemental) {
+            let pair = match if snapshot_budget.is_some() && !supplemental && matches!(inv.range, ReviewRange::Workspace | ReviewRange::Staged | ReviewRange::Unstaged) {
+                self.read_content_pair_snapshot(if matches!(inv.range, ReviewRange::Staged) { CompareScope::Staged } else if matches!(inv.range, ReviewRange::Unstaged) { CompareScope::Unstaged } else { CompareScope::All }, inv.revision.clone(), file.path_id.clone())
+            } else { self.review_pair(&inv, &file, supplemental) } {
                 Ok(pair) => pair,
                 Err(GitError::StaleRequest) => return Err(GitError::StaleRequest),
                 Err(e) => {
@@ -380,7 +391,7 @@ impl GitAdapter {
             let patch = if supplemental || incomplete {
                 String::new()
             } else {
-                self.review_patch(&inv, &file, &pair)?
+                if snapshot_budget.is_some() { self.snapshot_patch(&pair)? } else { self.review_patch(&inv, &file, &pair)? }
             };
             // 差异最多占用一半预算，剩余用于可核验的原文及补充上下文。
             let remaining = (BUDGET / 2).saturating_sub(result.diff.len());
@@ -411,7 +422,7 @@ impl GitAdapter {
                 };
                 let mut lines = vec![];
                 let mut bytes = 0;
-                let limit = if offset.is_some() { 6000usize.saturating_sub(result.used) } else { (BUDGET - result.used).min(5000) };
+                let limit = if offset.is_some() { snapshot_budget.unwrap_or(6000).saturating_sub(result.used) } else { (BUDGET - result.used).min(5000) };
                 let mut truncated = false;
                 for (index, line) in text.split('\n').enumerate() {
                     if !ranges
@@ -425,7 +436,7 @@ impl GitAdapter {
                     position += 1;
                     if offset.is_some_and(|start| current_position < start) { continue; }
                     let size = line.len() + 16;
-                    if offset.is_some() && size > 6000 {
+                    if offset.is_some() && size > snapshot_budget.unwrap_or(6000) {
                         result.truncated = true;
                         result.warnings.push(format!("{} {side}:{} 超长原文行未读取", file.path, index + 1));
                         continue;
@@ -458,6 +469,7 @@ impl GitAdapter {
                 });
             }
         }
+        if snapshot_budget.is_none() {
         // 最后再读快照并核对显式补充文件，捕获生成上下文期间的变化。
         if self.review_inventory(request.range)?.identity != inv.identity {
             return Err(GitError::StaleRequest);
@@ -473,12 +485,23 @@ impl GitAdapter {
                 return Err(GitError::StaleRequest);
             }
         }
+        }
         if offset.is_none() && result.sources.iter().all(|s| s.lines.is_empty()) {
             return Err(GitError::Io(
                 "所选文件没有预算内可读取的文本，请检查文件类型或缩小范围".into(),
             ));
         }
         Ok(result)
+    }
+
+    /// Diff only captured bytes; Git never consults the live index/worktree here.
+    fn snapshot_patch(&self, pair: &ContentPair) -> Result<String, GitError> {
+        let dir = tempfile::tempdir().map_err(|e| GitError::Io(e.to_string()))?;
+        fs::write(dir.path().join("left"), pair.left.text.as_deref().unwrap_or("")).map_err(|e| GitError::Io(e.to_string()))?;
+        fs::write(dir.path().join("right"), pair.right.text.as_deref().unwrap_or("")).map_err(|e| GitError::Io(e.to_string()))?;
+        let out = run_readonly(&self.git, dir.path(), &["diff", "--no-index", "--no-ext-diff", "--no-textconv", "--no-color", "--unified=3", "--", "left", "right"])?;
+        if !matches!(out.status.code(), Some(0 | 1)) { return Err(GitError::CommandFailed(String::from_utf8_lossy(&out.stderr).into_owned())); }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
     fn review_patch(

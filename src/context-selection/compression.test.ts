@@ -56,14 +56,14 @@ it("preserves complete numbered lines, reports oversized lines and never duplica
   expect(pages.every(p=>tokenEstimate(compactEvidence(p))<=CONTEXT_BUDGET.evidence)).toBe(true);
   expect(JSON.stringify(pages.map(compactEvidence))).not.toContain("actual diff");
 });
-it("full review follows continuation to late-file evidence and does not publish partial results on stale validation",async()=>{
-  invoke.mockImplementation(async(command,args)=>command==="review_inventory"?fixture().inventory:{...fixture(args.offset===0?90:null),sources:[{...fixture().sources[0],lines:[{line:args.offset===0?1:900,text:args.offset===0?"early":"late bug"}]}]});
+it("full review captures late-file original evidence once and keeps results after current-version validation fails", async () => {
+  invoke.mockImplementation(async(command)=>command==="review_inventory"?fixture().inventory:{...fixture(),sources:[{...fixture().sources[0],lines:[{line:1,text:"early"},{line:900,text:"late bug"}]}]});
   const answer=vi.fn(async(value)=>{const c=value as any;return {kind:"answer",review:{summary:c.sources.flatMap((s:any)=>s.lines.map((l:any)=>l.text)).join(";"),impact:"",findings:[],commits:[]}};});
   const result=await reviewAttachments("repo",[file(0)],()=>true,answer,"");
-  expect(answer).toHaveBeenCalledTimes(1);expect(result.result?.summary).toContain("late bug");expect(result.result?.context.sources.some(s=>s.lines.some(l=>l.line===900))).toBe(true);
-  let reads=0;
-  invoke.mockImplementation(async command=>command==="review_inventory"?fixture().inventory:{...fixture(),sources:fixture().sources.map(s=>({...s,contentId:++reads>1?"changed":s.contentId}))});
-  await expect(reviewAttachments("repo",[file(0)],()=>true,answer,"")).rejects.toThrow("仓库发生变化");
+  expect(answer).toHaveBeenCalledTimes(1);expect(result.result?.summary).toContain("late bug");
+  invoke.mockImplementation(async command=>{if(command==="review_inventory")return fixture().inventory;if(command==="review_context_page")throw Error("changed");return fixture();});
+  const changed=await reviewAttachments("repo",[file(0)],()=>true,answer,"");
+  expect(changed.result).not.toBeNull();expect(changed.coverage+changed.result?.limitations+changed.result?.context.warnings.join()).toContain("本轮结论保留");
 });
 
 it("selects 64 files across directories in one call and omitted evidenceIds does not trigger diff reads",async()=>{

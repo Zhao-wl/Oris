@@ -28,12 +28,14 @@ it("does not discard same-path findings at different endpoint/content identities
   const { result } = await reviewAttachments("repo", [attachment("price.ts"), attachment("price.ts", "staged")], () => true, answer, "");
   expect(result?.findings).toHaveLength(2); expect(new Set(result?.context.sources.map(s => s.id)).size).toBe(2);
 });
-it("does not publish partial results after cancellation or final content validation failure", async () => {
+it("discards cancellation but retains verified snapshot results after later content changes", async () => {
   let active = true;
   await expect(reviewAttachments("repo", [attachment("price.ts")], () => active, async wire => { active = false; return response(wire); }, "")).rejects.toThrow("取消");
   active = true; let reads = 0;
   invoke.mockImplementation(async (cmd, args) => cmd === "review_inventory" ? original("price.ts", "unstaged").inventory : { ...original("price.ts", "unstaged"), sources: [{ ...original("price.ts", "unstaged").sources[0], contentId: ++reads > 1 ? "changed" : "original" }] });
-  await expect(reviewAttachments("repo", [attachment("price.ts")], () => true, async wire => response(wire), "")).rejects.toThrow("仓库发生变化");
+  const changed = await reviewAttachments("repo", [attachment("price.ts")], () => true, async wire => response(wire), "");
+  expect(changed.result?.context.sources[0].contentId).toBe("original");
+  expect(changed.result?.context.warnings.join()).toContain("本轮结论保留");
 });
 it.each([null, { kind: "git", operation: { kind: "stage" } }])("refuses non-answer output %j", async output => {
   await expect(reviewAttachments("repo", [attachment("price.ts")], () => true, async () => output, "")).rejects.toThrow("只允许回答");

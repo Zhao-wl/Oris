@@ -23,18 +23,21 @@ it("bare explain proactively sends every selected file's original text before an
   const result = await explainAttachments("repo", attachments, () => true, answer, "@解释");
   expect(new Set(seen)).toEqual(new Set(files.map(f => f.path)));
   expect(result.message).toContain("已遍历 59 项"); expect(result.message).toContain("附件遍历完成");
-  expect(invoke.mock.calls.filter(c => c[0] === "review_context_page")).toHaveLength(118);
+  expect(invoke.mock.calls.filter(c => c[0] === "review_context_page")).toHaveLength(59);
 });
-it("reads continuation text and discards answers if evidence becomes stale during inference", async () => {
+it("keeps the full captured text and answer if evidence becomes stale during inference", async () => {
   let stale = false;
-  invoke.mockImplementation(async (command, args) => command === "review_inventory" ? { ...context.inventory, files } : {
-    ...context, sources: [{ ...context.sources[0], file: files[0], contentId: stale ? "changed" : "content", lines: [{ line: args.offset + 1, text: args.offset ? "late change" : "early change" }] }], nextOffset: args.offset ? null : 90
+  invoke.mockImplementation(async (command) => {
+    if (command === "review_inventory") return { ...context.inventory, files };
+    if (stale && command === "review_context_page") throw new Error("仓库发生变化");
+    return { ...context, sources: [{ ...context.sources[0], file: files[0], lines: [{ line: 1, text: "early change" }, { line: 91, text: "late change" }] }], nextOffset: null };
   });
   const answer = vi.fn(async (wire: any) => {
-    expect(wire.sources.some((s: any) => s.lines[0].text === "late change")).toBe(true);
-    stale = true; return { kind: "answer", message: "不能发布" };
+    expect(wire.sources.some((s: any) => s.lines.some((l: any) => l.text === "late change"))).toBe(true);
+    stale = true; return { kind: "answer", message: "快照解释完成" };
   });
-  await expect(explainAttachments("repo", [attachments[0]], () => true, answer, "@解释")).rejects.toThrow("仓库发生变化");
+  const result = await explainAttachments("repo", [attachments[0]], () => true, answer, "@解释");
+  expect(result.message).toContain("本轮结论保留"); expect(result.message).toContain("快照解释完成");
 });
 it("reports empty and budget-limited ranges without inventing analysis, rejects cancellation and operation answers", async () => {
   const answer = vi.fn(async () => ({ kind: "answer", message: "已解释" }));
@@ -43,4 +46,20 @@ it("reports empty and budget-limited ranges without inventing analysis, rejects 
   expect(result.message).toContain("剩余内容未解释");
   await expect(explainAttachments("repo", attachments, () => false, answer, "")).rejects.toThrow("取消");
   await expect(explainAttachments("repo", [attachments[0]], () => true, async () => ({ kind: "git", message: "write" }), "")).rejects.toThrow();
+});
+it("captures every window before inference so edits between model calls never change later evidence", async () => {
+  let started = false, snapshots = 0;
+  invoke.mockImplementation(async (command, args) => {
+    if (command === "review_inventory") return { ...context.inventory, files };
+    if (command === "review_snapshot") { expect(started).toBe(false); snapshots++; }
+    return { ...context, truncated: false, sources: [{ ...context.sources[0], truncated: false, file: files.find(f => f.pathId === args.request.pathIds[0]),
+      contentId: started ? "new-version" : "content", lines: [{ line: 1, text: started ? "new text" : "snapshot text" }] }] };
+  });
+  const answer = vi.fn(async (wire: any) => {
+    started = true; expect(snapshots).toBe(59);
+    expect(wire.sources.every((s: any) => s.lines[0].text === "snapshot text")).toBe(true);
+    return { kind: "answer", message: "快照解释" };
+  });
+  const result = await explainAttachments("repo", attachments, () => true, answer, "", { contextWindowTokens: 4000 });
+  expect(answer.mock.calls.length).toBeGreaterThan(1); expect(result.message).toContain("本轮结论保留");
 });

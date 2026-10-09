@@ -1,4 +1,4 @@
-import { reviewContextPage, reviewInventory, type ReviewContext, type ReviewRequest } from "../ai-review/model";
+import { reviewContextPage, reviewInventory, reviewSnapshot, type ReviewContext, type ReviewRequest } from "../ai-review/model";
 import type { Attachment } from "./model";
 
 /** Fresh refs at the start, immutable identity thereafter. Changes during reading fail closed. */
@@ -30,5 +30,33 @@ export async function* attachmentEvidence(repoId:string,item:Attachment,valid:()
       if(raw.nextOffset<=offset)throw new Error("差异分页游标未前进");
       offset=raw.nextOffset;
     }
+  }
+}
+
+/** Capture once before inference; ordinary selection and live reading keep their guards. */
+export async function* attachmentSnapshotEvidence(repoId: string, item: Attachment, valid: () => boolean, maxBytes: () => number) {
+  const check = () => { if (!valid()) throw new Error("上下文读取已取消"); };
+  check(); if (item.repoId !== repoId) throw new Error("附件属于其他仓库");
+  const range = item.request?.range ?? (item.commit ? { kind: "commit" as const, commit: item.commit.oid } : null);
+  if (!range) throw new Error("附件没有有效来源");
+  const inventory = await reviewInventory(repoId, range); check();
+  const paths = item.request?.pathIds ?? inventory.files.map(f => f.pathId);
+  const unavailable = (reason: string) => ({ context: { inventory, sources: [], diff: "", budget: 0, used: 0, truncated: true, warnings: [reason] } as ReviewContext, validate: async () => {} });
+  for (const path of paths) {
+    check();
+    if (maxBytes() < 1000) return;
+    if (!inventory.files.some(f => f.pathId === path)) { yield unavailable(`${item.label}：采集时变化已消失，本条目未读取`); continue; }
+    const request: ReviewRequest = { range: inventory.range, identity: inventory.identity, pathIds: [path], contextPaths: [] };
+    let raw: ReviewContext;
+    try { raw = await reviewSnapshot(repoId, request, maxBytes()); }
+    catch (error) { check(); yield unavailable(`${item.label}：快照读取失败，未分析此文件：${String(error).slice(0, 500)}`); continue; }
+    check();
+    const context: ReviewContext = { ...raw, sources: raw.sources.map(s => ({ ...s, id: `0:${s.id}`, request: { ...request, identity: raw.inventory.identity } })),
+      ranges: [{ kind: raw.inventory.range.kind, left: raw.inventory.left, right: raw.inventory.right }] };
+    yield { context, validate: async () => {
+      check();
+      const fresh = await reviewContextPage(repoId, { ...request, identity: raw.inventory.identity }, 0); check();
+      if (fresh.inventory.identity !== raw.inventory.identity || raw.sources.some(s => !fresh.sources.some(n => n.id === s.id && n.contentId === s.contentId))) throw new Error("仓库已变化");
+    } };
   }
 }

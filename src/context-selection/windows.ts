@@ -1,4 +1,4 @@
-import { attachmentEvidence } from "./evidence";
+import { attachmentSnapshotEvidence } from "./evidence";
 import { budgetedAnswer, newContextMeter, type Attachment, type ContextLimits } from "./model";
 import { compactEvidence, CONTEXT_BUDGET, evidencePages, tokenEstimate } from "./compression";
 import type { ReviewContext } from "../ai-review/model";
@@ -36,28 +36,41 @@ export async function withAttachmentEvidence<T>(repoId: string, attachments: Att
     if (new Set(context.sources.map(s => s.file.path)).size > 1) jointWindows++;
     buffer = [];
   };
-  outer: for (const attachment of attachments) {
+  // Capture all budgeted evidence before the first model call. No continuation reads
+  // consult the live worktree while the model is running.
+  const captured: ReviewContext[] = []; let capturedCost = 0;
+  for (const attachment of attachments) {
     check();
-    if (meter.calls >= CONTEXT_BUDGET.calls || meter.tokens + 2000 >= meter.task) { stopped = true; break; }
-    for await (const loaded of attachmentEvidence(repoId, attachment, valid)) {
+    if (capturedCost >= meter.task - 3000) { stopped = true; break; }
+    for await (const loaded of attachmentSnapshotEvidence(repoId, attachment, valid, () => meter.task - capturedCost - 2000)) {
       check(); validators.push(loaded.validate); pagesRead++; warnings.push(...loaded.context.warnings);
       const pages = evidencePages(loaded.context, Math.min(6800, maxWire - 500));
       for (const page of pages) {
         warnings.push(...page.warnings);
         if (!page.sources.length) continue;
-        page.sources = page.sources.map(s => ({ ...s, id: `e${pagesRead}-${fragments + buffer.length}:${s.id}` }));
-        if (buffer.length && !fitsWindow([...buffer, page])) { await flush(); if (stopped) break outer; }
-        if (!fitsWindow([page])) throw new Error("原文片段超过分析单次预算，请调整模型上下文上限");
-        if (!fitsTask([...buffer, page])) {
-          await flush();
-          if (stopped || !fitsTask([page])) { stopped = true; break outer; }
-        }
-        buffer.push(page);
+        page.sources = page.sources.map(s => ({ ...s, id: `e${pagesRead}-${captured.length}:${s.id}` }));
+        captured.push(page); capturedCost += tokenEstimate(compactEvidence(page));
       }
     }
     opened++;
   }
+  for (const page of captured) {
+    check();
+    if (buffer.length && !fitsWindow([...buffer, page])) { await flush(); if (buffer.length) break; }
+    if (!fitsWindow([page])) throw new Error("原文片段超过分析单次预算，请调整模型上下文上限");
+    if (!fitsTask([...buffer, page])) {
+      await flush();
+      if (buffer.length || !fitsTask([page])) { stopped = true; break; }
+    }
+    buffer.push(page);
+  }
   await flush();
-  for (const validate of validators) { check(); await validate(); } check();
+  for (const validate of validators) {
+    check();
+    try { await validate(); }
+    catch { check(); warnings.push("采集后仓库已变化或当前版本无法核验；本轮结论保留并基于已采集的内容快照。定位时将重新核验，后续改动请另开一轮分析。"); }
+  }
+  check();
+  warnings.push("本轮基于分析前逐文件采集的只读内容快照，运行期间的新改动不纳入本轮结论。");
   return { results, warnings: [...new Set(warnings)], attached: attachments.length, opened, pagesRead, fragments, windows, jointWindows, stopped, meter };
 }

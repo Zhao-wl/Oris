@@ -8,7 +8,7 @@ import { DRAFTS_KEY } from "./operations-model";
 import { defaultAnchor, WORKSPACE_KEY } from "./workspace-model";
 
 const bridge = vi.hoisted(() => ({
-  reviewContext: vi.fn(), reviewInventory: vi.fn(), reviewLocation: vi.fn(), goToLine: vi.fn(), open: vi.fn(), refresh: vi.fn(), read: vi.fn(), diff: vi.fn(), details: vi.fn(), activate: vi.fn(), loadSnapshot: vi.fn(),
+  reviewSnapshot: vi.fn(), reviewContext: vi.fn(), reviewInventory: vi.fn(), reviewLocation: vi.fn(), goToLine: vi.fn(), open: vi.fn(), refresh: vi.fn(), read: vi.fn(), diff: vi.fn(), details: vi.fn(), activate: vi.fn(), loadSnapshot: vi.fn(),
   operation: vi.fn(), prepareDiscard: vi.fn(), head: vi.fn(), backups: vi.fn(), planAi: vi.fn(), refs: vi.fn(), reveal: vi.fn(async () => {}),
 }));
 vi.mock("./api", () => ({ discoverGroup: vi.fn(async () => ({ isGroup: false, members: [], selectedRepoId: null, ignored: [] })), memberChangeCount: vi.fn(async () => 0), watchGroup: vi.fn(async () => {}), setSubmodulePointers: vi.fn(async () => {}), openRepository: bridge.open, refreshRepository: bridge.refresh, readContentPair: bridge.read, closeRepository: vi.fn(async () => {}), cancelContentRead: vi.fn(async () => {}),
@@ -17,7 +17,7 @@ vi.mock("./operations-api", () => ({ runOperation: bridge.operation, cancelOpera
   prepareDiscard: bridge.prepareDiscard, discardBackups: bridge.backups, headCommitInfo: bridge.head }));
 vi.mock("./diff", () => ({ calculateDiff: bridge.diff }));
 vi.mock("./ai-api", () => ({ planAiAction: bridge.planAi, generateAiCommit: vi.fn(), cancelAiGeneration: vi.fn(async () => {}) }));
-vi.mock("./ai-review/model", async original => ({ ...(await original<typeof import("./ai-review/model")>()), reviewContext: bridge.reviewContext, reviewContextPage: bridge.reviewContext, reviewInventory: bridge.reviewInventory, reviewLocation: bridge.reviewLocation }));
+vi.mock("./ai-review/model", async original => ({ ...(await original<typeof import("./ai-review/model")>()), reviewContext: bridge.reviewContext, reviewContextPage: bridge.reviewContext, reviewSnapshot: bridge.reviewSnapshot, reviewInventory: bridge.reviewInventory, reviewLocation: bridge.reviewLocation }));
 vi.mock("./history-api", async (importOriginal) => ({ ...(await importOriginal<typeof import("./history-api")>()), readRefs: bridge.refs }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ isFocused: async () => false, onFocusChanged: async () => () => {} }) }));
@@ -245,6 +245,7 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ font: "", measureText: (text: string) => ({ width: text.length * 6 }) } as unknown as CanvasRenderingContext2D);
+  bridge.reviewSnapshot.mockImplementation((...args) => bridge.reviewContext(...args));
   bridge.reviewInventory.mockImplementation(async (repoId,range)=>({repoId,range,identity:"empty",revision:"r1",files:[],totalFiles:0,left:null,right:"index"}));
   bridge.details.mockResolvedValue(null); bridge.activate.mockResolvedValue(true); bridge.loadSnapshot.mockResolvedValue(null);
   bridge.backups.mockResolvedValue([]); bridge.head.mockResolvedValue(null);
@@ -660,7 +661,7 @@ it("review uses routed answer-only transport, validates the result and locates e
   expect(host.querySelector('.history-badge')?.textContent).toContain("审查定位");
   expect(bridge.goToLine).toHaveBeenCalledWith("right", 1); expect(bridge.operation).not.toHaveBeenCalled();
 });
-it.each(["provider", "stale", "action"])("review fails accurately for %s and never executes operations", async failure => {
+it.each(["provider", "action"])("review fails accurately for %s and never executes operations", async failure => {
   if (failure === "provider") bridge.planAi.mockRejectedValue(new Error("提供方连接失败"));
   else if (failure === "action") bridge.planAi.mockResolvedValue({ kind: "git", operation: { kind: "stage", pathIds: ["id-a.txt"] } });
   else { bridge.planAi.mockResolvedValue(modelReview); }
@@ -669,6 +670,18 @@ it.each(["provider", "stale", "action"])("review fails accurately for %s and nev
   await click(host.querySelector('[aria-label="确认 AI 指令"]')!);
   expect(host.querySelector('[role=alert]')?.textContent).toContain(failure === "provider" ? "提供方连接失败" : failure === "stale" ? "仓库状态已变化" : "只允许回答");
   expect(host.querySelector('[aria-label="变更集审查结果"]')).toBeNull(); expect(bridge.operation).not.toHaveBeenCalled();
+});
+it("review keeps the captured result when files change during the model call and still rejects stale navigation", async () => {
+  bridge.planAi.mockImplementation(async () => {
+    bridge.reviewContext.mockRejectedValue(new Error("仓库状态已变化"));
+    return modelReview;
+  });
+  await reviewStart(); await click(host.querySelector('[aria-label="确认 AI 指令"]')!);
+  expect(host.querySelector('[aria-label="变更集审查结果"]')).not.toBeNull();
+  expect(host.textContent).toContain("本轮结论保留");
+  bridge.reviewLocation.mockRejectedValue(new Error("仓库已发生变化，请刷新"));
+  await click([...host.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent === "定位问题")!);
+  expect(bridge.goToLine).not.toHaveBeenCalled(); expect(bridge.operation).not.toHaveBeenCalled();
 });
 it("review cancellation discards a late answer and does not publish a partial result", async () => {
   const waiting = deferred<unknown>(); bridge.planAi.mockReturnValue(waiting.promise);

@@ -259,6 +259,12 @@ async fn review_context_page(repo_id: String, request: git::ai_review::ReviewReq
 }
 #[cfg(feature = "desktop")]
 #[tauri::command]
+async fn review_snapshot(repo_id: String, request: git::ai_review::ReviewRequest, max_bytes: usize, registry: State<'_, RepositoryRegistry>) -> Result<git::ai_review::ReviewContext, String> {
+    let adapter = opened(&registry, &repo_id).map_err(|e| e.to_string())?.adapter.clone();
+    tauri::async_runtime::spawn_blocking(move || adapter.review_snapshot(request, max_bytes)).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())
+}
+#[cfg(feature = "desktop")]
+#[tauri::command]
 async fn review_location(repo_id: String, request: git::ai_review::ReviewRequest, path_id: String, registry: State<'_, RepositoryRegistry>) -> Result<tauri::ipc::Response, String> {
     let adapter = opened(&registry, &repo_id).map_err(|e| e.to_string())?.adapter.clone();
     let pair = tauri::async_runtime::spawn_blocking(move || adapter.review_location(request, path_id)).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
@@ -1068,6 +1074,7 @@ pub fn run() {
             select_context,
             review_context,
             review_context_page,
+            review_snapshot,
             review_location,
             cancel_ai_generation,
             run_operation,

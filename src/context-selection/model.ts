@@ -16,9 +16,9 @@ export interface CommitFilter { branch: string | null; keyword: string; author: 
 export const emptyFilter = (): CommitFilter => ({ branch: null, keyword: "", author: "", since: "", until: "", path: "", unpushed: false });
 export const selectionCommits = (repoId: string, query: CommitFilter, cursor: LogCursor | null) => invoke<LogPage>("selection_commits", { repoId, query, cursor });
 export const commitAttachment = (repoId: string, commit: CommitInfo): Attachment => ({ id: `commit:${commit.oid}`, kind: "commits", repoId, label: commit.subject, commit });
-export async function fileAttachments(repoId: string): Promise<Attachment[]> {
+export async function fileAttachments(repoId: string, snapshot = false): Promise<Attachment[]> {
   const inventories = await Promise.all((["unstaged", "staged"] as const).map(kind => reviewInventory(repoId, { kind })));
-  if (inventories[0].revision !== inventories[1].revision) throw new Error("读取期间仓库发生变化，请刷新");
+  if (!snapshot && inventories[0].revision !== inventories[1].revision) throw new Error("读取期间仓库发生变化，请刷新");
   return inventories.flatMap(inv => inv.files.map(file => ({ id: `${inv.range.kind}:${file.pathId}`, kind: "files" as const, repoId, label: file.path, path: file.path, oldPathId: file.oldPathId,
     source: inv.range.kind as "unstaged" | "staged", request: { range: inv.range, identity: inv.identity, pathIds: [file.pathId], contextPaths: [] } })));
 }
@@ -172,7 +172,7 @@ export async function loadAttachmentContext(repoId: string, attachments: Attachm
 
 export async function defaultAttachments(repoId: string, valid: () => boolean = () => true) {
   const check = () => { if (!valid()) throw new Error("默认范围读取已取消"); };
-  check(); const files = await fileAttachments(repoId); check();
+  check(); const files = await fileAttachments(repoId, true); check();
   const query = { ...emptyFilter(), unpushed: true };
   let page: LogPage;
   try { page = await selectionCommits(repoId, query, null); }

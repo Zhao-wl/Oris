@@ -1,6 +1,47 @@
 use super::*;
 use std::process::Command;
 #[test]
+fn analysis_snapshot_captures_once_while_live_reader_and_navigation_keep_freshness_guards() {
+    let (dir, adapter, _, _) = fixture();
+    fs::write(dir.path().join("callee.ts"), "export function price(n: number) { return n / 3; }\n").unwrap();
+    let inv = adapter.review_inventory(ReviewRange::Unstaged).unwrap();
+    let file = inv.files.iter().find(|f| f.path == "callee.ts").unwrap();
+    let make_request = || ReviewRequest { range: inv.range.clone(), identity: inv.identity.clone(), path_ids: vec![file.path_id.clone()], context_paths: vec![] };
+    fs::write(dir.path().join("other.txt"), "keep editing another file\n").unwrap();
+    assert!(adapter.review_context_page(make_request(), 0).is_err());
+    let captured = adapter.review_snapshot(make_request(), 96_000).unwrap();
+    let snapshot_text: Vec<_> = captured.sources.iter().flat_map(|s| s.lines.iter().map(|l| l.text.clone())).collect();
+    let index = fs::read(dir.path().join(".git/index")).unwrap();
+    let head = git(dir.path(), &["rev-parse", "HEAD"]);
+    fs::write(dir.path().join("callee.ts"), "export function price(n: number) { return n + 99; }\n").unwrap();
+    fs::write(dir.path().join("other.txt"), "edited again\n").unwrap();
+    assert_eq!(snapshot_text, captured.sources.iter().flat_map(|s| s.lines.iter().map(|l| l.text.clone())).collect::<Vec<_>>());
+    assert!(snapshot_text.iter().all(|text| !text.contains("99")));
+    let snapshot_request = ReviewRequest { identity: captured.inventory.identity.clone(), ..make_request() };
+    assert!(adapter.review_location(snapshot_request, file.path_id.clone()).is_err());
+    assert_eq!(index, fs::read(dir.path().join(".git/index")).unwrap()); assert_eq!(head, git(dir.path(), &["rev-parse", "HEAD"]));
+}
+
+#[test]
+fn snapshot_uses_frozen_pairs_for_staged_unstaged_and_bounded_original_lines() {
+    let (dir, adapter, _, _) = fixture();
+    fs::write(dir.path().join("config.json"), "{\"factor\":3}\n").unwrap(); git(dir.path(), &["add", "config.json"]);
+    fs::write(dir.path().join("config.json"), "{\"factor\":4}\n").unwrap();
+    for (range, left, right) in [(ReviewRange::Staged, "2", "3"), (ReviewRange::Unstaged, "3", "4")] {
+        let inv = adapter.review_inventory(range).unwrap(); let file = inv.files.iter().find(|f| f.path == "config.json").unwrap();
+        let captured = adapter.review_snapshot(ReviewRequest { range: inv.range.clone(), identity: inv.identity.clone(), path_ids: vec![file.path_id.clone()], context_paths: vec![] }, 96_000).unwrap();
+        assert!(captured.sources.iter().any(|s| s.side == "left" && s.lines.iter().any(|l| l.text.contains(left))));
+        assert!(captured.sources.iter().any(|s| s.side == "right" && s.lines.iter().any(|l| l.text.contains(right))));
+    }
+    let text = (0..600).map(|i| format!("export const row_{i} = {i};\n")).collect::<String>(); fs::write(dir.path().join("large.ts"), text).unwrap();
+    let inv = adapter.review_inventory(ReviewRange::Unstaged).unwrap(); let file = inv.files.iter().find(|f| f.path == "large.ts").unwrap();
+    let req = || ReviewRequest { range: inv.range.clone(), identity: inv.identity.clone(), path_ids: vec![file.path_id.clone()], context_paths: vec![] };
+    let all = adapter.review_snapshot(req(), 96_000).unwrap();
+    assert!(all.sources.iter().any(|s| s.lines.iter().any(|l| l.line == 600 && l.text.contains("row_599"))));
+    let limited = adapter.review_snapshot(req(), 1000).unwrap(); assert!(limited.used <= 1000); assert!(limited.truncated); assert!(limited.next_offset.is_none());
+    assert!(adapter.review_snapshot(ReviewRequest { path_ids: vec![URL_SAFE_NO_PAD.encode("../escape")], ..req() }, 1000).is_err());
+}
+#[test]
 fn paged_evidence_reaches_the_end_without_splitting_lines_or_writing() {
     let (dir, adapter, _, _) = fixture();
     let text = (0..600).map(|i| format!("export const football_{i} = {i};\n")).collect::<String>();

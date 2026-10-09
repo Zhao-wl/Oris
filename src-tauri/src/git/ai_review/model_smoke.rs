@@ -42,12 +42,28 @@ fn real_review_protocol_bridge() {
         let command = request["command"].as_str().unwrap(); let args = &request["args"];
         let value = match command {
             "review_inventory" => serde_json::to_value(adapter.review_inventory(serde_json::from_value(args["range"].clone()).unwrap()).unwrap()).unwrap(),
-            "review_context_page" => serde_json::to_value(adapter.review_context_page(serde_json::from_value(args["request"].clone()).unwrap(), args["offset"].as_u64().unwrap() as usize).unwrap()).unwrap(),
+            "review_snapshot" => serde_json::to_value(adapter.review_snapshot(serde_json::from_value(args["request"].clone()).unwrap(), args["maxBytes"].as_u64().unwrap() as usize).unwrap()).unwrap(),
+            "review_context_page" => match adapter.review_context_page(serde_json::from_value(args["request"].clone()).unwrap(), args["offset"].as_u64().unwrap() as usize) {
+                Ok(value) => serde_json::to_value(value).unwrap(),
+                Err(error) => json!({"bridgeError":error.to_string()}),
+            },
+            "restore_review_fixture" => { fs::write(dir.path().join("price.ts"), &bytes[0]).unwrap(); json!({"restored":true}) },
             "plan_ai_action" => {
                 let profile = AiProfile { id:"joint-review-smoke".into(), kind:"cli".into(),provider:"codex".into(),executable:std::env::var("ORIS_REVIEW_SMOKE_EXECUTABLE").unwrap_or_default(),base_url:"".into(),model:std::env::var("ORIS_REVIEW_SMOKE_MODEL").expect("set ORIS_REVIEW_SMOKE_MODEL") };
                 let prompt = format!("本轮用户输入：\n{}\n\nOris 当前上下文与可用操作（JSON）：\n{}", args["description"].as_str().unwrap(), args["context"]);
                 let system = action_system(args["systemPrompt"].as_str().unwrap(), true);
-                parse_json_output(&run_cli(&profile, dir.path(), &system, &prompt, &AtomicBool::new(false)).unwrap()).unwrap()
+                let edit = if std::env::var("ORIS_SNAPSHOT_EDIT").as_deref() == Ok("1") {
+                    let path = dir.path().join("price.ts");
+                    Some(std::thread::spawn(move || { std::thread::sleep(std::time::Duration::from_millis(100)); fs::write(path, "export function price(n: number) { return n + 99; }\n").unwrap(); }))
+                } else { None };
+                let response = parse_json_output(&run_cli(&profile, dir.path(), &system, &prompt, &AtomicBool::new(false)).unwrap()).unwrap();
+                if let Some(edit) = edit {
+                    edit.join().unwrap();
+                    assert_eq!(fs::read_to_string(dir.path().join("price.ts")).unwrap(), "export function price(n: number) { return n + 99; }\n");
+                    for (i, (p, _)) in base.iter().enumerate().skip(1) { assert_eq!(bytes[i], fs::read(dir.path().join(p)).unwrap()); }
+                    assert_eq!(index, fs::read(dir.path().join(".git/index")).unwrap()); assert_eq!(head, git(&["rev-parse", "HEAD"])); assert_eq!(refs, git(&["show-ref"]));
+                }
+                response
             },
             _ => panic!("unsupported read-only test command"),
         };
