@@ -273,7 +273,7 @@ function UpdatePage({ settings }: { settings: SettingsStore }) {
     <div className="settings-row">
       <label htmlFor="settings-update-auto">自动检查更新</label>
       <input id="settings-update-auto" type="checkbox" checked={autoCheck} onChange={(event) => settings.update("update", "autoCheck", event.target.checked)} />
-      <small>{mac ? "启动后与每 4 小时检查一次；有新版本时提示下载" : "启动后与每 4 小时检查一次；有新版本时在后台下载"}</small>
+      <small>启动后与每 4 小时检查一次；可原地更新的实例有新版本时在后台下载</small>
     </div>
     <div className="settings-row">
       <button type="button" disabled={["checking", "downloading", "installing"].includes(phase.kind)} onClick={() => void updater.check({ manual: true })}>检查更新</button>
@@ -283,7 +283,9 @@ function UpdatePage({ settings }: { settings: SettingsStore }) {
     {phase.kind === "failed" && <p className="settings-error" role="alert">{phase.message}</p>}
     {"info" in phase && phase.info?.notes && <pre className="update-notes">{phase.info.notes}</pre>}
     <p className="settings-note">{mac
-      ? "更新包来自 GitHub Releases。macOS 当前使用手动安装包；下载 DMG 后退出 Oris，将 Oris.app 拖入“应用程序”替换旧版。"
+      ? phase.kind === "manual"
+        ? "当前应用不在可更新的安装目录中。下载 DMG 后退出 Oris，将 Oris.app 拖入“应用程序”；之后支持后台下载和签名更新。"
+        : "更新包来自 GitHub Releases，安装前校验签名；应用位于系统或用户 Applications 目录时支持安装并自动重启。"
       : "更新包来自 GitHub Releases，安装前校验签名；安装时 Oris 会退出并在完成后自动重启。"}</p>
   </div>;
 }

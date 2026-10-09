@@ -10,8 +10,10 @@ mod reveal;
 mod snapshot_store;
 #[cfg(feature = "desktop")]
 mod updater;
-#[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
+#[cfg(test)]
 mod release_updates;
+#[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
+mod update_installation;
 #[cfg(any(test, feature = "desktop"))]
 mod watch;
 

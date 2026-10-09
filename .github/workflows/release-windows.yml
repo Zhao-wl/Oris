@@ -1,11 +1,11 @@
-name: Windows release
-run-name: Windows ${{ inputs.mode }} ${{ inputs.version }}
-
+# 保留原文件名，兼容 npm run release:windows 的触发入口。
+name: Desktop release
+run-name: Desktop ${{ inputs.mode }} ${{ inputs.version }}
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: check 只构建验证，publish 正式发布
+        description: check 构建并校验双平台，publish 正式发布
         type: choice
         options: [check, publish]
         default: check
@@ -15,85 +15,135 @@ on:
       notes:
         description: 正式发布说明
         type: string
-
 permissions:
-  contents: write
-
+  contents: read
 concurrency:
-  group: oris-windows-release
+  group: oris-desktop-release
   cancel-in-progress: false
-
+env:
+  RELEASE_MODE: ${{ inputs.mode }}
+  RELEASE_VERSION: ${{ inputs.version }}
+  RELEASE_NOTES: ${{ inputs.notes }}
 jobs:
-  release:
+  build:
     if: github.ref == 'refs/heads/main'
-    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows
+            runner: windows-2022
+          - platform: macos
+            runner: macos-14
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
-    defaults:
-      run:
-        shell: pwsh
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - name: 检查发布参数与签名配置
-        env:
-          MODE: ${{ inputs.mode }}
-          VERSION: ${{ inputs.version }}
-          NOTES: ${{ inputs.notes }}
-          SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          SIGNING_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: |
-          if ($env:MODE -eq 'publish') {
-            if ($env:VERSION -notmatch '^\d+\.\d+\.\d+$') { throw '版本号必须为 x.y.z' }
-            $current = (Get-Content package.json -Raw | ConvertFrom-Json).version
-            if ([version]$env:VERSION -le [version]$current) { throw "新版本必须大于 $current" }
-            if ([string]::IsNullOrWhiteSpace($env:NOTES)) { throw '正式发布必须提供更新说明' }
-            if (-not $env:SIGNING_KEY -or -not $env:SIGNING_PASSWORD) { throw '请配置原有更新签名私钥和口令 Secrets' }
-            if (git tag --list "v$env:VERSION") { throw '版本 tag 已存在' }
-          }
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
           cache: npm
-      - name: 配置 Rust MSVC 工具链与 Git 提交身份
+      - name: 准备统一版本与检查 Secrets
+        env:
+          SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          SIGNING_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -e "if (!process.env.SIGNING_KEY || !process.env.SIGNING_PASSWORD) throw Error('缺少更新签名 Secrets')"
+          node scripts/release/ci-release.mjs prepare
+      - name: Windows MSVC 工具链
+        if: matrix.platform == 'windows'
+        shell: pwsh
         run: |
           rustup toolchain install stable-x86_64-pc-windows-msvc --profile minimal
           if ($LASTEXITCODE -ne 0) { throw 'Rust 安装失败' }
           rustup default stable-x86_64-pc-windows-msvc
-          if ($LASTEXITCODE -ne 0) { throw 'Rust 工具链配置失败' }
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-      - name: 安装依赖并预取许可证所需的跨平台 Cargo 包
-        run: |
-          npm ci
-          if ($LASTEXITCODE -ne 0) { throw 'npm ci 失败' }
-          cargo fetch --locked --manifest-path src-tauri/Cargo.toml
-          if ($LASTEXITCODE -ne 0) { throw 'cargo fetch 失败' }
-      - name: 测试与无签名构建验证
-        if: inputs.mode == 'check'
-        run: |
-          npx vitest run --no-file-parallelism
-          if ($LASTEXITCODE -ne 0) { throw '测试失败' }
-          & ./scripts/build-release.ps1 -Bundle -Bundles nsis
-      - name: 签名构建与正式发布
-        if: inputs.mode == 'publish'
+          if ($LASTEXITCODE -ne 0) { throw 'Rust 配置失败' }
+      - name: macOS Apple Silicon 工具链
+        if: matrix.platform == 'macos'
+        run: rustup toolchain install stable --profile minimal --target aarch64-apple-darwin
+      - name: 安装依赖
+        run: npm ci
+      - name: 前端回归
+        run: npx vitest run --no-file-parallelism
+      - name: 旧 GUI 入口安全回归
+        run: npm run test:gui-safety
+      - name: 发布签名核验回归
+        run: npm run test:release
+      - name: Windows 签名构建和嵌入资源核验
+        if: matrix.platform == 'windows'
+        shell: pwsh
         env:
-          GH_TOKEN: ${{ github.token }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          RELEASE_VERSION: ${{ inputs.version }}
-          RELEASE_NOTES: ${{ inputs.notes }}
         run: |
-          $notesPath = Join-Path $env:RUNNER_TEMP 'oris-release-notes.md'
-          [IO.File]::WriteAllText($notesPath, $env:RELEASE_NOTES, [Text.UTF8Encoding]::new($false))
-          & ./scripts/publish-release.ps1 -Version $env:RELEASE_VERSION -NotesFile $notesPath
-      - name: 保存构建产物（check 产物仅供验证，不能用于自动更新）
+          cargo fetch --locked --manifest-path src-tauri/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { throw 'cargo fetch 失败' }
+          & ./scripts/build-release.ps1 -Bundle -Bundles nsis -UpdaterArtifacts
+      - name: macOS DMG 和自动更新包签名构建
+        if: matrix.platform == 'macos'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: '-'
+          MACOSX_DEPLOYMENT_TARGET: '14.0'
+        run: |
+          set -euo pipefail
+          cargo fetch --locked --manifest-path src-tauri/Cargo.toml
+          mkdir -p artifacts/ci-release
+          node scripts/release/third-party-licenses.mjs --md artifacts/ci-release/licenses.md --notices artifacts/ci-release/THIRD-PARTY-NOTICES.txt
+          node -e "require('fs').writeFileSync('artifacts/ci-release/macos-config.json', JSON.stringify({bundle:{createUpdaterArtifacts:true,macOS:{minimumSystemVersion:'14.0',signingIdentity:'-'},resources:{[process.cwd()+'/artifacts/ci-release/THIRD-PARTY-NOTICES.txt']:'THIRD-PARTY-NOTICES.txt'}}}))"
+          npm run tauri -- build --target aarch64-apple-darwin --features tauri/custom-protocol --bundles dmg --config artifacts/ci-release/macos-config.json
+          cargo run --manifest-path src-tauri/Cargo.toml --release --target aarch64-apple-darwin --example verify_release_entry --features tauri/custom-protocol
+      - name: 验证更新签名并收集产物
+        env:
+          BUILD_PLATFORM: ${{ matrix.platform }}
+        run: node scripts/release/ci-release.mjs collect "$BUILD_PLATFORM"
+        shell: bash
+      - name: 保存本轮产物
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: windows-${{ inputs.mode }}-${{ github.run_id }}
-          path: |
-            src-tauri/target/release/bundle/nsis/*.exe
-            src-tauri/target/release/bundle/nsis/*.sig
-            src-tauri/target/release/bundle/nsis/latest.json
+          name: desktop-${{ matrix.platform }}-${{ github.run_id }}
+          path: release-assets/${{ matrix.platform }}/*
           if-no-files-found: error
           retention-days: 14
+  publish:
+    if: inputs.mode == 'publish'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - name: 下载双平台产物
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh run download "$RUN_ID" -n "desktop-windows-$RUN_ID" -D release-assets/windows
+          gh run download "$RUN_ID" -n "desktop-macos-$RUN_ID" -D release-assets/macos
+      - name: 汇总核验后提交版本并统一发布
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          node scripts/release/ci-release.mjs prepare
+          node scripts/release/ci-release.mjs assemble
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
+          git commit -m "chore(release): v$RELEASE_VERSION"
+          git tag -a "v$RELEASE_VERSION" -m "Oris $RELEASE_VERSION"
+          git push --atomic origin HEAD:refs/heads/main "v$RELEASE_VERSION"
+          gh release create "v$RELEASE_VERSION" release-assets/published/* --verify-tag --draft --title "Oris $RELEASE_VERSION（Windows x64 / macOS Apple Silicon）" --notes-file release-assets/release-notes.md
+          gh release edit "v$RELEASE_VERSION" --draft=false --latest

@@ -84,7 +84,7 @@ it("closes on Escape and on overlay click", async () => {
   expect(onClose).toHaveBeenCalledTimes(2);
 });
 
-it("explains macOS manual updates and opens the detected release without claiming automatic installation", async () => {
+it("explains manual installation for a non-installed Mac copy and opens the download page", async () => {
   vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
   const openDownloadPage = vi.spyOn(updater, "openDownloadPage").mockResolvedValue();
   updater.store.set({ currentVersion: "0.8.2", checkedAt: 42, upToDate: false,
@@ -92,11 +92,23 @@ it("explains macOS manual updates and opens the detected release without claimin
   await render();
   await click(button("更新"));
   expect(host.textContent).toContain("发现新版本 0.8.3");
-  expect(host.textContent).toContain("有新版本时提示下载");
+  expect(host.textContent).toContain("可原地更新的实例有新版本时在后台下载");
   expect(host.textContent).toContain("下载 DMG 后退出 Oris");
   expect(host.textContent).not.toMatch(/当前不是安装版|安装前校验签名|完成后自动重启/);
   await click(button("打开下载页"));
   expect(openDownloadPage).toHaveBeenCalledOnce();
+});
+
+it("explains signed automatic updates for an installed Mac bundle", async () => {
+  vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
+  updater.store.set({ currentVersion: "0.9.0", checkedAt: 42, upToDate: false,
+    phase: { kind: "ready", info: { version: "0.9.1", notes: "更新", date: "2026-10-09" } } });
+  await render();
+  await click(button("更新"));
+  expect(host.textContent).toContain("重启以更新");
+  expect(host.textContent).toContain("安装前校验签名");
+  expect(host.textContent).toContain("Applications");
+  expect(host.textContent).not.toContain("下载 DMG 后退出 Oris");
 });
 
 it("keeps the Windows signed automatic update explanation", async () => {

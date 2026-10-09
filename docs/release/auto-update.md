@@ -1,6 +1,6 @@
 # 自动更新与发版
 
-Oris 在 Windows 上使用 Tauri 官方 `tauri-plugin-updater`，交互参考 VS Code：发现新版本后在后台下载，标题栏（「✦ AI」左侧）常驻显示「重启以更新」，点击后安装并重启。macOS 检查正式 DMG 版本并提供手动下载入口。
+Oris 在 Windows 上使用 Tauri 官方 `tauri-plugin-updater`，交互参考 VS Code：发现新版本后在后台下载，标题栏（「✦ AI」左侧）常驻显示「重启以更新」，点击后安装并重启。macOS 已接入同一签名更新清单，在 Applications 目录内支持后台下载、校验、安装和重启。
 
 ## 客户端行为
 
@@ -12,14 +12,14 @@ Oris 在 Windows 上使用 Tauri 官方 `tauri-plugin-updater`，交互参考 VS
 | 安装中 | `正在更新…` | Windows 以 NSIS passive 模式安装（只显示进度），完成后自动启动新版本 |
 | 失败 | `更新失败` | 悬停显示原因，点击重试对应阶段 |
 | 免安装版 | `新版本 x.y.z` | 当前 exe 旁没有 `uninstall.exe`（例如直接运行 `target\release\oris.exe`）时不能原地替换，点击打开 Release 页面 |
-| macOS 手动安装包 | `新版本 x.y.z` | 检查对应架构的正式 DMG，点击打开该版本 Release 页面后手动安装 |
+| macOS 应用包 | `重启以更新` | 系统或用户 Applications 目录内的正式应用可更新；DMG、App Translocation、开发目录仍提供手动入口 |
 
 - 检查时机：启动 5 秒后一次，之后每 4 小时一次；可在「设置 → 更新」关闭自动检查，或手动「检查更新」。开发构建（debug）不做原地安装。
 - Windows 更新源：`https://github.com/Zhao-wl/Oris/releases/latest/download/latest.json`。网络请求和签名校验都在 Rust 端完成，前端 CSP 不变。
 - Windows 只有**通过安装包安装**的实例能自动更新；第一个带更新功能的版本需要手动安装一次。
-- macOS 当前仅发布手动 DMG，不使用 Windows 的 `latest.json`。客户端通过 GitHub Releases API 检查发布列表，按语义版本选择高于当前版本、已经上传对应架构（`aarch64` / `x86_64` 或 `universal`）DMG 的最高正式版本，跳过草稿与预发布。即使 macOS Release 没有被标为 GitHub `latest`，也能被发现。
-- macOS 有新版本时，标题栏与设置页提供下载入口，打开检查到的具体版本页面。下载 DMG 后退出 Oris，将 Oris.app 拖入“应用程序”替换旧版；不后台下载或原地安装，不宣称有 Tauri 更新签名校验。
-- GitHub API 限流、网络或响应格式异常仍视为检查失败，不显示“已是最新”。macOS 检查每页 100 条，最多 10 页；达到上限仍未读完时报告未完成检查。
+- Windows 和 macOS 共用签名更新源。清单必须同时包含 windows-x86_64 与 darwin-aarch64；Mac 更新包为 Oris.app.tar.gz 与对应 .sig，DMG 用于首次手动安装。
+- Mac 正式应用必须位于 /Applications 或用户的 ~/Applications。DMG、App Translocation 和开发构建不允许原地更新；安装权限不足时报告失败，不提权。
+- 已安装 0.8.4 及更早 Mac 用户须手动安装一次支持自动更新的版本，之后即可使用后台签名更新。旧版仍可从该版本 DMG 手动升级。
 
 ## 签名密钥
 
@@ -35,46 +35,28 @@ Oris 在 Windows 上使用 Tauri 官方 `tauri-plugin-updater`，交互参考 VS
 
 ## 发版
 
-### 在 Mac 上触发 Windows 构建和发布
+### 触发 Windows 与 macOS 统一构建和发布
 
-本机安装 GitHub CLI 并登录后，使用远端 `main` 上的 `.github/workflows/release-windows.yml`：
-
-```bash
-# 测试、无 GUI 嵌入入口验证和 NSIS 打包，不修改版本、不创建 Release，不需要私钥
-npm run release:windows -- --check
-
-# 正式发布：填写比远端 main 更新的版本，并提供对应版本的说明文件
-npm run release:windows -- 0.8.5 --notes-file docs/release/v0.8.5.md
-
-# 查看运行，再用实际 run ID 等待结果
-gh run list -R Zhao-wl/Oris --workflow release-windows.yml --limit 5
-gh run watch <run-id> -R Zhao-wl/Oris --exit-status
-```
-
-工作流固定使用 GitHub 的 `windows-2022`、Node 22 与 Rust stable MSVC，在 PowerShell 中构建。正式发布仅接受 `main`，串行执行，运行期间推送若遇非快进会失败，不强推。本机尚未推送的代码不会进入构建。`check` 附件保留 14 天，只供验证，不带更新签名，不能替代正式更新包。
-
-首次正式发布前，仓库必须配置以下 Actions Secrets，沿用此前正式发布的私钥和口令：
-
-- `TAURI_SIGNING_PRIVATE_KEY`
-- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
-
-可从保存原有密钥的 Windows PowerShell 中上传（需安装并登录 `gh`）：
-
-```powershell
-Get-Content -Raw "$env:USERPROFILE\.tauri\oris-updater-release.key" | gh secret set TAURI_SIGNING_PRIVATE_KEY -R Zhao-wl/Oris
-Get-Content -Raw "$env:USERPROFILE\.tauri\oris-updater-release.key.password" | gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD -R Zhao-wl/Oris
-```
-
-也可安全复制原有两个文件到 Mac 的 `~/.tauri/` 后上传：
+使用同一个 `.github/workflows/release-windows.yml`（保留旧文件名），同时运行 Windows x64 和 macOS Apple Silicon 构建。Windows 使用 PowerShell 与 MSVC；Mac 使用 macos-14、aarch64-apple-darwin、ad-hoc 应用签名，最低系统版本为 14。
 
 ```bash
-gh secret set TAURI_SIGNING_PRIVATE_KEY -R Zhao-wl/Oris < ~/.tauri/oris-updater-release.key
-gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD -R Zhao-wl/Oris < ~/.tauri/oris-updater-release.key.password
+# 两平台签名构建与核验，不修改 main、标签或 Release
+npm run release:desktop -- --check
+# 两平台全部成功后统一发布
+npm run release:desktop -- 0.9.0 --notes-file docs/release/v0.9.0.md
 ```
 
-`gh` 会在本机加密 Secret 再上传。不要把密钥提交到 Git 或聊天中。工作流仅在正式发布步骤注入密钥，不将私钥写入构建目录、日志或附件。配置工作流需要 CLI 的 `workflow` 授权范围；正常触发运行使用已有仓库权限。
+`release:windows` 是兼容入口，现在同样触发双平台。两种模式都需要仓库 Secrets：`TAURI_SIGNING_PRIVATE_KEY` 与 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`，沿用原有密钥；Mac 不另建更新密钥。密钥只注入检查和构建步骤，不进入附件或日志。
 
-### 在 Windows 本机发版
+构建从本轮固定的 main 提交开始，在各 runner 上准备相同版本文件，执行回归、构建安装包和更新包、核验嵌入资源及密码学签名。任一平台失败则不提交版本、不推标签、不发布。产物附件保留 14 天；check 产物虽然带签名，但未创建公开更新入口，仅用于验证。
+
+发布任务等待两平台成功，重新核验更新包签名，汇总双平台 latest.json、安装包、更新包、签名及 SHA256SUMS.txt，再提交版本、原子推送 main 与标签，创建并上传草稿 Release，最后公开并设为 latest。main 若已有新提交，非快进推送失败，不强推。若标签已推送后上传失败，应核对并恢复原标签的草稿发布，不重新生成同版本标签。
+
+Mac 不需要 Apple 证书即可 ad-hoc 打包，但仍可能需要用户在系统安全设置允许首次安装。Tauri 更新签名与 Apple Developer ID/公证、Windows Authenticode 相互独立。
+
+可以从 GitHub Actions 页面选择 check/publish，或使用以上命令。尚未推送的本机修改不会进入构建。
+
+### Windows 本机单平台工具（不用于双平台正式发布）
 
 在 PowerShell 中执行（Git Bash 下 windres 会失败）：
 

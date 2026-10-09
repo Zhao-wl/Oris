@@ -1,4 +1,4 @@
-// 从 Mac / Windows 发起远端 Windows 构建；所有子进程均使用参数数组。
+// 从 Mac / Windows 发起双平台构建；保留原文件名以兼容既有调用。
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const repo = 'Zhao-wl/Oris';
 const args = process.argv.slice(2);
-const usage = '用法：npm run release:windows -- <x.y.z> --notes-file <文件>\n验证：npm run release:windows -- --check';
+const usage = '用法：npm run release:desktop -- <x.y.z> --notes-file <文件>\n验证：npm run release:desktop -- --check';
 function gh(params) {
   const result = spawnSync('gh', params, { cwd: root, encoding: 'utf8' });
   if (result.error) throw new Error(`无法运行 gh，请先安装 GitHub CLI：${result.error.message}`);
@@ -42,7 +42,7 @@ try {
     }
     gh(['workflow', 'run', 'release-windows.yml', '--repo', repo, '--ref', 'main',
       '-f', `mode=${check ? 'check' : 'publish'}`, '-f', `version=${version}`, '-f', `notes=${notes}`]);
-    console.log(`已触发 Windows ${check ? '构建验证（不发布）' : `正式发布 ${version}`}。`);
+    console.log(`已触发 Windows / macOS ${check ? '构建验证（不发布）' : `正式发布 ${version}`}。`);
     console.log(`进度：https://github.com/${repo}/actions/workflows/release-windows.yml`);
     console.log(`终端查看：gh run list -R ${repo} --workflow release-windows.yml --limit 5`);
     console.log('工作流只构建远端 main，本机未推送的修改不会进入发布。');

@@ -12,7 +12,9 @@
     "test:branch-switch-ui": "node scripts/verify-branch-switch-ui.mjs",
     "tauri": "tauri",
     "package": "powershell -NoProfile -File scripts/build-release.ps1",
-    "release:windows": "node scripts/release/dispatch-windows.mjs"
+    "release:windows": "node scripts/release/dispatch-windows.mjs",
+    "release:desktop": "node scripts/release/dispatch-windows.mjs",
+    "test:release": "node --test scripts/release/ci-release.test.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "6.8.1",
