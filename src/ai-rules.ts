@@ -74,7 +74,7 @@ export function resolveAiRoute(ai: AiSettings, input: string, override: string |
   const profile = ai.profiles.find(p => p.id === profileId);
   if (!profile || !profile.model.trim() || (profile.kind === "api" && !profile.hasKey)) throw new Error("路由目标未配置或不可用，请在设置 → AI → 连接与模型／规则路由中完成配置");
   return { commandId: c?.id ?? null, commandTag: c?.tag ?? null, ruleId: r?.id ?? "default", ruleName: c ? `${c.name}规则` : "默认规则",
-    profile: { ...profile }, mode: c?.mode ?? "action", contexts: c ? [...c.contexts] : ["status", "diff", "refs", "settings"], prompt: c?.prompt ?? "", overridden: override !== null };
+    profile: { ...profile }, mode: c?.id === "review" ? "answer" : c?.mode ?? "action", contexts: c ? [...c.contexts] : ["status", "diff", "refs", "settings"], prompt: c?.prompt ?? "", overridden: override !== null };
 }
 export function resolveStagedProfile(ai: AiSettings): AiProfile {
   const profileId = ai.ruleSet.stagedMessageProfileId ?? ai.ruleSet.defaultProfileId ?? ai.activeId;
@@ -84,6 +84,7 @@ export function resolveStagedProfile(ai: AiSettings): AiProfile {
 }
 export interface AiConversationMessage { role: "user" | "assistant" | "operation" | "tool"; content: string }
 export interface AiTurn {
+  reviewRequest?: import("./ai-review/model").ReviewRequest;
   route: AiResolvedRoute; history: AiConversationMessage[]; historyTruncated: boolean;
   repoId: string | null; branch: string | null; systemPrompt: string; commitPrompt: string;
   /** 主会话追加式传输前缀；一次性指令不携带此字段。 */

@@ -26,6 +26,7 @@ import type { HunkHeaderAction, HunkHeaders } from "./DiffViewer";
 import { operationLabels, optimisticMove, pathIdsFor, refsKinds, selectionAfterOperation, stashKinds, switchKinds, undoCommitText, unsupportedInProgress, writeBlockedReason } from "./operations-model";
 import SettingsDialog from "./SettingsDialog";
 import AiCommitDialog from "./AiCommitDialog";
+import { reviewContext, reviewInventory, reviewLocation, parseReview, locationMatches, REVIEW_CONTRACT, type ReviewResult, type ReviewFinding, type ReviewSource } from "./ai-review/model";
 import { matchesAiShortcut } from "./ai-shortcut";
 import { cancelAiGeneration, generateAiCommit, planAiAction, type AiPlan } from "./ai-api";
 import { aiActionCatalogue, aiScope, parseAiAction, type AiAction } from "./ai-actions";
@@ -119,6 +120,8 @@ export default function App() {
   const gitSetting = useSettings(settings, (value) => value.git.executable);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
+  const [reviewReading, setReviewReading] = useState<ReviewSource | null>(null);
+  const pendingReviewLine = useRef<{ source: ReviewSource; line: number } | null>(null);
   const aiPlannedRevision = useRef<{ repoId: string | null; revision: string | null } | null>(null);
   useEffect(() => { setAiOpen(false); }, [workspaceState.activeRepoId]);
   const aiShortcut = useSettings(settings, (value) => value.ai.shortcut);
@@ -299,6 +302,7 @@ export default function App() {
   };
 
   const selectFile = useCallback(async (nextSnapshot: RepositorySnapshot, file: FileChange, effectiveGitExecutable: string, restoreHunk = 0, automatic = false, requestedVersions?: [ConflictVersion, ConflictVersion]) => {
+    setReviewReading(null); pendingReviewLine.current = null;
     readingPath.current = file.displayPath;
     const prior = currentRead.current;
     requestedVersions ??= prior.repo === nextSnapshot.repo.repoId && prior.selected === file.pathId ? prior.versions : ["stage2", "stage3"];
@@ -770,6 +774,16 @@ export default function App() {
     } finally { if (repositoryGate.current.accepts(requestId)) { setRefreshing(false); repositoryGate.current.finish(requestId); } }
   };
   const setCompareScope = async (nextScope: CompareScope) => {
+    const wasReview = !!reviewReading;
+    setReviewReading(null); pendingReviewLine.current = null;
+    if (wasReview) {
+      currentRead.current = { ...currentRead.current, pair: null }; setPair(null); setDiffDocument(null);
+      if (nextScope === scope && snapshot) {
+        const file = snapshot.files.find(f => f.pathId === selectedPathId) ?? snapshot.files[0];
+        if (file) await selectFile(snapshot, file, activeProject?.gitExecutable ?? "");
+        return;
+      }
+    }
     if (!activeProject || nextScope === scope) return;
     const anchor = { ...activeProject.anchor, scope: nextScope, selectedPathId: null, hunk: 0 };
     historyRef.current = null; setHistoryReading(null);
@@ -929,8 +943,8 @@ export default function App() {
   };
   const historyFile = useMemo<FileChange | undefined>(() => historyReading ? { pathId: historyReading.file.pathId, displayPath: historyReading.file.path, oldPathId: historyReading.file.oldPathId, oldDisplayPath: historyReading.file.oldPath, status: historyStatus(historyReading.file.status), additions: null, deletions: null } : undefined, [historyReading]);
   const localSelectedFile = snapshot?.files.find((file) => file.pathId === selectedPathId);
-  const selectedFile = historyFile ?? localSelectedFile;
-  const lineContext = useMemo<LineHistoryContext | null>(() => pair && selectedFile ? { pair, file: selectedFile, history: historyReading, head: snapshot?.branchInfo?.oid ?? null } : null, [pair, selectedFile, historyReading, snapshot?.branchInfo?.oid]);
+  const selectedFile = reviewReading ? { pathId: reviewReading.file.pathId, displayPath: reviewReading.file.path, oldPathId: reviewReading.file.oldPathId, oldDisplayPath: reviewReading.file.oldPath, status: reviewReading.file.status === "untracked" ? "untracked" as const : historyStatus(reviewReading.file.status as import("./history-api").ChangeStatus), additions: null, deletions: null } : historyFile ?? localSelectedFile;
+  const lineContext = useMemo<LineHistoryContext | null>(() => pair && selectedFile && !reviewReading ? { pair, file: selectedFile, history: historyReading, head: snapshot?.branchInfo?.oid ?? null } : null, [pair, selectedFile, historyReading, reviewReading, snapshot?.branchInfo?.oid]);
   const onLineSelect = useCallback((value: DiffLineSelection) => {
     if (lineContext) setLineSelection({ key: lineHistoryKey(lineContext), value });
   }, [lineContext]);
@@ -964,7 +978,7 @@ export default function App() {
   const selectedIndex = visibleFiles.findIndex((file) => file.pathId === selectedPathId);
   const readable = !!pair && pair.left.text !== null && pair.right.text !== null && (pair.left.encoding !== "missing" || pair.right.encoding !== "missing");
   const availableText = !readable && pair ? [pair.left, pair.right].find(side => side.text !== null && side.encoding !== "missing") : undefined;
-  const endpoints = historyReading ? [historyReading.left.label, historyReading.right.label] : selectedFile?.status === "conflicted" ? versions.map(version => versionLabels[version]) : scopeLabels[scope].endpoints;
+  const endpoints = reviewReading ? [pair?.left.endpoint ?? "", pair?.right.endpoint ?? ""] : historyReading ? [historyReading.left.label, historyReading.right.label] : selectedFile?.status === "conflicted" ? versions.map(version => versionLabels[version]) : scopeLabels[scope].endpoints;
   const presentation = useMemo<DiffPresentation>(() => selectedFile && pair
     ? resolveDiffPresentation(selectedFile.status, pair.left, pair.right)
     : { kind: "compare" }, [selectedFile, pair]);
@@ -1434,17 +1448,48 @@ export default function App() {
     return () => { window.clearTimeout(timer); void unlisten.then((dispose) => dispose()); };
   }, [opStore, updateOps]);
   const leaveHistory = () => {
+    if (reviewReading) { setReviewReading(null); pendingReviewLine.current = null; currentRead.current = { ...currentRead.current, pair: null }; setPair(null); setDiffDocument(null); }
     if (!historyRef.current) return;
     historyRef.current = null; setHistoryReading(null);
     // 历史版本的内容不参与本地文件的“同一文件”判断。
     currentRead.current = { ...currentRead.current, pair: null }; setPair(null); setDiffDocument(null);
   };
+  const locateReview = async (result: ReviewResult, finding: ReviewFinding) => {
+    const inv = result.context.inventory, source = finding.source;
+    if (!source || finding.invalid) throw new Error("该问题没有有效引用");
+    const repoId = currentRead.current.repo;
+    if (repoId !== inv.repoId) throw new Error("项目已切换，不能定位旧审查结果");
+    const next = await reviewInventory(repoId, inv.range);
+    if (next.identity !== inv.identity) throw new Error("审查范围或仓库状态已变化，请重新审查");
+    const request = { range: inv.range, identity: inv.identity, pathIds: source.supplemental ? [] : [source.file.pathId], contextPaths: source.supplemental ? [source.file.path] : [] };
+    const requestId = newRequestId();
+    contentGate.current.activate(requestId);
+    const target = await reviewLocation(repoId, request, source.file.pathId);
+    if (currentRead.current.repo !== repoId || !contentGate.current.accepts(requestId)) throw new Error("定位请求已失效");
+    if (!locationMatches(source, target, repoId) || !target[source.side].text?.split("\n")[finding.line - 1]?.includes(finding.evidence)) throw new Error("引用内容已变化，不能定位旧问题");
+    const computed = await calculateDiff(requestId, [target.left.contentId, target.right.contentId], editorText(target.left.text ?? ""), editorText(target.right.text ?? ""), "keep");
+    if (currentRead.current.repo !== repoId || !contentGate.current.accepts(requestId)) throw new Error("定位请求已失效");
+    historyRef.current = null; setHistoryReading(null);
+    setReviewReading(source); pendingReviewLine.current = { source, line: finding.line };
+    setMode("split"); setWhitespace("keep");
+    currentRead.current = { ...currentRead.current, pair: target };
+    readingPath.current = source.file.path;
+    setPair(target); setDiffDocument(computed); setError(null); setNotice(null); setLoading(false);
+    contentGate.current.finish(requestId);
+  };
+  useEffect(() => {
+    const target = pendingReviewLine.current;
+    if (!target || !pair || !diffDocument || !locationMatches(target.source, pair, pair.repoId)) return;
+    const frame = requestAnimationFrame(() => { viewer.current?.goToLine(target.source.side, target.line); pendingReviewLine.current = null; });
+    return () => cancelAnimationFrame(frame);
+  }, [pair, diffDocument, mode]);
   const userSelect = (file: FileChange) => {
     leaveHistory();
     if (snapshot) void selectFile(snapshot, file, activeProject?.gitExecutable ?? "");
   };
   /** 在主阅读器中打开历史版本（两端为固定的提交 OID）；本地阅读位置保留，可随时返回。 */
   const openHistoryFile = async (open: HistoryFileOpen) => {
+    setReviewReading(null); pendingReviewLine.current = null;
     const repoId = currentRead.current.repo;
     if (!repoId) return;
     const returnTo = historyRef.current?.returnTo ?? { pathId: currentRead.current.selected, hunk: activeProject?.anchor.hunk ?? 0 };
@@ -1488,6 +1533,21 @@ export default function App() {
   };
   const planAction = async (description: string, requestId: string, turn: AiTurn): Promise<AiAction> => {
     assertAiTurn(turn);
+    if (turn.route.commandId === "review") {
+      if (!turn.repoId || !turn.reviewRequest) throw new Error("请选择审查范围和变化文件");
+      const context = await reviewContext(turn.repoId, turn.reviewRequest);
+      assertAiTurn(turn);
+      const response = await planAiAction(turn.route.profile, description, { review: context, capability: { answer: true } },
+        [turn.systemPrompt, turn.route.prompt, REVIEW_CONTRACT].join("\n\n"), requestId, true);
+      assertAiTurn(turn);
+      const answer = parseAiAction(response);
+      if (answer.kind !== "answer") throw new Error("审查只允许回答，已阻止模型提出的操作");
+      // 模型运行期间，ref、index、工作区或补充文件变化都使结果失效。
+      const fresh = await reviewContext(turn.repoId, turn.reviewRequest);
+      assertAiTurn(turn);
+      if (fresh.inventory.identity !== context.inventory.identity || context.sources.some(s => !fresh.sources.some(next => next.id === s.id && next.contentId === s.contentId))) throw new Error("仓库内容已变化，请刷新审查范围后重新发送");
+      return { ...answer, review: parseReview((response as { review?: unknown }).review, context) };
+    }
     const startedAt = performance.now();
     const repoId = currentRead.current.repo;
     const needs = new Set(turn.route.contexts);
@@ -1688,7 +1748,7 @@ export default function App() {
     }, () => {});
     return () => { cancelled = true; };
   }, [whitespace, pair, diffDocument]);
-  const handlePositionChange = useCallback((current: number, total: number) => { setPosition({ current, total }); if (current > 0) updateAnchor({ hunk: current - 1 }); }, [updateAnchor]);
+  const handlePositionChange = useCallback((current: number, total: number) => { setPosition({ current, total }); if (current > 0 && !reviewReading) updateAnchor({ hunk: current - 1 }); }, [updateAnchor, reviewReading]);
   const handleSplitLayoutChange = useCallback((ratio: number, leftWidth: number) => { setSplitLayout((current) => Math.abs(current.ratio - ratio) < .0001 && current.leftWidth === leftWidth ? current : { ratio, leftWidth }); }, []);
 
   // 单字节显示的差异文档：与普通文本相同的规则计算（空白规则、DiffCache），内容标识加前缀区分。
@@ -1709,8 +1769,8 @@ export default function App() {
   const special = pair && !imageDisplay && !latin1Active ? describeSpecial(pair, [endpoints[0], endpoints[1]]) : null;
 
   // ---------- 块操作（V2-05） ----------
-  const hunkScope = !historyReading && (scope === "unstaged" || scope === "staged") ? scope : null;
-  const hunkBlock = pair && !historyReading && !imageDisplay
+  const hunkScope = !historyReading && !reviewReading && (scope === "unstaged" || scope === "staged") ? scope : null;
+  const hunkBlock = pair && !historyReading && !reviewReading && !imageDisplay
     ? fileLevelBlock({ scope, history: false, whitespace, readable: !!viewTexts, partial: !!availableText && !latin1Active, single: presentation.kind === "single", conflicted: selectedFile?.status === "conflicted", pair })
     : null;
   const hunkKey = pair && hunkScope && activeRepoId ? hunkMapKey(activeRepoId, hunkScope, pair) : null;
@@ -1818,10 +1878,10 @@ export default function App() {
       })}<p>这些目录是独立的 Git 仓库，不作为未跟踪文件显示。不需要这条说明时，可以把它们写入 .gitignore。</p></details>}<footer>{selectedCount > 1 ? <div className="batch-bar"><span>已选 {selectedCount} 个 · 右键批量操作</span><button type="button" className="quiet" onClick={() => setMultiSelection(new Set())}>清除</button></div>
         : snapshot ? `${visibleFiles.length} / ${snapshot.files.length} 个文件 · ${scopeLabels[scope].short}` : error ? "项目读取失败" : loading ? "正在读取项目状态" : "未知项目状态"}</footer></aside>
       <div className="workspace-resizer" role="separator" aria-label="调整文件侧栏宽度" aria-orientation="vertical" aria-valuemin={SIDEBAR_MIN_WIDTH} aria-valuenow={sidebarWidth} tabIndex={0} onPointerDown={beginSidebarResize} onPointerMove={moveSidebarResize} onPointerUp={endSidebarResize} onPointerCancel={endSidebarResize} onKeyDown={(event) => { if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return; event.preventDefault(); setSidebarWidth((width) => clampSidebarWidth(width + (event.key === "ArrowLeft" ? -16 : 16))); }}/>
-      <section className="editor">{inProgressNotice && <div className="op-banner" role="status">{inProgressNotice}</div>}{mergeInProgress && <div className="op-banner merge-banner" role="status"><strong>合并进行中 · {mergeConflicts} 个冲突</strong><span>{mergeConflicts ? "冲突只读查看；在外部工具中解决后，在文件列表中“标记已解决”" : "冲突已全部标记解决，可以完成合并"}</span><span className="spacer"/>{mergeConflicts > 0 && <button type="button" onClick={() => void viewConflicts()}>查看冲突</button>}{mergeConflicts === 0 && <button type="button" className="primary" disabled={!!writeBlocked} title={writeBlocked ?? undefined} onClick={() => setMergeCommitOpen(true)}>完成合并…</button>}<button type="button" className="danger" disabled={!!writeBlocked} title={writeBlocked ?? undefined} onClick={() => void abortMerge()}>中止合并…</button></div>}{detachedOid && <div className="op-banner detached-banner" role="status"><span>分离 HEAD：当前检出提交 {detachedOid.slice(0, 8)}，不在任何分支上；在此提交会不属于任何分支。</span><button type="button" disabled={!!writeBlocked} title={writeBlocked ?? undefined} onClick={() => { loadRefsView(); setNewBranch({ initial: { ref: "HEAD", label: `当前 HEAD ${detachedOid.slice(0, 8)}` } }); }}>从这里新建分支…</button></div>}<div className="tabbar">{selectedFile ? <strong className="tab-path"><PathText path={selectedFile.displayPath}/></strong> : <strong>Diff</strong>}{selectedFile?.oldDisplayPath && <PathText path={selectedFile.oldDisplayPath} prefix="← " className="rename-path"/>}{!historyReading && localSelectedFile?.gitlink && (() => { const member = submoduleMember(localSelectedFile.displayPath); const record = member?.repoId ? workspaceState.projects.find((project) => project.repo.repoId === member.repoId) : undefined; return record ? <button type="button" className="quiet" title={`切换到子仓库 ${member!.name}`} onClick={() => void switchProject(record)}>切换到该仓库</button> : null; })()}{historyReading && <span className="history-badge" title="主阅读器正在显示历史版本：两端为固定的提交 OID，只读">历史 · {historyReading.source}</span>}<span className="spacer"/>{historyReading ? <button type="button" onClick={returnToLocal} title="回到进入历史之前的本地文件与阅读位置">← 返回本地变化</button> : localSelectedFile && localSelectedFile.status !== "untracked" && <button type="button" className="quiet" onClick={() => openFileHistory(localSelectedFile)} title="在底部“历史”页查看该文件的提交历史（从 HEAD 开始）">文件历史</button>}{selectedFile?.contentUnchanged && <span className="unchanged-note" title={contentUnchangedLabels[selectedFile.contentUnchanged].detail}>{contentUnchangedLabels[selectedFile.contentUnchanged].short}：Git 规范化后内容一致</span>}{loading && contentPending.current && <button onClick={() => { const cancelled = newRequestId(); contentGate.current.activate(cancelled); contentGate.current.finish(cancelled); contentPending.current = false; setLoading(false); setPair(null); setDiffDocument(null); void cancelContentRead().catch(() => {}); }}>取消读取</button>}{diffDocument && <span>{diffDocument.hunks.length} 处差异 · Worker {diffDocument.elapsedMs.toFixed(1)} ms</span>}</div>{viewTexts && <div className="toolbar"><button onClick={() => viewer.current?.navigate(-1)} disabled={!position.total} aria-label="上一处差异" title="上一处差异（Shift+F7）">↑</button><button onClick={() => viewer.current?.navigate(1)} disabled={!position.total} aria-label="下一处差异" title="下一处差异（F7）">↓</button><span className="diff-position" aria-live="polite">{position.current} / {position.total}</span><select value={singleFile ? "single" : mode} disabled={singleFile} onChange={(event) => { const value = event.target.value; if (value === "split" || value === "unified") setMode(value); }} aria-label="Diff 布局">{diffModes.includes("single") && <option value="single">单文件视图</option>}{diffModes.includes("split") && <option value="split">并排视图</option>}{diffModes.includes("unified") && <option value="unified">统一视图</option>}</select><select value={highlight} disabled={singleFile} onChange={(event) => setHighlight(event.target.value as "words" | "lines")} aria-label="高亮粒度"><option value="words">按词高亮</option><option value="lines">按行高亮</option></select><ToggleButton label="折叠上下文" pressed={collapsed} disabled={singleFile} onClick={() => setCollapsed((value) => !value)}/><ToggleButton label="自动换行" pressed={wrap} onClick={() => setWrap((value) => !value)}/><ToggleButton label="对齐变化" pressed={alignChanges} disabled={singleFile} onClick={() => setAlignChanges((value) => !value)}/><select value={whitespace} disabled={singleFile} onChange={(event) => setWhitespace(event.target.value as WhitespaceMode)} aria-label="空白规则" title="空白规则只影响显示，不修改仓库"><option value="keep">保留空白</option><option value="ignore">忽略空白</option></select>{collapsed && !singleFile && <button type="button" onClick={() => viewer.current?.expandAll()} title="展开当前文件中全部折叠的未变化内容">全部展开</button>}<ToggleButton label="行提交信息" pressed={lineInfoEnabled} onClick={() => setLineInfoEnabled(value => { localStorage.setItem("oris.lineHistory.v1", value ? "off" : "on"); return !value; })}/><ToggleButton label="专注" pressed={focusMode} title={`专注 diff：只保留阅读器（${shortcut("Ctrl+Shift+Enter")} 切换，Esc 退出）`} onClick={() => setFocusMode((value) => !value)}/>{latin1Active && <button type="button" onClick={() => setLatin1Keys((current) => { const next = new Set(current); next.delete(latin1Key); return next; })}>退出单字节显示</button>}{ignoredWhitespace !== null && <span className="filter-badge" role="status" title="只影响显示；差异计数、高亮与导航按同一规则计算">已忽略空白 · 略去 {ignoredWhitespace} 处</span>}</div>}
+      <section className="editor">{inProgressNotice && <div className="op-banner" role="status">{inProgressNotice}</div>}{mergeInProgress && <div className="op-banner merge-banner" role="status"><strong>合并进行中 · {mergeConflicts} 个冲突</strong><span>{mergeConflicts ? "冲突只读查看；在外部工具中解决后，在文件列表中“标记已解决”" : "冲突已全部标记解决，可以完成合并"}</span><span className="spacer"/>{mergeConflicts > 0 && <button type="button" onClick={() => void viewConflicts()}>查看冲突</button>}{mergeConflicts === 0 && <button type="button" className="primary" disabled={!!writeBlocked} title={writeBlocked ?? undefined} onClick={() => setMergeCommitOpen(true)}>完成合并…</button>}<button type="button" className="danger" disabled={!!writeBlocked} title={writeBlocked ?? undefined} onClick={() => void abortMerge()}>中止合并…</button></div>}{detachedOid && <div className="op-banner detached-banner" role="status"><span>分离 HEAD：当前检出提交 {detachedOid.slice(0, 8)}，不在任何分支上；在此提交会不属于任何分支。</span><button type="button" disabled={!!writeBlocked} title={writeBlocked ?? undefined} onClick={() => { loadRefsView(); setNewBranch({ initial: { ref: "HEAD", label: `当前 HEAD ${detachedOid.slice(0, 8)}` } }); }}>从这里新建分支…</button></div>}<div className="tabbar">{selectedFile ? <strong className="tab-path"><PathText path={selectedFile.displayPath}/></strong> : <strong>Diff</strong>}{selectedFile?.oldDisplayPath && <PathText path={selectedFile.oldDisplayPath} prefix="← " className="rename-path"/>}{!historyReading && localSelectedFile?.gitlink && (() => { const member = submoduleMember(localSelectedFile.displayPath); const record = member?.repoId ? workspaceState.projects.find((project) => project.repo.repoId === member.repoId) : undefined; return record ? <button type="button" className="quiet" title={`切换到子仓库 ${member!.name}`} onClick={() => void switchProject(record)}>切换到该仓库</button> : null; })()}{reviewReading && <span className="history-badge">审查定位 · {reviewReading.endpoint} · 只读</span>}{historyReading && <span className="history-badge" title="主阅读器正在显示历史版本：两端为固定的提交 OID，只读">历史 · {historyReading.source}</span>}<span className="spacer"/>{historyReading || reviewReading ? <button type="button" onClick={returnToLocal} title="回到进入历史之前的本地文件与阅读位置">← 返回本地变化</button> : localSelectedFile && localSelectedFile.status !== "untracked" && <button type="button" className="quiet" onClick={() => openFileHistory(localSelectedFile)} title="在底部“历史”页查看该文件的提交历史（从 HEAD 开始）">文件历史</button>}{selectedFile?.contentUnchanged && <span className="unchanged-note" title={contentUnchangedLabels[selectedFile.contentUnchanged].detail}>{contentUnchangedLabels[selectedFile.contentUnchanged].short}：Git 规范化后内容一致</span>}{loading && contentPending.current && <button onClick={() => { const cancelled = newRequestId(); contentGate.current.activate(cancelled); contentGate.current.finish(cancelled); contentPending.current = false; setLoading(false); setPair(null); setDiffDocument(null); void cancelContentRead().catch(() => {}); }}>取消读取</button>}{diffDocument && <span>{diffDocument.hunks.length} 处差异 · Worker {diffDocument.elapsedMs.toFixed(1)} ms</span>}</div>{viewTexts && <div className="toolbar"><button onClick={() => viewer.current?.navigate(-1)} disabled={!position.total} aria-label="上一处差异" title="上一处差异（Shift+F7）">↑</button><button onClick={() => viewer.current?.navigate(1)} disabled={!position.total} aria-label="下一处差异" title="下一处差异（F7）">↓</button><span className="diff-position" aria-live="polite">{position.current} / {position.total}</span><select value={singleFile ? "single" : mode} disabled={singleFile} onChange={(event) => { const value = event.target.value; if (value === "split" || value === "unified") setMode(value); }} aria-label="Diff 布局">{diffModes.includes("single") && <option value="single">单文件视图</option>}{diffModes.includes("split") && <option value="split">并排视图</option>}{diffModes.includes("unified") && <option value="unified">统一视图</option>}</select><select value={highlight} disabled={singleFile} onChange={(event) => setHighlight(event.target.value as "words" | "lines")} aria-label="高亮粒度"><option value="words">按词高亮</option><option value="lines">按行高亮</option></select><ToggleButton label="折叠上下文" pressed={collapsed} disabled={singleFile} onClick={() => setCollapsed((value) => !value)}/><ToggleButton label="自动换行" pressed={wrap} onClick={() => setWrap((value) => !value)}/><ToggleButton label="对齐变化" pressed={alignChanges} disabled={singleFile} onClick={() => setAlignChanges((value) => !value)}/><select value={whitespace} disabled={singleFile} onChange={(event) => setWhitespace(event.target.value as WhitespaceMode)} aria-label="空白规则" title="空白规则只影响显示，不修改仓库"><option value="keep">保留空白</option><option value="ignore">忽略空白</option></select>{collapsed && !singleFile && <button type="button" onClick={() => viewer.current?.expandAll()} title="展开当前文件中全部折叠的未变化内容">全部展开</button>}<ToggleButton label="行提交信息" pressed={lineInfoEnabled} onClick={() => setLineInfoEnabled(value => { localStorage.setItem("oris.lineHistory.v1", value ? "off" : "on"); return !value; })}/><ToggleButton label="专注" pressed={focusMode} title={`专注 diff：只保留阅读器（${shortcut("Ctrl+Shift+Enter")} 切换，Esc 退出）`} onClick={() => setFocusMode((value) => !value)}/>{latin1Active && <button type="button" onClick={() => setLatin1Keys((current) => { const next = new Set(current); next.delete(latin1Key); return next; })}>退出单字节显示</button>}{ignoredWhitespace !== null && <span className="filter-badge" role="status" title="只影响显示；差异计数、高亮与导航按同一规则计算">已忽略空白 · 略去 {ignoredWhitespace} 处</span>}</div>}
         {selectedFile?.status === "conflicted" && <div className="conflict-toolbar"><strong>未合并 index · 只读版本查看（替代普通范围比较）</strong>{versions.map((value, index) => <select key={index} aria-label={index === 0 ? "冲突左版本" : "冲突右版本"} value={value} onChange={event => { const next: [ConflictVersion, ConflictVersion] = [...versions]; next[index] = event.target.value as ConflictVersion; if (snapshot) void selectFile(snapshot, selectedFile, activeProject?.gitExecutable ?? "", 0, false, next); }}>{Object.entries(versionLabels).map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select>)}{pair && <div className="conflict-identities">{[pair.left, pair.right].map((side,index) => <div key={index}>{endpoints[index]} · {side.encoding === "missing" ? "缺失 / 删除" : side.details?.sizeKnown === false ? "字节数未知" : `${side.byteLength} 字节`} · mode {side.details?.mode ?? "—"} · OID {side.details?.oid ?? "—"}{side.details?.reason && <p>{side.details.reason}</p>}</div>)}</div>}</div>}
         {selectedFile && <div className={singleFile ? "endpoints single" : mode === "split" ? "endpoints split" : "endpoints"} style={{ "--diff-header-left-width": `${splitLayout.leftWidth}px` } as CSSProperties}>{singleFile ? <span className="single-endpoint"><span>▣ {singleEndpointLabel}</span>{singleTextSide && <span className="encoding">{sideLabel(singleTextSide)}</span>}</span> : <><span className="left-endpoint"><span>▣ {pair?.left.endpoint === "emptyTree" ? "空树" : endpoints[0]}</span>{pair && !imageDisplay && <span className="encoding">{sideLabel(pair.left)}</span>}</span>{mode === "split" && <span className="endpoint-gutter" aria-hidden="true"/>}<span className="right-endpoint"><span>▣ {endpoints[1]}</span>{pair && !imageDisplay && <span className="encoding">{sideLabel(pair.right)}</span>}</span></>}</div>}
-        <div className="content">{notice && <SelectionNotice message={notice} onDismiss={() => setNotice(null)}/>}{loading && !diffDocument && <div className="state loading" role="status"><span className="loading-spinner" aria-hidden="true"/><span>正在读取真实仓库…</span></div>}{error && <div className="state error"><strong>无法显示差异</strong><p>{error}</p></div>}{!loading && !error && pair?.left.encoding === "missing" && pair.right.encoding === "missing" && <div className="state">所选两端均缺失，没有可比较内容。</div>}{!loading && !error && pair?.degradation && !special && !latin1Active && <div className="state warning"><strong>内容已降级</strong><p>{pair.degradation}</p></div>}{!loading && !error && special && <SpecialFileView description={special} compact={!!availableText} action={latin1Available ? { label: "按单字节（Latin-1）显示", onClick: () => setLatin1Keys((current) => new Set([...current, latin1Key])) } : undefined}/>}{!loading && !error && readingNotices.length > 0 && <div className="reading-notice" role="status">{readingNotices.map((text, index) => <p key={index}>{text}</p>)}</div>}{!loading && !error && pair && (pair.left.details?.image || pair.right.details?.image || /\.(png|jpe?g|webp)$/i.test(pair.displayPath)) && <ImageViewer key={`${pair.repoId}:${pair.pathId}:${pair.left.contentId}:${pair.right.contentId}`} left={pair.left} right={pair.right} labels={endpoints}/>} {!loading && !error && availableText && pair && !latin1Active && <><div className="partial-notice">仅显示可用文本端；另一侧不可用，跨侧差异计数与导航不可计算。{special ? "" : pair.degradation}</div><DiffViewer readingKey={`${pair.repoId}:${pair.pathId}:${availableText.endpoint}`} presentation={{kind:"compare"}} left={editorText(availableText.text!)} right={editorText(availableText.text!)} document={{requestId:pair.requestId,contentIds:[availableText.contentId,availableText.contentId],changes:[],hunks:[],elapsedMs:0}} mode="unified" highlight={highlight} collapsed={false} wrap={wrap} alignChanges={false} onPositionChange={() => {}} onSplitLayoutChange={() => {}}/></>} {!error && viewTexts && pair && viewDocument && <DiffViewer readingKey={historyReading ? `${pair.repoId}:history:${historyReading.key}` : `${pair.repoId}:${scope}:${pair.pathId}`} presentation={presentation} ref={viewer} left={viewTexts[0]} right={viewTexts[1]} document={viewDocument} hunkHeaders={hunkHeaders} onLineSelect={onLineSelect} selectedLine={lineContext && lineSelection?.key === lineHistoryKey(lineContext) ? lineSelection.value : null} mode={mode} highlight={highlight} collapsed={collapsed} wrap={wrap} alignChanges={alignChanges} onPositionChange={handlePositionChange} onSplitLayoutChange={handleSplitLayoutChange}/>} {!loading && !error && !pair && <div className="state">{snapshot && !snapshot.files.length ? "当前比较范围没有变化" : "选择一个变化文件开始阅读"}</div>}</div>{lineInfoEnabled && lineContext && viewTexts && !latin1Active && !error && <LineHistoryBar context={lineContext} selection={lineSelection} onJump={jumpFromLine}/>}<footer className="diff-footer"><span>蓝：修改　绿：新增　灰：删除</span><span className="spacer"/>{snapshot && <span>Git {snapshot.git.version} · revision {snapshot.revision.slice(0, 8)}</span>}</footer></section>
+        <div className="content">{notice && <SelectionNotice message={notice} onDismiss={() => setNotice(null)}/>}{loading && !diffDocument && <div className="state loading" role="status"><span className="loading-spinner" aria-hidden="true"/><span>正在读取真实仓库…</span></div>}{error && <div className="state error"><strong>无法显示差异</strong><p>{error}</p></div>}{!loading && !error && pair?.left.encoding === "missing" && pair.right.encoding === "missing" && <div className="state">所选两端均缺失，没有可比较内容。</div>}{!loading && !error && pair?.degradation && !special && !latin1Active && <div className="state warning"><strong>内容已降级</strong><p>{pair.degradation}</p></div>}{!loading && !error && special && <SpecialFileView description={special} compact={!!availableText} action={latin1Available ? { label: "按单字节（Latin-1）显示", onClick: () => setLatin1Keys((current) => new Set([...current, latin1Key])) } : undefined}/>}{!loading && !error && readingNotices.length > 0 && <div className="reading-notice" role="status">{readingNotices.map((text, index) => <p key={index}>{text}</p>)}</div>}{!loading && !error && pair && (pair.left.details?.image || pair.right.details?.image || /\.(png|jpe?g|webp)$/i.test(pair.displayPath)) && <ImageViewer key={`${pair.repoId}:${pair.pathId}:${pair.left.contentId}:${pair.right.contentId}`} left={pair.left} right={pair.right} labels={endpoints}/>} {!loading && !error && availableText && pair && !latin1Active && <><div className="partial-notice">仅显示可用文本端；另一侧不可用，跨侧差异计数与导航不可计算。{special ? "" : pair.degradation}</div><DiffViewer ref={reviewReading ? viewer : undefined} readingKey={`${pair.repoId}:${pair.pathId}:${availableText.endpoint}`} presentation={{kind:"compare"}} left={editorText(availableText.text!)} right={editorText(availableText.text!)} document={{requestId:pair.requestId,contentIds:[availableText.contentId,availableText.contentId],changes:[],hunks:[],elapsedMs:0}} mode="unified" highlight={highlight} collapsed={false} wrap={wrap} alignChanges={false} onPositionChange={() => {}} onSplitLayoutChange={() => {}}/></>} {!error && viewTexts && pair && viewDocument && <DiffViewer readingKey={reviewReading ? `${pair.repoId}:review:${pair.revision}:${pair.pathId}` : historyReading ? `${pair.repoId}:history:${historyReading.key}` : `${pair.repoId}:${scope}:${pair.pathId}`} presentation={presentation} ref={viewer} left={viewTexts[0]} right={viewTexts[1]} document={viewDocument} hunkHeaders={hunkHeaders} onLineSelect={onLineSelect} selectedLine={lineContext && lineSelection?.key === lineHistoryKey(lineContext) ? lineSelection.value : null} mode={mode} highlight={highlight} collapsed={collapsed} wrap={wrap} alignChanges={alignChanges} onPositionChange={handlePositionChange} onSplitLayoutChange={handleSplitLayoutChange}/>} {!loading && !error && !pair && <div className="state">{snapshot && !snapshot.files.length ? "当前比较范围没有变化" : "选择一个变化文件开始阅读"}</div>}</div>{lineInfoEnabled && lineContext && viewTexts && !latin1Active && !error && <LineHistoryBar context={lineContext} selection={lineSelection} onJump={jumpFromLine}/>}<footer className="diff-footer"><span>蓝：修改　绿：新增　灰：删除</span><span className="spacer"/>{snapshot && <span>Git {snapshot.git.version} · revision {snapshot.revision.slice(0, 8)}</span>}</footer></section>
     </section>
     <GitPanel repoId={backendRepoId} tab={gitTab} onTab={setGitTab} stagedCount={stagedCount} headOid={runtime?.snapshot?.branchInfo?.oid ?? null} headKey={`${snapshot?.branchInfo?.oid ?? ""}:${snapshot?.branchInfo?.upstream ?? ""}:${snapshot?.branchInfo?.ahead ?? ""}:${snapshot?.branchInfo?.behind ?? ""}`}
       mergeInProgress={!!snapshot?.inProgress?.merge} blockedReason={writeBlocked && !repoOps?.running ? writeBlocked : null} running={repoOps?.running ?? null} lines={repoOps?.lines ?? []} last={repoOps?.last ?? null} lastCommit={repoOps?.lastCommit ?? null} backups={repoOps?.backups ?? []}
@@ -1845,7 +1905,7 @@ export default function App() {
     {switchState && <SwitchDialog request={switchState} onChoose={(choice) => { switchState.resolve(choice); setSwitchState(null); }} onCancel={() => { switchState.resolve(null); setSwitchState(null); }}/>}
     {confirmState && <ConfirmDialog request={confirmState} onConfirm={() => { confirmState.resolve(true); setConfirmState(null); }} onCancel={() => { confirmState.resolve(false); setConfirmState(null); }}/>}
     {settingsOpen && <SettingsDialog settings={settings} onClose={() => setSettingsOpen(false)} gitInUse={snapshot ? { executable: snapshot.git.executable, version: snapshot.git.version, minimumVersion: snapshot.git.minimumVersion } : null}/>}
-    {aiOpen && <AiCommitDialog settings={settings} project={snapshot && activeRepoId ? { repoId: activeRepoId, name: snapshot.repo.displayName, branch: snapshot.repo.branch } : null} onClose={() => setAiOpen(false)} onGenerate={aiPlan} onPlanAction={planAction} onExecuteAction={async (action, turn) => {
+    {aiOpen && <AiCommitDialog settings={settings} onLocateReview={locateReview} project={snapshot && activeRepoId ? { repoId: activeRepoId, name: snapshot.repo.displayName, branch: snapshot.repo.branch } : null} onClose={() => setAiOpen(false)} onGenerate={aiPlan} onPlanAction={planAction} onExecuteAction={async (action, turn) => {
       assertAiTurn(turn);
       if (turn.route.mode !== "action") throw new Error("当前指令只允许回答");
       if (!await executeAction(action)) throw new Error("操作未完成，请查看操作输出");

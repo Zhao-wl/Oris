@@ -71,3 +71,7 @@ it("migrates only customized legacy prompts and preserves deliberate deletions",
   loaded.ai.ruleSet.commands = []; loaded.ai.ruleSet.routes = [];
   expect(loadSettings({ getItem: key => key === SETTINGS_KEY ? JSON.stringify(loaded) : null }, registry).settings.ai.ruleSet.commands).toEqual([]);
 });
+it("keeps built-in review read-only even when imported settings request action mode", () => {
+  const config = ai(); config.ruleSet.commands.find(c => c.id === "review")!.mode = "action";
+  expect(resolveAiRoute(config, "@审查 检查").mode).toBe("answer");
+});

@@ -5,18 +5,23 @@ import { activePromptTag, configuredPromptTags, insertPromptTag, matchingPromptT
 import { conversationContext, resolveAiRoute, hasAiCommand, sessionEvent, type AiConversationMessage, type AiResolvedRoute, type AiTurn } from "./ai-rules";
 import { useSettings, type SettingsStore } from "./settings";
 import AiMessage from "./AiMessage";
+import ReviewSelector from "./ai-review/ReviewSelector";
+import ReviewResults from "./ai-review/ReviewResults";
+import { reviewText, type ReviewRequest, type ReviewResult, type ReviewFinding } from "./ai-review/model";
 interface Props {
   settings: SettingsStore;
   project: { repoId: string; name: string; branch: string | null } | null;
   onClose(): void;
+  onLocateReview?(result: ReviewResult, finding: ReviewFinding): Promise<void>;
   onGenerate(description: string, requestId: string, turn: AiTurn): Promise<AiPlan>;
   onPlanAction(description: string, requestId: string, turn: AiTurn): Promise<AiAction>;
   onExecuteAction(action: AiAction, turn: AiTurn): Promise<string>;
   onCancelGeneration(requestId: string): Promise<void>;
   onCommit(plan: AiPlan, turn: AiTurn): Promise<string>;
 }
-interface Message extends AiConversationMessage { id: string; route?: AiResolvedRoute }
-export default function AiCommitDialog({ settings, project, onClose, onGenerate, onPlanAction, onExecuteAction, onCancelGeneration, onCommit }: Props) {
+interface Message extends AiConversationMessage { id: string; route?: AiResolvedRoute; review?: ReviewResult }
+export default function AiCommitDialog({ settings, project, onClose, onGenerate, onPlanAction, onExecuteAction, onCancelGeneration, onCommit, onLocateReview }: Props) {
+  const [reviewRequest, setReviewRequest] = useState<ReviewRequest>();
   const ai = useSettings(settings, v => v.ai), boundProject = useRef(project).current;
   const [description, setDescription] = useState(""), [messages, setMessages] = useState<Message[]>([]);
   const [caret, setCaret] = useState(0), [menuDismissed, setMenuDismissed] = useState(false), [activeTagIndex, setActiveTagIndex] = useState(0), [composing, setComposing] = useState(false);
@@ -61,8 +66,8 @@ export default function AiCommitDialog({ settings, project, onClose, onGenerate,
     setDescription(next.text); setCaret(next.caret); setMenuDismissed(true); setActiveTagIndex(0);
     queueMicrotask(() => { input.current?.focus(); input.current?.setSelectionRange(next.caret, next.caret); });
   };
-  const append = (role: Message["role"], content: string, route?: AiResolvedRoute) => {
-    setMessages(v => [...v, { id: crypto.randomUUID(), role, content, route }]);
+  const append = (role: Message["role"], content: string, route?: AiResolvedRoute, review?: ReviewResult) => {
+    setMessages(v => [...v, { id: crypto.randomUUID(), role, content, route, review }]);
     record(sessionEvent(role, route?.commandId && role !== "user" ? JSON.stringify({ command: `@${route.commandTag}`, rule: route.ruleName, model: route.profile.model, configuration: route.profile.name, result: content }) : content));
   };
   const dismiss = () => { closed.current = true; epoch.current++; if (pendingRequest.current) void onCancelGeneration(pendingRequest.current).catch(() => {}); onClose(); };
@@ -88,8 +93,11 @@ export default function AiCommitDialog({ settings, project, onClose, onGenerate,
       route = command.commandId ? command : session.route;
       primary.current = session; setSessionStarted(true);
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); return; }
+    if (route.commandId === "review" && (!reviewRequest || !boundProject)) { setError("请选择审查范围和变化文件，读取范围后再发送"); return; }
+    if (route.commandId === "review") route = { ...route, mode: "answer" };
     const turn: AiTurn = { route, ...conversationContext(messages.map(({ role, content }) => ({ role, content }))), repoId: boundProject?.repoId ?? null, branch: boundProject?.branch ?? null,
-      systemPrompt: route.commandId ? snapshot.prompts.commandCenter : primary.current!.systemPrompt, commitPrompt: route.commandId ? snapshot.prompts.describedCommit : primary.current!.commitPrompt };
+      systemPrompt: route.commandId ? snapshot.prompts.commandCenter : primary.current!.systemPrompt, commitPrompt: route.commandId ? snapshot.prompts.describedCommit : primary.current!.commitPrompt,
+      reviewRequest: route.commandId === "review" ? reviewRequest : undefined };
     const text = description.trim(), requestId = crypto.randomUUID(), generation = ++epoch.current;
     const valid = () => !closed.current && generation === epoch.current;
     busy.current = true; pendingRequest.current = requestId; setRunningRoute(route); setPhase("generating"); setError(""); setContextTrimmed(route.commandId ? turn.historyTruncated : transcriptTrimmed.current); nearBottom.current = true; append("user", text, route);
@@ -100,7 +108,7 @@ export default function AiCommitDialog({ settings, project, onClose, onGenerate,
       if (!valid()) return;
       pendingRequest.current = null;
       if (turn.requestTranscript) record(turn.requestTranscript);
-      if (action.kind === "answer") { append(route.commandId ? "tool" : "assistant", action.message, route); return; }
+      if (action.kind === "answer") { append(route.commandId ? "tool" : "assistant", action.review ? reviewText(action.review) : action.message, route, action.review); return; }
       if (route.mode === "answer") throw new Error("当前指令只允许回答，已阻止模型提出的应用操作");
       append(route.commandId ? "tool" : "assistant", action.summary, route);
       let outcome: string;
@@ -125,9 +133,10 @@ export default function AiCommitDialog({ settings, project, onClose, onGenerate,
         <small>{resolved?.commandId ? `一次性调用 @${resolved.commandTag} → ${resolved.ruleName} → ${resolved.profile.name} · ${resolved.profile.model} · ${resolved.mode === "answer" ? "仅回答" : "允许应用操作"}` : resolved ? "普通对话使用主模型，指令回复不切换主模型。" : routeError}</small>
         {modelPicker && <div className="ai-model-picker"><label>会话主模型<select aria-label="会话主模型" value={mainProfileId ?? "__route"} disabled={phase !== "idle" || sessionStarted} onChange={e => setMainProfileId(e.target.value === "__route" ? null : e.target.value)}><option value="__route">使用默认路由模型</option>{ai.profiles.map(p => <option key={p.id} value={p.id}>{p.name} · {p.model || "未选择模型"}</option>)}</select></label><small>{sessionStarted ? "本会话的主模型已固定，更换模型请重新打开窗口。" : "首次发送后固定主模型与系统提示词。@指令按各自路由独立调用。"}</small></div>}
       </section>
+      {resolved?.commandId === "review" && <ReviewSelector repoId={boundProject?.repoId ?? null} disabled={phase !== "idle" || projectChanged} onChange={setReviewRequest}/>}
       <div className="ai-conversation-messages" ref={history} role="log" aria-label="本次对话消息" aria-live="polite" onScroll={e => { const el = e.currentTarget; nearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60; }}>
         {!messages.length && <p className="ai-conversation-empty">输入任务开始对话，可用 @ 选择指令。</p>}
-        {messages.map(m => <article key={m.id} className={`ai-chat-message ${m.role}${m.role === "tool" ? " assistant" : ""}`}><div className="ai-chat-byline"><strong>{m.role === "user" ? "你" : m.role === "assistant" ? "主模型" : m.role === "tool" ? "指令结果" : "应用结果"}</strong>{m.route && <small>{m.route.ruleName} · {m.route.profile.name} · {m.route.profile.model}{m.route.overridden ? " · 手动覆盖" : ""}</small>}<button aria-label={`复制${m.role === "user" ? "输入" : "回复"}`} onClick={() => copy(m.content)}>复制</button></div><AiMessage text={m.content}/></article>)}
+        {messages.map(m => <article key={m.id} className={`ai-chat-message ${m.role}${m.role === "tool" ? " assistant" : ""}`}><div className="ai-chat-byline"><strong>{m.role === "user" ? "你" : m.role === "assistant" ? "主模型" : m.role === "tool" ? "指令结果" : "应用结果"}</strong>{m.route && <small>{m.route.ruleName} · {m.route.profile.name} · {m.route.profile.model}{m.route.overridden ? " · 手动覆盖" : ""}</small>}<button aria-label={`复制${m.role === "user" ? "输入" : "回复"}`} onClick={() => copy(m.content)}>复制</button></div>{m.review ? <ReviewResults result={m.review} onLocate={onLocateReview ? (result, finding) => { void onLocateReview(result, finding).then(() => { if (!closed.current) dismiss(); }, e => { if (!closed.current) setError(e instanceof Error ? e.message : String(e)); }); } : undefined}/> : <AiMessage text={m.content}/>}</article>)}
         {phase !== "idle" && <div className="ai-input-progress" role="status"><span className="ai-spinner"/>{phase === "generating" ? "AI 正在处理…" : "应用正在执行…"}</div>}
       </div>
       {projectChanged && <p className="settings-warning" role="status">项目或分支已切换，本会话不能继续操作，请重新打开。</p>}
