@@ -1,12 +1,18 @@
-# Oris 发行说明（macOS v0.8.3 / Windows v0.8.2）
+# Oris 发行说明（v0.8.4）
 
-macOS 最新手动安装包：**[v0.8.3（Apple Silicon）已公开发布](https://github.com/Zhao-wl/Oris/releases/tag/v0.8.3)**，公开时间为 2026-10-08 23:13（北京时间），tag 指向 `7c906f8`。本次修复应用包内 Codex CLI 漏检，支持 macOS 14 及以上；提供 DMG、校验和及验证记录，使用 ad-hoc 签名，未进行 Developer ID 签名 / Apple 公证，也未提供 macOS 自动更新签名。更新与核验见 [0.8.3 更新日志](v0.8.3.md) 和 [收尾记录](../validation/v0.8.3-release-closeout.md)。当前源码版本为 0.8.3；Windows 自动更新入口仍保留 0.8.2，下文的 Windows 发布信息继续适用。
+本次发布：**[v0.8.4（Windows x64 / macOS Apple Silicon）已公开发布](https://github.com/Zhao-wl/Oris/releases/tag/v0.8.4)**，tag 指向 `61a5dca`。macOS 包于 2026-10-09 06:03（北京时间）公开；本轮于同日补齐 Windows NSIS 安装包、更新签名与 `latest.json`，并将该 Release 设为 latest。已安装的 Windows 用户可通过应用内更新升级至 0.8.4。更新内容见 [0.8.4 更新日志](v0.8.4.md)，Windows 测试、产物摘要与签名核验见 [发布收尾记录](../validation/v0.8.4-release-closeout.md)。Windows 尚无 Authenticode 代码签名；安装 / 卸载、实际自动更新安装、GUI 和真实焦点切换未在本轮复测。
 
-本次发布：**[v0.8.2（Windows x64）已公开发布](https://github.com/Zhao-wl/Oris/releases/tag/v0.8.2)**，公开时间为 2026-10-08 19:28（北京时间），tag 指向 `12c2db1`。更新内容见 [0.8.2 更新日志](v0.8.2.md)，测试、产物哈希与签名核验见 [0.8.2 发布收尾记录](../validation/v0.8.2-release-closeout.md)。安装包、签名和自动更新清单均已上传。NSIS 安装包具备自动更新签名，尚无 Windows Authenticode 代码签名；macOS 签名 / 公证、安装后的最终版本复测、真实 Windows 前后台焦点切换及 AI 真实模型兼容性仍未完成验证。06 整体不因此标记为全部验收通过；历史验收见 [RC 验收结果](../validation/v1-06-rc-results.md)，安装 / 卸载此前已由用户自测。
+macOS 0.8.4 修复点击“检查更新”时的平台缺失错误，包含 0.8.3 的应用包内 Codex CLI 检测修复。支持 macOS 14 及以上、Apple Silicon；DMG、校验和与原有验证记录保持不变。macOS 使用手动安装包和 ad-hoc 签名，未进行 Developer ID 签名 / Apple 公证，未提供 macOS 自动更新签名；用户需下载 DMG 后替换“应用程序”中的 Oris.app。0.8.3 的历史更新与核验见 [更新日志](v0.8.3.md) 和 [收尾记录](../validation/v0.8.3-release-closeout.md)。
+
+历史发布：**[v0.8.2（Windows x64）](https://github.com/Zhao-wl/Oris/releases/tag/v0.8.2)** 于 2026-10-08 19:28（北京时间）公开，tag 指向 `12c2db1`。更新内容见 [0.8.2 更新日志](v0.8.2.md)，测试、产物哈希与签名核验见 [0.8.2 发布收尾记录](../validation/v0.8.2-release-closeout.md)。06 整体不因此标记为全部验收通过；历史验收见 [RC 验收结果](../validation/v1-06-rc-results.md)，安装 / 卸载此前已由用户自测。
 
 历史发布：v0.8.1 于 2026-10-08 15:50（北京时间）公开，tag 指向 `48a1712`，更新与核验见 [0.8.1 更新日志](v0.8.1.md) 和 [收尾记录](../validation/v0.8.1-release-closeout.md)。v0.8.0 于 2026-10-08 14:49（北京时间）公开，tag 指向 `e4e41f8`，更新与产物核验见 [0.8.0 更新日志](v0.8.0.md) 和 [发布收尾记录](../validation/v0.8.0-release-closeout.md)。v0.7.0 于 2026-10-08 10:29（北京时间）重新公开，tag 指向 `5280875`，更新与产物核验见 [0.7.0 更新日志](v0.7.0.md) 和 [发布收尾记录](../validation/v0.7.0-release-closeout.md)。v0.6.0 于 2026-09-30 03:42 UTC 发布（tag `9f2bba7`），v0.5.0 于同日 01:19 UTC 发布（tag `8dc620b`），均附 NSIS 安装包与更新签名。
 
-版本：本次发布版本为 0.8.2，在 0.8.1 基础上增加 diff 行提交信息及历史联动。发布流程同步 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock` 与 `tauri.conf.json`。此前长链 lc5 / lc4 中显示为 0.6.0、0.5.0、0.4.1 的测试构建并非对应的已发布构建，其 SHA-256 与来源见 [RC 验收结果](../validation/v1-06-rc-results.md)。已安装用户可通过应用内更新升级至 0.8.2。
+版本：当前五个版本文件中的根包均为 0.8.4，本轮 Windows 构建直接使用既有发布标签，未另行改版本或移动标签。此前长链 lc5 / lc4 中显示为 0.6.0、0.5.0、0.4.1 的测试构建并非对应的已发布构建，其 SHA-256 与来源见 [RC 验收结果](../validation/v1-06-rc-results.md)。
+
+## v0.8.4：Windows 补齐与 macOS 更新检查修复
+
+详见 [0.8.4 更新日志](v0.8.4.md)：Windows 发布同版本签名安装包并同步自动更新入口；macOS 按芯片架构独立检查 GitHub 正式 DMG，提供对应版本的手动下载入口。
 
 ## v0.8.2：相对 v0.8.1 的变化
 
@@ -68,8 +74,8 @@ macOS 最新手动安装包：**[v0.8.3（Apple Silicon）已公开发布](https
 
 | 平台 | 架构 | 安装包 | 状态 |
 | --- | --- | --- | --- |
-| Windows 11 | x64 | NSIS 安装程序（`Oris_0.8.2_x64-setup.exe`） | 已公开发布；具备自动更新签名，尚无 Authenticode 代码签名 |
-| macOS 14 及以上 | Apple Silicon（arm64，M1 起） | DMG | 本轮未构建；用户按 [macOS 交接清单](macos-checklist.md) 构建与复测 |
+| Windows 11 | x64 | NSIS 安装程序（`Oris_0.8.4_x64-setup.exe`） | 已公开发布；具备自动更新签名，尚无 Authenticode 代码签名 |
+| macOS 14 及以上 | Apple Silicon（arm64，M1 起） | DMG（`Oris_0.8.4_aarch64.dmg`） | 已公开发布手动安装包；ad-hoc 签名，无 Developer ID 签名或 Apple 公证 |
 
 不提供 Intel Mac、Universal、Windows ARM64 原生包。
 
