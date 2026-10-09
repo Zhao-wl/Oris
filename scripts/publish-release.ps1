@@ -111,11 +111,13 @@ try {
   if ($NotesFile) { $Notes = [IO.File]::ReadAllText((Resolve-Path $NotesFile)) }
   if (-not $Notes) { $Notes = "Oris $Version" }
 
-  if (-not (Test-Path $KeyPath)) { throw "未找到签名私钥 $KeyPath，请先运行 -InitSigningKey" }
+  if (-not $env:TAURI_SIGNING_PRIVATE_KEY -and -not (Test-Path $KeyPath)) { throw "未找到签名私钥 $KeyPath，请先运行 -InitSigningKey" }
   $savedKey = $env:TAURI_SIGNING_PRIVATE_KEY
   $savedPassword = $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD
-  $env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content -Raw $KeyPath).Trim()
+  # Actions 直接从 Secrets 注入私钥，不落盘；本地发版继续读取原有密钥文件。
+  if (-not $env:TAURI_SIGNING_PRIVATE_KEY) { $env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content -Raw $KeyPath).Trim() }
   if (-not $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) {
+    if ($env:CI -and -not (Test-Path $passwordPath)) { throw 'CI 中必须设置 TAURI_SIGNING_PRIVATE_KEY_PASSWORD，禁止交互读取口令' }
     $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = if (Test-Path $passwordPath) { [IO.File]::ReadAllText($passwordPath).Trim() } else { Read-Password '私钥口令' }
   }
 

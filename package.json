@@ -11,7 +11,8 @@
     "test:gui-safety": "node --test scripts/task02-safety.test.mjs",
     "test:branch-switch-ui": "node scripts/verify-branch-switch-ui.mjs",
     "tauri": "tauri",
-    "package": "powershell -NoProfile -File scripts/build-release.ps1"
+    "package": "powershell -NoProfile -File scripts/build-release.ps1",
+    "release:windows": "node scripts/release/dispatch-windows.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "6.8.1",

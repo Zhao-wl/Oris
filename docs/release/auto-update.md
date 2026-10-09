@@ -35,6 +35,47 @@ Oris 在 Windows 上使用 Tauri 官方 `tauri-plugin-updater`，交互参考 VS
 
 ## 发版
 
+### 在 Mac 上触发 Windows 构建和发布
+
+本机安装 GitHub CLI 并登录后，使用远端 `main` 上的 `.github/workflows/release-windows.yml`：
+
+```bash
+# 测试、无 GUI 嵌入入口验证和 NSIS 打包，不修改版本、不创建 Release，不需要私钥
+npm run release:windows -- --check
+
+# 正式发布：填写比远端 main 更新的版本，并提供对应版本的说明文件
+npm run release:windows -- 0.8.5 --notes-file docs/release/v0.8.5.md
+
+# 查看运行，再用实际 run ID 等待结果
+gh run list -R Zhao-wl/Oris --workflow release-windows.yml --limit 5
+gh run watch <run-id> -R Zhao-wl/Oris --exit-status
+```
+
+工作流固定使用 GitHub 的 `windows-2022`、Node 22 与 Rust stable MSVC，在 PowerShell 中构建。正式发布仅接受 `main`，串行执行，运行期间推送若遇非快进会失败，不强推。本机尚未推送的代码不会进入构建。`check` 附件保留 14 天，只供验证，不带更新签名，不能替代正式更新包。
+
+首次正式发布前，仓库必须配置以下 Actions Secrets，沿用此前正式发布的私钥和口令：
+
+- `TAURI_SIGNING_PRIVATE_KEY`
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+
+可从保存原有密钥的 Windows PowerShell 中上传（需安装并登录 `gh`）：
+
+```powershell
+Get-Content -Raw "$env:USERPROFILE\.tauri\oris-updater-release.key" | gh secret set TAURI_SIGNING_PRIVATE_KEY -R Zhao-wl/Oris
+Get-Content -Raw "$env:USERPROFILE\.tauri\oris-updater-release.key.password" | gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD -R Zhao-wl/Oris
+```
+
+也可安全复制原有两个文件到 Mac 的 `~/.tauri/` 后上传：
+
+```bash
+gh secret set TAURI_SIGNING_PRIVATE_KEY -R Zhao-wl/Oris < ~/.tauri/oris-updater-release.key
+gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD -R Zhao-wl/Oris < ~/.tauri/oris-updater-release.key.password
+```
+
+`gh` 会在本机加密 Secret 再上传。不要把密钥提交到 Git 或聊天中。工作流仅在正式发布步骤注入密钥，不将私钥写入构建目录、日志或附件。配置工作流需要 CLI 的 `workflow` 授权范围；正常触发运行使用已有仓库权限。
+
+### 在 Windows 本机发版
+
 在 PowerShell 中执行（Git Bash 下 windres 会失败）：
 
 ```powershell
