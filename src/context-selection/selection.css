@@ -28,7 +28,7 @@
 .cs-date-popover label{display:flex;align-items:center;justify-content:space-between;gap:12px}.cs-date-popover>div{display:flex;gap:6px;justify-content:flex-end}.cs-date-popover [role=alert]{color:#df7575}
 .cs-ai>.ai-input-frame{flex:1;min-width:180px}.cs-ai .ai-input-frame input{min-width:0}.cs-ai{padding:10px;align-items:center}
 .cs-spacer{flex:1}.cs-notices{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.cs-notices>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.cs-info{border:0;background:transparent;color:var(--dim);cursor:help}
-.cs-dialog .file-view-select{width:38px;min-width:38px;font-size:16px}.cs-row .cs-main{overflow:hidden}
+.cs-dialog .file-view-select{width:56px;min-width:56px;flex-shrink:0;font-size:16px}.cs-row .cs-main{overflow:hidden}
 
 .cs-dialog footer{height:44px;min-height:44px;box-sizing:border-box;flex-wrap:nowrap;gap:8px;padding:8px 10px}
 .cs-footer-status{display:flex;align-items:center;gap:4px;flex:1;min-width:0;overflow:hidden;font-size:11px;color:var(--dim)}
