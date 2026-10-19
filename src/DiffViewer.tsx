@@ -60,7 +60,7 @@ interface SplitView {
 interface SplitController {
   view: SplitView;
   navigate(index: number, focus?: boolean): void;
-  settleViewport(onComplete: () => void): void;
+  settleViewport(onComplete: () => void, side?: DiffSide): void;
   /** 外观（字号、配色）reconfigure 后重新测量对齐、连接带与轨道。 */
   refreshLayout(): void;
   /** 展开全部折叠的未变化内容；返回本次展开的区段数。 */
@@ -449,7 +449,12 @@ function alignedBoundary(
       ? spec.role === "prefix" ? spec.height : 0
       : spec.role === "body" ? spec.height : 0);
   }, 0);
-  return boundaryY(view, pos) + samePositionOffset;
+  // EOF 的 boundaryY 取最后一个行块的 bottom，已经包含该位置的块占位。
+  // 先去掉这些高度再按角色加回，避免尾部新增的占位被重复计入并反复增减。
+  const endSpacers = pos === view.state.doc.length && pos > 0
+    ? (specIndex(specs).byPos.get(pos) ?? NO_SPECS).reduce((height, spec) => height + spec.height, 0)
+    : 0;
+  return boundaryY(view, pos) - endSpacers + samePositionOffset;
 }
 
 function installChangeAlignment(split: SplitView, onGeometryChange: () => void) {
@@ -781,7 +786,7 @@ interface GlobalSearchMatch extends TextMatch {
 function installReadingSearch(
   parent: HTMLElement,
   entries: ReadingSearchView[],
-  settleViewport: ((onComplete: () => void) => void) | undefined
+  settleViewport: ((onComplete: () => void, side: ReadingSearchView["side"]) => void) | undefined
 ) {
   const panel = document.createElement("div");
   panel.className = "oris-search-panel";
@@ -938,7 +943,7 @@ function installReadingSearch(
     settleViewport?.(() => {
       position();
       requestAnimationFrame(scheduleVisible);
-    });
+    }, entry.side);
     renderStatus();
     requestAnimationFrame(scheduleVisible);
   };
@@ -1601,8 +1606,7 @@ function installRailInput(rail: HTMLElement, view: EditorView, onUserInput: () =
 
 function installScrollAndRails(
   split: SplitView,
-  visuals: { scheduleDraw: () => void; drawNow: () => void },
-  onUserViewportChange: () => void
+  visuals: { scheduleDraw: () => void; drawNow: () => void }
 ) {
   let epoch = 0;
   let frame = 0;
@@ -1611,14 +1615,14 @@ function installScrollAndRails(
   const tokens: Partial<Record<DiffSide, { epoch: number; expected: number }>> = {};
   const viewFor = (side: DiffSide) => side === "a" ? split.a : split.b;
   const railFor = (side: DiffSide) => split.rails[side];
-  const claim = (side: DiffSide, userInitiated = false) => {
+  const claim = (side: DiffSide) => {
     epoch += 1;
     master = side;
-    delete tokens.a;
-    delete tokens.b;
+    // 新输入只接管这一侧；另一侧尚未送达的程序滚动回声仍需抑制。
+    delete tokens[side];
+    if (pending !== side) pending = null;
     split.dom.dataset.masterSide = side;
     split.dom.dataset.syncEpoch = String(epoch);
-    if (userInitiated) onUserViewportChange();
   };
   const beginProgramEpoch = () => {
     epoch += 1;
@@ -1637,8 +1641,9 @@ function installScrollAndRails(
   const write = (side: DiffSide, value: number, writeEpoch: number) => {
     const target = viewFor(side).scrollDOM;
     const next = clampViewScroll(viewFor(side), value);
-    tokens[side] = { epoch: writeEpoch, expected: next };
     target.scrollTop = next;
+    // 浏览器可能取整或截断：记录实际写入值，而不是写入前计算的值。
+    tokens[side] = { epoch: writeEpoch, expected: target.scrollTop };
   };
   const updateRail = (side: DiffSide) => {
     const view = viewFor(side);
@@ -1661,7 +1666,11 @@ function installScrollAndRails(
     const mapped = mapDiffPosition(split.boundaries, side, source.scrollDOM.scrollTop + anchor);
     split.dom.dataset.syncSegment = String(mapped.segment);
     split.dom.dataset.syncSourceTop = String(source.scrollDOM.scrollTop);
-    write(targetSide, mapped.value - target.scrollDOM.clientHeight / 3, epoch);
+    // 开启对齐后，占位已把两侧放到同一像素坐标系。再次按差异块映射会在
+    // 占位区或边界表尚未更新时跳跃，也会使文件底部保持一个错误偏移。
+    write(targetSide, split.dom.dataset.alignmentEnabled === "true"
+      ? source.scrollDOM.scrollTop
+      : mapped.value - target.scrollDOM.clientHeight / 3, epoch);
     updateRailViewports();
     // Draw in this frame, after both panes hold their final scrollTop; a deferred
     // draw would paint connectors against one pane that has already moved on.
@@ -1708,6 +1717,13 @@ function installScrollAndRails(
     }
     // Purely horizontal scroll: no vertical re-sync or master change.
     if (!moved) return;
+    // 对齐/虚拟行测量可能触发从属侧的滚动锚定，不能据此反过来接管主控侧。
+    // 真正的滚轮、指针、触屏、键盘和轨道输入均在操作前显式 claim。
+    if (side !== master && split.dom.dataset.alignmentEnabled === "true") {
+      scheduleSync(master);
+      updateRailViewports();
+      return;
+    }
     if (side !== master) claim(side);
     scheduleSync(side);
     // Connectors wait for syncFrom: drawing now would pair this pane's new
@@ -1730,7 +1746,7 @@ function installScrollAndRails(
     const delta = chainedWheelDelta(event.deltaY * unit, extentOf(source), extentOf(target));
     if (!delta) return false;
     event.preventDefault();
-    claim(targetSide, true);
+    claim(targetSide);
     target.scrollDOM.scrollTop += delta;
     return true;
   };
@@ -1738,12 +1754,12 @@ function installScrollAndRails(
   for (const side of ["a", "b"] as const) {
     const scrollDOM = viewFor(side).scrollDOM;
     const scroll = () => onScroll(side);
-    const userInput = () => claim(side, true);
+    const userInput = () => claim(side);
     const wheel = (event: WheelEvent) => {
-      if (!chainWheel(side, event)) claim(side, true);
+      if (!chainWheel(side, event)) claim(side);
     };
     const keyboard = (event: KeyboardEvent) => {
-      if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) claim(side, true);
+      if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) claim(side);
     };
     scrollDOM.addEventListener("scroll", scroll, { passive: true });
     scrollDOM.addEventListener("wheel", wheel, { passive: false });
@@ -1758,7 +1774,7 @@ function installScrollAndRails(
       scrollDOM.removeEventListener("keydown", keyboard);
     });
     const rail = railFor(side);
-    listeners.push(installRailInput(rail, viewFor(side), () => claim(side, true)));
+    listeners.push(installRailInput(rail, viewFor(side), () => claim(side)));
   }
   const resize = new ResizeObserver(updateRails);
   resize.observe(split.dom);
@@ -1769,6 +1785,8 @@ function installScrollAndRails(
     beginProgramEpoch,
     write,
     updateRails,
+    sync: () => scheduleSync(master),
+    claim,
     destroy() {
       if (frame) cancelAnimationFrame(frame);
       resize.disconnect();
@@ -1844,6 +1862,7 @@ function createSplitView(
   const navigate = (index: number, focus = true) => {
     if (!chunks.length) return;
     const safeIndex = (index + chunks.length) % chunks.length;
+    scrollController?.claim("b");
     const chunk = chunks[safeIndex];
     const targets = [
       { side: "a" as const, view: a, pos: Math.min(chunk.fromA, a.state.doc.length) },
@@ -1871,19 +1890,26 @@ function createSplitView(
     visualController?.scheduleDraw();
   };
   visualController = installSplitVisuals(split, navigate);
-  scrollController = installScrollAndRails(split, visualController, () => alignmentController?.schedule());
+  // 滚动停下后由对齐控制器增量校正；输入时不能清空、重建所有占位。
+  scrollController = installScrollAndRails(split, visualController);
   const removeResize = installSplitResize(split, separator, initialRatio, onLayoutChange, visualController.scheduleMeasure);
   const collapse = collapsed ? installPairedCollapse(split) : undefined;
-  alignmentController = alignChanges ? installChangeAlignment(split, visualController.scheduleMeasure) : undefined;
+  alignmentController = alignChanges ? installChangeAlignment(split, () => {
+    visualController?.scheduleMeasure();
+    // 重新测量可能使从属侧自行滚动锚定；对齐完成后恢复同一像素位置。
+    if (root.dataset.alignmentReady === "true") scrollController?.sync();
+  }) : undefined;
   onPositionChange(chunks.length ? 1 : 0, chunks.length);
   return {
     view: split,
     navigate,
-    settleViewport(onComplete) {
+    settleViewport(onComplete, side) {
+      if (side) scrollController?.claim(side);
       if (alignmentController) alignmentController.schedule(onComplete);
       else onComplete();
     },
     revealLine(side, line) {
+      scrollController?.claim(side);
       const view = side === "a" ? split.a : split.b;
       collapse?.reveal(side, view.state.doc.line(line).from);
       alignmentController?.schedule(); visualController?.scheduleMeasure(); scrollController?.updateRails();
@@ -2248,7 +2274,7 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
         }
       });
     }
-    readingSearch = installReadingSearch(host.current, searchViews, split ? (onComplete) => split?.settleViewport(onComplete) : undefined);
+    readingSearch = installReadingSearch(host.current, searchViews, split ? (onComplete, side) => split?.settleViewport(onComplete, side === "left" ? "a" : "b") : undefined);
     const removeLineSelection = installLineSelection(searchViews, selection => lineSelect.current?.(selection));
     const removeGoToLine = installGoToLine(host.current, searchViews, (entry, line) => {
       if (split) split.revealLine(entry.side === "left" ? "a" : "b", line);

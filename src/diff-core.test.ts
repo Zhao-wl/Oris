@@ -3,6 +3,28 @@ import { describe, expect, it } from "vitest";
 import { computeDiff } from "./diff-core";
 
 describe("DiffDocument 核心", () => {
+  it.each([
+    ["head\n\n", "new\nhead\n\n\n"],
+    ["head\n\nend\n", "new\nhead\n\n\nend\n"],
+    ["new\nhead\n\n\nend\n", "head\n\nend\n"],
+    ["\nend\n", "\nnew\n\nend\n"]
+  ])("重复空行的新增和删除不丢失块外上下文", (left, right) => {
+    const { hunks } = computeDiff(left, right);
+    let previousA = 0, previousB = 0;
+    for (const hunk of hunks) {
+      expect(left.slice(previousA, hunk.fromA)).toBe(right.slice(previousB, hunk.fromB));
+      previousA = hunk.toA; previousB = hunk.toB;
+    }
+    expect(left.slice(previousA)).toBe(right.slice(previousB));
+  });
+  it("空行处插入带末尾空行的代码块时，块范围包含全部新增行", () => {
+    const left = "head\n\nfooter\n";
+    const right = "head\n\ninsert\n\nfooter\n";
+    const { hunks } = computeDiff(left, right);
+    expect(hunks).toHaveLength(1);
+    const [hunk] = hunks;
+    expect(left.slice(hunk.toA)).toBe(right.slice(hunk.toB));
+  });
   it("从同一算法生成不等长块与导航锚点", () => {
     const left = "header\nconst policy = 'old';\nremoved\nfooter\n";
     const right = "header\nconst policy = 'new';\nadded one\nadded two\nfooter\n";
@@ -155,6 +177,7 @@ describe("DiffDocument 核心", () => {
         let lastA = 0;
         let lastB = 0;
         for (const hunk of hunks) {
+          expect(left.slice(lastA, hunk.fromA)).toBe(right.slice(lastB, hunk.fromB));
           expect(hunk.fromA).toBeGreaterThanOrEqual(lastA);
           expect(hunk.fromB).toBeGreaterThanOrEqual(lastB);
           expect(hunk.toA).toBeGreaterThanOrEqual(hunk.fromA);
@@ -162,6 +185,7 @@ describe("DiffDocument 核心", () => {
           lastA = hunk.toA;
           lastB = hunk.toB;
         }
+        expect(left.slice(lastA)).toBe(right.slice(lastB));
         if (left === right) expect(hunks).toEqual([]);
       }
     });

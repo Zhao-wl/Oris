@@ -53,11 +53,11 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function render(file: { left: string; right: string }, document: DiffDocument, readingKey: string, hunkHeaders: HunkHeaders | null, mode: "split" | "unified" = "split", collapsed = false) {
+function render(file: { left: string; right: string }, document: DiffDocument, readingKey: string, hunkHeaders: HunkHeaders | null, mode: "split" | "unified" = "split", collapsed = false, aligned = false) {
   const ref = createRef<DiffViewerHandle>();
   act(() => root.render(
     <DiffViewer ref={ref} readingKey={readingKey} presentation={{ kind: "compare" }} left={file.left} right={file.right} document={document}
-      mode={mode} highlight="words" collapsed={collapsed} wrap={false} alignChanges={false} hunkHeaders={hunkHeaders}
+      mode={mode} highlight="words" collapsed={collapsed} wrap={false} alignChanges={aligned} hunkHeaders={hunkHeaders}
       onPositionChange={onPositionChange} onSplitLayoutChange={onSplitLayoutChange} />
   ));
   return ref;
@@ -65,6 +65,61 @@ function render(file: { left: string; right: string }, document: DiffDocument, r
 const onPositionChange = () => {};
 const onSplitLayoutChange = () => {};
 const editors = () => [...host.querySelectorAll<HTMLElement>(".cm-editor")].map((dom) => EditorView.findFromDOM(dom)!);
+
+describe("对齐滚动的输入与回声隔离（模拟几何）", () => {
+  let frames: Map<number, FrameRequestCallback>;
+  beforeEach(() => {
+    frames = new Map();
+    let id = 0;
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { frames.set(++id, callback); return id; });
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id));
+  });
+  const flush = () => act(() => {
+    const pending = [...frames.values()]; frames.clear();
+    pending.forEach(callback => callback(0));
+  });
+  const setup = () => {
+    render(fileA, docA, "aligned", null, "split", false, true);
+    flush();
+    for (const view of editors()) {
+      Object.defineProperty(view.scrollDOM, "scrollHeight", { configurable: true, value: 5000 });
+      Object.defineProperty(view.scrollDOM, "clientHeight", { configurable: true, value: 300 });
+    }
+    return editors();
+  };
+  const wheel = (view: EditorView) => act(() => { view.scrollDOM.dispatchEvent(new WheelEvent("wheel", { deltaY: 90 })); });
+  const scroll = (view: EditorView, top: number) => act(() => {
+    view.scrollDOM.scrollTop = top;
+    view.scrollDOM.dispatchEvent(new Event("scroll"));
+  });
+
+  it("连续输入不重建对齐；未送达的从属侧同步事件不能接管主控侧", () => {
+    const [a, b] = setup();
+    const split = host.querySelector<HTMLElement>(".oris-split-view")!;
+    const generation = split.dataset.alignmentGeneration;
+    wheel(a); scroll(a, 450); flush();
+    expect(b.scrollDOM.scrollTop).toBe(450);
+    wheel(a); // 上一轮写入 b 的 scroll 回声此时才送达
+    b.scrollDOM.dispatchEvent(new Event("scroll"));
+    flush();
+    expect(split.dataset.masterSide).toBe("a");
+    expect(a.scrollDOM.scrollTop).toBe(450);
+    expect(split.dataset.alignmentGeneration).toBe(generation);
+  });
+
+  it("从属侧的测量滚动不拉回左侧；右侧真实输入可以接管并按同一坐标同步", () => {
+    const [a, b] = setup();
+    const split = host.querySelector<HTMLElement>(".oris-split-view")!;
+    wheel(a); scroll(a, 450); flush();
+    scroll(b, 420); flush();
+    expect(split.dataset.masterSide).toBe("a");
+    expect(a.scrollDOM.scrollTop).toBe(450);
+    expect(b.scrollDOM.scrollTop).toBe(450);
+    wheel(b); scroll(b, 700); flush();
+    expect(split.dataset.masterSide).toBe("b");
+    expect(a.scrollDOM.scrollTop).toBe(700);
+  });
+});
 
 describe("DiffViewer 已缓存文件切换", () => {
   it("切到另一个文件时装饰随状态创建：左侧不派发事务，右侧只派发一次块标题行", () => {

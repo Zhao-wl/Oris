@@ -1,5 +1,5 @@
 import { Text } from "@codemirror/state";
-import { Change, Chunk, diff } from "@codemirror/merge";
+import { Change, diff } from "@codemirror/merge";
 import type { DiffHunk, WhitespaceMode } from "./types";
 
 /** 行内空白（空格、制表符等，不含换行）。 */
@@ -36,16 +36,34 @@ export function computeDiff(left: string, right: string, whitespace: WhitespaceM
     fromB: change.fromB,
     toB: change.toB
   }));
-  const asChanges = () => changes.map((change) => new Change(change.fromA, change.toA, change.fromB, change.toB));
-  const hunks = Chunk.build(Text.of(left.split("\n")), Text.of(right.split("\n")), {
-    override: asChanges
-  }).map((chunk) => ({
-    fromA: Math.min(left.length, chunk.fromA),
-    toA: Math.min(left.length, chunk.toA),
-    fromB: Math.min(right.length, chunk.fromB),
-    toB: Math.min(right.length, chunk.toB)
-  }));
+  const hunks = lineHunks(Text.of(left.split("\n")), Text.of(right.split("\n")), changes);
   return { changes, hunks, ignoredWhitespace };
+}
+
+/** 与阅读器一致的行级半开范围。空行既是行首也是行尾，不能按“共同的行尾换行”跳过：
+ * 否则纯插入的一侧 from/to 被截到下一行，另一侧却少包含一条空行，块外上下文就不再对应。 */
+function lineHunks(a: Text, b: Text, changes: readonly DiffHunk[]): DiffHunk[] {
+  const hunks: DiffHunk[] = [];
+  for (const change of changes) {
+    const firstA = a.lineAt(change.fromA), firstB = b.lineAt(change.fromB);
+    const afterNewline = firstA.to === change.fromA && firstB.to === change.fromB &&
+      change.fromA < a.length && change.fromB < b.length &&
+      !(firstA.from === change.fromA && firstB.from === change.fromB);
+    const fromA = afterNewline ? change.fromA + 1 : firstA.from;
+    const fromB = afterNewline ? change.fromB + 1 : firstB.from;
+    const lastA = a.lineAt(change.toA), lastB = b.lineAt(change.toB);
+    const atLineStart = lastA.from === change.toA && lastB.from === change.toB;
+    const toA = Math.max(fromA, Math.min(a.length, atLineStart ? change.toA : lastA.to + 1));
+    const toB = Math.max(fromB, Math.min(b.length, atLineStart ? change.toB : lastB.to + 1));
+    const previous = hunks.at(-1);
+    if (previous && (fromA <= previous.toA + 1 || fromB <= previous.toB + 1)) {
+      previous.toA = toA;
+      previous.toB = toB;
+    } else {
+      hunks.push({ fromA, toA, fromB, toB });
+    }
+  }
+  return hunks;
 }
 
 /**
