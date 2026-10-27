@@ -1,6 +1,8 @@
-# Oris 发行说明（v0.9.1）
+# Oris 发行说明（v0.9.2）
 
-本次发布：**[v0.9.1（Windows x64 / macOS Apple Silicon）已公开发布](https://github.com/Zhao-wl/Oris/releases/tag/v0.9.1)**，于 2026-10-19 16:18:08（北京时间）通过 [Desktop release 工作流](https://github.com/Zhao-wl/Oris/actions/runs/39220209530) 发布，标签指向 `0aadf3e`。Windows 安装包、Mac DMG、双平台自动更新包及签名、`latest.json` 和校验和已齐备，并设为 latest。全部七项公开附件的哈希、双平台更新签名及自动更新入口已核验。更新内容见 [0.9.1 更新日志](v0.9.1.md)，证据与边界见 [发布收尾记录](../validation/v0.9.1-release-closeout.md)。
+本次发布：**[v0.9.2（Windows x64 / macOS Apple Silicon）已公开发布](https://github.com/Zhao-wl/Oris/releases/tag/v0.9.2)**，于 2026-10-27 14:49:23（北京时间）通过 [Desktop release 工作流](https://github.com/Zhao-wl/Oris/actions/runs/40462080636) 发布，标签指向 `3cb3302`。七项公开附件哈希、双平台更新签名及 latest 自动更新入口已核验。更新内容见 [0.9.2 更新日志](v0.9.2.md)，证据与边界见 [发布收尾记录](../validation/v0.9.2-release-closeout.md)。
+
+历史发布：**[v0.9.1（Windows x64 / macOS Apple Silicon）已公开发布](https://github.com/Zhao-wl/Oris/releases/tag/v0.9.1)**，于 2026-10-19 16:18:08（北京时间）通过 [Desktop release 工作流](https://github.com/Zhao-wl/Oris/actions/runs/39220209530) 发布，标签指向 `0aadf3e`。Windows 安装包、Mac DMG、双平台自动更新包及签名、`latest.json` 和校验和已齐备，并设为 latest。全部七项公开附件的哈希、双平台更新签名及自动更新入口已核验。更新内容见 [0.9.1 更新日志](v0.9.1.md)，证据与边界见 [发布收尾记录](../validation/v0.9.1-release-closeout.md)。
 
 macOS 0.8.4 及更早用户需先手动安装一次 0.9.0，后续版本可通过应用内签名更新。支持 macOS 14 及以上、Apple Silicon；应用使用 ad-hoc 签名，未提供 Developer ID 或 Apple 公证。Windows 尚无 Authenticode 代码签名。实际自动更新安装及重启链路本轮未执行。
 
@@ -14,7 +16,11 @@ macOS 0.8.4 修复点击“检查更新”时的平台缺失错误，包含 0.8.
 
 历史发布：v0.8.1 于 2026-10-08 15:50（北京时间）公开，tag 指向 `48a1712`，更新与核验见 [0.8.1 更新日志](v0.8.1.md) 和 [收尾记录](../validation/v0.8.1-release-closeout.md)。v0.8.0 于 2026-10-08 14:49（北京时间）公开，tag 指向 `e4e41f8`，更新与产物核验见 [0.8.0 更新日志](v0.8.0.md) 和 [发布收尾记录](../validation/v0.8.0-release-closeout.md)。v0.7.0 于 2026-10-08 10:29（北京时间）重新公开，tag 指向 `5280875`，更新与产物核验见 [0.7.0 更新日志](v0.7.0.md) 和 [发布收尾记录](../validation/v0.7.0-release-closeout.md)。v0.6.0 于 2026-09-30 03:42 UTC 发布（tag `9f2bba7`），v0.5.0 于同日 01:19 UTC 发布（tag `8dc620b`），均附 NSIS 安装包与更新签名。
 
-版本：当前五个版本文件中的根包均为 0.9.1，由工作流统一准备并提交。此前长链 lc5 / lc4 中显示为 0.6.0、0.5.0、0.4.1 的测试构建并非对应的已发布构建，其 SHA-256 与来源见 [RC 验收结果](../validation/v1-06-rc-results.md)。
+版本：当前五个版本文件中的根包均为 0.9.2，由工作流统一准备并提交。此前长链 lc5 / lc4 中显示为 0.6.0、0.5.0、0.4.1 的测试构建并非对应的已发布构建，其 SHA-256 与来源见 [RC 验收结果](../validation/v1-06-rc-results.md)。
+
+## v0.9.2：文件多选与暂存操作改进
+
+详见 [0.9.2 更新日志](v0.9.2.md)：修复单选后的 Shift 连续多选，新增全部暂存 / 取消暂存按钮，移除变更区和提交区 AI 辅助选文件及变更标题旁比较端点说明。用户手动验证本地 Windows 包通过，两平台前端各 455 项测试通过、1 项跳过。
 
 ## v0.9.1：对齐变化滚动与底部对齐修复
 
