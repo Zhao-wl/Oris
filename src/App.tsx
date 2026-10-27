@@ -29,11 +29,10 @@ import { operationLabels, optimisticMove, pathIdsFor, refsKinds, selectionAfterO
 import SettingsDialog from "./SettingsDialog";
 import { applyFileIgnoreOperation, createFileIgnoreMatcher, filterReadableFiles, fileIgnoreOperationSummary, type FileIgnoreRule } from "./file-ignore";
 import AiCommitDialog from "./AiCommitDialog";
-import ContextSelector from "./context-selection/ContextSelector";
 import { explainAttachments, EXPLAIN_CONTRACT } from "./context-selection/explain";
 import { withAttachmentReads, CONTEXT_READ_CONTRACT } from "./context-selection/reader";
 import { reviewAttachments } from "./ai-review/review";
-import { defaultAttachments, loadAttachmentContext, type Attachment } from "./context-selection/model";
+import { defaultAttachments, loadAttachmentContext } from "./context-selection/model";
 import { reviewContext, reviewInventory, reviewLocation, parseReview, locationMatches, REVIEW_CONTRACT, type ReviewResult, type ReviewFinding, type ReviewSource } from "./ai-review/model";
 import { matchesAiShortcut } from "./ai-shortcut";
 import { cancelAiGeneration, generateAiCommit, planAiAction, type AiPlan } from "./ai-api";
@@ -131,8 +130,6 @@ export default function App() {
   const [showIgnoredRepo, setShowIgnoredRepo] = useState<string | null>(null);
   const showIgnoredRepoRef = useRef(showIgnoredRepo); showIgnoredRepoRef.current = showIgnoredRepo;
   const [aiOpen, setAiOpen] = useState(false);
-  const [selectionPurpose,setSelectionPurpose] = useState<"stage"|"commit"|null>(null);
-  const [operationAttachments,setOperationAttachments] = useState<{repoId:string;branch:string|null;purpose:"stage"|"commit";items:Attachment[]}|null>(null);
   const [reviewReading, setReviewReading] = useState<ReviewSource | null>(null);
   const pendingReviewLine = useRef<{ source: ReviewSource; line: number } | null>(null);
   const aiPlannedRevision = useRef<{ repoId: string | null; revision: string | null; ignoreRules?: string } | null>(null);
@@ -1181,29 +1178,8 @@ export default function App() {
     }
   };
   /** 提交；勾选“提交并推送”时提交成功后推送：已有上游直接推送，否则打开推送预览选择 remote。 */
-  const validateOperationAttachments = async (selection: NonNullable<typeof operationAttachments>) => {
-    if (selection.repoId !== currentRead.current.repo || selection.branch !== projects.get(selection.repoId)?.snapshot?.repo.branch) throw new Error("项目或分支已变化，请重新选择");
-    let revision = "";
-    for (const item of new Map(selection.items.map(x=>[x.request?.identity,x])).values()) {
-      if (!item.request || item.kind !== "files") throw new Error("历史提交不能作为待操作文件");
-      const inv = await reviewInventory(selection.repoId,item.request.range);
-      if (inv.identity !== item.request.identity || (revision && revision !== inv.revision)) throw new Error("文件选择已过期，请重新打开选择器");
-      revision = inv.revision;
-    }
-    if (selection.repoId !== currentRead.current.repo || selection.branch !== projects.get(selection.repoId)?.snapshot?.repo.branch) throw new Error("项目或分支已变化，请重新选择");
-    return revision;
-  };
   const commit = async (message: string, push: boolean) => {
-    let request: OperationRequest = { kind: "commit", message };
-    if (operationAttachments?.purpose === "commit") {
-      let revision: string;
-      try { revision = await validateOperationAttachments(operationAttachments); }
-      catch(e) { setNotice(errorText(e)); return null; }
-      const pathIds = [...new Set(operationAttachments.items.flatMap(x=>[...x.request!.pathIds,...(x.oldPathId?[x.oldPathId]:[])]))];
-      request = { kind:"commitSelected", message, pathIds, expectedRevision: revision };
-    }
-    const outcome = await runOp(request);
-    if (outcome?.status === "succeeded") setOperationAttachments(null);
+    const outcome = await runOp({ kind: "commit", message });
     // 没有上游时同样一键发布：只有一个 remote 时直接推送并设为上游，多个时选择 remote。
     if (push && outcome?.status === "succeeded") void runPush();
     return outcome;
@@ -1472,7 +1448,7 @@ export default function App() {
     scope,
     disabledReason: writeBlocked,
     selection: multiSelection,
-    onSelection: (pathIds, focus) => { setMultiSelection(pathIds.length > 1 ? new Set(pathIds) : new Set()); if (focus) userSelectRef.current(focus); },
+    onSelection: (pathIds, focus) => { setMultiSelection(new Set(pathIds)); if (focus) userSelectRef.current(focus); },
     onAction: (action, files) => onFileActionRef.current(action, files),
     onReveal: backendRepoId ? (relative) => { revealInFileManager(backendRepoId, relative).catch((reason) => setNotice(`无法在资源管理器中打开：${errorText(reason)}`)); } : undefined
   }), [scope, writeBlocked, multiSelection, backendRepoId]);
@@ -1976,7 +1952,7 @@ export default function App() {
       onReorder={target => setWorkspaceState(current => moveProject(current, project.repo.repoId, target))}/>)}{!visibleProjects.length && <span className="project-empty">{workspaceState.projects.length ? "没有匹配项目" : "尚未添加项目"}</span>}</div></section>
     <section className="openbar"><input value={path} onChange={(event) => setPath(event.target.value)} placeholder="仓库绝对路径" aria-label="仓库路径"/><button onClick={() => void addRepository(path)} disabled={loading || !path.trim()}>载入/添加</button>{snapshot && <button onClick={() => void refreshActive()} disabled={manualRefreshing}>↻ 本地刷新</button>}{snapshot && <span className="restore-status">{projectMessages[snapshot.repo.repoId] ?? "已同步"} · {new Date(snapshot.scannedAt).toLocaleTimeString()}</span>}</section>
     <section className="workspace" ref={workspace} style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}>
-      <aside className="sidebar"><div className="panel-title"><strong>变更</strong><button disabled={!activeRepoId||!!writeBlocked} onClick={()=>setSelectionPurpose("stage")}>辅助选择…</button><span>{scopeLabels[scope].endpoints[0]} → {scopeLabels[scope].endpoints[1]}</span></div><div className="scope-row">{(["unstaged", "staged", "all"] as CompareScope[]).map((value) => <button key={value} className={`scope ${scope === value ? "selected" : ""}`} onClick={() => void setCompareScope(value)}>{scopeLabels[value].short}</button>)}<select className="file-view-select" aria-label="文件显示方式" title={fileView === "flat" ? "平铺显示相对路径" : "树状显示目录"} value={fileView} onChange={(event) => { const value = event.target.value as "flat" | "tree"; setFileView(value); updateAnchor({ fileView: value }); }}><option value="flat">☷</option><option value="tree">⑂</option></select></div><div className="filter-row"><input className="filter" aria-label="按完整相对路径筛选" value={filter} onChange={(event) => { setFilter(event.target.value); updateAnchor({ filter: event.target.value }); }} placeholder="按完整相对路径筛选"/>{snapshot?.hasSubmodules && activeProject && <button type="button" role="switch" className="pointer-switch" aria-checked={!!activeProject.showSubmodulePointers} title="显示子模块指针变化（按仓库保存，默认关闭）。关闭时不显示任何子模块条目；打开时只显示提交指针变化，子模块内部的改动到子仓库中查看。" onClick={() => void toggleSubmodulePointers()}><span className="track" aria-hidden="true"/>子模块指针</button>}</div><div className="files" role="listbox" aria-label={`${scopeLabels[scope].short}变更`}>{snapshot && <FileTree files={visibleFiles} selectedPathId={historyReading ? null : selectedPathId} mode={fileView} statsPending={pendingStats} onSelect={userSelect} actions={fileActions}/>} {snapshot && !visibleFiles.length && <div className="empty">{ignoredCount && !showIgnored && !filter ? "当前范围的变化文件已全部忽略" : filter ? "筛选无匹配文件" : "当前比较范围没有变化"}</div>}{!snapshot && <div className="empty">添加或选择一个真实 Git 仓库</div>}</div>{nestedRepos.length > 0 && <details className="nested-repos"><summary>{nestedRepos.length} 个嵌套仓库未显示</summary>{nestedRepos.map((relative) => {
+      <aside className="sidebar"><div className="panel-title"><strong>变更</strong><div className="change-batch-actions"><button type="button" disabled={!!writeBlocked || !runtime?.snapshot?.scopes?.unstaged.some(file => file.status !== "conflicted")} title={writeBlocked ?? "将仓库全部未暂存文件加入暂存区（不受筛选影响）"} onClick={() => stageFiles("stage", runtime?.snapshot?.scopes?.unstaged.filter(file => file.status !== "conflicted") ?? [])}>全部加入暂存</button><button type="button" disabled={!!writeBlocked || !runtime?.snapshot?.scopes?.staged.some(file => file.status !== "conflicted")} title={writeBlocked ?? "取消仓库全部已暂存文件的暂存（不受筛选影响）"} onClick={() => stageFiles("unstage", runtime?.snapshot?.scopes?.staged.filter(file => file.status !== "conflicted") ?? [])}>全部取消暂存</button></div></div><div className="scope-row">{(["unstaged", "staged", "all"] as CompareScope[]).map((value) => <button key={value} className={`scope ${scope === value ? "selected" : ""}`} onClick={() => void setCompareScope(value)}>{scopeLabels[value].short}</button>)}<select className="file-view-select" aria-label="文件显示方式" title={fileView === "flat" ? "平铺显示相对路径" : "树状显示目录"} value={fileView} onChange={(event) => { const value = event.target.value as "flat" | "tree"; setFileView(value); updateAnchor({ fileView: value }); }}><option value="flat">☷</option><option value="tree">⑂</option></select></div><div className="filter-row"><input className="filter" aria-label="按完整相对路径筛选" value={filter} onChange={(event) => { setFilter(event.target.value); updateAnchor({ filter: event.target.value }); }} placeholder="按完整相对路径筛选"/>{snapshot?.hasSubmodules && activeProject && <button type="button" role="switch" className="pointer-switch" aria-checked={!!activeProject.showSubmodulePointers} title="显示子模块指针变化（按仓库保存，默认关闭）。关闭时不显示任何子模块条目；打开时只显示提交指针变化，子模块内部的改动到子仓库中查看。" onClick={() => void toggleSubmodulePointers()}><span className="track" aria-hidden="true"/>子模块指针</button>}</div><div className="files" role="listbox" aria-label={`${scopeLabels[scope].short}变更`}>{snapshot && <FileTree files={visibleFiles} selectedPathId={historyReading ? null : selectedPathId} mode={fileView} statsPending={pendingStats} onSelect={userSelect} actions={fileActions}/>} {snapshot && !visibleFiles.length && <div className="empty">{ignoredCount && !showIgnored && !filter ? "当前范围的变化文件已全部忽略" : filter ? "筛选无匹配文件" : "当前比较范围没有变化"}</div>}{!snapshot && <div className="empty">添加或选择一个真实 Git 仓库</div>}</div>{nestedRepos.length > 0 && <details className="nested-repos"><summary>{nestedRepos.length} 个嵌套仓库未显示</summary>{nestedRepos.map((relative) => {
         const member = nestedMember(relative);
         const record = member?.repoId ? workspaceState.projects.find((project) => project.repo.repoId === member.repoId) : undefined;
         return <div key={relative} className="nested-repo"><code>{relative}/</code><span>{member ? member.kind === "worktree" ? `${activeGroup?.members.find((owner) => owner.repoId === member.parentRepoId)?.name ?? "仓库"} 的 worktree` : "工作区成员" : activeRoot ? "独立仓库，未加入工作区" : "独立的 Git 仓库"}</span>
@@ -1991,8 +1967,7 @@ export default function App() {
     </section>
     <GitPanel ignoredStagedPaths={ignoredStagedPaths} repoId={backendRepoId} tab={gitTab} onTab={setGitTab} stagedCount={stagedCount} headOid={runtime?.snapshot?.branchInfo?.oid ?? null} headKey={`${snapshot?.branchInfo?.oid ?? ""}:${snapshot?.branchInfo?.upstream ?? ""}:${snapshot?.branchInfo?.ahead ?? ""}:${snapshot?.branchInfo?.behind ?? ""}`}
       mergeInProgress={!!snapshot?.inProgress?.merge} blockedReason={writeBlocked && !repoOps?.running ? writeBlocked : null} running={repoOps?.running ?? null} lines={repoOps?.lines ?? []} last={repoOps?.last ?? null} lastCommit={repoOps?.lastCommit ?? null} backups={repoOps?.backups ?? []}
-      selectedCount={operationAttachments?.purpose === "commit" && operationAttachments.repoId === activeRepoId ? new Set(operationAttachments.items.map(x=>x.path)).size : undefined} onChooseFiles={()=>setSelectionPurpose("commit")} onClearFiles={()=>setOperationAttachments(null)}
-      onCommit={commit} onGenerateMessage={operationAttachments?.purpose === "commit" ? undefined : aiMessage} onUndoCommit={(head) => void undoCommit(head)} onUndoDiscard={(id) => void undoDiscard(id)} onCancel={() => { if (activeRepoId) void cancelOperation(activeRepoId); }}
+      onCommit={commit} onGenerateMessage={aiMessage} onUndoCommit={(head) => void undoCommit(head)} onUndoDiscard={(id) => void undoDiscard(id)} onCancel={() => { if (activeRepoId) void cancelOperation(activeRepoId); }}
       logContent={backendRepoId && logMounted === backendRepoId ? <HistoryPanel key={backendRepoId} repoId={backendRepoId} lineJump={lineJump} onReturnFromLine={returnFromLine} compareRequest={historyCompare} onSubmoduleCompare={activeGroup ? compareInSubmodule : undefined} refsVersion={refsVersion} hidden={gitTab !== "log"} fileHistoryRequest={fileHistoryRequest} activeKey={historyReading?.key ?? null} onOpenFile={(open) => void openHistoryFile(open)} onRefs={setRefsView}
         writeBlocked={writeBlocked} onCheckout={(oid) => void runSwitch({ kind: "checkout", commit: oid })} onNewBranch={(start) => { loadRefsView(); setNewBranch({ initial: start }); }} onMerge={detachedOid ? undefined : startMerge}
         onSwitch={branchActions.onSwitch} onTrack={branchActions.onTrack} onDeleteBranch={(branch) => void deleteBranch(branch)} onPruneGone={() => void pruneGoneBranches()} stashVersion={stashVersion} selectedFiles={stashSelection}
@@ -2012,10 +1987,6 @@ export default function App() {
     {switchState && <SwitchDialog request={switchState} onChoose={(choice) => { switchState.resolve(choice); setSwitchState(null); }} onCancel={() => { switchState.resolve(null); setSwitchState(null); }}/>}
     {confirmState && <ConfirmDialog request={confirmState} onConfirm={() => { confirmState.resolve(true); setConfirmState(null); }} onCancel={() => { confirmState.resolve(false); setConfirmState(null); }}/>}
     {settingsOpen && <SettingsDialog key={activeRepoId} ignorePreview={{ showIgnored, ignoredCount, onChange: value => setShowIgnoredRepo(value ? activeRepoId : null) }} repoId={activeRepoId} repoName={activeProject ? projectName(activeProject) : ""} settings={settings} onClose={() => setSettingsOpen(false)} gitInUse={snapshot ? { executable: snapshot.git.executable, version: snapshot.git.version, minimumVersion: snapshot.git.minimumVersion } : null}/>}
-    {selectionPurpose && activeRepoId && snapshot && <ContextSelector limits={settings.get().ai.ruleSet} key={`${activeRepoId}:${snapshot.repo.branch}:${selectionPurpose}`} repoId={activeRepoId} purpose={selectionPurpose} value={operationAttachments?.repoId===activeRepoId&&operationAttachments.purpose===selectionPurpose?operationAttachments.items:[]}
-      profile={settings.get().ai.profiles.find(p=>p.id===(settings.get().ai.ruleSet.selectionProfileId??settings.get().ai.ruleSet.defaultProfileId??settings.get().ai.activeId))??null}
-      onClose={()=>setSelectionPurpose(null)} onApply={items=>{setOperationAttachments({repoId:activeRepoId,branch:snapshot.repo.branch,purpose:selectionPurpose,items});setSelectionPurpose(null);if(selectionPurpose==="commit")setGitTab("commit");}}/>}
-    {operationAttachments?.purpose==="stage" && operationAttachments.repoId===activeRepoId && <div className="op-banner cs-operation"><span>已选 {new Set(operationAttachments.items.map(x=>x.path)).size} 个待暂存文件</span><button disabled={!!writeBlocked||!operationAttachments.items.length} onClick={()=>{void (async()=>{try { const revision=await validateOperationAttachments(operationAttachments); const outcome=await runOp({kind:"stageSelected",expectedRevision:revision,pathIds:[...new Set(operationAttachments.items.flatMap(x=>[...x.request!.pathIds,...(x.oldPathId?[x.oldPathId]:[])]))]});if(outcome?.status==="succeeded")setOperationAttachments(null); } catch(e){setNotice(errorText(e));}})();}}>暂存已选文件</button><button onClick={()=>setSelectionPurpose("stage")}>调整</button><button onClick={()=>setOperationAttachments(null)}>取消选择</button></div>}
     {aiOpen && <AiCommitDialog settings={settings} onLocateReview={locateReview} project={snapshot && activeRepoId ? { repoId: activeRepoId, name: snapshot.repo.displayName, branch: snapshot.repo.branch } : null} onClose={() => setAiOpen(false)} onGenerate={aiPlan} onPlanAction={planAction} onExecuteAction={async (action, turn) => {
       assertAiTurn(turn);
       if (turn.route.mode !== "action") throw new Error("当前指令只允许回答");

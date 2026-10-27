@@ -827,3 +827,7 @@ button.op-status { padding:0 6px; border:0; background:transparent; font-size:11
 .ignore-rule-list small { color:var(--dim); }
 .ignore-commit-warning { color:var(--warning, #d9a24f); font-size:12px; max-height:110px; overflow:auto; }
 .ignore-commit-warning ul { padding-left:18px; margin:5px 0; overflow-wrap:anywhere; }
+
+.change-batch-actions { display:flex; flex-wrap:wrap; gap:4px; justify-content:flex-end; }
+.change-batch-actions button { padding:4px 6px; font-size:11px; white-space:nowrap; }
+.sidebar > .panel-title > strong { flex-shrink:0; }

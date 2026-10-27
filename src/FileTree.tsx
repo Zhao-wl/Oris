@@ -15,7 +15,7 @@ export interface FileActions {
   scope: CompareScope;
   /** 写入口不可用的原因（校验中、其他写操作进行中、不支持的进行中状态）；null 为可用。 */
   disabledReason: string | null;
-  /** 多选集合（少于 2 项时为单选，以 selectedPathId 为准）。 */
+  /** 显式选择集合；空集合时回退到当前阅读文件。 */
   selection: ReadonlySet<string>;
   /** 选择变化；focus 为需要在 diff 中显示的文件（null 表示保持当前显示）。 */
   onSelection(pathIds: string[], focus: FileChange | null): void;
@@ -51,7 +51,7 @@ const ActionsContext = createContext<ActionsContextValue | null>(null);
 
 /** 行是否处于选中状态：多选时看集合，单选时看当前阅读的文件。 */
 const isSelected = (actions: ActionsContextValue | null, pathId: string, selectedPathId: string | null) =>
-  actions && actions.selection.size > 1 ? actions.selection.has(pathId) : pathId === selectedPathId;
+  actions && actions.selection.size > 0 ? actions.selection.has(pathId) : pathId === selectedPathId;
 
 const actionLabels: Record<Exclude<FileAction, "discard">, string> = { stage: "暂存", unstage: "取消暂存", markResolved: "标记已解决" };
 
@@ -289,9 +289,14 @@ export default function FileTree({ files, selectedPathId, mode, statsPending = f
   const anchor = useRef<string | null>(null);
   // 最新的选择（含尚未重渲染的连续点击），每次渲染按 props 重置。
   const latest = useRef<string[]>([]);
-  latest.current = actions && actions.selection.size > 1 ? [...actions.selection] : selectedPathId ? [selectedPathId] : [];
+  latest.current = actions && actions.selection.size > 0 ? [...actions.selection] : selectedPathId ? [selectedPathId] : [];
   const focused = useRef(selectedPathId);
   focused.current = selectedPathId;
+  // 单选（包括键盘切换、清除多选）也是下一次 Shift 选择的锚点。
+  // 多选期间保持原始锚点，避免连续 Shift 点击把范围起点移到上次终点。
+  useLayoutEffect(() => {
+    if (!actions || actions.selection.size <= 1) anchor.current = selectedPathId;
+  }, [selectedPathId, actions?.selection, actions?.scope]);
   // 列表的显示顺序（Shift 连续选择按此计算）。
   const order = useMemo(() => {
     const sortedUnchanged = [...unchanged].sort(compareFiles);

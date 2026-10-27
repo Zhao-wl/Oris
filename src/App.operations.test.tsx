@@ -618,27 +618,44 @@ it("bare explain sends the 59 UI-selected file diffs as original text and publis
   expect(new Set(seen)).toEqual(new Set(files.map(f => f.path)));
   expect(host.textContent).toContain("已遍历 59 项"); expect(host.textContent).toContain("足球改动解释"); expect(bridge.operation).not.toHaveBeenCalled();
 });
-async function chooseOperationFiles(purpose:"stage"|"commit") {
-  bridge.reviewInventory.mockImplementation(async(repoId,range)=>({...reviewFixture.inventory,repoId,range,identity:range.kind,files:range.kind==="unstaged"?[reviewSource.file]:[]}));
+it("removes operation file selectors and the sidebar endpoint hint", async () => {
   await mount();
-  if(purpose==="stage")await click(button("辅助选择…"));
-  else {await click(commitTab());await click(button("选择文件 / AI 辅助…"));}
-  await click(button("加入全部匹配"));
-  await click([...host.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent?.startsWith("应用文件选择"))!);
-  expect(bridge.operation).not.toHaveBeenCalled();
-}
-it("selection only applies a file set; explicit stage uses a revision guarded operation",async()=>{
-  await chooseOperationFiles("stage");bridge.operation.mockResolvedValue(outcome("stage",snap([],[change("a.txt")])));
-  await click(button("暂存已选文件"));expect(bridge.operation.mock.calls[0][3]).toEqual({kind:"stageSelected",expectedRevision:"r1",pathIds:["id-a.txt"]});
+  expect(host.querySelector(".sidebar .panel-title")?.textContent).not.toMatch(/辅助选择|Working Tree|Index/);
+  await click(commitTab());
+  expect(host.textContent).not.toContain("选择文件 / AI 辅助");
+  expect(host.textContent).toContain("提交暂存区");
 });
-it("commit selection reuses the selector and submits only on the commit button",async()=>{
-  await chooseOperationFiles("commit");bridge.operation.mockResolvedValue(outcome("commit",snap([],[])));
-  await type(host.querySelector<HTMLTextAreaElement>('[aria-label="提交信息"]')!,"selected changes");await click(button("提交"));
-  expect(bridge.operation.mock.calls[0][3]).toEqual({kind:"commitSelected",expectedRevision:"r1",pathIds:["id-a.txt"],message:"selected changes"});
+it.each(["stage", "unstage"] as const)("bulk %s includes all files even when the list is filtered", async kind => {
+  const files = [change("a.txt"), change("b.txt", "renamed")];
+  files[1].oldPathId = "id-old.txt"; files[1].oldDisplayPath = "old.txt";
+  bridge.open.mockResolvedValue(snap(files, files));
+  bridge.operation.mockResolvedValue(outcome(kind, snap([], [])));
+  await mount();
+  const input = host.querySelector<HTMLInputElement>('[aria-label="按完整相对路径筛选"]')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "a.txt");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  }); await flush();
+  expect(rows()).toEqual(["a.txt"]);
+  await click(button(kind === "stage" ? "全部加入暂存" : "全部取消暂存"));
+  expect(bridge.operation).toHaveBeenCalledWith("a", "unstaged", expect.any(String), {
+    kind, pathIds: kind === "stage" ? ["id-a.txt", "id-b.txt"] : ["id-a.txt", "id-b.txt", "id-old.txt"]
+  });
 });
-it("stale selected files never reach the write runner",async()=>{
-  await chooseOperationFiles("stage");bridge.reviewInventory.mockResolvedValue({...reviewFixture.inventory,identity:"changed"});
-  await click(button("暂存已选文件"));expect(bridge.operation).not.toHaveBeenCalled();expect(host.textContent).toContain("文件选择已过期");
+it("Shift uses the current single selection after keyboard navigation and keeps its anchor", async () => {
+  bridge.open.mockResolvedValue(snap([change("a.txt"), change("b.txt"), change("c.txt"), change("d.txt")], []));
+  await mount();
+  await clickWith("a.txt", {});
+  await act(async () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", altKey: true, bubbles: true })));
+  await flush();
+  expect(selectedRows()).toEqual(["b.txt"]);
+  await clickWith("d.txt", { shiftKey: true });
+  expect(selectedRows()).toEqual(["b.txt", "c.txt", "d.txt"]);
+  await clickWith("c.txt", { shiftKey: true });
+  expect(selectedRows()).toEqual(["b.txt", "c.txt"]);
+  await clickWith("d.txt", {});
+  await clickWith("b.txt", { shiftKey: true });
+  expect(selectedRows()).toEqual(["b.txt", "c.txt", "d.txt"]);
 });
 async function reviewStart() {
   settings.update("ai", "profiles", [{ id: "test-ai", name: "模型", kind: "cli", provider: "codex", executable: "", baseUrl: "", model: "model", hasKey: false }]); settings.update("ai", "activeId", "test-ai");
