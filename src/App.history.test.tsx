@@ -113,6 +113,9 @@ describe("Git log tab (A07 / A08)", () => {
     await openLog();
     expect(q(".log-current")?.textContent).toContain("● main");
     expect(q(".log-current")?.textContent).toContain("↑1 ↓2");
+    expect(q(".log-branch.browsing")?.textContent).toContain("main");
+    expect(bridge.log).toHaveBeenCalledTimes(1);
+    expect(bridge.log).toHaveBeenLastCalledWith("a", expect.objectContaining({ refs: ["refs/heads/main"] }), null);
     const tracking = all(".log-branch").map((b) => b.textContent);
     expect(tracking.some((t) => t?.includes("topic") && t.includes("上游已消失"))).toBe(true);
     expect(tracking.some((t) => t?.includes("solo") && t.includes("无上游"))).toBe(true);

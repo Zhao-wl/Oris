@@ -104,7 +104,8 @@ export default function HistoryPanel(props: Props) {
   const [lineJumpVersion, setLineJumpVersion] = useState(0);
   const [lineAnchor, setLineAnchor] = useState<string | null>(null);
   const [lineNote, setLineNote] = useState<string | null>(null);
-  const [filter, setFilter] = useState<string | null>(null);
+  // undefined 表示尚未读取默认分支；null 是用户可选择的全部分支。
+  const [filter, setFilter] = useState<string | null | undefined>(undefined);
   const [searchKind, setSearchKind] = useState<SearchKind>("message");
   const [searchText, setSearchText] = useState("");
   const [search, setSearch] = useState<{ kind: SearchKind; text: string } | null>(null);
@@ -149,7 +150,7 @@ export default function HistoryPanel(props: Props) {
   const [loadedRefs, setLoadedRefs] = useState(-1);
   const [loadedLog, setLoadedLog] = useState(-1);
   const loadRefs = useCallback((version: number) => {
-    void readRefs(repoId).then((view) => { setRefs(view); setRefsError(null); setLoadedRefs(version); onRefsRef.current?.(view); }, (error) => { if (!isStale(error)) { setRefsError(errorText(error)); setLoadedRefs(version); } });
+    void readRefs(repoId).then((view) => { setRefs(view); setFilter((current) => current === undefined ? view.local.find((branch) => branch.current)?.fullName ?? null : current); setRefsError(null); setLoadedRefs(version); onRefsRef.current?.(view); }, (error) => { if (!isStale(error)) { setRefsError(errorText(error)); setFilter((current) => current === undefined ? null : current); setLoadedRefs(version); } });
   }, [repoId]);
 
   /** 读取第一页（重置已加载的结果）；已选中的提交仍在结果中时保持选择。 */
@@ -189,7 +190,7 @@ export default function HistoryPanel(props: Props) {
   }, [repoId, cursor, logLoading, search]);
 
   useEffect(() => { loadRefs(shownRefs); }, [loadRefs, shownRefs]);
-  useEffect(() => { loadFirst(shownRefs); }, [loadFirst, shownRefs]);
+  useEffect(() => { if (filter !== undefined) loadFirst(shownRefs); }, [loadFirst, shownRefs, filter]);
   // 不可见期间失效的内容在切回后的重读完成前不显示（旧的分支、HEAD、引用标记与 stash 列表），提交列表保留以维持滚动位置。
   const refsStale = deferred.refsUntil !== null && (loadedRefs < deferred.refsUntil || loadedLog < deferred.refsUntil);
   const viewRefs = refsStale ? null : refs;
@@ -299,7 +300,7 @@ export default function HistoryPanel(props: Props) {
     if (!lineJump || lineJump.repoId !== repoId || appliedLineJump.current === lineJump.nonce) return;
     appliedLineJump.current = lineJump.nonce;
     setLineJumpVersion(lineJump.nonce);
-    if (!lineOrigin.current) lineOrigin.current = { filter, searchKind, searchText, search, commits, cursor, selected: selectedOid, fileFilter, mode, scroll: list.current?.scrollTop ?? 0 };
+    if (!lineOrigin.current) lineOrigin.current = { filter: filter ?? null, searchKind, searchText, search, commits, cursor, selected: selectedOid, fileFilter, mode, scroll: list.current?.scrollTop ?? 0 };
     // 先作废旧查询，避免筛选变更后的 effect 开始之前，旧结果覆盖新目标。
     ++logRequest.current;
     setFilter(null); setMode({ kind: "commit" });
@@ -426,7 +427,7 @@ export default function HistoryPanel(props: Props) {
   const stashEntry = mode.kind === "stash" ? stash.entries?.find((e) => e.oid === mode.oid) ?? null : null;
 
   return <div ref={root} className="git-body log-layout" hidden={hidden} style={{ gridTemplateColumns: `${columns.left}px ${SPLITTER}px minmax(0, 1fr) ${SPLITTER}px ${columns.right}px` }} onContextMenu={(event) => { if (!(event.target as Element).closest("[data-endpoint]")) setMenu(null); }}>
-    <HistorySidebar refs={viewRefs} refsError={refsError} headLabel={headLabel} current={current} hidden={hidden} filter={filter} onFilter={(value) => { setLineAnchor(null); setLineNote(null); setFilter(value); }}
+    <HistorySidebar refs={viewRefs} refsError={refsError} headLabel={headLabel} current={current} hidden={hidden} filter={filter ?? null} onFilter={(value) => { setLineAnchor(null); setLineNote(null); setFilter(value); }}
       stashes={stashStale ? null : stash.entries} stashError={stash.error} selectedStash={mode.kind === "stash" ? mode.oid : null} onStash={(entry) => setMode({ kind: "stash", oid: entry.oid })} onNewStash={onStashPush ? () => setMode({ kind: "stashPush" }) : undefined}
       blocked={writeBlocked ?? null} onSwitch={onSwitch} onTrack={onTrack} onPruneGone={onPruneGone} onMenu={(x, y, endpoint) => setMenu({ x, y, endpoint })}/>
     {splitter("left")}
