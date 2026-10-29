@@ -302,7 +302,7 @@ describe("task03 conflict navigation and partial content", () => {
   bridge.open.mockResolvedValue(conflict);
   const first=pair("a");first.left.endpoint="stage2";first.right.endpoint="stage3";
   bridge.read.mockResolvedValue(first);
-  await mount();
+  await mount();await openConflictComparison();
   expect(bridge.read.mock.calls[0][6]).toEqual(["stage2","stage3"]);
   const pending=deferred<ContentPair>();bridge.read.mockReturnValueOnce(pending.promise);
   const change=async(selector:string,value:string)=>{await act(async()=>{const field=host.querySelector(selector) as HTMLSelectElement;field.value=value;field.dispatchEvent(new Event("change",{bubbles:true}));});await flush();};
@@ -318,14 +318,14 @@ describe("task03 conflict navigation and partial content", () => {
  it("preserves usable text when the other endpoint fails and reports no false zero comparison",async()=>{
   const conflict=snapshot("a");conflict.files[0].status="conflicted";bridge.open.mockResolvedValue(conflict);
   const partial=pair("a");partial.left.text=null;partial.left.details={state:"unavailable",reason:"解码失败",oid:"failed-oid",mode:"100644",image:null};partial.degradation="解码失败";bridge.read.mockResolvedValue(partial);
-  await mount();expect(host.textContent).toContain("跨侧差异计数与导航不可计算");expect(host.querySelector('[data-testid="readable"]')).not.toBeNull();expect(bridge.diff).not.toHaveBeenCalled();expect(host.textContent).not.toContain("0 处差异");
+  await mount();await openConflictComparison();expect(host.textContent).toContain("跨侧差异计数与导航不可计算");expect(host.querySelector('[data-testid="readable"]')).not.toBeNull();expect(bridge.diff).not.toHaveBeenCalled();expect(host.textContent).not.toContain("0 处差异");
  });
 });
 
 it("task03 discards conflict content invalidated while reading and allows cancellation followed by another read", async()=>{
   const conflict=snapshot("a");conflict.files[0].status="conflicted";bridge.open.mockResolvedValue(conflict);
   const pending=deferred<ContentPair>();bridge.read.mockReturnValueOnce(pending.promise);
-  await mount();await act(async()=>bridge.changed?.({payload:"a"}));
+  await mount();await openConflictComparison();await act(async()=>bridge.changed?.({payload:"a"}));
   const result=pair("a");result.left.endpoint="stage2";result.right.endpoint="stage3";
   await act(async()=>pending.resolve(result));await flush();
   expect(host.querySelector('[data-testid="readable"]')).toBeNull();expect(host.textContent).toContain("旧内容已丢弃");
@@ -408,7 +408,7 @@ it("manual refresh queues once behind an automatic scan and completes while writ
 it("path-specific unrelated writes preserve displayed conflict content", async () => {
   bridge.open.mockResolvedValue({ ...snapshot("a"), files: [{ ...snapshot("a").files[0], status: "conflicted" }] });
   bridge.read.mockResolvedValue({ ...pair("a"), left: { ...pair("a").left, endpoint: "stage2" }, right: { ...pair("a").right, endpoint: "stage3" } });
-  await mount();
+  await mount();await openConflictComparison();
   expect(host.querySelector('[data-testid="readable"]')).not.toBeNull();
   await act(async () => (bridge.changed as unknown as (event: { payload: unknown }) => void)?.({ payload: { repoId: "a", paths: ["generated/other.json"], global: false } }));
   expect(host.querySelector('[data-testid="readable"]')).not.toBeNull();
@@ -419,11 +419,11 @@ it("path-specific unrelated writes preserve displayed conflict content", async (
 it("unrelated continuous events do not reject an in-flight conflict read", async () => {
   bridge.open.mockResolvedValue({ ...snapshot("a"), files: [{ ...snapshot("a").files[0], status: "conflicted" }] });
   const pending = deferred<ContentPair>(); bridge.read.mockReturnValueOnce(pending.promise);
-  await mount();
+  await mount();await openConflictComparison();
   for (let i = 0; i < 10; i++) await act(async () => (bridge.changed as unknown as (event: { payload: unknown }) => void)?.({ payload: { repoId: "a", paths: ["generated/other.json"], global: false } }));
   await act(async () => pending.resolve({ ...pair("a"), left: { ...pair("a").left, endpoint: "stage2" }, right: { ...pair("a").right, endpoint: "stage3" } })); await flush();
   expect(host.querySelector('[data-testid="readable"]')).not.toBeNull();
-  expect(host.textContent).not.toContain("旧内容已丢弃"); expect(bridge.read).toHaveBeenCalledTimes(1);
+  expect(host.textContent).not.toContain("旧内容已丢弃"); expect(bridge.read).toHaveBeenCalledTimes(2);
 });
 
 describe("V2 data layer integration (mocked backend)", () => {
@@ -494,3 +494,8 @@ describe("V2 data layer integration (mocked backend)", () => {
     expect(bridge.refresh.mock.calls.at(-1)?.[0]).toBe("b");
   });
 });
+
+async function openConflictComparison() {
+  await act(async () => { ([...host.querySelectorAll("button")].find(b => b.textContent === "全文件比较（辅助）") as HTMLButtonElement).click(); });
+  await flush();
+}
