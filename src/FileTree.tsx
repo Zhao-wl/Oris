@@ -135,7 +135,16 @@ function FileButton({ file, selectedPathId, onSelect, depth = 0, showPath = fals
         : file.additions !== null ? <span className="line-stat">+{file.additions} −{file.deletions ?? 0}</span>
         : statsPending && file.status !== "conflicted" && <span className="line-stat pending" title="增删统计正在后台补齐">…</span>}
       {actions && allowed && <span className="file-actions">
-        {allowed.primary && <button type="button" className="file-action" disabled={!!actions.disabledReason || file.pending} title={actions.disabledReason ?? `${actionLabels[allowed.primary]} ${file.displayPath}`} onClick={(event) => run(event, allowed.primary!)}>{actionLabels[allowed.primary]}</button>}
+        {allowed.primary && <button
+          type="button"
+          className="file-action"
+          disabled={!!actions.disabledReason || file.pending}
+          aria-label={actionLabels[allowed.primary]}
+          title={actions.disabledReason ?? `${actionLabels[allowed.primary]} ${file.displayPath}`}
+          onClick={(event) => run(event, allowed.primary!)}
+        >
+          {allowed.primary === "stage" ? "+" : allowed.primary === "unstage" ? "-" : actionLabels[allowed.primary]}
+        </button>}
       </span>}
       <span className={`status ${file.status}`}>{statusLabels[file.status]}</span>
     </div>

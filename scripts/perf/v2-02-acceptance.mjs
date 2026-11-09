@@ -156,7 +156,7 @@ const V2_HELPERS = String.raw`
   if (window.__v2) return true;
   const qa = (s) => [...document.querySelectorAll(s)];
   window.__v2 = {
-    rowButton(path, label) { const r = window.__op.row(path); return r ? [...r.querySelectorAll('button')].find((b) => b.textContent === label) ?? null : null; },
+    rowButton(path, label) { const r = window.__op.row(path); return r ? [...r.querySelectorAll('button')].find((b) => (b.getAttribute('aria-label') ?? b.textContent) === label) ?? null : null; },
     clickRow(path, label) { const b = window.__v2.rowButton(path, label); if (!b) throw new Error('行上没有按钮 ' + label + '：' + path); b.click(); },
     clickWith(path, init) { const r = window.__op.row(path); if (!r) throw new Error('没有行 ' + path); r.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, ...init })); },
     /** 多选：先普通点击第一个，其余 Ctrl + 点击。 */
