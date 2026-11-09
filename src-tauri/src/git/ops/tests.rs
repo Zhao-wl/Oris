@@ -738,6 +738,19 @@ fn write_channel_does_not_run_fsmonitor_or_external_diff_commands() {
     assert!(!marker.exists());
 }
 
+#[test]
+fn background_details_reject_a_snapshot_after_the_index_changes() {
+    let dir = base_repo();
+    let p = dir.path();
+    let h = Harness::new(p);
+    write(p, "a.txt", b"first change\n");
+    let first = h.run(OperationRequest::Stage { path_ids: vec![id("a.txt")] }).snapshot.unwrap();
+    write(p, "another.txt", b"second change\n");
+    let second = h.run(OperationRequest::Stage { path_ids: vec![id("another.txt")] }).snapshot.unwrap();
+    assert!(matches!(h.adapter.details(&first.revision), Err(GitError::StaleRequest)));
+    assert!(h.adapter.details(&second.revision).is_ok());
+}
+
 /// 外部开始 rebase 时 status 输出可能不变：扫描仍要报告进行中状态（写操作据此全部禁用）。
 #[test]
 fn in_progress_state_changes_the_revision_even_when_status_output_is_identical() {

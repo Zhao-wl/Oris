@@ -1,12 +1,21 @@
 import { createStore, type Store } from "./store";
 import type { CompareScope, FileChange, RepositoryDetails, RepositorySnapshot } from "./types";
 
+type StagingScope = "unstaged" | "staged";
+export interface StagingPreview {
+  revision: string;
+  unstaged: ReadonlyMap<string, FileChange>;
+  staged: ReadonlyMap<string, FileChange>;
+}
+
 /** 每个项目的轻量运行状态（按项目拆分，切换项目时只替换当前项目切片）。 */
 export interface ProjectRuntime {
   /** 最近一次扫描（V2 含三个范围）。 */
   snapshot: RepositorySnapshot | null;
   /** 与 snapshot.revision 对应的后台统计 / “全部”范围修正。 */
   details: RepositoryDetails | null;
+  /** 新统计到达前，仅在暂存列表中保留未操作文件的显示信息。 */
+  stagingPreview?: StagingPreview | null;
   /** 显示的是持久化快照，后台校验尚未完成（V2-D08）。 */
   verifying: boolean;
   /** 项目在后台期间收到了变化，切回时需要刷新。 */
@@ -81,6 +90,33 @@ export function filesForScope(snapshot: RepositorySnapshot, details: RepositoryD
   }
   perSnapshot.set(key, files);
   return files;
+}
+
+/** 以 Git 返回的条目为准，仅临时补上未操作文件的统计和折叠标记。 */
+export function stagingList(snapshot: RepositorySnapshot, runtime: ProjectRuntime, scope: StagingScope): FileChange[] {
+  const files = filesForScope(snapshot, runtime.details, scope);
+  const preview = runtime.stagingPreview;
+  if (preview?.revision !== snapshot.revision || !statsPending(snapshot, runtime.details)) return files;
+  return files.map(file => {
+    const previous = preview[scope].get(file.pathId);
+    if (!previous || file.pending || file.status !== previous.status || file.oldPathId !== previous.oldPathId) return file;
+    return {
+      ...file,
+      additions: file.additions ?? previous.additions,
+      deletions: file.deletions ?? previous.deletions,
+      contentUnchanged: file.contentUnchanged ?? previous.contentUnchanged
+    };
+  });
+}
+
+export function retainStagingPreview(runtime: ProjectRuntime, next: RepositorySnapshot, pathIds: string[]): StagingPreview | null {
+  const previous = runtime.snapshot;
+  if (!previous?.scopes || !next.scopes || next.statsReady !== false) return null;
+  const touched = new Set(pathIds);
+  const retain = (scope: StagingScope) => new Map(stagingList(previous, runtime, scope)
+    .filter(file => !touched.has(file.pathId) && (!file.oldPathId || !touched.has(file.oldPathId)))
+    .map(file => [file.pathId, file]));
+  return { revision: next.revision, unstaged: retain("unstaged"), staged: retain("staged") };
 }
 
 /** 生成某范围的快照视图（与 V1 的单范围快照同形），供现有阅读流程使用。 */

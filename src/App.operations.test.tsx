@@ -753,7 +753,7 @@ it("remembers dock height across file/history switching, collapse and remount", 
   expect(localStorage.getItem('oris.bottomHeight.v1')).toBe(String(previous + 20));
 });
 
-it("publishes staging confirmation with its stats, without flashing folded files or resetting surviving rows", async () => {
+it("confirms staging before stats arrive, without flashing folded files or resetting surviving rows", async () => {
   const moved = change('a.txt'), survivor = change('b.txt'), folded = { ...change('c.txt'), contentUnchanged: 'eol' as const };
   bridge.open.mockResolvedValue(snap([moved, survivor, folded], []));
   const confirmed = snap([{ ...survivor, additions: null, deletions: null }, { ...change('c.txt'), additions: null, deletions: null }], [moved], 'r2');
@@ -771,6 +771,9 @@ it("publishes staging confirmation with its stats, without flashing folded files
   expect(row('b.txt').querySelector('.line-stat')?.textContent).toBe('+1 −0');
   expect(container.scrollTop).toBe(56);
   expect(host.querySelector('.fold-divider')?.textContent).toContain('1个折叠内容');
+  expect(host.querySelector('.pending-mark')).toBeNull();
+  expect(host.querySelector('.op-status.succeeded')).not.toBeNull();
+  expect(rowButton('b.txt','暂存').disabled).toBe(false);
   details.resolve({ revision:'r2', stats:{ unstaged:[['id-b.txt',1,0]], staged:[['id-a.txt',1,0]], all:[] }, contentUnchanged:{unstaged:[['id-c.txt','eol']]}, all:confirmed.scopes!.all, elapsedMs:5 });
   await flush();
   expect(rows()).toEqual(['b.txt']);
@@ -779,7 +782,7 @@ it("publishes staging confirmation with its stats, without flashing folded files
   expect(rowButton('b.txt','暂存').disabled).toBe(false);
 });
 
-it("keeps the staged list stable while unstage confirmation stats are pending", async () => {
+it("confirms unstage before stats arrive and keeps the staged list stable", async () => {
   const moved = change('a.txt'), survivor = change('b.txt');
   bridge.open.mockResolvedValue(snap([], [moved, survivor]));
   const confirmed = { ...snap([moved], [{...survivor, additions:null, deletions:null}], 'r2'), statsReady:false };
@@ -792,6 +795,8 @@ it("keeps the staged list stable while unstage confirmation stats are pending", 
   expect(rows()).toEqual(['b.txt']);
   expect(row('b.txt')).toBe(stableRow);
   expect(row('b.txt').querySelector('.line-stat')?.textContent).toBe('+1 −0');
+  expect(host.querySelector('.pending-mark')).toBeNull();
+  expect(rowButton('b.txt','取消暂存').disabled).toBe(false);
   details.resolve({revision:'r2',stats:{unstaged:[['id-a.txt',1,0]],staged:[['id-b.txt',7,2]],all:[]},all:confirmed.scopes!.all,elapsedMs:1});
   await flush();
   expect(row('b.txt')).toBe(stableRow);

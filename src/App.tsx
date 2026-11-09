@@ -18,7 +18,7 @@ import type { DiffLineSelection } from "./diff-line-selection";
 import ImageViewer from "./ImageViewer";
 import FileTree, { compareFiles, contentUnchangedLabels, type FileAction, type FileActions } from "./FileTree";
 import ProjectTab from "./ProjectTab";
-import { ProjectStore, parsePersistedSnapshot, persistableSnapshot, scopeView, statsPending } from "./project-store";
+import { ProjectStore, parsePersistedSnapshot, persistableSnapshot, retainStagingPreview, scopeView, stagingList, statsPending, type StagingPreview } from "./project-store";
 import { createStore, useStore } from "./store";
 import ConfirmDialog, { type ConfirmRequest } from "./ConfirmDialog";
 import SwitchDialog, { type SwitchChoice, type SwitchRequest } from "./SwitchDialog";
@@ -53,7 +53,7 @@ import SpecialFileView from "./SpecialFileView";
 import { describeSpecial, isSvgPath, lfsNotice, metaChanges, noVisibleDifferenceReason, shortcut, sideLabel } from "./reading-model";
 import { settings } from "./appearance";
 import { FONT_SIZE_DEFAULT, FONT_SIZE_MAX, FONT_SIZE_MIN, useSettings } from "./settings";
-import type { CompareScope, ConflictVersion, ContentPair, DiffDocument, FileChange, GroupDiscovery, GroupMember, RepositoryDetails, RepositorySnapshot, WhitespaceMode } from "./types";
+import type { CompareScope, ConflictVersion, ContentPair, DiffDocument, FileChange, GroupDiscovery, GroupMember, RepositorySnapshot, WhitespaceMode } from "./types";
 import { schemeIndex } from "./themes/runtime";
 import UpdateButton from "./UpdateButton";
 import { ContentCache, DiffCache, RequestGate, projectName, moveProject, contentCacheKey, defaultAnchor, loadWorkspace, removeProject, resolveReadingSelection, saveWorkspace, upsertProject, type ProjectRecord, type ReadingAnchor } from "./workspace-model";
@@ -261,11 +261,15 @@ export default function App() {
     };
     if (!next.scopes) return;
     if (next.statsReady !== false || projects.get(repoId)?.details?.revision === next.revision) { persist(); return; }
+    const clearPreview = () => {
+      if (projects.get(repoId)?.stagingPreview?.revision === next.revision) projects.update(repoId, { stagingPreview: null });
+    };
     void repositoryDetails(repoId, next.revision).then((details) => {
-      if (!details || projects.get(repoId)?.snapshot?.revision !== details.revision) return;
-      projects.update(repoId, { details });
+      if (projects.get(repoId)?.snapshot?.revision !== next.revision) return;
+      if (details?.revision !== next.revision) { clearPreview(); return; }
+      projects.update(repoId, { details, stagingPreview: null });
       persist();
-    }, () => {});
+    }, clearPreview);
   };
   /** 空闲时预取列表中上下相邻各 1 个 ≤256 KiB 的文本文件（后端做大小检查）。 */
   const schedulePrefetch = useRef((_snapshot: RepositorySnapshot, _file: FileChange, _git: string) => {});
@@ -353,7 +357,7 @@ export default function App() {
     finally { if (contentGate.current.accepts(requestId)) { contentPending.current = false; setLoading(false); contentGate.current.finish(requestId); } }
   }, [updateAnchor]);
 
-  const acceptSnapshot = useCallback(async (result: RepositorySnapshot, project: ProjectRecord, anchor: ReadingAnchor, requestId: string, automatic = false, suppliedDetails: RepositoryDetails | null = null) => {
+  const acceptSnapshot = useCallback(async (result: RepositorySnapshot, project: ProjectRecord, anchor: ReadingAnchor, requestId: string, automatic = false, stagingPreview?: StagingPreview | null) => {
     if (!repositoryGate.current.accepts(requestId)) return;
     if (!opened.current.has(result.repo.repoId)) { opened.current.add(result.repo.repoId); setOpenedRepos(new Set(opened.current)); }
     if (scopeSnapshots.current.get(`${result.repo.repoId}:${result.scope}`) !== result) {
@@ -369,7 +373,8 @@ export default function App() {
       : { ...anchor, scope: result.scope };
     projects.update(result.repo.repoId, (current) => ({
       snapshot: result,
-      details: suppliedDetails?.revision === result.revision ? suppliedDetails : current.details?.revision === result.revision ? current.details : null,
+      details: current.details?.revision === result.revision ? current.details : null,
+      stagingPreview: stagingPreview === undefined && current.stagingPreview?.revision === result.revision ? current.stagingPreview : stagingPreview ?? null,
       verifying: false,
       dirty: false
     }));
@@ -840,7 +845,10 @@ export default function App() {
   const showIgnored = !!activeRepoId && showIgnoredRepo === activeRepoId;
   const ignoredCount = useMemo(() => snapshot?.files.filter(f => ignoreMatcher(f.displayPath)).length ?? 0, [snapshot, ignoreMatcher]);
   const ignoredStagedPaths = useMemo(() => runtime?.snapshot?.scopes?.staged.filter(f => ignoreMatcher(f.displayPath)).map(f => f.displayPath) ?? [], [runtime, ignoreMatcher]);
-  const visibleFiles = useMemo(() => filterReadableFiles(snapshot?.files ?? [], ignoreMatcher, filter, showIgnored).sort(compareFiles), [snapshot, filter, ignoreMatcher, showIgnored]);
+  const visibleFiles = useMemo(() => {
+    const files = snapshot && runtime && scope !== "all" ? stagingList(snapshot, runtime, scope) : snapshot?.files ?? [];
+    return filterReadableFiles(files, ignoreMatcher, filter, showIgnored).sort(compareFiles);
+  }, [snapshot, runtime, scope, filter, ignoreMatcher, showIgnored]);
   visibleFilesRef.current = visibleFiles;
   // 工作区成员不单独占标签（V2-D76）；工作区标签也按成员名称匹配搜索。
   const visibleProjects = useMemo(() => { const query = projectFilter.trim().toLocaleLowerCase(); return tabProjects(workspaceState).filter((project) => `${projectName(project)} ${project.repo.worktreePath} ${project.group ? workspaceState.projects.filter((member) => member.groupId === project.repo.repoId).map(projectName).join(" ") : ""}`.toLocaleLowerCase().includes(query)); }, [projectFilter, workspaceState]);
@@ -1071,17 +1079,6 @@ export default function App() {
       if (repositoryGate.current.accepts(requestId)) repositoryGate.current.finish(requestId);
       return null;
     }
-    // Stage/unstage already moved the requested rows optimistically. Keep that
-    // presentation until the confirmed revision's metadata is available, then
-    // publish both together instead of flashing every stat/fold to unknown.
-    let operationDetails: RepositoryDetails | null = null;
-    const confirmed = outcome.snapshot;
-    if (confirmed?.scopes && confirmed.statsReady === false && (kind === "stage" || kind === "unstage")) {
-      try {
-        const details = await repositoryDetails(repoId, confirmed.revision);
-        if (details?.revision === confirmed.revision) operationDetails = details;
-      } catch { /* Stats are optional: still apply Git's authoritative outcome, never roll back a successful write. */ }
-    }
     opRunning.current.delete(repoId);
     // 写操作期间 watcher 屏蔽了 refs 事件：结束后由这里触发分支列表与日志重读。
     if (currentRead.current.repo === repoId) {
@@ -1096,20 +1093,25 @@ export default function App() {
     if (outcome.kind === "discard" || outcome.kind === "hunkDiscard" || outcome.kind === "undoDiscard") void discardBackups(repoId).then((backups) => updateOps(repoId, { backups }), () => {});
     if (outcome.snapshot) {
       const result = outcome.snapshot;
+      // Git 已确认，统计仍在后台补齐；只在文件列表暂时沿用未操作行的显示信息。
+      const previous = projects.get(repoId);
+      const stagingPreview = succeeded && prior && previous?.snapshot?.revision === prior.revision
+        && (request.kind === "stage" || request.kind === "unstage" || request.kind === "stageSelected")
+        ? retainStagingPreview(previous, result, request.pathIds) : null;
       if (prior?.revision !== result.revision) cache.current.clearRepo(repoId);
       if (currentRead.current.repo === repoId && repositoryGate.current.accepts(requestId)) {
         refreshPending.current = false;
         const project = workspaceRef.current.projects.find((entry) => entry.repo.repoId === repoId);
         const scopeNow = currentRead.current.scope;
-        const view = scopeView(result, operationDetails, scopeNow);
+        const view = scopeView(result, null, scopeNow);
         const query = (project?.anchor.filter ?? "").trim().toLocaleLowerCase();
         const nextVisible = filterReadableFiles(view.files, createFileIgnoreMatcher(settings.get().fileIgnore.rules, repoId), query, showIgnoredRepoRef.current === repoId).sort(compareFiles);
         // 切换分支、检出、stash 等会整体改变工作区的操作：文件仍在时保持阅读位置，否则回到合法入口并提示（V2-03 M4）。
         const selected = switchKinds.has(outcome.kind) ? currentRead.current.selected ?? selectedBefore : selectionAfterOperation(beforeFiles, nextVisible, currentRead.current.selected ?? selectedBefore);
-        if (project) await acceptSnapshot(view, project, { ...project.anchor, scope: scopeNow, selectedPathId: selected }, requestId, false, operationDetails);
+        if (project) await acceptSnapshot(view, project, { ...project.anchor, scope: scopeNow, selectedPathId: selected }, requestId, false, stagingPreview);
         if (repositoryGate.current.accepts(requestId)) repositoryGate.current.finish(requestId);
       } else {
-        projects.update(repoId, { snapshot: result, details: operationDetails, verifying: false, dirty: false });
+        projects.update(repoId, { snapshot: result, details: null, stagingPreview, verifying: false, dirty: false });
         loadDetails.current(result);
       }
     } else {
@@ -1962,7 +1964,7 @@ export default function App() {
         <div className="content">{notice && <SelectionNotice message={notice} onDismiss={() => setNotice(null)}/>}{loading && !diffDocument && <div className="state loading" role="status"><span className="loading-spinner" aria-hidden="true"/><span>正在读取真实仓库…</span></div>}{error && <div className="state error"><strong>无法显示差异</strong><p>{error}</p></div>}{!loading && !error && pair?.left.encoding === "missing" && pair.right.encoding === "missing" && <div className="state">所选两端均缺失，没有可比较内容。</div>}{!loading && !error && pair?.degradation && !special && !latin1Active && <div className="state warning"><strong>内容已降级</strong><p>{pair.degradation}</p></div>}{!loading && !error && special && <SpecialFileView description={special} compact={!!availableText} action={latin1Available ? { label: "按单字节（Latin-1）显示", onClick: () => setLatin1Keys((current) => new Set([...current, latin1Key])) } : undefined}/>}{!loading && !error && readingNotices.length > 0 && <div className="reading-notice" role="status">{readingNotices.map((text, index) => <p key={index}>{text}</p>)}</div>}{!loading && !error && pair && (pair.left.details?.image || pair.right.details?.image || /\.(png|jpe?g|webp)$/i.test(pair.displayPath)) && <ImageViewer key={`${pair.repoId}:${pair.pathId}:${pair.left.contentId}:${pair.right.contentId}`} left={pair.left} right={pair.right} labels={endpoints}/>} {!loading && !error && availableText && pair && !latin1Active && <><div className="partial-notice">仅显示可用文本端；另一侧不可用，跨侧差异计数与导航不可计算。{special ? "" : pair.degradation}</div><DiffViewer ref={reviewReading ? viewer : undefined} readingKey={`${pair.repoId}:${pair.pathId}:${availableText.endpoint}`} presentation={{kind:"compare"}} left={editorText(availableText.text!)} right={editorText(availableText.text!)} document={{requestId:pair.requestId,contentIds:[availableText.contentId,availableText.contentId],changes:[],hunks:[],elapsedMs:0}} mode="unified" highlight={highlight} collapsed={false} wrap={wrap} alignChanges={false} onPositionChange={() => {}} onSplitLayoutChange={() => {}}/></>} {!error && viewTexts && pair && viewDocument && <DiffViewer readingKey={reviewReading ? `${pair.repoId}:review:${pair.revision}:${pair.pathId}` : historyReading ? `${pair.repoId}:history:${historyReading.key}` : `${pair.repoId}:${scope}:${pair.pathId}`} presentation={presentation} ref={viewer} left={viewTexts[0]} right={viewTexts[1]} document={viewDocument} hunkHeaders={hunkHeaders} onLineSelect={onLineSelect} selectedLine={lineContext && lineSelection?.key === lineHistoryKey(lineContext) ? lineSelection.value : null} mode={mode} highlight={highlight} collapsed={collapsed} wrap={wrap} alignChanges={alignChanges} onPositionChange={handlePositionChange} onSplitLayoutChange={handleSplitLayoutChange}/>} {!loading && !error && !pair && <div className="state">{snapshot && !snapshot.files.length ? "当前比较范围没有变化" : "选择一个变化文件开始阅读"}</div>}</div>{lineInfoEnabled && lineContext && viewTexts && !latin1Active && !error && <LineHistoryBar context={lineContext} selection={lineSelection} onJump={jumpFromLine}/>}</>}</section>
     </section>
     <GitPanel filesContent={<>{(["unstaged", "staged"] as const).map(listScope => {
-      const source = runtime?.snapshot?.scopes ? scopeView(runtime.snapshot, runtime.details, listScope).files : snapshot?.scope === listScope ? snapshot.files : [];
+      const source = runtime?.snapshot?.scopes ? stagingList(runtime.snapshot, runtime, listScope) : snapshot?.scope === listScope ? snapshot.files : [];
       const files = filterReadableFiles(source, ignoreMatcher, filter, showIgnored).sort(compareFiles);
       const active = scope === listScope;
       const actions: FileActions = { ...fileActions, scope: listScope, selection: active ? multiSelection : new Set<string>(),

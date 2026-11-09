@@ -462,6 +462,15 @@ impl GitAdapter {
         if let Some(details) = state.details.get() {
             return Ok(details.clone());
         }
+        // 后台统计可能与下一次写操作重叠。确认比较基准仍属于本次扫描，
+        // 避免把另一份 index 或 HEAD 的结果缓存到旧 revision。
+        let check_base = || {
+            if self.index_stat() != state.index_stat || self.refs_digest()? != state.refs_digest {
+                return Err(GitError::StaleRequest);
+            }
+            Ok(())
+        };
+        check_base()?;
         let started = std::time::Instant::now();
         let base = if state.has_head { "HEAD".to_owned() } else { self.empty_tree()? };
         let numstat = |args: Vec<&str>| -> Result<HashMap<String, (Option<u64>, Option<u64>)>, GitError> {
@@ -592,6 +601,7 @@ impl GitAdapter {
             unstaged: self.unchanged_files(state, &state.lists.unstaged, &unstaged, false),
             all: if state.has_head { self.unchanged_files(state, &all, &all_stats, true) } else { Vec::new() },
         };
+        check_base()?;
         let details = Arc::new(RepositoryDetails {
             revision: state.revision.clone(),
             stats,
