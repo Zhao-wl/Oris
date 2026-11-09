@@ -50,7 +50,7 @@ import { MergeCommitDialog, MergeDialog, RemoteChoiceDialog, SyncToast, SyncTool
 import { fetchAgeText, fetchTimeText, historyStatus, isStale as isStaleError, loadFetchRecord, loadPullMode, parseProgress, saveFetchRecord, savePullMode, type PullMode } from "./history-model";
 import SelectionNotice from "./SelectionNotice";
 import SpecialFileView from "./SpecialFileView";
-import { describeSpecial, isSvgPath, lfsNotice, metaChanges, noVisibleDifferenceReason, shortcut, sideLabel } from "./reading-model";
+import { describeSpecial, isSvgPath, lfsNotice, noVisibleDifferenceReason, shortcut, sideLabel } from "./reading-model";
 import { settings } from "./appearance";
 import { FONT_SIZE_DEFAULT, FONT_SIZE_MAX, FONT_SIZE_MIN, useSettings } from "./settings";
 import type { CompareScope, ConflictVersion, ContentPair, DiffDocument, FileChange, GroupDiscovery, GroupMember, RepositorySnapshot, WhitespaceMode } from "./types";
@@ -1931,9 +1931,7 @@ export default function App() {
     const lfs = lfsNotice(pair);
     if (lfs) readingNotices.push(lfs);
     const invisible = readable && presentation.kind === "compare" ? noVisibleDifferenceReason(pair, diffDocument) : null;
-    const meta = readable && presentation.kind === "compare" ? metaChanges(pair.left, pair.right) : [];
     if (invisible) readingNotices.push(invisible);
-    else if (meta.length) readingNotices.push(`文本之外的变化：${meta.join("、")}`);
     if (readable && isSvgPath(pair.displayPath)) readingNotices.push("SVG 按源代码文本显示：不渲染图像，不执行其中的脚本或外部引用。");
   }
   const hunkReason = hunkBlock ?? mapBlocked;
