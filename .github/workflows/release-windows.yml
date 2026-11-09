@@ -87,7 +87,7 @@ jobs:
         run: |
           cargo fetch --locked --manifest-path src-tauri/Cargo.toml
           if ($LASTEXITCODE -ne 0) { throw 'cargo fetch 失败' }
-          & ./scripts/build-release.ps1 -Bundle -Bundles nsis -UpdaterArtifacts
+          & ./scripts/build-release.ps1 -Bundle -Bundles nsis -UpdaterArtifacts -BundleAttempts 5
       - name: macOS DMG 和自动更新包签名构建
         if: matrix.platform == 'macos'
         env:

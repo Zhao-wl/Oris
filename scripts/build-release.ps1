@@ -8,6 +8,9 @@
 .PARAMETER Bundles
   与 -Bundle 一起使用：只生成指定格式（例如 nsis；逗号分隔）。默认按 tauri.conf.json 的 targets。
 
+.PARAMETER BundleAttempts
+  安装包生成的最大尝试次数；CI 可增加以容忍打包工具下载的临时网络错误，不重复编译应用。
+
 .PARAMETER UpdaterArtifacts
   与 -Bundle 一起使用：为安装包生成自动更新签名（.sig）。需要 TAURI_SIGNING_PRIVATE_KEY 与
   TAURI_SIGNING_PRIVATE_KEY_PASSWORD，通常由 scripts\publish-release.ps1 设置。
@@ -32,6 +35,8 @@
 param(
   [switch]$Bundle,
   [string]$Bundles,
+  [ValidateRange(1, 5)]
+  [int]$BundleAttempts = 1,
   [switch]$UpdaterArtifacts,
   [string[]]$ExtraConfig,
   [switch]$Test,
@@ -149,7 +154,16 @@ try {
     foreach ($extra in $ExtraConfig) { $bundleArgs += @('--config', [IO.Path]::GetFullPath($extra)) }
     $bundleArgs += @('--config', $bundleConfigPath)
     if ($Bundles) { $bundleArgs += @('--bundles', $Bundles) }
-    Invoke-Step "生成安装包 (npm $($bundleArgs -join ' '))" { npm @bundleArgs }
+    for ($attempt = 1; $attempt -le $BundleAttempts; $attempt++) {
+      try {
+        Invoke-Step "生成安装包（$attempt/$BundleAttempts）(npm $($bundleArgs -join ' '))" { npm @bundleArgs }
+        break
+      } catch {
+        if ($attempt -eq $BundleAttempts) { throw }
+        Write-Warning "安装包生成失败，20 秒后重试；不会重复编译应用。"
+        Start-Sleep -Seconds 20
+      }
+    }
   }
 
   $elapsed = (Get-Date) - $started
