@@ -8,7 +8,7 @@ import { DRAFTS_KEY } from "./operations-model";
 import { defaultAnchor, WORKSPACE_KEY } from "./workspace-model";
 
 const bridge = vi.hoisted(() => ({
-  reviewSnapshot: vi.fn(), reviewContext: vi.fn(), reviewInventory: vi.fn(), reviewLocation: vi.fn(), goToLine: vi.fn(), open: vi.fn(), refresh: vi.fn(), read: vi.fn(), diff: vi.fn(), details: vi.fn(), activate: vi.fn(), loadSnapshot: vi.fn(),
+  reviewSnapshot: vi.fn(), reviewContext: vi.fn(), reviewInventory: vi.fn(), reviewLocation: vi.fn(), goToLine: vi.fn(), open: vi.fn(), refresh: vi.fn(), read: vi.fn(), diff: vi.fn(), details: vi.fn(), activate: vi.fn(), loadSnapshot: vi.fn(), presentation: vi.fn(),
   operation: vi.fn(), prepareDiscard: vi.fn(), head: vi.fn(), backups: vi.fn(), planAi: vi.fn(), refs: vi.fn(), reveal: vi.fn(async () => {}),
 }));
 vi.mock("./api", () => ({ discoverGroup: vi.fn(async () => ({ isGroup: false, members: [], selectedRepoId: null, ignored: [] })), memberChangeCount: vi.fn(async () => 0), watchGroup: vi.fn(async () => {}), setSubmodulePointers: vi.fn(async () => {}), openRepository: bridge.open, refreshRepository: bridge.refresh, readContentPair: bridge.read, closeRepository: vi.fn(async () => {}), cancelContentRead: vi.fn(async () => {}),
@@ -22,7 +22,14 @@ vi.mock("./history-api", async (importOriginal) => ({ ...(await importOriginal<t
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ isFocused: async () => false, onFocusChanged: async () => () => {} }) }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => {} }));
-vi.mock("./DiffViewer", async () => { const { forwardRef, useImperativeHandle } = await import("react"); return { default: forwardRef(({ readingKey }: { readingKey: string }, ref) => { useImperativeHandle(ref, () => ({ goToLine: bridge.goToLine })); return <div data-testid="readable">{readingKey}</div>; }) }; });
+vi.mock("./DiffViewer", async () => {
+  const { forwardRef, useImperativeHandle, useLayoutEffect } = await import("react");
+  return { default: forwardRef(({ readingKey, presentation }: { readingKey: string; presentation: unknown }, ref) => {
+    useImperativeHandle(ref, () => ({ goToLine: bridge.goToLine }));
+    useLayoutEffect(() => { bridge.presentation(presentation); }, [presentation]);
+    return <div data-testid="readable">{readingKey}</div>;
+  }) };
+});
 vi.mock("./ImageViewer", () => ({ default: () => <div/> }));
 import App from "./App";
 import { settings } from "./appearance";
@@ -261,9 +268,14 @@ afterEach(async () => { await act(async () => root.unmount()); settings.update("
 describe("stage / unstage (B05, B16)", () => {
   it("moves the file optimistically before Git confirms, disables other writes meanwhile, then applies the confirmed snapshot", async () => {
     const pending = deferred<OperationOutcome>();
+    const nextDiff = deferred<ContentPair>();
     bridge.operation.mockReturnValue(pending.promise);
+    bridge.read.mockImplementation(async (_repo: string, _scope: string, revision: string, pathId: string) =>
+      revision === "r2" && pathId === "id-b.txt" ? nextDiff.promise : pair(pathId, revision));
     await mount();
     expect(rows()).toEqual(["a.txt", "b.txt"]);
+    const editor = host.querySelector("[data-testid=readable]");
+    expect(editor?.textContent).toBe("a:unstaged:id-a.txt");
     await click(rowButton("a.txt", "暂存"));
     expect(bridge.operation).toHaveBeenCalledWith("a", "unstaged", expect.any(String), { kind: "stage", pathIds: ["id-a.txt"] });
     expect(rows()).toEqual(["b.txt"]);
@@ -272,12 +284,20 @@ describe("stage / unstage (B05, B16)", () => {
     expect(rowButton("b.txt", "暂存").disabled).toBe(true);
     expect(rowButton("b.txt", "暂存").title).toContain("正在执行");
     expect(host.querySelector(".op-status.running")?.textContent).toContain("正在暂存");
+    expect(host.querySelector("[data-testid=readable]")).toBe(editor);
+    expect(editor?.textContent).toBe("a:unstaged:id-a.txt");
     pending.resolve(outcome("stage", snap([change("b.txt")], [change("a.txt")], "r2"), { message: "已暂存 1 个文件" }));
     await flush();
     expect(rows()).toEqual(["b.txt"]);
     expect(host.querySelector(".file.selected")?.getAttribute("aria-label")).toBe("b.txt");
     expect(rowButton("b.txt", "暂存").disabled).toBe(false);
     expect(host.querySelector(".op-status")?.textContent).toContain("已暂存 1 个文件");
+    expect(host.querySelector("[data-testid=readable]")).toBe(editor);
+    expect(editor?.textContent).toBe("a:unstaged:id-a.txt");
+    nextDiff.resolve(pair("id-b.txt", "r2"));
+    await flush();
+    expect(host.querySelector("[data-testid=readable]")).toBe(editor);
+    expect(editor?.textContent).toBe("a:unstaged:id-b.txt");
     expect(host.querySelector(".selection-notice")).toBeNull();
   });
 
@@ -762,6 +782,8 @@ it("confirms staging before stats arrive, without flashing folded files or reset
   bridge.details.mockReturnValue(details.promise);
   bridge.operation.mockResolvedValue(outcome('stage', confirmed));
   await mount();
+  await click(row('b.txt'));
+  bridge.presentation.mockClear();
   const survivorNode = row('b.txt');
   const container = host.querySelector<HTMLElement>('.active-scope .files')!;
   container.scrollTop = 56;
@@ -774,12 +796,14 @@ it("confirms staging before stats arrive, without flashing folded files or reset
   expect(host.querySelector('.pending-mark')).toBeNull();
   expect(host.querySelector('.op-status.succeeded')).not.toBeNull();
   expect(rowButton('b.txt','暂存').disabled).toBe(false);
+  expect(bridge.presentation).not.toHaveBeenCalled();
   details.resolve({ revision:'r2', stats:{ unstaged:[['id-b.txt',1,0]], staged:[['id-a.txt',1,0]], all:[] }, contentUnchanged:{unstaged:[['id-c.txt','eol']]}, all:confirmed.scopes!.all, elapsedMs:5 });
   await flush();
   expect(rows()).toEqual(['b.txt']);
   expect(row('b.txt')).toBe(survivorNode);
   expect(container.scrollTop).toBe(56);
   expect(rowButton('b.txt','暂存').disabled).toBe(false);
+  expect(bridge.presentation).not.toHaveBeenCalled();
 });
 
 it("confirms unstage before stats arrive and keeps the staged list stable", async () => {

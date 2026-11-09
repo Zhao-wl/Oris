@@ -116,6 +116,12 @@ describe("任务 05 阅读体验（App 集成）", () => {
   it("专注 diff 与 F7：快捷键切换专注、Esc 退出；F7 / Shift+F7 调用阅读器导航", async () => {
     await mount();
     await select("a.ts");
+    const tools = host.querySelector<HTMLButtonElement>('button[aria-label="Diff 工具栏"]')!;
+    if (tools.getAttribute("aria-expanded") === "false") await act(async () => tools.click());
+    await act(async () => tools.click());
+    expect(host.querySelector(".toolbar")?.hasAttribute("hidden")).toBe(true);
+    expect(host.querySelector(".tabbar .diff-navigation button[aria-label='上一处差异']")).not.toBeNull();
+    expect(host.querySelector(".tabbar .diff-navigation button[aria-label='下一处差异']")).not.toBeNull();
     await key({ key: "Enter", ctrlKey: true, shiftKey: true });
     expect(host.querySelector(".app.focus-mode")).toBeTruthy();
     await key({ key: "Escape" });

@@ -124,6 +124,8 @@ button:disabled { opacity:.45; cursor:default; }
 .editor > .content { flex:1 1 0; }
 .editor > .diff-footer { height:27px; }
 .tabbar { padding:0 10px; background:var(--panel); font-size:12px; }
+.diff-navigation { display:inline-flex; flex:none; align-items:center; gap:4px; white-space:nowrap; }
+.diff-navigation button { padding:2px 5px; }
 .toolbar { padding:5px 8px; background:var(--chrome); flex-wrap:wrap; }
 .toolbar button,.toolbar select { padding:3px 7px; }
 .toolbar .toggle-button { display:inline-flex; align-items:center; background:var(--toggle-off); border-color:var(--border); color:var(--dim); }
