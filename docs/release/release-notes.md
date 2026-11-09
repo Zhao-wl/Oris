@@ -1,4 +1,6 @@
-# Oris 发行说明（v0.9.2）
+# Oris 发行说明（v1.0.0）
+
+最新发布：**[v1.0.0（Windows x64 / macOS Apple Silicon）](https://github.com/Zhao-wl/Oris/releases/tag/v1.0.0)**，于 2026-11-09 正式公开并设为 latest。文件审核布局改版与暂存闪烁修复见 [1.0.0 更新日志](v1.0.0.md)；双平台构建、七项附件哈希与更新签名核验已通过，详情见 [发布收尾记录](../validation/v1.0.0-release-closeout.md)。下方保留旧版发布记录与历史验证边界。
 
 本次发布：**[v0.9.2（Windows x64 / macOS Apple Silicon）已公开发布](https://github.com/Zhao-wl/Oris/releases/tag/v0.9.2)**，于 2026-10-27 14:49:23（北京时间）通过 [Desktop release 工作流](https://github.com/Zhao-wl/Oris/actions/runs/40462080636) 发布，标签指向 `3cb3302`。七项公开附件哈希、双平台更新签名及 latest 自动更新入口已核验。更新内容见 [0.9.2 更新日志](v0.9.2.md)，证据与边界见 [发布收尾记录](../validation/v0.9.2-release-closeout.md)。
 
