@@ -1,5 +1,5 @@
 import AiInputFrame from "./AiInputFrame";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { headCommitInfo, type BackupSummary, type HeadCommitInfo, type OperationKind, type OperationOutcome, type OperationStatus } from "./operations-api";
 import { loadDraft, operationLabels, saveDraft } from "./operations-model";
 import { errorText } from "./error-message";
@@ -34,6 +34,8 @@ interface Props {
   onGenerateMessage?(): Promise<string>;
   /** “历史”页内容（任务 04；V2-03 的 Stash 已并入其左侧）：挂载后保持，切换页签时只隐藏，保留已加载的历史与选择。 */
   logContent?: ReactNode;
+  filesContent?: ReactNode;
+  filesTools?: ReactNode;
 }
 
 const statusText: Record<OperationStatus, string> = { succeeded: "成功", failed: "失败", cancelled: "已取消", needsConfirmation: "等待确认" };
@@ -41,18 +43,27 @@ const statusMark: Record<OperationStatus, string> = { succeeded: "✓", failed: 
 
 /** 底部 Git 区（混合发布参考图）：可收起的“历史”“提交”与“操作输出”页签。 */
 export default function GitPanel(props: Props) {
-  const { repoId, tab, onTab, stagedCount, running } = props;
-  return <section className={`git-panel${tab ? " open" : ""}`} aria-label="Git 区">
-    <div className="git-tabs" role="tablist">
-      <button type="button" role="tab" aria-selected={tab === "log"} className={tab === "log" ? "active" : ""} onClick={() => onTab(tab === "log" ? null : "log")}>历史</button>
-      <button type="button" role="tab" aria-selected={tab === "commit"} className={tab === "commit" ? "active" : ""} onClick={() => onTab(tab === "commit" ? null : "commit")}>提交 · {stagedCount}</button>
-      <button type="button" role="tab" aria-selected={tab === "output"} className={tab === "output" ? "active" : ""} onClick={() => onTab(tab === "output" ? null : "output")}>操作输出{running ? " ⟳" : ""}</button>
-      <span className="spacer"/>
-      <button type="button" className="git-fold" onClick={() => onTab(tab ? null : "commit")} aria-label={tab ? "收起 Git 区" : "展开 Git 区"}>{tab ? "收起 ↓" : "展开 ↑"}</button>
+  const { repoId, tab, onTab } = props;
+  const clampHeight = (height: number) => Math.max(160, Math.min(Math.max(160, window.innerHeight - 240), height));
+  const [height, setHeight] = useState(() => { try { const saved = Number(localStorage.getItem("oris.bottomHeight.v1")); return clampHeight(saved > 0 ? saved : 330); } catch { return 330; } });
+  const drag = useRef<{ id: number; y: number; height: number } | null>(null);
+  const resize = (value: number) => { const next = clampHeight(value); setHeight(next); try { localStorage.setItem("oris.bottomHeight.v1", String(next)); } catch { /* 可选 */ } };
+  useEffect(() => { const fit = () => setHeight(h => clampHeight(h)); window.addEventListener("resize", fit); return () => window.removeEventListener("resize", fit); }, []);
+  return <section className={`git-panel${tab ? " open" : ""}`} aria-label="Git 区" style={tab ? { height } : undefined}>
+    <div className="git-resizer" role="separator" aria-label="调整下方区域高度" aria-orientation="horizontal" aria-valuenow={height} tabIndex={0}
+      onPointerDown={event => { if (event.button !== 0) return; drag.current = { id: event.pointerId, y: event.clientY, height }; event.currentTarget.setPointerCapture?.(event.pointerId); if (!tab) onTab("commit"); event.preventDefault(); }}
+      onPointerMove={event => { const start = drag.current; if (start?.id === event.pointerId) resize(start.height + start.y - event.clientY); }}
+      onPointerUp={() => { drag.current = null; }} onPointerCancel={() => { drag.current = null; }}
+      onKeyDown={event => { if (event.key === "ArrowUp" || event.key === "ArrowDown") { event.preventDefault(); if (!tab) onTab("commit"); resize(height + (event.key === "ArrowUp" ? 20 : -20)); } }}/>
+    <div className="git-tabs" role="tablist" aria-label="仓库内容">
+      <button type="button" role="tab" aria-selected={tab === "commit" || tab === "output"} className={tab === "commit" || tab === "output" ? "active" : ""} onClick={() => onTab("commit")}>文件</button>
+      <button type="button" role="tab" aria-selected={tab === "log"} className={tab === "log" ? "active" : ""} onClick={() => onTab("log")}>历史</button>
+      <span className="spacer"/>{tab === "commit" && props.filesTools}
+      <button type="button" className="git-fold" title={tab ? "收起下方区域" : "展开下方区域"} onClick={() => onTab(tab ? null : "commit")} aria-label={tab ? "收起 Git 区" : "展开 Git 区"}>{tab ? "⌄" : "⌃"}</button>
     </div>
     {props.logContent}
-    {tab === "commit" && repoId && <CommitTab key={repoId} {...props} repoId={repoId}/>}
-    {tab === "output" && <OutputTab {...props}/>}
+    {(tab === "commit" || tab === "output") && <div className="files-layout">{props.filesContent}{repoId ? <CommitTab key={repoId} {...props} repoId={repoId}/> : <div className="empty">使用 + 添加项目</div>}</div>}
+    {tab === "output" && <div className="dialog-overlay"><section className="operation-dialog" role="dialog" aria-label="操作详情"><div className="panel-title"><strong>操作详情</strong><button onClick={() => onTab("commit")} aria-label="关闭操作详情">×</button></div><OutputTab {...props}/></section></div>}
   </section>;
 }
 
@@ -102,12 +113,11 @@ function CommitTab({ repoId, stagedCount, ignoredStagedPaths = [], headKey, head
       </AiInputFrame>
     </div>
     <div className="commit-side">
-      <strong>{`提交暂存区 · ${stagedCount} 个文件`}</strong>
       {ignoredStagedPaths.length > 0 && <details className="ignore-commit-warning" open><summary>包含 {ignoredStagedPaths.length} 个被忽略的已暂存文件，仍会提交</summary><ul>{ignoredStagedPaths.map(path => <li key={path}>{path}</li>)}</ul><small>忽略只影响列表，不会自动取消暂存。</small></details>}
       <label title={pushReason ?? "提交成功后推送当前分支；没有上游时先选择 remote"}><input type="checkbox" aria-label="提交并推送" checked={push && !pushReason} disabled={!!pushReason || !!committing} onChange={(event) => setPush(event.target.checked)}/> 提交并推送</label>
       <div className="commit-buttons">
         <button type="button" className="primary" disabled={!!commitBlocked || !!committing} title={commitBlocked ?? "Ctrl+Enter"} onClick={() => void submit()}>{push && !pushReason ? "提交并推送" : "提交"}</button>
-        <button type="button" className="quiet" disabled={!!undoBlocked || !!committing} title={undoBlocked ?? (head ? `撤销 ${head.oid.slice(0, 8)} ${head.subject}` : undefined)} onClick={() => head && onUndoCommit(head)}>撤销最近提交…</button>
+
         {committing && <button type="button" onClick={onCancel}>取消</button>}
       </div>
       {aiError && <small className="commit-reason" role="alert">{aiError}</small>}

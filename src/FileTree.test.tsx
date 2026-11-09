@@ -133,3 +133,16 @@ it("offers “在资源管理器中打开” on virtualized flat rows", async ()
   expect(onReveal).toHaveBeenLastCalledWith(first.getAttribute("aria-label"));
   await act(async () => root.unmount());
 });
+
+it("keeps existing file nodes when the unchanged fold appears and disappears", async () => {
+  const root = createRoot(host);
+  const files = make(3);
+  const render = async (entries: FileChange[]) => { await act(async () => root.render(<FileTree files={entries} selectedPathId={null} mode="flat" onSelect={() => {}}/>)); };
+  await render(files);
+  const stableRow = host.querySelector(`[aria-label="${files[0].displayPath}"]`);
+  await render([files[0], files[1], { ...files[2], contentUnchanged: "eol" }]);
+  expect(host.querySelector(`[aria-label="${files[0].displayPath}"]`)).toBe(stableRow);
+  await render(files);
+  expect(host.querySelector(`[aria-label="${files[0].displayPath}"]`)).toBe(stableRow);
+  await act(async () => root.unmount());
+});

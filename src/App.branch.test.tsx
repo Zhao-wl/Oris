@@ -297,7 +297,7 @@ describe("history sidebar: branches, tags, remotes and stash (B09 / B10)", () =>
   it("groups local branches, tags, remotes by remote and stashes; groups collapse and the state is remembered", async () => {
     bridge.refs.mockResolvedValue({ ...refsView, tags: [{ fullName: "refs/tags/v1.0", name: "v1.0", oid: O("1"), annotated: true }] });
     await mount();
-    expect(all(".git-tabs button").map((b) => b.textContent)).toEqual(["历史", "提交 · 0", "操作输出", "展开 ↑"]);
+    expect(all(".git-tabs button[role=tab]").map((b) => b.textContent)).toEqual(["文件", "历史"]);
     await openHistory();
     expect(all(".log-group-head").map((b) => `${b.getAttribute("aria-expanded") === "true" ? "▾" : "▸"}${b.querySelector(".log-group-label")?.textContent}`)).toEqual(["▾本地分支 · 2", "▸标签 · 1", "▾远端分支 · 1", "▾origin · 1", "▾Stash · 2"]);
     expect(all("[data-group='local'] .log-branch-name").map((b) => b.textContent)).toEqual(["● main", "feature"]);

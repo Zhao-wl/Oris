@@ -77,7 +77,7 @@ const mount = async (projects: { id: string; path: string; customName?: string }
 const addPath = async (path: string) => {
   if (!host.querySelector(".projectbar")) await mount();
   bridge.dialog.mockResolvedValueOnce(path);
-  await click(host.querySelector(".projectbar > button.primary"));
+  await click(host.querySelector('.projectbar > button[aria-label="添加项目"]'));
 };
 
 beforeEach(() => {
@@ -114,8 +114,8 @@ describe("工作区（V2-07）", () => {
     const client = saved().projects.find((p) => p.repo.repoId === "client")!;
     expect(client.groupId).toBe("ws"); expect(client.customName).toBe("客户端");
     // 父仓库只显示自身：嵌套仓库目录折叠说明，属于成员的可以切换。
-    expect(text(".nested-repos summary")).toBe("1 个嵌套仓库未显示");
-    expect(text(".nested-repo")).toContain("battle 的 worktree");
+    expect(text(".nested-repos summary")).toBe("◫ 1");
+    expect(text(".nested-repo")).toContain("battle");
     expect(host.querySelector(".nested-repo button")?.textContent).toBe("切换");
   });
 
@@ -141,7 +141,7 @@ describe("工作区（V2-07）", () => {
     expect(text(".repo-picker-button")).toBe("client▾");
     expect(host.querySelector(".project-tab.active")?.getAttribute("title")).toBe(ROOT);
     expect(host.querySelector('[data-testid="readable"]')?.textContent).toBe("client:unstaged:f-client");
-    expect(host.querySelector(".pointer-switch")).toBeNull();
+    expect(host.querySelector("[role=switch]")).toBeNull();
     expect(saved().activeRepoId).toBe("client");
     expect(saved().projects.find((p) => p.repo.repoId === "ws")!.group!.lastRepoId).toBe("client");
     // Ctrl+E 打开 / 关闭选择器；键盘 ↓ 跳过不可打开的成员。
@@ -168,13 +168,13 @@ describe("工作区（V2-07）", () => {
 
   it("子模块指针开关按仓库保存，切换后重新扫描；子模块提交变化让父仓库刷新", async () => {
     await addPath(ROOT);
-    const toggle = host.querySelector(".pointer-switch")!;
+    const toggle = host.querySelector("[role=switch]")!;
     expect(toggle.getAttribute("aria-checked")).toBe("false");
     bridge.refresh.mockClear();
     await click(toggle);
     expect(bridge.pointers).toHaveBeenCalledWith("ws", true);
     expect(bridge.refresh).toHaveBeenCalledWith("ws", "unstaged", expect.any(String), false);
-    expect(host.querySelector(".pointer-switch")!.getAttribute("aria-checked")).toBe("true");
+    expect(host.querySelector("[role=switch]")!.getAttribute("aria-checked")).toBe("true");
     expect(saved().projects.find((p) => p.repo.repoId === "ws")!.showSubmodulePointers).toBe(true);
     // 子模块中的提交（refs 事件）：父仓库是当前仓库且开关打开，父仓库刷新。
     bridge.refresh.mockClear();

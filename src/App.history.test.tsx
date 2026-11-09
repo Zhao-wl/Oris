@@ -148,14 +148,17 @@ describe("Git log tab (A07 / A08)", () => {
   it("resizes the side columns with the splitters and remembers the widths; paths keep their tail visible", async () => {
     await mount();
     await openLog();
+    // Export real rendered markup only when the isolated layout harness requests it.
+    const capture = (globalThis as { orisLayoutCapture?: (name: string, html: string) => void }).orisLayoutCapture;
+    capture?.("history", `<!doctype html>${document.documentElement.outerHTML}`);
     const [left, right] = all(".log-splitter");
     const key = async (element: HTMLElement, name: string) => { await act(async () => { element.dispatchEvent(new KeyboardEvent("keydown", { key: name, bubbles: true })); }); await flush(); };
-    expect([left.getAttribute("aria-valuenow"), right.getAttribute("aria-valuenow")]).toEqual(["230", "340"]);
+    expect([left.getAttribute("aria-valuenow"), right.getAttribute("aria-valuenow")]).toEqual(["154", "358"]);
     await key(left, "ArrowRight");
     await key(right, "ArrowLeft");
-    expect([left.getAttribute("aria-valuenow"), right.getAttribute("aria-valuenow")]).toEqual(["246", "356"]);
-    expect(q(".log-layout")?.style.gridTemplateColumns).toBe("246px 5px minmax(0, 1fr) 5px 356px");
-    expect(JSON.parse(localStorage.getItem("oris.historyColumns.v1")!)).toEqual({ left: 246, right: 356 });
+    expect([left.getAttribute("aria-valuenow"), right.getAttribute("aria-valuenow")]).toEqual(["170", "374"]);
+    expect(q(".log-layout")?.style.gridTemplateColumns).toBe("170px 5px minmax(0, 1fr) 5px 374px");
+    expect(JSON.parse(localStorage.getItem("oris.historyColumns.v2")!)).toEqual({ left: 170, right: 374 });
     await act(async () => { left.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })); }); await flush();
     expect(left.getAttribute("aria-valuenow")).toBe("230");
     const path = all(".log-file-path").find((n) => n.textContent === "src/a.txt")!;
@@ -297,7 +300,7 @@ describe("explicit fetch (A10)", () => {
 describe("V2-D60：写操作后的历史重读", () => {
   const fetchOutcome = (): OperationOutcome => ({ opId: "op", repoId: "a", kind: "fetch", status: "succeeded", message: "已获取 origin", output: "", outputTruncated: false, snapshot: snap(), confirmation: null, backup: null, lockLeft: false, gitProcesses: 1, elapsedMs: 1 });
   const runFetch = async () => { await click(q(".sync-fetch .sync-main")); };
-  const openCommitTab = async () => { await click(all(".git-tabs button").find((b) => b.textContent?.startsWith("提交"))!); };
+  const openCommitTab = async () => { await click(all(".git-tabs button").find((b) => b.textContent?.startsWith("文件"))!); };
   const counts = () => ({ refs: bridge.refs.mock.calls.length, log: bridge.log.mock.calls.length, changes: bridge.changes.mock.calls.length });
 
   it("历史页不可见时写操作只标记失效；切回时重读一次，读完前不显示过期的引用", async () => {

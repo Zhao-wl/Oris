@@ -46,11 +46,11 @@ function deferred<T>() { let resolve!: (value: T) => void; let reject!: (error: 
 let host: HTMLDivElement;
 let root: Root;
 const flush = async () => { await act(async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); }); };
-const rows = () => [...host.querySelectorAll(".file")].map((n) => n.getAttribute("aria-label"));
-const row = (path: string) => host.querySelector(`.file[aria-label="${path}"]`) as HTMLElement;
-const rowButton = (path: string, label: string) => [...row(path).querySelectorAll("button")].find((b) => b.textContent === label) as HTMLButtonElement;
-const button = (label: string) => [...host.querySelectorAll("button")].find((b) => b.textContent === label) as HTMLButtonElement;
-const commitTab = () => [...host.querySelectorAll(".git-tabs button")].find((b) => b.textContent?.startsWith("提交 ·")) as HTMLButtonElement;
+const rows = () => [...host.querySelectorAll(".active-scope .file")].map((n) => n.getAttribute("aria-label"));
+const row = (path: string) => host.querySelector(`.active-scope .file[aria-label="${path}"]`) as HTMLElement;
+const rowButton = (path: string, label: string) => [...row(path).querySelectorAll("button")].find((b) => b.textContent === label || b.getAttribute("aria-label") === label) as HTMLButtonElement;
+const button = (label: string) => [...host.querySelectorAll("button")].find((b) => b.textContent === label || b.getAttribute("aria-label") === label) as HTMLButtonElement;
+const commitTab = () => [...host.querySelectorAll(".git-tabs button")].find((b) => b.textContent === "文件") as HTMLButtonElement;
 const contextMenu = async (path: string) => { await act(async () => { row(path).dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 40, clientY: 60 })); }); await flush(); };
 const menuItem = (prefix: string) => [...host.querySelectorAll(".file-menu button")].find((b) => b.textContent!.startsWith(prefix)) as HTMLButtonElement | undefined;
 const click = async (element: HTMLElement) => { await act(async () => element.click()); await flush(); };
@@ -109,27 +109,27 @@ describe("工单 #36：忽略规则与 AI 配置（DOM，不调用原生窗口�
     expect(bridge.read.mock.calls[0][3]).toBe("id-src/app.ts");
     expect(host.querySelector(".ignore-status")).toBeNull();
     // 文件列表必须仍是侧栏的第四个网格项，占用 1fr；不能再插入控制区。
-    expect(host.querySelector(".sidebar")?.children[3]).toBe(host.querySelector(".files"));
-    expect(host.querySelector(".sidebar")?.textContent).not.toContain("忽略规则");
+    expect(host.querySelectorAll(".change-column")).toHaveLength(2);
+    expect(host.querySelector(".files-layout")?.textContent).not.toContain("忽略规则");
     captureLayout("sidebar");
-    expect(button("提交 · 1")).toBeTruthy();
+    expect(button("文件")).toBeTruthy();
     await click(button("已暂存"));
     expect(rows()).toEqual([]);
-    expect(host.querySelector(".files")?.textContent).toContain("已全部忽略");
+    expect(host.querySelector(".active-scope .files")?.textContent).toContain("暂无文件");
     await openIgnore();
     captureLayout("settings");
     expect(host.querySelector(".ignore-preview [role=status]")?.textContent).toContain("匹配 1 个文件");
     await click(host.querySelector('[aria-label="临时显示被忽略文件"]')!);
     await click(host.querySelector('[aria-label="关闭设置"]')!);
     expect(rows()).toEqual(["deep/.DS_Store"]);
-    await click(button("全部"));
-    expect(rows()).toHaveLength(4);
+    expect(host.querySelectorAll(".file")).toHaveLength(4);
+    await click(button("未暂存"));
     await openIgnore();
     await click(host.querySelector('[aria-label="临时显示被忽略文件"]')!);
     await click(host.querySelector('[aria-label="关闭设置"]')!);
     expect(rows()).toEqual(["src/app.ts"]);
     await act(async () => { settings.update("fileIgnore", "rules", [dsRule({ enabled: false })]); }); await flush();
-    expect(rows()).toHaveLength(4);
+    expect(host.querySelectorAll(".file")).toHaveLength(4);
     expect(bridge.operation).not.toHaveBeenCalled();
   });
   it("忽略操作全部位于 Git 设置子项，规则生效后切换阅读并可删除", async () => {
@@ -198,7 +198,7 @@ describe("工单 #36：忽略规则与 AI 配置（DOM，不调用原生窗口�
     await mount(); await click(commitTab());
     expect(host.querySelector(".ignore-commit-warning")?.textContent).toContain("仍会提交");
     expect(host.querySelector(".ignore-commit-warning")?.textContent).toContain("json/.DS_Store");
-    expect(button("提交 · 2")).toBeTruthy(); expect(bridge.operation).not.toHaveBeenCalled();
+    expect(button("文件")).toBeTruthy(); expect(bridge.operation).not.toHaveBeenCalled();
   });
   it("设置页手动添加与编辑规则，非法模式报错；启停立即恢复列表", async () => {
     bridge.open.mockResolvedValue(snap([change("json/.DS_Store"), change("a.txt")], []));
@@ -267,7 +267,7 @@ describe("stage / unstage (B05, B16)", () => {
     await click(rowButton("a.txt", "暂存"));
     expect(bridge.operation).toHaveBeenCalledWith("a", "unstaged", expect.any(String), { kind: "stage", pathIds: ["id-a.txt"] });
     expect(rows()).toEqual(["b.txt"]);
-    expect(button("提交 · 1")).toBeTruthy();
+    expect(button("文件")).toBeTruthy();
     // B16：写操作进行中，同仓库的其他写入口不可用并说明原因。
     expect(rowButton("b.txt", "暂存").disabled).toBe(true);
     expect(rowButton("b.txt", "暂存").title).toContain("正在执行");
@@ -314,7 +314,7 @@ describe("stage / unstage (B05, B16)", () => {
     expect(selectedRows()).toEqual(["a.txt", "c.txt"]);
     await clickWith("b.txt", { ctrlKey: true });
     expect(selectedRows()).toEqual(["a.txt", "b.txt", "c.txt"]);
-    expect(host.querySelector(".sidebar > footer")?.textContent).toContain("已选 3 个");
+    expect(host.querySelector(".batch-count")?.textContent).toContain("已选 3 个");
     expect(bridge.operation).not.toHaveBeenCalled();
     // 行上的按钮只作用于该行，即使该行在多选中。
     await click(rowButton("b.txt", "暂存"));
@@ -506,19 +506,19 @@ describe("commit panel (B07)", () => {
     expect(host.querySelector(".commit-result.succeeded")?.textContent).toContain("已提交");
   });
 
-  it("disables undo for a pushed HEAD and while the HEAD info is older than the snapshot's HEAD", async () => {
+  it("omits the undo-commit entry from the compact composer", async () => {
     bridge.open.mockResolvedValue(snap([], [change("a.txt", "added")]));
     bridge.head.mockResolvedValue({ oid: "h".repeat(40), parents: ["p".repeat(40)], message: "original message", subject: "original message", pushed: true, upstream: "origin/main", detached: false });
     await mount();
     await click(commitTab());
-    expect(button("撤销最近提交…").disabled).toBe(true);
-    expect(button("撤销最近提交…").title).toContain("origin/main");
+    expect(button("撤销最近提交…")).toBeUndefined();
+    expect(button("撤销最近提交…")).toBeUndefined();
     await act(async () => root.unmount()); root = createRoot(host);
     bridge.head.mockResolvedValue({ oid: "o".repeat(40), parents: ["p".repeat(40)], message: "old head", subject: "old head", pushed: null, upstream: null, detached: false });
     await mount();
     await click(commitTab());
-    expect(button("撤销最近提交…").disabled).toBe(true);
-    expect(button("撤销最近提交…").title).toContain("正在读取 HEAD");
+    expect(button("撤销最近提交…")).toBeUndefined();
+    expect(button("撤销最近提交…")).toBeUndefined();
   });
 
   it("commit and push: pushes after a successful commit, publishing the branch when it has no upstream", async () => {
@@ -620,10 +620,10 @@ it("bare explain sends the 59 UI-selected file diffs as original text and publis
 });
 it("removes operation file selectors and the sidebar endpoint hint", async () => {
   await mount();
-  expect(host.querySelector(".sidebar .panel-title")?.textContent).not.toMatch(/辅助选择|Working Tree|Index/);
+  expect(host.querySelector(".sidebar")).toBeNull();
   await click(commitTab());
   expect(host.textContent).not.toContain("选择文件 / AI 辅助");
-  expect(host.textContent).toContain("提交暂存区");
+  expect(host.textContent).not.toContain("提交暂存区");
 });
 it.each(["stage", "unstage"] as const)("bulk %s includes all files even when the list is filtered", async kind => {
   const files = [change("a.txt"), change("b.txt", "renamed")];
@@ -719,4 +719,95 @@ it("locates a verified text side when the other side is binary using the partial
   await new Promise(resolve => setTimeout(resolve, 25));
   expect(host.querySelector('.partial-notice')).not.toBeNull();
   expect(bridge.goToLine).toHaveBeenCalledWith("left", 1); expect(bridge.operation).not.toHaveBeenCalled();
+});
+
+it("keeps both file scopes visible and reads the clicked path from the correct scope", async () => {
+  const same = change("src/shared.ts"), other = change("src/other.ts");
+  bridge.open.mockResolvedValue(snap([same], [other, same]));
+  await mount();
+  expect(host.querySelectorAll('.git-tabs [role=tab]')).toHaveLength(2);
+  expect(host.querySelectorAll('.change-column')).toHaveLength(2);
+  const stagedRow = host.querySelector('.change-column:nth-child(2) .file[aria-label="src/shared.ts"]') as HTMLElement;
+  await click(stagedRow);
+  expect(bridge.read).toHaveBeenCalledWith("a", "staged", expect.any(String), "id-src/shared.ts", null, expect.any(String), undefined);
+  expect(host.querySelector('.change-column:nth-child(2) .file.selected')?.getAttribute('aria-label')).toBe("src/shared.ts");
+  await click(host.querySelector('.change-column:first-child .file[aria-label="src/shared.ts"]') as HTMLElement);
+  expect(host.querySelector('[data-testid=readable]')?.textContent).toContain('a:unstaged:id-src/shared.ts');
+  expect(bridge.operation).not.toHaveBeenCalled();
+});
+
+it("remembers dock height across file/history switching, collapse and remount", async () => {
+  await mount();
+  const handle = host.querySelector('[aria-label="调整下方区域高度"]') as HTMLElement;
+  const previous = Number(handle.getAttribute('aria-valuenow'));
+  await act(async () => { handle.dispatchEvent(new KeyboardEvent('keydown', {key:'ArrowUp', bubbles:true})); });
+  await flush();
+  const height = host.querySelector<HTMLElement>('.git-panel')!.style.height;
+  expect(height).toBe(`${previous + 20}px`);
+  await click(button('收起 Git 区'));
+  await click(button('展开 Git 区'));
+  expect(host.querySelector<HTMLElement>('.git-panel')!.style.height).toBe(height);
+  await act(async () => root.unmount()); root = createRoot(host);
+  await mount();
+  expect(host.querySelector<HTMLElement>('.git-panel')!.style.height).toBe(height);
+  expect(localStorage.getItem('oris.bottomHeight.v1')).toBe(String(previous + 20));
+});
+
+it("publishes staging confirmation with its stats, without flashing folded files or resetting surviving rows", async () => {
+  const moved = change('a.txt'), survivor = change('b.txt'), folded = { ...change('c.txt'), contentUnchanged: 'eol' as const };
+  bridge.open.mockResolvedValue(snap([moved, survivor, folded], []));
+  const confirmed = snap([{ ...survivor, additions: null, deletions: null }, { ...change('c.txt'), additions: null, deletions: null }], [moved], 'r2');
+  confirmed.statsReady = false;
+  const details = deferred<import('./types').RepositoryDetails | null>();
+  bridge.details.mockReturnValue(details.promise);
+  bridge.operation.mockResolvedValue(outcome('stage', confirmed));
+  await mount();
+  const survivorNode = row('b.txt');
+  const container = host.querySelector<HTMLElement>('.active-scope .files')!;
+  container.scrollTop = 56;
+  await click(rowButton('a.txt', '暂存'));
+  expect(rows()).toEqual(['b.txt']);
+  expect(row('b.txt')).toBe(survivorNode);
+  expect(row('b.txt').querySelector('.line-stat')?.textContent).toBe('+1 −0');
+  expect(container.scrollTop).toBe(56);
+  expect(host.querySelector('.fold-divider')?.textContent).toContain('1个折叠内容');
+  details.resolve({ revision:'r2', stats:{ unstaged:[['id-b.txt',1,0]], staged:[['id-a.txt',1,0]], all:[] }, contentUnchanged:{unstaged:[['id-c.txt','eol']]}, all:confirmed.scopes!.all, elapsedMs:5 });
+  await flush();
+  expect(rows()).toEqual(['b.txt']);
+  expect(row('b.txt')).toBe(survivorNode);
+  expect(container.scrollTop).toBe(56);
+  expect(rowButton('b.txt','暂存').disabled).toBe(false);
+});
+
+it("keeps the staged list stable while unstage confirmation stats are pending", async () => {
+  const moved = change('a.txt'), survivor = change('b.txt');
+  bridge.open.mockResolvedValue(snap([], [moved, survivor]));
+  const confirmed = { ...snap([moved], [{...survivor, additions:null, deletions:null}], 'r2'), statsReady:false };
+  const details = deferred<import('./types').RepositoryDetails | null>();
+  bridge.details.mockReturnValue(details.promise);
+  bridge.operation.mockResolvedValue(outcome('unstage',confirmed));
+  await mount(); await click(button('已暂存'));
+  const stableRow = row('b.txt');
+  await click(rowButton('a.txt','取消暂存'));
+  expect(rows()).toEqual(['b.txt']);
+  expect(row('b.txt')).toBe(stableRow);
+  expect(row('b.txt').querySelector('.line-stat')?.textContent).toBe('+1 −0');
+  details.resolve({revision:'r2',stats:{unstaged:[['id-a.txt',1,0]],staged:[['id-b.txt',7,2]],all:[]},all:confirmed.scopes!.all,elapsedMs:1});
+  await flush();
+  expect(row('b.txt')).toBe(stableRow);
+  expect(row('b.txt').querySelector('.line-stat')?.textContent).toBe('+7 −2');
+  expect(rowButton('b.txt','取消暂存').disabled).toBe(false);
+});
+
+it.each(['failed','wrong revision'])("applies the real staging result even when metadata is %s", async metadata => {
+  const confirmed = { ...snap([change('b.txt')],[change('a.txt')],'r2'), statsReady:false };
+  bridge.operation.mockResolvedValue(outcome('stage',confirmed));
+  if(metadata==='failed') bridge.details.mockRejectedValue(new Error('stats unavailable'));
+  else bridge.details.mockResolvedValue({revision:'stale',stats:{unstaged:[['id-b.txt',99,99]],staged:[],all:[]},all:[],elapsedMs:1});
+  await mount();await click(rowButton('a.txt','暂存'));
+  expect(rows()).toEqual(['b.txt']);
+  expect(host.querySelector('.change-column:nth-child(2) .file[aria-label="a.txt"]')).not.toBeNull();
+  expect(rowButton('b.txt','暂存').disabled).toBe(false);
+  expect(row('b.txt').textContent).not.toContain('+99');
+  expect(host.querySelector('.op-status.succeeded')).not.toBeNull();
 });

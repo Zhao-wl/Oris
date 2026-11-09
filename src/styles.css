@@ -838,3 +838,59 @@ button.op-status { padding:0 6px; border:0; background:transparent; font-size:11
 .conflict-block-reader pre { overflow: auto; white-space: pre; padding: 12px; background: #202227; color: #e3e5ea; line-height: 1.6; }
 .conflict-block-reader summary { cursor: pointer; padding: 14px 0; }
 .conflict-block-reader h3 { margin: 0; overflow-wrap: anywhere; }
+
+/* 0.9.5: full-width reader and resizable Files / History dock. */
+.app { grid-template-rows:39px 35px minmax(0,1fr) auto 22px; }
+.titlebar { min-height:0; padding:3px 10px; }
+.titlebar button { padding-top:3px; padding-bottom:3px; }
+.projectbar { min-height:0; height:35px; padding:3px 8px; }
+.project-tabs { align-items:center; }
+.project-tab { height:28px; }
+.project-switch,.project-label { justify-content:center; padding:2px; }
+.project-switch small,.project-label small { display:none; }
+.project-ws-mark { display:none !important; }
+.icon-button { width:27px; height:26px; flex-shrink:0; padding:0; font-size:17px; }
+.workspace { grid-template-columns:minmax(0,1fr); }
+.editor { min-height:0; }
+.toolbar[hidden] { display:none; }
+.tabbar { min-height:32px; padding:3px 10px; }
+.git-panel.open { max-height:calc(100vh - 240px); min-height:160px; }
+.git-resizer { height:6px; flex-shrink:0; cursor:row-resize; touch-action:none; background:var(--chrome); border-top:1px solid var(--border); }
+.git-resizer:hover,.git-resizer:focus-visible { background:var(--blue); }
+.git-tabs { height:32px; flex-shrink:0; gap:4px; }
+.git-tabs button[role="tab"] { height:31px; min-width:64px; border-radius:0; }
+.git-tabs .compact-filter { width:210px; height:24px; padding:2px 7px; }
+.git-tabs select { height:25px; padding:0 5px; }
+.files-layout { flex:1; min-height:0; display:grid; grid-template-columns:minmax(0,42fr) minmax(0,42fr) minmax(210px,16fr); overflow:hidden; }
+.change-column { display:flex; flex-direction:column; min-width:0; min-height:0; border-right:1px solid var(--border); }
+.change-heading { height:34px; flex-shrink:0; display:flex; align-items:center; gap:8px; padding:2px 9px; border-bottom:1px solid var(--border); }
+.scope-title { background:transparent; border:0; padding:2px 0; }
+.scope-title.selected { color:var(--blue); }
+.change-heading .dim { color:var(--dim); font-size:11px; }
+.change-column .files { flex:1; overflow:auto; }
+.change-column .file { height:28px; padding-top:3px; padding-bottom:3px; }
+.change-column .tree-row,.change-column .tree-directory>summary { height:28px; }
+.change-column .file-path { flex-shrink:0; }
+.change-column .file:has(.file-path) { min-width:max-content; }
+.change-column .file-path.path-text { overflow:visible; text-overflow:clip; direction:ltr; }
+.change-column .file .line-stat { padding-left:8px; }
+.files-layout .commit-layout { display:flex; flex-direction:column; gap:7px; height:100%; min-width:0; padding:10px; overflow:auto; }
+.files-layout .commit-editor { min-height:0; flex:none; height:100px; }
+.files-layout .commit-editor textarea { min-height:0; height:100px; }
+.files-layout .commit-side { gap:6px; font-size:12px; }
+.git-panel .git-body.log-layout { height:auto; flex:1; min-height:0; }
+.operation-dialog { width:min(850px,90vw); background:var(--panel); border:1px solid var(--border); border-radius:6px; }
+.operation-dialog .git-body { height:min(430px,65vh); }
+.app.focus-mode { grid-template-rows:39px minmax(0,1fr) 22px; }
+@media(max-width:1100px) { .files-layout { grid-template-columns:minmax(0,1fr) minmax(0,1fr) 210px; } }
+.file-info { position:relative; flex-shrink:0; }
+.file-info summary { cursor:pointer; list-style:none; font-size:16px; padding:0 5px; }
+.file-info-popover { position:absolute; z-index:45; right:0; top:26px; width:380px; max-width:80vw; padding:10px; border:1px solid var(--border); background:var(--panel); box-shadow:0 6px 20px #0005; }
+.file-info-popover .endpoints { display:flex; flex-direction:column; align-items:flex-start; gap:8px; padding:0; border:0; }
+.hunk-unavailable { margin:8px 0 0; font-size:12px; }
+.scope-title.scope { flex:none; border-radius:0; }
+.batch-count { color:var(--dim); font-size:11px; }
+.git-tabs .nested-repos { position:relative; padding:0; border:0; font-size:12px; }
+.nested-popover { position:absolute; z-index:40; right:0; bottom:28px; width:380px; padding:10px; background:var(--panel); border:1px solid var(--border); }
+.nested-popover>div { display:flex; gap:8px; align-items:center; }
+.nested-popover>div>span { flex:1; overflow-wrap:anywhere; }

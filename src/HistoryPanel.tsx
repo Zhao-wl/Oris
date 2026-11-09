@@ -68,7 +68,7 @@ const time = (seconds: number) => new Date(seconds * 1000).toLocaleString();
 const MAX_GRAPH_LANES = 16;
 
 /** 三栏宽度（全局，不区分仓库）：左侧引用栏与右侧详情栏的像素宽度，中间提交列表占剩余空间。 */
-export const COLUMNS_KEY = "oris.historyColumns.v1";
+export const COLUMNS_KEY = "oris.historyColumns.v2";
 const LEFT = { min: 150, max: 520, initial: 230 };
 const RIGHT = { min: 220, max: 680, initial: 340 };
 const MIDDLE_MIN = 260;
@@ -80,7 +80,7 @@ function loadColumns(): Columns {
     const value = JSON.parse(localStorage.getItem(COLUMNS_KEY) ?? "null") as Partial<Columns> | null;
     if (value && typeof value.left === "number" && typeof value.right === "number") return { left: clamp(value.left, LEFT.min, LEFT.max), right: clamp(value.right, RIGHT.min, RIGHT.max) };
   } catch { /* 存储可选 */ }
-  return { left: LEFT.initial, right: RIGHT.initial };
+  return { left: clamp(window.innerWidth * .15, LEFT.min, LEFT.max), right: clamp(window.innerWidth * .35, RIGHT.min, RIGHT.max) };
 }
 function saveColumns(columns: Columns) { try { localStorage.setItem(COLUMNS_KEY, JSON.stringify(columns)); } catch { /* 存储可选 */ } }
 

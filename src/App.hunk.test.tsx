@@ -52,9 +52,9 @@ let root: Root;
 const flush = async () => { await act(async () => { for (let i = 0; i < 25; i++) await Promise.resolve(); }); };
 const click = async (element: Element | null | undefined) => { if (!element) throw new Error("元素不存在"); await act(async () => (element as HTMLElement).click()); await flush(); };
 const buttons = (label: string) => [...host.querySelectorAll(".hunk button")].filter((b) => b.textContent === label) as HTMLButtonElement[];
-const notices = () => [...host.querySelectorAll(".reading-notice p")].map((n) => n.textContent).join("\n");
+const notices = () => [...host.querySelectorAll(".reading-notice p, .hunk-unavailable")].map((n) => n.textContent).join("\n");
 const settle = async () => { for (let i = 0; i < 40 && !host.querySelector('[data-testid="viewer"]'); i++) await flush(); };
-const mount = async () => { await act(async () => { root.render(<App />); }); await flush(); await click(host.querySelector('.file[aria-label="a.txt"]')); await settle(); };
+const mount = async () => { await act(async () => { root.render(<App />); }); await flush(); await click(host.querySelector('.active-scope .file[aria-label="a.txt"]')); await settle(); };
 
 beforeEach(() => {
   vi.resetAllMocks(); localStorage.clear();
@@ -128,17 +128,14 @@ describe("块操作（V2-05）", () => {
     expect(notices()).toContain("忽略空白模式下不提供块操作");
     await act(async () => { select.value = "keep"; select.dispatchEvent(new Event("change", { bubbles: true })); });
     await flush();
-    bridge.open.mockResolvedValue(snap("all"));
-    await click([...host.querySelectorAll(".scope")].find((b) => b.textContent === "全部"));
-    await click(host.querySelector('.file[aria-label="a.txt"]'));
-    expect(host.querySelectorAll(".hunk")).toHaveLength(0);
-    expect(notices()).toContain("“全部”范围");
+    expect([...host.querySelectorAll(".scope")].some(b => b.textContent === "全部")).toBe(false);
+
   });
 
   it("已暂存范围提供“取消暂存此块”", async () => {
     await mount();
     await click([...host.querySelectorAll(".scope")].find((b) => b.textContent === "已暂存"));
-    await click(host.querySelector('.file[aria-label="a.txt"]'));
+    await click(host.querySelector('.active-scope .file[aria-label="a.txt"]'));
     expect(buttons("取消暂存此块")).toHaveLength(2);
     expect(buttons("暂存此块")).toHaveLength(0);
   });

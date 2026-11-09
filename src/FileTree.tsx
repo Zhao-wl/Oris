@@ -264,6 +264,7 @@ function flattenTree(node: DirectoryNode, depth: number, collapsed: Set<string>,
 /** 列表末尾的折叠区：默认收起，只由点击展开 / 收起；收起时若选中项在其中，分割线文字高亮提示。 */
 function UnchangedFold({ files, selectedPathId, mode, onSelect }: Omit<Props, "statsPending" | "actions">) {
   const [expanded, setExpanded] = useState(false);
+  if (!files.length) return null;
   const containsSelection = files.some((file) => file.pathId === selectedPathId);
   const label = `${files.length}个折叠内容`;
   return (
@@ -342,13 +343,13 @@ export default function FileTree({ files, selectedPathId, mode, statsPending = f
     return { ...actions, selectedPathId, clickRow, openMenu, openDirectoryMenu };
   }, [actions, files, order, selectedPathId]);
   const closeMenu = useMemo(() => () => setMenu(null), []);
-  const list = !unchanged.length
-    ? <FileList files={files} selectedPathId={selectedPathId} mode={mode} statsPending={statsPending} onSelect={onSelect} />
-    : <>
-      <FileList files={changed} selectedPathId={selectedPathId} mode={mode} statsPending={statsPending} onSelect={onSelect} />
-      <UnchangedFold files={unchanged} selectedPathId={selectedPathId} mode={mode} onSelect={onSelect} />
-    </>;
-  return <ActionsContext.Provider value={context}>{list}{menu && context && ("directory" in menu ? <DirectoryMenu menu={menu} onClose={closeMenu}/> : <FileMenu menu={menu} files={files} onClose={closeMenu}/>)}</ActionsContext.Provider>;
+  // Keep the main list at a stable keyed position when background normalization
+  // adds/removes the fold. Switching between a list and a fragment remounts every row.
+  return <ActionsContext.Provider value={context}>
+    <FileList key="changes" files={changed} selectedPathId={selectedPathId} mode={mode} statsPending={statsPending} onSelect={onSelect} />
+    <UnchangedFold key="unchanged" files={unchanged} selectedPathId={selectedPathId} mode={mode} onSelect={onSelect} />
+    {menu && context && ("directory" in menu ? <DirectoryMenu menu={menu} onClose={closeMenu}/> : <FileMenu menu={menu} files={files} onClose={closeMenu}/>)}
+  </ActionsContext.Provider>;
 }
 
 function FileList({ files, selectedPathId, mode, statsPending = false, onSelect }: Props) {

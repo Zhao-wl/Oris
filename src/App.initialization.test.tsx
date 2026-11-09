@@ -92,7 +92,7 @@ describe("empty repository loading state (no native windows)", () => {
     const reading = deferred<ContentPair>(); bridge.read.mockReturnValueOnce(reading.promise);
     await mount();
     expect(host.textContent).toContain("正在读取真实仓库");
-    await click('.scope:nth-child(2)');
+    await click('.change-column:nth-child(2) .scope');
     expect(host.textContent).not.toContain("正在读取真实仓库");
     expect(host.querySelector('.content')?.textContent).toContain("当前比较范围没有变化");
     expect(host.textContent).not.toContain("取消读取");
@@ -111,7 +111,7 @@ describe("empty repository loading state (no native windows)", () => {
     expect(host.textContent).not.toContain("正在读取真实仓库");
     expect(host.querySelector('.content')?.textContent).toContain("当前比较范围没有变化");
     expect(host.textContent).not.toContain("取消读取");
-    expect((host.querySelector('.openbar button') as HTMLButtonElement).disabled).toBe(false);
+    expect((host.querySelector('[aria-label="本地刷新"]') as HTMLButtonElement).disabled).toBe(false);
     reading.resolve(pair("b")); await flush();
     expect(host.querySelector('[data-testid="readable"]')).toBeNull();
     expect(bridge.diff).not.toHaveBeenCalled();
@@ -148,7 +148,7 @@ describe("controlled focus state integration (no native windows)", () => {
   it.each(["readable", "empty", "error"])("restarts saved v2 non-first staged tab under StrictMode: %s", async outcome => {
     await mount(["a", "b"]);
     await click('.project-tab:nth-child(2) .project-switch');
-    await click('.scope-row button:nth-child(2)');
+    await click('.change-column:nth-child(2) .scope');
     const saved = JSON.parse(localStorage.getItem(WORKSPACE_KEY)!);
     expect(saved.activeRepoId).toBe("b"); expect(saved.projects[1].anchor.scope).toBe("staged");
     await act(async () => root.unmount()); root = createRoot(host);
@@ -161,10 +161,10 @@ describe("controlled focus state integration (no native windows)", () => {
     expect(host.querySelector('.project-tab.active')?.getAttribute('title')).toBe("C:/b");
     expect(host.textContent).not.toContain("正在读取真实仓库");
     expect(host.querySelector('.project-state')).toBeNull();
-    if (outcome !== "error") expect(host.querySelector('.restore-status')?.textContent?.split(' · ')[0]).toBe("已同步");
+    if (outcome !== "error") expect(host.querySelector('.state.error')).toBeNull();
     if (outcome === "readable") expect(host.querySelector('[data-testid="readable"]')?.textContent).toBe("b:staged:f");
     if (outcome === "empty") { expect(host.textContent).toContain("当前比较范围没有变化"); expect(host.textContent).not.toContain("未知项目状态"); expect(bridge.read).not.toHaveBeenCalled(); }
-    if (outcome === "error") { expect(host.textContent).toContain("saved repo unavailable"); expect(bridge.read).not.toHaveBeenCalled(); expect(host.querySelector('.sidebar > footer')?.textContent).toBe("项目读取失败"); }
+    if (outcome === "error") { expect(host.textContent).toContain("saved repo unavailable"); expect(bridge.read).not.toHaveBeenCalled(); expect(host.querySelector('.state.error')).not.toBeNull(); }
     await tick(61000); expect(bridge.refresh).not.toHaveBeenCalled();
   });
   it("automatically opens the first valid record if the saved active ID is invalid", async () => {
@@ -179,7 +179,7 @@ describe("controlled focus state integration (no native windows)", () => {
     expect(bridge.open.mock.calls[0][0]).toBe("C:/a");
     expect(host.querySelector('[data-testid="readable"]')?.textContent).toBe("a:unstaged:f");
     expect(host.textContent).not.toContain("正在读取真实仓库");
-    expect(host.querySelector('.restore-status')?.textContent?.split(' · ')[0]).toBe("已同步");
+    expect(host.querySelector('.state.error')).toBeNull();
   });
   it("keeps the initialization request through blur during metadata and content reads", async () => {
     const opening = deferred<RepositorySnapshot>(); const reading = deferred<ContentPair>();
@@ -195,13 +195,11 @@ describe("controlled focus state integration (no native windows)", () => {
   it("re-adding after a failed open clears the old error immediately, while workspace discovery is still pending", async () => {
     await act(async () => { root.render(<App />); }); await flush();
     const add = async () => {
-      await act(async () => {
-        const field = host.querySelector('input[aria-label="仓库路径"]')!;
-        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(field, 'C:/a');
-        field.dispatchEvent(new Event('input', { bubbles: true }));
-      });
-      await click('.openbar button');
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      vi.mocked(open).mockResolvedValueOnce("C:/a");
+      await click('[aria-label="添加项目"]');
     };
+
     bridge.open.mockRejectedValueOnce(new Error("找不到或无法启动 Git（PATH 中没有 git）"));
     await add();
     expect(host.querySelector('.state.error')?.textContent).toContain("PATH 中没有 git");
@@ -220,7 +218,7 @@ describe("controlled focus state integration (no native windows)", () => {
     await mount();
     expect(host.textContent).toContain("项目恢复失败：repository missing");
     expect(host.textContent).not.toContain("正在读取真实仓库");
-    expect(host.querySelector('.sidebar > footer')?.textContent).toBe("项目读取失败");
+    expect(host.querySelector('.state.error')).not.toBeNull();
   });
   it("does not refresh after initialization while unfocused; merges focus events and dirty changes", async () => {
     await mount(); const view = host.querySelector('[data-testid="readable"]');
@@ -254,12 +252,12 @@ describe("controlled focus state integration (no native windows)", () => {
     await mount(); await focus(false);
     expect(host.textContent).toContain(`${phase} failed`);
     expect(host.textContent).not.toContain("正在读取真实仓库");
-    expect((host.querySelector('.openbar button') as HTMLButtonElement).disabled).toBe(false);
+    expect((host.querySelector('[aria-label="本地刷新"]') as HTMLButtonElement).disabled).toBe(false);
   });
   it("keeps an explicit file read alive across blur", async () => {
     await mount(); const reading = deferred<ContentPair>(); bridge.read.mockReturnValueOnce(reading.promise);
     // A different scope creates an uncached explicit read.
-    await click('.scope-row button:nth-child(2)'); await focus(false);
+    await click('.change-column:nth-child(2) .scope'); await focus(false);
     expect(bridge.read).toHaveBeenCalledTimes(2);
     expect(host.querySelector('[data-testid="readable"]')).toBeNull();
     reading.resolve(pair("a")); await flush();
@@ -365,7 +363,7 @@ it("manual refresh retries unread JSON even when repository revision is unchange
   bridge.read.mockRejectedValueOnce({kind:"staleRequest"});
   await mount();
   const json=pair("a");json.left={...json.left,encoding:"missing",text:"",byteLength:0};json.right.text='{"valid":true}';bridge.read.mockResolvedValueOnce(json);
-  await act(async()=>[...host.querySelectorAll('button')].find(node=>node.textContent?.includes("本地刷新"))!.click());await flush();
+  await act(async()=>[...host.querySelectorAll('button')].find(node=>node.getAttribute("aria-label") === "本地刷新")!.click());await flush();
   expect(bridge.read).toHaveBeenCalledTimes(2);
   expect(host.querySelector('[data-testid="readable"]')).not.toBeNull();
 });
@@ -373,7 +371,7 @@ it("manual refresh keeps repeated JSON read failures visible",async()=>{
   const snap=snapshot("a");snap.files[0].displayPath="new.json";
   bridge.open.mockResolvedValue(snap);bridge.read.mockRejectedValue({kind:"io",message:"读取权限被拒绝"});
   await mount();bridge.refresh.mockResolvedValue({...snap,revision:"r2"});
-  await act(async()=>[...host.querySelectorAll('button')].find(node=>node.textContent?.includes("本地刷新"))!.click());await flush();
+  await act(async()=>[...host.querySelectorAll('button')].find(node=>node.getAttribute("aria-label") === "本地刷新")!.click());await flush();
   expect(bridge.read).toHaveBeenCalledTimes(2);expect(host.querySelector('.state.error p')?.textContent).toContain("读取权限被拒绝");
 });
 
@@ -390,7 +388,7 @@ it("manual refresh queues once behind an automatic scan and completes while writ
   bridge.refresh.mockReturnValueOnce(slow.promise);
   await tick(1600);
   await act(async () => bridge.changed?.({ payload: "a" })); await tick(350);
-  const refreshButton = [...host.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent?.includes("本地刷新"))!;
+  const refreshButton = [...host.querySelectorAll<HTMLButtonElement>("button")].find(b => b.getAttribute("aria-label") === "本地刷新")!;
   expect(refreshButton.disabled).toBe(false);
   await act(async () => refreshButton.click()); await flush();
   expect(refreshButton.disabled).toBe(true);
@@ -439,12 +437,12 @@ describe("V2 data layer integration (mocked backend)", () => {
     await tick(10);
     expect(bridge.details).toHaveBeenCalledWith("a", "r1");
     const opens = bridge.open.mock.calls.length, refreshes = bridge.refresh.mock.calls.length;
-    await click('.scope:nth-child(2)');
+    await click('.change-column:nth-child(2) .scope');
     await tick(10);
-    expect([...host.querySelectorAll('.files button')].map(node => node.textContent)).toEqual(["staged.txt"]);
+    expect([...host.querySelectorAll('.active-scope .files button')].map(node => node.textContent)).toEqual(["staged.txt"]);
     expect(bridge.open.mock.calls.length).toBe(opens);
     expect(bridge.refresh.mock.calls.length).toBe(refreshes);
-    expect(host.querySelector('.sidebar > footer')?.textContent).toContain("已暂存");
+    expect(host.querySelector('.statusbar')?.textContent).toContain("已暂存");
   });
   it("shows the persisted snapshot as verifying on restart, then replaces it after verification", async () => {
     const opening = deferred<RepositorySnapshot>();
@@ -453,7 +451,7 @@ describe("V2 data layer integration (mocked backend)", () => {
     bridge.loadSnapshot.mockResolvedValue(JSON.stringify({ version: 1, savedAt: 1, snapshot: persisted }));
     await mount(["a"]);
     expect(host.querySelector('.verifying')?.textContent).toBe("校验中");
-    expect([...host.querySelectorAll('.files button')].map(node => node.textContent)).toEqual(["file.txt"]);
+    expect([...host.querySelectorAll('.active-scope .files button')].map(node => node.textContent)).toEqual(["file.txt"]);
     opening.resolve(v2("a", "r1"));
     await tick(10);
     expect(host.querySelector('.verifying')).toBeNull();
@@ -463,11 +461,11 @@ describe("V2 data layer integration (mocked backend)", () => {
     bridge.open.mockReturnValueOnce(opening.promise);
     bridge.loadSnapshot.mockResolvedValue(JSON.stringify({ version: 1, savedAt: 1, snapshot: v2("a", "old") }));
     await mount(["a"]);
-    expect([...host.querySelectorAll('.files button')].map(node => node.textContent)).toEqual(["file.txt"]);
+    expect([...host.querySelectorAll('.active-scope .files button')].map(node => node.textContent)).toEqual(["file.txt"]);
     opening.reject(new Error("repository missing"));
     await tick(10);
     expect(host.querySelector('.verifying')).toBeNull();
-    expect(host.querySelectorAll('.files button').length).toBe(0);
+    expect(host.querySelectorAll('.active-scope .files button').length).toBe(0);
     expect(host.textContent).toContain("项目恢复失败：repository missing");
     expect(host.querySelector('.project-tab')).not.toBeNull();
   });
