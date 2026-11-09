@@ -34,7 +34,7 @@ jobs:
           - platform: windows
             runner: windows-2022
           - platform: macos
-            runner: macos-14
+            runner: macos-15
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     steps:
