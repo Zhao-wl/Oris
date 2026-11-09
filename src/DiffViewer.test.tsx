@@ -258,6 +258,37 @@ describe("DiffViewer 新文件默认定位", () => {
     button.remove();
   });
 
+  it("跨工作区复用编辑器时，定位和恢复阅读位置都主动请求测量两侧视口", () => {
+    render(distant, distantDoc, "workspace-a:distant", null);
+    mockGeometry();
+    flushFrames();
+    const views = editors();
+    const measuredTops = views.map(view => {
+      const tops: number[] = [];
+      const requestMeasure = view.requestMeasure.bind(view);
+      vi.spyOn(view, "requestMeasure").mockImplementation(request => {
+        tops.push(view.scrollDOM.scrollTop);
+        requestMeasure(request);
+      });
+      view.scrollDOM.scrollTop = 1234;
+      return tops;
+    });
+
+    // 不发送 scroll 事件，也不提供 IntersectionObserver 可见性回调。
+    render(distant, distantDoc, "workspace-b:distant", null);
+    expect(editors()).toEqual(views);
+    measuredTops.forEach(tops => { tops.length = 0; });
+    flushFrames();
+    views.forEach((view, index) => {
+      expect(measuredTops[index]).toContain(3000 + view.documentPadding.top - 100);
+    });
+
+    render(distant, distantDoc, "workspace-a:distant", null);
+    measuredTops.forEach(tops => { tops.length = 0; });
+    flushFrames();
+    measuredTops.forEach(tops => expect(tops).toContain(1234));
+  });
+
   it("统一视图请求滚到第一个差异，包含右侧无对应内容的纯删除", () => {
     const scroll = vi.spyOn(EditorView, "scrollIntoView");
     const deleted = { left: lines(200), right: lines(200).split("\n").filter((_, i) => i < 150).join("\n") + "\n" };

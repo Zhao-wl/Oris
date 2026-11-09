@@ -226,6 +226,12 @@ export default function App() {
   workspaceRef.current = workspaceState;
   /** 最近一次决定的当前仓库（同步更新，早于重新渲染）：自动刷新据此判断自己捕获的当前仓库是否已过期。 */
   const activeIntent = useRef<string | null>(workspaceState.activeRepoId);
+  // 允许继续阅读用户主动选中的折叠项；工作区恢复只从普通列表选择。
+  const explicitFoldedSelection = useRef<{ repoId: string; scope: CompareScope; pathId: string } | null>(null);
+  const isExplicitFoldedSelection = useCallback((repoId: string, scope: CompareScope, pathId: string | null) => {
+    const selection = explicitFoldedSelection.current;
+    return selection?.repoId === repoId && selection.scope === scope && selection.pathId === pathId;
+  }, []);
   // ---------- 工作区（V2-07）：发现结果按父仓库 repoId 缓存（不持久化）；成员徽标只在打开选择器时读取 ----------
   const [groups, setGroups] = useState<Record<string, GroupDiscovery>>({});
   const groupsRef = useRef(groups);
@@ -375,9 +381,13 @@ export default function App() {
       checkedAt.current.set(`${result.repo.repoId}:${result.scope}`, Date.now());
       snapshotGeneration.current.set(`${result.repo.repoId}:${result.scope}`, repoGeneration.current.get(result.repo.repoId) ?? 0);
     }
-    result.files.sort(compareFiles);
-    const readable = filterReadableFiles(result.files, createFileIgnoreMatcher(settings.get().fileIgnore.rules, result.repo.repoId), anchor.filter, showIgnoredRepoRef.current === result.repo.repoId);
-    const selection = resolveReadingSelection(readable, anchor.selectedPathId);
+    const existing = projects.get(result.repo.repoId);
+    const details = existing?.details ?? null;
+    const selectionFiles = result.scope === "all"
+      ? scopeView(result, details, result.scope).files
+      : stagingList(result, { details, stagingPreview: options ? options.stagingPreview : existing?.stagingPreview }, result.scope);
+    const readable = filterReadableFiles(selectionFiles, createFileIgnoreMatcher(settings.get().fileIgnore.rules, result.repo.repoId), anchor.filter, showIgnoredRepoRef.current === result.repo.repoId).sort(compareFiles);
+    const selection = resolveReadingSelection(readable, anchor.selectedPathId, isExplicitFoldedSelection(result.repo.repoId, result.scope, anchor.selectedPathId));
     const nextAnchor = selection.invalidated
       ? { ...anchor, scope: result.scope, selectedPathId: selection.selected?.pathId ?? null, hunk: 0 }
       : { ...anchor, scope: result.scope };
@@ -409,10 +419,10 @@ export default function App() {
       setSelectedPathId(null); setPair(null); setDiffDocument(null); updateAnchor({ selectedPathId: null, hunk: 0 });
     }
     if (!repositoryGate.current.accepts(requestId)) return;
-    if (selection.invalidated) setNotice(selected
+    if (selection.invalidated && !readable.some(file => file.pathId === anchor.selectedPathId)) setNotice(selected
       ? `此前选中的文件已不在当前比较范围中，已改为第一个可用变化文件：${selected.displayPath}`
       : "此前选中的文件已不在当前比较范围中；当前范围没有可阅读的变化，已清除阅读位置。");
-  }, [selectFile, updateAnchor]);
+  }, [selectFile, updateAnchor, isExplicitFoldedSelection]);
 
   const loadProject = useCallback(async (project: ProjectRecord, anchor = project.anchor, restoring = false) => {
     const requestId = newRequestId(); repositoryGate.current.activate(requestId); contentGate.current.activate(requestId);
@@ -731,6 +741,7 @@ export default function App() {
   };
   const switchProject = async (project: ProjectRecord) => {
     if (project.repo.repoId === activeRepoId && snapshot) return;
+    explicitFoldedSelection.current = null;
     const switchingId = newRequestId(); repositoryGate.current.activate(switchingId); contentGate.current.activate(switchingId);
     historyRef.current = null; setHistoryReading(null);
     activeIntent.current = project.repo.repoId;
@@ -744,7 +755,10 @@ export default function App() {
       return;
     }
     setScope(project.anchor.scope); setFilter(project.anchor.filter); setFileView(project.anchor.fileView); setPath(project.repo.worktreePath); setGitExecutable(project.gitExecutable);
-    const selection = resolveReadingSelection(filterReadableFiles(cached.files, createFileIgnoreMatcher(settings.get().fileIgnore.rules, project.repo.repoId), project.anchor.filter, showIgnoredRepoRef.current === project.repo.repoId), project.anchor.selectedPathId);
+    const files = stored && cached.scope !== "all" ? stagingList(cached, stored, cached.scope) : cached.files;
+    const readable = filterReadableFiles(files, createFileIgnoreMatcher(settings.get().fileIgnore.rules, project.repo.repoId), project.anchor.filter, showIgnoredRepoRef.current === project.repo.repoId).sort(compareFiles);
+    const selection = resolveReadingSelection(readable, project.anchor.selectedPathId);
+    const missingSelection = selection.invalidated && !readable.some(file => file.pathId === project.anchor.selectedPathId);
     const selected = selection.selected;
     const nextAnchor = selection.invalidated
       ? { ...project.anchor, selectedPathId: selected?.pathId ?? null, hunk: 0 }
@@ -767,7 +781,7 @@ export default function App() {
       if (currentRead.current.repo !== project.repo.repoId) return;
       if (watched && unchangedSinceScan && !stored?.dirty) return;
     } else if (Date.now() - (checkedAt.current.get(`${project.repo.repoId}:${cached.scope}`) ?? cached.scannedAt) < 3000 && unchangedSinceScan) return;
-    if (selection.invalidated) setNotice(cachedInvalidationNotice);
+    if (missingSelection) setNotice(cachedInvalidationNotice);
     const requestId = newRequestId(); repositoryGate.current.activate(requestId);
     setRefreshing(true);
     try {
@@ -776,7 +790,7 @@ export default function App() {
       checkedAt.current.set(`${project.repo.repoId}:${project.anchor.scope}`, Date.now());
       if (result.revision !== cached.revision) cache.current.clearRepo(project.repo.repoId);
       if (result.revision !== cached.revision) await acceptSnapshot(result, { ...project, anchor: nextAnchor }, { ...nextAnchor, selectedPathId: currentRead.current.selected }, requestId);
-      if (selection.invalidated) setNotice(cachedInvalidationNotice);
+      if (missingSelection) setNotice(cachedInvalidationNotice);
       setProjectMessages((current) => ({ ...current, [project.repo.repoId]: "已同步" }));
     } catch (nextError) {
       if (repositoryGate.current.accepts(requestId)) {
@@ -1528,13 +1542,13 @@ export default function App() {
     const frame = requestAnimationFrame(() => { viewer.current?.goToLine(target.source.side, target.line); pendingReviewLine.current = null; });
     return () => cancelAnimationFrame(frame);
   }, [pair, diffDocument, mode]);
-  const userSelect = (file: FileChange) => {
+  const userSelect = (file: FileChange, nextScope = scope) => {
+    explicitFoldedSelection.current = file.contentUnchanged && activeRepoId
+      ? { repoId: activeRepoId, scope: nextScope, pathId: file.pathId }
+      : null;
+    if (nextScope !== scope) { void setCompareScope(nextScope, file); return; }
     leaveHistory();
     if (snapshot) void selectFile(snapshot, file, activeProject?.gitExecutable ?? "");
-  };
-  const selectScopedFile = (nextScope: "unstaged" | "staged", file: FileChange) => {
-    if (nextScope === scope) userSelect(file);
-    else void setCompareScope(nextScope, file);
   };
   /** 在主阅读器中打开历史版本（两端为固定的提交 OID）；本地阅读位置保留，可随时返回。 */
   const openHistoryFile = async (open: HistoryFileOpen) => {
@@ -1569,16 +1583,16 @@ export default function App() {
     const reading = historyRef.current;
     leaveHistory();
     if (!snapshot) return;
-    const back = reading?.returnTo.pathId ? visibleFiles.find((file) => file.pathId === reading.returnTo.pathId) : undefined;
-    const target = back ?? visibleFiles[0];
-    if (target) void selectFile(snapshot, target, activeProject?.gitExecutable ?? "", back ? reading!.returnTo.hunk : 0);
+    const pathId = reading?.returnTo.pathId ?? null;
+    const { selected: target, invalidated } = resolveReadingSelection(visibleFiles, pathId, isExplicitFoldedSelection(snapshot.repo.repoId, scope, pathId));
+    if (target) void selectFile(snapshot, target, activeProject?.gitExecutable ?? "", invalidated ? 0 : reading?.returnTo.hunk ?? 0);
     else {
       const cancelled = newRequestId(); contentGate.current.activate(cancelled); contentGate.current.finish(cancelled);
       contentPending.current = false; setLoading(false); setSelectedPathId(null); setPair(null); setDiffDocument(null);
       updateAnchor({ selectedPathId: null, hunk: 0 });
       setNotice("进入历史前阅读的文件已不在当前比较范围中，当前范围没有可阅读的变化。");
     }
-    if (reading?.returnTo.pathId && !back && target) setNotice(`进入历史前阅读的文件已不在当前比较范围中，已改为 ${target.displayPath}`);
+    if (invalidated && target && !visibleFiles.some(file => file.pathId === pathId)) setNotice(`进入历史前阅读的文件已不在当前比较范围中，已改为 ${target.displayPath}`);
   };
   const openFileHistory = (file: FileChange) => {
     // 暂存区中的 rename：HEAD 里只有原路径。
@@ -1780,13 +1794,14 @@ export default function App() {
   // 规则/搜索/快照改变后，只保留可见选择；作废隐藏文件尚未完成的读取。历史阅读不受规则影响。
   useEffect(() => { setMultiSelection(new Set()); }, [ignoreRules, showIgnored]);
   useEffect(() => {
-    if (!snapshot || currentRead.current.repo !== snapshot.repo.repoId || historyRef.current) return;
+    if (!snapshot || currentRead.current.repo !== snapshot.repo.repoId || historyRef.current || reviewReading) return;
     // 文件在乐观更新中已经移列，等写操作返回后再决定阅读位置。
     if (repoOps?.running) return;
-    if (selectedPathId && visibleFiles.some(f => f.pathId === selectedPathId)) return;
-    if (!selectedPathId && !visibleFiles.length) return;
+    const { selected } = resolveReadingSelection(visibleFiles, selectedPathId, isExplicitFoldedSelection(snapshot.repo.repoId, scope, selectedPathId));
+    if ((selected?.pathId ?? null) === selectedPathId) return;
+    explicitFoldedSelection.current = null;
     setMultiSelection(new Set());
-    if (visibleFiles[0]) userSelectRef.current(visibleFiles[0]);
+    if (selected) userSelectRef.current(selected);
     else {
       const cancelled = newRequestId(); contentGate.current.activate(cancelled); contentGate.current.finish(cancelled);
       contentPending.current = false; contentReadFailed.current = false; readingPath.current = null;
@@ -1794,17 +1809,16 @@ export default function App() {
       setSelectedPathId(null); setPair(null); setDiffDocument(null); setLoading(false); setError(null);
       updateAnchor({ selectedPathId: null, hunk: 0 });
     }
-  }, [visibleFiles, selectedPathId, snapshot, repoOps?.running]);
+  }, [visibleFiles, selectedPathId, snapshot, scope, repoOps?.running, isExplicitFoldedSelection, reviewReading]);
   /** 键盘连续切换文件（按住方向键）：只立即更新选中高亮，内容请求延迟发出，被下一次切换取代时不再发出。 */
   const navigateFile = (direction: -1 | 1) => {
     if (!snapshot || !visibleFiles.length) return;
-    leaveHistory();
     setMultiSelection((current) => (current.size ? new Set() : current));
     const index = selectedIndex < 0 ? 0 : (selectedIndex + direction + visibleFiles.length) % visibleFiles.length;
     const now = performance.now();
     burstSelect.current = now - lastSelectAt.current < BURST_WINDOW_MS;
     lastSelectAt.current = now;
-    void selectFile(snapshot, visibleFiles[index], activeProject?.gitExecutable ?? "");
+    userSelect(visibleFiles[index]);
   };
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1993,13 +2007,13 @@ export default function App() {
       const files = filterReadableFiles(source, ignoreMatcher, filter, showIgnored).sort(compareFiles);
       const active = scope === listScope;
       const actions: FileActions = { ...fileActions, scope: listScope, selection: active ? multiSelection : new Set<string>(),
-        onSelection: (ids, focus) => { setMultiSelection(new Set(ids)); if (focus) selectScopedFile(listScope, focus); },
+        onSelection: (ids, focus) => { setMultiSelection(new Set(ids)); if (focus) userSelect(focus, listScope); },
         onAction: (action, targets) => { if (action === "discard") void discardFiles(targets, listScope); else onFileAction(action, targets); } };
       return <section className={`change-column${active ? " active-scope" : ""}`} key={listScope}>
         <div className="change-heading"><button className={`scope scope-title${active ? " selected" : ""}`} onClick={() => void setCompareScope(listScope)}>{scopeLabels[listScope].short}</button><span className="dim">{files.length}</span>{active && selectedCount > 1 && <span className="batch-count">已选 {selectedCount} 个</span>}<span className="spacer"/>
           <button className="icon-button" aria-label={listScope === "unstaged" ? "全部加入暂存" : "全部取消暂存"} title={writeBlocked ?? (listScope === "unstaged" ? "全部暂存（不受筛选影响）" : "全部取消暂存（不受筛选影响）")} disabled={!!writeBlocked || !source.some(f => f.status !== "conflicted")} onClick={() => stageFiles(listScope === "unstaged" ? "stage" : "unstage", source.filter(f => f.status !== "conflicted"))}>{listScope === "unstaged" ? "⇥" : "⇤"}</button>
         </div>
-        <div className="files" role="listbox" aria-label={`${scopeLabels[listScope].short}变更`}><FileTree files={files} selectedPathId={active && !historyReading ? selectedPathId : null} mode={fileView} statsPending={pendingStats} onSelect={file => selectScopedFile(listScope, file)} actions={actions}/>{!files.length && <div className="empty">{filter ? "筛选无匹配文件" : "暂无文件"}</div>}</div>
+        <div className="files" role="listbox" aria-label={`${scopeLabels[listScope].short}变更`}><FileTree files={files} selectedPathId={active && !historyReading ? selectedPathId : null} mode={fileView} statsPending={pendingStats} onSelect={file => userSelect(file, listScope)} actions={actions}/>{!files.length && <div className="empty">{filter ? "筛选无匹配文件" : "暂无文件"}</div>}</div>
       </section>;
     })}</>} filesTools={<>{nestedRepos.length > 0 && <details className="nested-repos"><summary title="嵌套仓库">◫ {nestedRepos.length}</summary><div className="nested-popover">{nestedRepos.map(relative => { const member = nestedMember(relative); return <div className="nested-repo" key={relative}><span>{relative}{!member && <small>独立仓库，未加入工作区</small>}</span>{member?.repoId ? <button onClick={() => { const project = workspaceState.projects.find(p => p.repo.repoId === member.repoId); if (project) void switchProject(project); }}>切换</button> : <button onClick={() => void changeManual(joinPath(snapshot!.repo.worktreePath, relative), true)}>加入工作区</button>}</div>; })}</div></details>}<input className="compact-filter" aria-label="按完整相对路径筛选" placeholder="筛选文件路径" value={filter} onChange={event => { setFilter(event.target.value); updateAnchor({ filter: event.target.value }); }}/><select aria-label="文件显示方式" value={fileView} onChange={event => { const value = event.target.value as "flat" | "tree"; setFileView(value); updateAnchor({ fileView: value }); }}><option value="flat">☷</option><option value="tree">⑂</option></select>{snapshot?.hasSubmodules && <button role="switch" aria-checked={!!activeProject?.showSubmodulePointers} title="显示子模块指针变化" onClick={() => void toggleSubmodulePointers()}>子模块指针</button>}</>} ignoredStagedPaths={ignoredStagedPaths} repoId={backendRepoId} tab={gitTab} onTab={setGitTab} stagedCount={stagedCount} headOid={runtime?.snapshot?.branchInfo?.oid ?? null} headKey={`${snapshot?.branchInfo?.oid ?? ""}:${snapshot?.branchInfo?.upstream ?? ""}:${snapshot?.branchInfo?.ahead ?? ""}:${snapshot?.branchInfo?.behind ?? ""}`}
       mergeInProgress={!!snapshot?.inProgress?.merge} blockedReason={writeBlocked && !repoOps?.running ? writeBlocked : null} running={repoOps?.running ?? null} lines={repoOps?.lines ?? []} last={repoOps?.last ?? null} lastCommit={repoOps?.lastCommit ?? null} backups={repoOps?.backups ?? []}

@@ -773,6 +773,30 @@ it("remembers dock height across file/history switching, collapse and remount", 
   expect(localStorage.getItem('oris.bottomHeight.v1')).toBe(String(previous + 20));
 });
 
+it.each([false, true])("keeps automatic selection outside the fold after normalization (ordinary change: %s)", async (hasChange) => {
+  const folded = change("a.txt");
+  const changed = change("b.txt");
+  const snapshot = { ...snap(hasChange ? [folded, changed] : [folded], []), statsReady: false };
+  const details = deferred<import("./types").RepositoryDetails | null>();
+  bridge.open.mockResolvedValue(snapshot);
+  bridge.details.mockReturnValue(details.promise);
+  await mount();
+  expect(selectedRows()).toEqual(["a.txt"]);
+
+  details.resolve({ revision: "r1", stats: { unstaged: [], staged: [], all: [] }, contentUnchanged: { unstaged: [[folded.pathId, "eol"]] }, all: snapshot.scopes!.all, elapsedMs: 1 });
+  await flush();
+  expect(selectedRows()).toEqual(hasChange ? ["b.txt"] : []);
+  expect(host.querySelector('[data-testid="readable"]')?.textContent ?? null).toBe(hasChange ? "a:unstaged:id-b.txt" : null);
+  const fold = host.querySelector<HTMLButtonElement>(".fold-divider")!;
+  expect(fold.getAttribute("aria-expanded")).toBe("false");
+  expect(fold.classList.contains("has-selection")).toBe(false);
+
+  await click(fold);
+  await click(row("a.txt"));
+  expect(selectedRows()).toEqual(["a.txt"]);
+  expect(host.querySelector('[data-testid="readable"]')?.textContent).toBe("a:unstaged:id-a.txt");
+});
+
 it("confirms staging before stats arrive, without flashing folded files or resetting surviving rows", async () => {
   const moved = change('a.txt'), survivor = change('b.txt'), folded = { ...change('c.txt'), contentUnchanged: 'eol' as const };
   bridge.open.mockResolvedValue(snap([moved, survivor, folded], []));

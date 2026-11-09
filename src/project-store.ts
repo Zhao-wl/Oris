@@ -93,7 +93,7 @@ export function filesForScope(snapshot: RepositorySnapshot, details: RepositoryD
 }
 
 /** 以 Git 返回的条目为准，仅临时补上未操作文件的统计和折叠标记。 */
-export function stagingList(snapshot: RepositorySnapshot, runtime: ProjectRuntime, scope: StagingScope): FileChange[] {
+export function stagingList(snapshot: RepositorySnapshot, runtime: Pick<ProjectRuntime, "details" | "stagingPreview">, scope: StagingScope): FileChange[] {
   const files = filesForScope(snapshot, runtime.details, scope);
   const preview = runtime.stagingPreview;
   if (preview?.revision !== snapshot.revision || !statsPending(snapshot, runtime.details)) return files;

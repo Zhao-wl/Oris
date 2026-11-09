@@ -1,4 +1,4 @@
-import type { CompareScope, ContentPair, DiffDocument, RepositoryInfo } from "./types";
+import type { CompareScope, ContentPair, DiffDocument, FileChange, RepositoryInfo } from "./types";
 
 export const WORKSPACE_KEY = "oris.workspace.v2";
 export const CONTENT_CACHE_BUDGET = 16 * 1024 * 1024;
@@ -43,10 +43,10 @@ export const defaultAnchor = (): ReadingAnchor => ({
 
 export const emptyWorkspace = (): WorkspaceState => ({ version: 2, activeRepoId: null, projects: [] });
 
-export function resolveReadingSelection<T extends { pathId: string }>(files: T[], selectedPathId: string | null) {
-  const restored = selectedPathId ? files.find((file) => file.pathId === selectedPathId) : undefined;
+export function resolveReadingSelection<T extends Pick<FileChange, "pathId" | "contentUnchanged">>(files: T[], selectedPathId: string | null, allowFoldedSelection = false) {
+  const restored = selectedPathId ? files.find(file => file.pathId === selectedPathId && (!file.contentUnchanged || allowFoldedSelection)) : undefined;
   return {
-    selected: restored ?? files[0] ?? null,
+    selected: restored ?? files.find(file => !file.contentUnchanged) ?? null,
     invalidated: selectedPathId !== null && !restored
   };
 }

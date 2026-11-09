@@ -1639,11 +1639,15 @@ function installScrollAndRails(
     return epoch;
   };
   const write = (side: DiffSide, value: number, writeEpoch: number) => {
-    const target = viewFor(side).scrollDOM;
-    const next = clampViewScroll(viewFor(side), value);
-    target.scrollTop = next;
+    const view = viewFor(side);
+    const target = view.scrollDOM;
+    const previous = target.scrollTop;
+    target.scrollTop = clampViewScroll(view, value);
     // 浏览器可能取整或截断：记录实际写入值，而不是写入前计算的值。
-    tokens[side] = { epoch: writeEpoch, expected: target.scrollTop };
+    const actual = target.scrollTop;
+    tokens[side] = { epoch: writeEpoch, expected: actual };
+    // 复用编辑器时，CodeMirror 的可见性回调可能还没到，不能只靠 scroll 事件更新虚拟行。
+    if (actual !== previous) view.requestMeasure();
   };
   const updateRail = (side: DiffSide) => {
     const view = viewFor(side);
@@ -2258,6 +2262,7 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
           }
           view.scrollDOM.scrollTop = Math.max(0, view.lineBlockAt(view.state.doc.line(number).from).top + anchor.offset);
           view.scrollDOM.scrollLeft = anchor.left;
+          view.requestMeasure();
         });
       };
       if (split) split.settleViewport(restore); else viewportFrame = requestAnimationFrame(restore);

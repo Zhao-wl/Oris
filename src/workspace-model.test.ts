@@ -68,6 +68,11 @@ describe("workspace model", () => {
     expect(resolveReadingSelection(files, "missing")).toEqual({ selected: files[0], invalidated: true });
     expect(resolveReadingSelection(files, "other")).toEqual({ selected: files[1], invalidated: false });
     expect(resolveReadingSelection([], "missing")).toEqual({ selected: null, invalidated: true });
+    const folded = { pathId: "folded", contentUnchanged: "eol" as const };
+    expect(resolveReadingSelection([folded, ...files], null)).toEqual({ selected: files[0], invalidated: false });
+    expect(resolveReadingSelection([folded, ...files], "folded")).toEqual({ selected: files[0], invalidated: true });
+    expect(resolveReadingSelection([folded], "folded")).toEqual({ selected: null, invalidated: true });
+    expect(resolveReadingSelection([folded], "folded", true)).toEqual({ selected: folded, invalidated: false });
   });
 
   it("records 30 hot five-project model switches", () => {
