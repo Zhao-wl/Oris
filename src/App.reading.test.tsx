@@ -75,10 +75,16 @@ afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi
 const mount = async () => { await act(async () => { root.render(<App />); }); await flush(); };
 
 describe("任务 05 阅读体验（App 集成）", () => {
-  it("忽略空白：同一内容按新规则重新计算，规则持续可见，只有空白差异时说明原因", async () => {
+  it("默认忽略空白，切换规则时重新计算当前内容而不重读文件", async () => {
     await mount();
     await select("a.ts");
+    expect(host.querySelector<HTMLSelectElement>('select[aria-label="空白规则"]')?.value).toBe("ignore");
+    expect(host.querySelector("[data-testid=readable]")?.getAttribute("data-hunks")).toBe("0");
+    expect(host.querySelector(".filter-badge")?.textContent).toBe("已忽略空白 · 略去 1 处");
+    expect(host.querySelector(".reading-notice")?.textContent).toContain("忽略空白后没有差异");
+    await setSelect("空白规则", "keep");
     expect(host.querySelector("[data-testid=readable]")?.getAttribute("data-hunks")).toBe("1");
+    expect(host.querySelector(".filter-badge")).toBeNull();
     // 相邻文件的后台预取也会调用 read / diff，只统计当前文件，避免与预取的时序竞争。
     const currentReads = () => bridge.read.mock.calls.filter((call) => call[3] === "id-a.ts").length;
     const reads = currentReads();
@@ -88,9 +94,6 @@ describe("任务 05 阅读体验（App 集成）", () => {
     expect(host.querySelector("[data-testid=readable]")?.getAttribute("data-hunks")).toBe("0");
     expect(host.querySelector(".filter-badge")?.textContent).toBe("已忽略空白 · 略去 1 处");
     expect(host.querySelector(".reading-notice")?.textContent).toContain("忽略空白后没有差异");
-    await setSelect("空白规则", "keep");
-    expect(host.querySelector("[data-testid=readable]")?.getAttribute("data-hunks")).toBe("1");
-    expect(host.querySelector(".filter-badge")).toBeNull();
   });
 
   it("CRLF → LF：两侧端点标出换行符，并说明文本相同只有换行符变化", async () => {

@@ -1,0 +1,596 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Oris · Stash 交互草图</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --canvas: #1e2024;
+      --surface: #25282d;
+      --chrome: #2b2e34;
+      --border: #3b4049;
+      --text: #dce2ec;
+      --muted: #a0acbd;
+      --accent: #9bb6ff;
+      --selected: #30466a;
+      --hover: #333b49;
+      --green: #98c8a8;
+      --red: #f5a7ab;
+      font: 13px/1.45 "Segoe UI", "Microsoft YaHei", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    body { margin: 0; min-height: 100vh; display: flex; flex-direction: column; background: var(--canvas); color: var(--text); }
+    button, input { font: inherit; color: inherit; }
+    button { border: 1px solid var(--border); border-radius: 4px; background: var(--chrome); padding: 4px 10px; cursor: pointer; white-space: nowrap; }
+    button:hover { background: var(--hover); }
+    button:disabled { opacity: .5; cursor: default; }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+    input[type="checkbox"] { accent-color: var(--accent); }
+    input[type="text"] { min-width: 0; width: 100%; border: 1px solid var(--border); border-radius: 4px; background: var(--canvas); padding: 7px 9px; }
+    h1, h2, p { margin: 0; }
+    h1, h2 { font-size: 13px; font-weight: 600; }
+    .muted, small { color: var(--muted); }
+    .mono, code { font-family: Consolas, "Cascadia Mono", monospace; }
+    .spacer { flex: 1; }
+    .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+    .bar { min-height: 36px; padding: 0 12px; display: flex; align-items: center; gap: 10px; }
+    .titlebar, .projects, .pathbar { border-bottom: 1px solid var(--border); }
+    .titlebar, .projects { background: var(--chrome); }
+    .brand { background: #6554a8; border-radius: 4px; color: #fff; font-weight: 700; padding: 2px 7px; }
+    .prototype { border: 1px solid var(--border); padding: 1px 6px; border-radius: 4px; white-space: nowrap; }
+    .project { align-self: stretch; display: flex; align-items: center; padding: 0 12px; border-bottom: 2px solid var(--accent); background: var(--surface); }
+    .pathbar { background: var(--surface); }
+    .source { flex: none; color: var(--accent); white-space: nowrap; }
+    .diff { flex: 1; min-height: 270px; display: flex; flex-direction: column; }
+    .diff-grid { flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+    .side { min-width: 0; }
+    .side + .side { border-left: 1px solid var(--border); }
+    .side-title { display: flex; align-items: center; padding: 5px 12px; min-height: 30px; background: #22252a; border-bottom: 1px solid var(--border); }
+    .lines { padding: 6px 0 12px; overflow-x: auto; font: 13px/1.7 Consolas, "Cascadia Mono", monospace; }
+    .line { display: flex; align-items: baseline; white-space: pre; min-width: max-content; }
+    .line .number { width: 38px; padding-right: 8px; text-align: right; color: var(--muted); user-select: none; }
+    .line .mark { width: 17px; user-select: none; }
+    .line.add { background: #263e33; }
+    .line.del { background: #462f34; }
+    .line.skip { background: #25282d; }
+    .line.add .mark { color: var(--green); }
+    .line.del .mark { color: var(--red); }
+    .lower { height: clamp(315px, 43vh, 400px); display: flex; flex-direction: column; background: var(--surface); border-top: 2px solid var(--border); }
+    .tabs { min-height: 37px; background: var(--chrome); border-bottom: 1px solid var(--border); gap: 4px; }
+    .tab { align-self: stretch; min-width: 66px; background: transparent; border: 0; border-radius: 0; border-bottom: 2px solid transparent; }
+    .tab[aria-selected="true"] { background: var(--surface); border-bottom-color: var(--accent); }
+    .badge { font-size: 11px; color: var(--muted); margin-left: 4px; font-variant-numeric: tabular-nums; }
+    .panel { flex: 1; min-height: 0; display: grid; }
+    .stash-panel { grid-template-columns: minmax(240px, 28%) minmax(0, 1fr); }
+    .files-panel { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(185px, 20%); }
+    .history-panel { grid-template-columns: minmax(180px, 24%) minmax(0, 1fr); }
+    .column { display: flex; min-height: 0; min-width: 0; flex-direction: column; }
+    .column + .column { border-left: 1px solid var(--border); }
+    .section-head { border-bottom: 1px solid var(--border); min-height: 42px; flex-wrap: wrap; gap: 6px; }
+    .scroll { flex: 1; min-height: 0; overflow: auto; }
+    .stash-row, .file-row { width: 100%; text-align: left; background: transparent; border: 0; border-radius: 0; }
+    .stash-row { display: grid; gap: 3px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+    .stash-row[aria-pressed="true"], .file-row[aria-pressed="true"] { background: var(--selected); }
+    .row-main, .row-meta { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .row-meta { font-size: 11px; color: var(--muted); }
+    .row-id { color: var(--accent); font-size: 11px; flex: none; }
+    .detail-head { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+    .detail-head p { margin-top: 4px; }
+    .primary { background: var(--selected); border-color: #5376ad; }
+    .primary:hover { background: #3b5683; }
+    .context-menu { position: fixed; z-index: 2; display: grid; gap: 2px; padding: 4px; background: var(--chrome); border: 1px solid var(--border); border-radius: 4px; box-shadow: 0 4px 12px #0005; }
+    .context-menu button { text-align: left; border: 0; }
+    .danger { color: var(--red); }
+    .file-group { padding: 6px 12px; color: var(--muted); background: #22252a; font-size: 11px; }
+    .file-row { display: flex; align-items: center; gap: 8px; min-height: 29px; padding: 4px 12px; }
+    .file-kind { flex: none; color: var(--green); width: 13px; }
+    .empty { padding: 18px 12px; color: var(--muted); }
+    .draft { padding: 10px 12px; display: grid; gap: 7px; }
+    .status { border-top: 1px solid var(--border); background: var(--chrome); min-height: 32px; font-size: 12px; }
+    .status button { padding: 1px 7px; }
+    dialog { color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; width: min(460px, calc(100% - 24px)); padding: 0; box-shadow: 0 16px 64px #0008; }
+    dialog::backdrop { background: #0008; }
+    .dialog-head { padding: 12px 16px; border-bottom: 1px solid var(--border); }
+    .dialog-body { padding: 14px 16px; display: grid; gap: 10px; }
+    .dialog-body label { display: flex; align-items: center; gap: 6px; }
+    .name-field { display: grid; gap: 5px; }
+    .name-input { display: flex; align-items: center; gap: 4px; background: var(--canvas); border: 1px solid var(--border); border-radius: 4px; }
+    .name-input:focus-within { border-color: var(--accent); }
+    .name-input input[type="text"] { border: 0; background: transparent; }
+    .name-input button { margin-right: 4px; border-color: transparent; background: transparent; color: var(--accent); }
+    .name-input button:not(:disabled):hover { background: var(--hover); }
+    .dialog-foot { padding: 10px 16px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 8px; }
+    @media (max-width: 680px) {
+      .stash-panel { grid-template-columns: minmax(125px, 37%) minmax(0, 1fr); }
+      .files-panel { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .files-panel .commit-column, .project-note, .status-repo { display: none; }
+      .stash-row .row-main { flex-wrap: wrap; gap: 1px 5px; }
+      .bar, .stash-row, .detail-head, .file-row { padding-left: 8px; padding-right: 8px; }
+      .pathbar { flex-wrap: wrap; gap: 3px 8px; padding-block: 4px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="bar titlebar">
+    <span class="brand">Oris</span><span class="muted">⌘ feature/stash-ui</span>
+    <span class="spacer"></span><span class="prototype muted">交互草图 · 示例数据</span>
+  </header>
+  <div class="bar projects"><span class="project">Oris</span><span class="project-note muted">本地仓库</span></div>
+
+  <main class="diff" aria-label="Diff 阅读器">
+    <div class="bar pathbar"><span id="diff-source" class="source"></span><strong id="diff-path" class="truncate"></strong></div>
+    <div class="diff-grid" id="diff-grid"></div>
+    <p id="diff-empty" class="empty" hidden>选择一个文件查看差异</p>
+  </main>
+
+  <section class="lower" aria-label="Git 面板">
+    <nav class="bar tabs" role="tablist" aria-label="仓库内容">
+      <button class="tab" type="button" role="tab" id="tab-files" data-tab="files" aria-controls="files">文件</button>
+      <button class="tab" type="button" role="tab" id="tab-history" data-tab="history" aria-controls="history">历史</button>
+      <button class="tab" type="button" role="tab" id="tab-stash" data-tab="stash" aria-controls="stash">Stash<span id="stash-badge" class="badge"></span></button>
+    </nav>
+
+    <div id="files" class="panel files-panel" role="tabpanel" aria-labelledby="tab-files" hidden>
+      <section class="column"><div class="bar section-head"><h2>未暂存</h2><small id="unstaged-count"></small></div><div id="unstaged" class="scroll"></div></section>
+      <section class="column"><div class="bar section-head"><h2>已暂存</h2><small id="staged-count"></small></div><div id="staged" class="scroll"></div></section>
+      <section class="column commit-column"><div class="bar section-head"><h2>提交</h2></div><div class="draft"><input type="text" aria-label="提交摘要" placeholder="提交摘要（必填）" disabled></div></section>
+    </div>
+
+    <div id="history" class="panel history-panel" role="tabpanel" aria-labelledby="tab-history" hidden>
+      <section class="column">
+        <div class="bar section-head"><h2>分支与标签</h2></div>
+        <div class="scroll">
+          <div class="file-row"><span class="muted">⑂</span> feature/stash-ui</div>
+          <div class="file-row"><span class="muted">⑂</span> main</div>
+          <button class="file-row" type="button" id="history-stash">查看 Stash →</button>
+        </div>
+      </section>
+      <section class="column">
+        <div class="bar section-head"><h2>提交历史</h2><small>示例</small></div>
+        <div class="scroll">
+          <div class="file-row"><span class="source mono">●</span> 改进工作区切换后的 Diff 刷新 <small class="mono">f98ae0a</small></div>
+          <div class="file-row"><span class="muted mono">●</span> 调整变更文件的列表布局 <small class="mono">20e5d13</small></div>
+        </div>
+      </section>
+    </div>
+
+    <div id="stash" class="panel stash-panel" role="tabpanel" aria-labelledby="tab-stash">
+      <section class="column" aria-label="储藏列表">
+        <div class="bar section-head"><h2>储藏列表</h2><small id="stash-count"></small></div>
+        <div id="stash-list" class="scroll"></div>
+      </section>
+      <section class="column" aria-label="储藏详情">
+        <div id="stash-detail"></div>
+        <div id="stash-files" class="scroll"></div>
+      </section>
+    </div>
+  </section>
+
+  <footer class="bar status">
+    <span class="status-repo muted">Oris · feature/stash-ui</span><span class="spacer"></span>
+    <span id="status" role="status"></span><button id="show-saved" type="button" hidden>查看 Stash</button>
+  </footer>
+
+  <div id="file-menu" class="context-menu" role="menu" aria-label="文件操作" hidden>
+    <button id="save-selection" type="button" role="menuitem" tabindex="-1">储藏所选文件…</button>
+  </div>
+  <div id="stash-menu" class="context-menu" role="menu" aria-label="储藏操作" hidden>
+    <button type="button" role="menuitem" tabindex="-1" data-action="apply">应用并保留</button>
+    <button type="button" role="menuitem" tabindex="-1" data-action="pop">应用后移除</button>
+    <button type="button" role="menuitem" tabindex="-1" class="danger" data-action="drop">删除…</button>
+  </div>
+
+  <dialog id="save-dialog" aria-labelledby="save-title">
+    <form id="save-form">
+      <header class="dialog-head"><h2 id="save-title">储藏所选文件</h2></header>
+      <div class="dialog-body">
+        <div class="name-field">
+          <label for="message">储藏名称</label>
+          <div class="name-input">
+            <input type="text" id="message" placeholder="留空使用分支名 + 时间戳" autofocus>
+            <button id="generate-name" type="button" aria-label="AI 生成储藏名称"><span aria-hidden="true">✧</span> AI 生成</button>
+          </div>
+        </div>
+        <p id="save-scope"></p>
+        <label><input type="checkbox" id="include-untracked">包含未跟踪文件</label>
+        <p id="save-summary" class="muted" aria-live="polite"></p>
+      </div>
+      <footer class="dialog-foot"><button id="cancel-save" type="button">取消</button><button id="submit-save" class="primary" type="submit">储藏</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="drop-dialog" aria-labelledby="drop-title">
+    <header class="dialog-head"><h2 id="drop-title">删除这条 Stash？</h2></header>
+    <div class="dialog-body"><p id="drop-summary"></p><p class="muted">这条储藏将从列表移除，工作区文件保持原样。</p></div>
+    <form class="dialog-foot" method="dialog"><button value="cancel" autofocus>取消</button><button class="danger" value="drop">删除</button></form>
+  </dialog>
+
+  <script>
+    const byId = (id) => document.getElementById(id);
+    const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (char) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+    })[char]);
+    const branch = "feature/stash-ui";
+    const changes = {
+      GitPanel: { path: "src/GitPanel.tsx", before: [
+        '  <Tab id="files">文件</Tab>', '  <Tab id="log">历史</Tab>'
+      ], after: ['  <Tab id="files">文件</Tab>', '  <Tab id="log">历史</Tab>', '  <Tab id="stash">Stash</Tab>'], context: ["function GitPanel() {", "  return <TabBar>", "  </TabBar>;", "}"] },
+      History: { path: "src/HistorySidebar.tsx", before: ["  <StashGroup entries={stashes} />"], after: ["  <StashLink onClick={openStash} />"], context: ["function HistorySidebar() {", "  return <Sidebar>", "  </Sidebar>;", "}"] },
+      Notes: { path: "docs/design/stash-notes.md", untracked: true, before: [], after: ["# Stash 交互", "", "- 独立页签展示当前仓库的储藏。", "- 点击文件在上方阅读器预览差异。"] },
+      CSS: { path: "src/styles.css", before: ["  grid-template-columns: 1fr 1fr;"], after: ["  grid-template-columns: minmax(240px, 28%) 1fr;"], context: [".stash-layout {", "", "  min-height: 0;", "}"] },
+      Readme: { path: "README.md", before: ["- 浏览提交历史"], after: ["- 浏览提交历史与本地储藏"] },
+      Shortcuts: { path: "docs/design/stash-shortcuts.md", untracked: true, before: [], after: ["# 储藏入口", "- 文件工具栏", "- 文件右键菜单"] },
+      App: { path: "src/App.tsx", before: ['setGitTab("log");'], after: ['setGitTab("stash");'], context: ["function openStash() {", "", "", "}"] }
+    };
+    const sampleNames = {
+      GitPanel: "添加 Stash 页签",
+      History: "调整历史页的 Stash 入口",
+      Notes: "补充 Stash 交互说明",
+      CSS: "调整储藏面板布局",
+      Readme: "更新储藏功能介绍",
+      Shortcuts: "补充储藏快捷入口",
+      App: "调整 Stash 页签跳转"
+    };
+    const timestampFormat = new Intl.DateTimeFormat("sv-SE", {
+      timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"
+    });
+    const stashes = [
+      { id: 1, name: "Stash 页签布局调整", branch, date: "11-10 10:24", files: ["GitPanel", "History", "Notes"] },
+      { id: 2, name: "修复切换仓库后的 Diff 刷新", branch: "fix/workspace-diff", date: "11-09 19:42", files: ["App"] },
+      { id: 3, name: "拉取前的本地改动", branch: "main", date: "11-08 15:36", files: ["Readme"] }
+    ];
+    const working = new Map([["CSS", false], ["Shortcuts", false], ["GitPanel", true]]);
+    const selectedFiles = new Set(["CSS"]);
+    let activeTab = "stash";
+    let activeStash = 1;
+    let stashPreview = "GitPanel";
+    let workingPreview = "CSS";
+    let selectionAnchor = "CSS";
+    let saveScope = [];
+    let openedMenu = null;
+    let menuTrigger = null;
+    let savedId = null;
+    let nextId = 4;
+    let pendingDrop = null;
+    const tabButtons = [...document.querySelectorAll("[data-tab]")];
+    const saveDialog = byId("save-dialog");
+    const saveForm = byId("save-form");
+    const dropDialog = byId("drop-dialog");
+    const fileMenu = byId("file-menu");
+    const stashMenu = byId("stash-menu");
+
+    function stashName(stash) {
+      return `stash@{${stashes.indexOf(stash)}}`;
+    }
+
+    function fileRow(id, selected, stashFile = false) {
+      const file = changes[id];
+      return `<button type="button" class="file-row" data-file="${id}" aria-pressed="${selected}"${stashFile ? "" : ' aria-haspopup="menu"'}>
+        <span class="file-kind">${file.untracked ? "?" : "M"}</span><span class="truncate" title="${file.path}">${file.path}</span>
+      </button>`;
+    }
+
+    function renderWorking() {
+      for (const [name, staged] of [["unstaged", false], ["staged", true]]) {
+        const files = [...working].filter(([, value]) => value === staged).map(([id]) => id);
+        byId(name + "-count").textContent = `${files.length} 个文件`;
+        byId(name).innerHTML = files.map((id) => fileRow(id, selectedFiles.has(id))).join("") || '<p class="empty">暂无文件</p>';
+      }
+    }
+
+    function renderStash() {
+      byId("stash-badge").textContent = stashes.length || "";
+      byId("stash-count").textContent = `${stashes.length} 条`;
+      byId("stash-list").innerHTML = stashes.map((stash) =>
+        `<button type="button" class="stash-row" data-stash="${stash.id}" aria-pressed="${stash.id === activeStash}" aria-haspopup="menu">
+          <span class="row-main"><span class="row-id mono">${stashName(stash)}</span><strong class="truncate" title="${escapeHtml(stash.name)}">${escapeHtml(stash.name)}</strong></span>
+          <span class="row-meta"><span class="truncate">${escapeHtml(stash.branch)}</span><span class="spacer"></span><span>${stash.date}</span></span>
+        </button>`
+      ).join("") || '<p class="empty">当前仓库暂无储藏</p>';
+      const stash = stashes.find((entry) => entry.id === activeStash);
+      byId("stash-detail").innerHTML = stash ? `
+        <div class="detail-head">
+          <h2>${escapeHtml(stash.name)}</h2>
+          <p class="muted"><code>${stashName(stash)}</code> · ${escapeHtml(stash.branch)} · ${stash.files.length} 个文件</p>
+        </div>` : "";
+      const groups = [["已跟踪文件", false], ["未跟踪文件", true]];
+      byId("stash-files").innerHTML = stash ? groups.map(([label, untracked]) => {
+        const files = stash.files.filter((id) => Boolean(changes[id].untracked) === untracked);
+        return files.length ? `<div class="file-group">${label} · ${files.length}</div>${files.map((id) => fileRow(id, id === stashPreview, true)).join("")}` : "";
+      }).join("") : '<p class="empty">储藏当前改动后，可在这里预览并恢复文件。</p>';
+    }
+
+    function diffLine(text, number, kind = "") {
+      const sign = kind === "add" ? "+" : kind === "del" ? "−" : "";
+      return `<div class="line ${kind}"><span class="number">${number}</span><span class="mark">${sign}</span><span>${escapeHtml(text) || "&nbsp;"}</span></div>`;
+    }
+
+    function diffSide(title, file, right) {
+      const context = file.context || ["", "", "", ""];
+      const own = right ? file.after : file.before;
+      const length = Math.max(file.before.length, file.after.length);
+      const counterpart = right ? file.before : file.after;
+      let number = 18;
+      let lines = file.untracked ? "" : context.slice(0, 2).map((line) => diffLine(line, number++)).join("");
+      if (file.untracked) number = 1;
+      for (let index = 0; index < length; index++) {
+        lines += index < own.length
+          ? diffLine(own[index], number++, own[index] === counterpart[index] ? "" : right ? "add" : "del")
+          : diffLine("", "", "skip");
+      }
+      if (!file.untracked) lines += context.slice(2).map((line) => diffLine(line, number++)).join("");
+      return `<section class="side"><div class="side-title muted">${escapeHtml(title)}</div><div class="lines">${lines}</div></section>`;
+    }
+
+    function renderDiff() {
+      const stash = stashes.find((entry) => entry.id === activeStash);
+      const stashMode = activeTab === "stash";
+      const id = stashMode ? stashPreview : activeTab === "files" ? workingPreview : "App";
+      const file = changes[id];
+      const hasFile = Boolean(file);
+      byId("diff-empty").hidden = hasFile;
+      byId("diff-grid").hidden = !hasFile;
+      byId("diff-path").textContent = file?.path || "";
+      byId("diff-source").textContent = stashMode ? (stash ? stashName(stash) : "Stash") : activeTab === "history" ? "历史 · 示例提交" : (working.get(id) ? "已暂存" : "未暂存");
+      if (!file) return;
+      const left = file.untracked ? "空树 · 未跟踪文件" : stashMode ? "储藏时的 HEAD" : activeTab === "history" ? "父提交" : working.get(id) ? "HEAD" : "暂存区";
+      const right = stashMode ? stashName(stash) : activeTab === "history" ? "示例提交" : working.get(id) ? "暂存区" : "工作区";
+      byId("diff-grid").innerHTML = diffSide(left, file, false) + diffSide(right, file, true);
+    }
+
+    function showTab(tab) {
+      activeTab = tab;
+      for (const button of tabButtons) {
+        const active = button.dataset.tab === tab;
+        button.setAttribute("aria-selected", active);
+        button.tabIndex = active ? 0 : -1;
+        byId(button.dataset.tab).hidden = !active;
+      }
+      closeMenu();
+      renderDiff();
+    }
+
+    function setStatus(text, showSaved = false) {
+      byId("status").textContent = text;
+      byId("show-saved").hidden = !showSaved;
+    }
+
+    function selectStash(stash) {
+      activeStash = stash?.id ?? null;
+      stashPreview = stash?.files[0] ?? null;
+      renderStash();
+      renderDiff();
+    }
+
+    function saveTargets() {
+      return saveScope.filter((id) => working.has(id) && (byId("include-untracked").checked || !changes[id].untracked));
+    }
+
+    function updateSaveSummary() {
+      const count = saveTargets().length;
+      byId("save-summary").textContent = count ? `将储藏 ${count} 个文件的改动，并从工作区或暂存区移走这些改动。` : "当前选项下没有可储藏的改动。";
+      byId("submit-save").disabled = count === 0;
+      byId("generate-name").disabled = count === 0;
+    }
+
+    function openSave() {
+      closeMenu(true);
+      saveForm.reset();
+      saveScope = [...selectedFiles];
+      byId("save-scope").textContent = `范围 · 所选的 ${saveScope.length} 个文件`;
+      updateSaveSummary();
+      saveDialog.showModal();
+    }
+
+    function removeStash(stash) {
+      const index = stashes.indexOf(stash);
+      stashes.splice(index, 1);
+      selectStash(stashes[index] ?? stashes[index - 1]);
+      (byId("stash-list").querySelector('[aria-pressed="true"]') ?? byId("tab-stash")).focus();
+    }
+
+    function selectWorking(id, { toggle = false, range = false } = {}) {
+      const rows = [...byId("files").querySelectorAll("[data-file]")];
+      const ordered = rows.map((row) => row.dataset.file);
+      const start = ordered.indexOf(selectionAnchor);
+      const end = ordered.indexOf(id);
+      if (range && start !== -1) {
+        selectedFiles.clear();
+        for (const file of ordered.slice(Math.min(start, end), Math.max(start, end) + 1)) selectedFiles.add(file);
+      } else if (toggle) {
+        if (selectedFiles.has(id)) selectedFiles.delete(id);
+        else selectedFiles.add(id);
+        selectionAnchor = id;
+      } else {
+        selectedFiles.clear();
+        selectedFiles.add(id);
+        selectionAnchor = id;
+      }
+      workingPreview = id;
+      for (const row of rows) row.setAttribute("aria-pressed", selectedFiles.has(row.dataset.file));
+      renderDiff();
+    }
+
+    function closeMenu(restoreFocus = false) {
+      if (!openedMenu) return;
+      openedMenu.hidden = true;
+      if (restoreFocus) menuTrigger.focus();
+      openedMenu = null;
+      menuTrigger = null;
+    }
+
+    function openMenu(menu, trigger, x, y) {
+      closeMenu();
+      openedMenu = menu;
+      menuTrigger = trigger;
+      menu.hidden = false;
+      menu.style.left = Math.max(0, Math.min(x, innerWidth - menu.offsetWidth - 4)) + "px";
+      menu.style.top = Math.max(0, Math.min(y, innerHeight - menu.offsetHeight - 4)) + "px";
+      menu.querySelector("button").focus();
+    }
+
+    function bindContextMenu(container, selector, open) {
+      container.addEventListener("contextmenu", (event) => {
+        const row = event.target.closest(selector);
+        if (!row) return;
+        event.preventDefault();
+        open(row, event.clientX, event.clientY);
+      });
+      container.addEventListener("keydown", (event) => {
+        const row = event.target.closest(selector);
+        if (!row || (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10"))) return;
+        event.preventDefault();
+        const rect = row.getBoundingClientRect();
+        open(row, rect.left + 12, rect.bottom);
+      });
+    }
+
+    for (const button of tabButtons) button.onclick = () => showTab(button.dataset.tab);
+    document.querySelector(".tabs").addEventListener("keydown", (event) => {
+      const index = tabButtons.indexOf(event.target);
+      if (index === -1 || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      const next = event.key === "Home" ? 0 : event.key === "End" ? tabButtons.length - 1
+        : (index + (event.key === "ArrowLeft" ? -1 : 1) + tabButtons.length) % tabButtons.length;
+      tabButtons[next].click();
+      tabButtons[next].focus();
+    });
+
+    byId("stash-list").onclick = (event) => {
+      const row = event.target.closest("[data-stash]");
+      if (!row) return;
+      selectStash(stashes.find((stash) => stash.id === Number(row.dataset.stash)));
+      byId("stash-list").querySelector('[aria-pressed="true"]')?.focus();
+    };
+    byId("stash-files").onclick = (event) => {
+      const row = event.target.closest("[data-file]");
+      if (!row) return;
+      stashPreview = row.dataset.file;
+      byId("stash-files").querySelector('[aria-pressed="true"]')?.setAttribute("aria-pressed", "false");
+      row.setAttribute("aria-pressed", "true");
+      renderDiff();
+    };
+    byId("files").onclick = (event) => {
+      const row = event.target.closest("[data-file]");
+      if (!row) return;
+      selectWorking(row.dataset.file, { toggle: event.ctrlKey || event.metaKey, range: event.shiftKey });
+    };
+    byId("files").onmousedown = (event) => {
+      if (event.shiftKey && event.target.closest("[data-file]")) event.preventDefault();
+    };
+    bindContextMenu(byId("files"), "[data-file]", (row, x, y) => {
+      if (!selectedFiles.has(row.dataset.file)) selectWorking(row.dataset.file);
+      openMenu(fileMenu, row, x, y);
+    });
+    bindContextMenu(byId("stash-list"), "[data-stash]", (row, x, y) => {
+      const id = Number(row.dataset.stash);
+      if (activeStash !== id) selectStash(stashes.find((stash) => stash.id === id));
+      openMenu(stashMenu, byId("stash-list").querySelector('[aria-pressed="true"]'), x, y);
+    });
+    document.addEventListener("click", (event) => {
+      if (openedMenu && !openedMenu.contains(event.target)) closeMenu();
+    });
+    document.addEventListener("keydown", (event) => {
+      if (!openedMenu) return;
+      if (event.key === "Escape" || event.key === "Tab") {
+        if (event.key === "Escape") event.preventDefault();
+        closeMenu(true);
+      } else if (["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
+        event.preventDefault();
+        const items = [...openedMenu.querySelectorAll("button")];
+        const index = items.indexOf(document.activeElement);
+        const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1
+          : (index + (event.key === "ArrowUp" ? -1 : 1) + items.length) % items.length;
+        items[next].focus();
+      }
+    });
+
+    byId("history-stash").onclick = () => showTab("stash");
+    byId("save-selection").onclick = openSave;
+    byId("cancel-save").onclick = () => saveDialog.close();
+    byId("generate-name").onclick = () => {
+      const files = saveTargets();
+      if (!files.length) return;
+      const message = byId("message");
+      // Simulate an editable AI suggestion using the files in scope.
+      message.value = files.slice(0, 2).map((id) => sampleNames[id]).join("、")
+        + (files.length > 2 ? `等 ${files.length} 项改动` : "");
+      message.focus();
+    };
+    saveForm.onchange = updateSaveSummary;
+    saveForm.onsubmit = (event) => {
+      event.preventDefault();
+      const files = saveTargets();
+      if (!files.length) return;
+      const timestamp = timestampFormat.format(new Date());
+      const stash = {
+        id: nextId++, name: byId("message").value.trim() || `${branch} · ${timestamp}`,
+        branch, date: timestamp.slice(5, 16), files
+      };
+      for (const id of files) {
+        working.delete(id);
+        selectedFiles.delete(id);
+      }
+      if (!working.has(workingPreview)) {
+        workingPreview = selectedFiles.values().next().value ?? working.keys().next().value ?? null;
+        if (workingPreview) selectedFiles.add(workingPreview);
+      }
+      if (!working.has(selectionAnchor)) selectionAnchor = workingPreview;
+      stashes.unshift(stash);
+      savedId = stash.id;
+      saveDialog.close();
+      renderWorking();
+      selectStash(stash);
+      setStatus(`已储藏 ${files.length} 个文件到 ${stashName(stash)}`, activeTab === "files");
+    };
+    byId("show-saved").onclick = () => {
+      const saved = stashes.find((stash) => stash.id === savedId);
+      if (saved) selectStash(saved);
+      showTab("stash");
+      byId("show-saved").hidden = true;
+    };
+
+    stashMenu.onclick = (event) => {
+      const action = event.target.closest("[data-action]")?.dataset.action;
+      const stash = stashes.find((entry) => entry.id === activeStash);
+      if (!action || !stash) return;
+      closeMenu(true);
+      if (action === "drop") {
+        pendingDrop = stash;
+        byId("drop-summary").textContent = `${stashName(stash)} · ${stash.name}`;
+        dropDialog.returnValue = "";
+        dropDialog.showModal();
+        return;
+      }
+      const overlaps = stash.files.find((id) => working.has(id));
+      if (overlaps) {
+        setStatus(`应用被阻止：${changes[overlaps].path} 有本地改动。Stash 已保留。`);
+        return;
+      }
+      for (const id of stash.files) working.set(id, false);
+      workingPreview = stash.files[0];
+      selectedFiles.clear();
+      selectedFiles.add(workingPreview);
+      selectionAnchor = workingPreview;
+      renderWorking();
+      if (action === "pop") removeStash(stash);
+      setStatus(action === "pop" ? "已应用到工作区，并移除该条 Stash" : "已应用到工作区，Stash 已保留");
+    };
+    dropDialog.onclose = () => {
+      if (dropDialog.returnValue === "drop" && pendingDrop) {
+        removeStash(pendingDrop);
+        setStatus("已删除该条 Stash");
+      }
+      pendingDrop = null;
+    };
+
+    renderWorking();
+    renderStash();
+    showTab("stash");
+  </script>
+</body>
+</html>

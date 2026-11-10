@@ -15,4 +15,4 @@ export const generateAiCommit = (repoId: string, profile: AiProfile, description
 export const cancelAiGeneration = (requestId: string) => invoke<void>("cancel_ai_generation", { requestId });
 export const planAiAction = (profile: AiProfile, description: string, context: unknown, systemPrompt: string, requestId: string, readOnly = false, conversationPrompt?: string) =>
   invoke<unknown>("plan_ai_action", { profile, description, context, systemPrompt, requestId, readOnly, conversationPrompt });
-export const readAiChanges = (repoId: string) => invoke<{ revision: string; candidates: AiCandidate[]; text: string; truncated: boolean }>("read_ai_changes", { repoId });
+export const readAiChanges = (repoId: string, pathIds?: string[]) => invoke<{ revision: string; candidates: AiCandidate[]; text: string; truncated: boolean }>("read_ai_changes", pathIds ? { repoId, pathIds } : { repoId });

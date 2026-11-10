@@ -149,6 +149,7 @@ fn b09_stash_push_with_message_untracked_and_selected_paths() {
     assert_eq!(fs::read_to_string(p.join("a.txt")).unwrap(), "a\n");
     assert!(p.join("u.txt").exists());
     let list = h.adapter.stash_list().unwrap();
+    assert_eq!(outcome.stash_oid.as_deref(), Some(list[0].oid.as_str()));
     assert_eq!((list.len(), list[0].index, list[0].message.as_str(), list[0].branch.as_str()), (1, 0, "wip a b", "main"));
     assert!(list[0].untracked.is_none());
     let content = h.adapter.stash_changes(&list[0].oid).unwrap();
@@ -178,6 +179,65 @@ fn b09_stash_push_with_message_untracked_and_selected_paths() {
     assert!(outcome.message.contains("没有可储藏的改动"), "{}", outcome.message);
     assert!(changed(&before, &fingerprint(p)).iter().all(|k| k == "index"));
     assert_eq!(stash_count(p), 3);
+}
+
+#[test]
+fn stash_selected_excludes_unrelated_index_and_worktree_changes() {
+    let dir = repo();
+    let p = dir.path();
+    commit(p, "b.txt", "b\n", "b");
+    write(p, "a.txt", "selected index\n");
+    write(p, "b.txt", "unrelated index\n");
+    git_in(p, &["add", "a.txt", "b.txt"]);
+    write(p, "a.txt", "selected worktree\n");
+    write(p, "b.txt", "unrelated worktree\n");
+    write(p, "u.txt", "selected untracked\n");
+    write(p, "v.txt", "unrelated untracked\n");
+    let h = Harness::new(p);
+    let outcome = h.run(OperationRequest::StashPush {
+        message: Some("selected".into()), include_untracked: true, path_ids: Some(vec![id("a.txt"), id("u.txt")]),
+    });
+    assert_eq!(outcome.status, OpStatus::Succeeded, "{}", outcome.message);
+    let oid = outcome.stash_oid.unwrap();
+    let content = h.adapter.stash_changes(&oid).unwrap();
+    assert_eq!(content.tracked.iter().map(|file| file.path.as_str()).collect::<Vec<_>>(), ["a.txt"]);
+    assert_eq!(content.untracked.iter().map(|file| file.path.as_str()).collect::<Vec<_>>(), ["u.txt"]);
+    assert_eq!(git_in(p, &["diff", "--name-only", &format!("{oid}^1"), &format!("{oid}^2")]), b"a.txt\n");
+    assert_eq!(git_in(p, &["show", ":b.txt"]), b"unrelated index\n");
+    assert_eq!(fs::read_to_string(p.join("b.txt")).unwrap(), "unrelated worktree\n");
+    assert_eq!(fs::read_to_string(p.join("a.txt")).unwrap(), "a\n");
+    assert!(!p.join("u.txt").exists() && p.join("v.txt").exists());
+    assert!(!p.join(".git/index.lock").exists());
+    let outcome = h.run(OperationRequest::StashApply { index: 0, oid, pop: true });
+    assert_eq!(outcome.status, OpStatus::Succeeded, "{}", outcome.message);
+    assert_eq!(fs::read_to_string(p.join("a.txt")).unwrap(), "selected worktree\n");
+    assert_eq!(fs::read_to_string(p.join("u.txt")).unwrap(), "selected untracked\n");
+    assert_eq!(git_in(p, &["show", ":b.txt"]), b"unrelated index\n");
+    assert_eq!(fs::read_to_string(p.join("b.txt")).unwrap(), "unrelated worktree\n");
+}
+
+#[test]
+fn stash_naming_context_only_reads_selected_paths() {
+    let dir = repo();
+    let p = dir.path();
+    commit(p, "b.txt", "b\n", "b");
+    write(p, "a.txt", "chosen index\n");
+    git_in(p, &["add", "a.txt"]);
+    write(p, "a.txt", "chosen worktree\n");
+    write(p, "b.txt", "unselected tracked\n");
+    write(p, "u.txt", "chosen untracked\n");
+    write(p, "v.txt", "unselected untracked\n");
+    let h = Harness::new(p);
+    let before = fingerprint(p);
+    let context = h.adapter.ai_context_for_paths(false, Some(&[id("a.txt"), id("u.txt"), id(".")])).unwrap();
+    assert!(context.text.contains("chosen index"));
+    assert!(context.text.contains("chosen worktree"));
+    assert!(context.text.contains("chosen untracked"));
+    assert!(!context.text.contains("unselected"));
+    assert_eq!(context.candidates.len(), 2);
+    let empty = h.adapter.ai_context_for_paths(false, Some(&[id(".")])).unwrap();
+    assert!(empty.candidates.is_empty() && empty.text.is_empty());
+    assert!(changed(&before, &fingerprint(p)).is_empty());
 }
 
 #[test]

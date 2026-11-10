@@ -684,12 +684,24 @@ button.op-status { padding:0 6px; border:0; background:transparent; font-size:11
 .detached-banner { display:flex; align-items:center; gap:10px; }
 .detached-banner span { flex:1; }
 .detached-banner button { padding:1px 8px; font-size:12px; }
-.stash-form { gap:6px; }
-.stash-form input[type="text"], .stash-form input:not([type]) { padding:5px 8px; }
+.stash-form { gap:8px; }
 .stash-form label { display:flex; align-items:center; gap:5px; }
-.stash-form > button { align-self:flex-start; }
-.stash-actions { display:flex; gap:4px; flex:none; margin:3px 0; }
-.stash-actions button { padding:1px 7px; font-size:11px; }
+.stash-form > p { margin:0; }
+.stash-form .stash-name-field > input { padding-right:76px; }
+.stash-layout { flex:1; min-height:0; display:grid; grid-template-columns:clamp(160px, 28%, 460px) minmax(0, 1fr); }
+.stash-layout[hidden] { display:none; }
+.stash-list { display:flex; flex-direction:column; min-width:0; min-height:0; border-right:1px solid var(--border); }
+.stash-list-heading { display:flex; gap:8px; align-items:center; padding:7px 10px; border-bottom:1px solid var(--border); }
+.stash-list-scroll { flex:1; min-height:0; overflow:auto; }
+.stash-list .log-stash { width:100%; display:grid; gap:3px; padding:6px 10px; text-align:left; border:0; border-bottom:1px solid var(--border); border-radius:0; background:transparent; }
+.stash-list .log-stash:hover { background:var(--hover); }
+.stash-list .log-stash[aria-selected="true"] { background:var(--hover); box-shadow:inset 2px 0 0 var(--blue); }
+.stash-row-title,.stash-row-meta { min-width:0; display:flex; gap:8px; align-items:center; }
+.stash-row-title code { color:var(--blue); white-space:nowrap; }
+.stash-row-title strong,.stash-row-meta > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.stash-row-meta { color:var(--dim); font-size:11px; justify-content:space-between; }
+.stash-row-meta time { white-space:nowrap; }
+.stash-count { color:var(--dim); }
 
 /* ---------- 同步工具栏（获取 / 拉取 / 推送分体按钮）、结果提示；V2-04 合并对话框与合并进行中横幅 ---------- */
 .sync-toolbar { display:inline-flex; align-items:center; gap:6px; }

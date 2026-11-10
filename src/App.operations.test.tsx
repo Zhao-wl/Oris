@@ -745,7 +745,7 @@ it("keeps both file scopes visible and reads the clicked path from the correct s
   const same = change("src/shared.ts"), other = change("src/other.ts");
   bridge.open.mockResolvedValue(snap([same], [other, same]));
   await mount();
-  expect(host.querySelectorAll('.git-tabs [role=tab]')).toHaveLength(2);
+  expect(host.querySelectorAll('.git-tabs [role=tab]')).toHaveLength(3);
   expect(host.querySelectorAll('.change-column')).toHaveLength(2);
   const stagedRow = host.querySelector('.change-column:nth-child(2) .file[aria-label="src/shared.ts"]') as HTMLElement;
   await click(stagedRow);

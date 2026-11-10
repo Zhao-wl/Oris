@@ -3,6 +3,37 @@
 //! pop 为“按 OID apply，成功且没有冲突后再核对并 drop”：出现冲突时 stash 保留（R-STASH）。
 use super::*;
 
+struct StashIndexLock {
+    path: PathBuf,
+    published: bool,
+}
+
+impl StashIndexLock {
+    fn acquire(path: PathBuf) -> Result<(Self, fs::File), GitError> {
+        let file = fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                GitError::ExternalLock(format!("暂存区被其他 Git 进程锁定：{}", path.display()))
+            } else {
+                GitError::Io(error.to_string())
+            }
+        })?;
+        Ok((Self { path, published: false }, file))
+    }
+
+    fn publish(mut self, file: fs::File, index: &Path) -> std::io::Result<()> {
+        drop(file);
+        fs::rename(&self.path, index)?;
+        self.published = true;
+        Ok(())
+    }
+}
+
+impl Drop for StashIndexLock {
+    fn drop(&mut self) {
+        if !self.published { let _ = fs::remove_file(&self.path); }
+    }
+}
+
 impl GitAdapter {
     fn stash_top(&self) -> Option<String> {
         self.stash_oid(0).ok().flatten()
@@ -54,29 +85,90 @@ impl GitAdapter {
         if let Some(message) = message {
             args.extend(["-m", message]);
         }
-        let stdin = paths.as_ref().map(|paths| nul_list(paths));
-        if stdin.is_some() {
+        let result = if let Some(paths) = paths.as_ref() {
             args.extend(["--pathspec-from-file=-", "--pathspec-file-nul"]);
+            return self.stash_selected(&args, paths, include_untracked, before.as_deref(), ctx);
+        } else {
+            // 不带路径时 Git 内部用 `:/` 清理已储藏的文件，不能开启字面量路径。
+            self.write_git_pathless(&args, ctx)?
+        };
+        Ok(self.finish_stash_push(result, before.as_deref(), None, include_untracked))
+    }
+
+    fn stash_selected(&self, args: &[&str], paths: &[Vec<u8>], include_untracked: bool, before: Option<&str>, ctx: &OpContext) -> Result<Step, GitError> {
+        let io_error = |error: std::io::Error| GitError::Io(error.to_string());
+        let index = self.git_dir.join("index");
+        let (lock, mut lock_file) = StashIndexLock::acquire(self.index_lock_path())?;
+        let temp = tempfile::tempdir().map_err(io_error)?;
+        let stash_index = temp.path().join("stash-index");
+        let final_index = temp.path().join("final-index");
+        if index.exists() { fs::copy(&index, &stash_index).map_err(io_error)?; }
+
+        let selected: std::collections::HashSet<_> = paths.iter().map(Vec::as_slice).collect();
+        let state = self.scan(false)?;
+        let unrelated = state.lists.staged.iter()
+            .flat_map(|file| std::iter::once(&file.path_id).chain(file.old_path_id.iter()))
+            .map(|id| decode_path_id(id))
+            .collect::<Result<Vec<_>, _>>()?;
+        let unrelated: Vec<_> = unrelated.into_iter().filter(|path| !selected.contains(path.as_slice())).collect();
+
+        let run = |index: &Path, args: &[&str], paths: &[Vec<u8>]| {
+            let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
+            process::run_with(&self.git, &self.worktree, &args, Some(nul_list(paths)), true,
+                &ctx.cancel, &ctx.log, &ctx.processes, process::RunOptions { index_file: Some(index.to_path_buf()), ..Default::default() })
+        };
+        let copy_index = |path: &Path, destination: &mut fs::File| {
+            std::io::copy(&mut fs::File::open(path)?, destination).map(|_| ())
+        };
+
+        if !unrelated.is_empty() {
+            if self.head_oid()?.is_none() { return Ok(Step::failed("首次提交之前无法储藏")); }
+            // Git 的路径储藏仍会把整个暂存区写入 stash。先从临时 index 去掉未选中的改动，
+            // 另从原 index 准备只重置所选路径的结果，在储藏成功后原子写回。
+            fs::copy(&index, &final_index).map_err(io_error)?;
+            let reset = ["reset", "--quiet", "HEAD", "--pathspec-from-file=-", "--pathspec-file-nul"];
+            for (path, files) in [(&stash_index, unrelated.as_slice()), (&final_index, paths)] {
+                let result = run(path, &reset, files)?;
+                if result.cancelled { return Ok(Step::cancelled("储藏已取消")); }
+                if !result.success { return Ok(Step::failed(Self::failure_message(&result, "准备储藏范围"))); }
+            }
+            copy_index(&final_index, &mut lock_file).map_err(io_error)?;
         }
-        // 带路径时路径按字面量传递；不带路径时 Git 内部用 `:/` 清理已储藏的文件，不能开启字面量路径。
-        let result = if stdin.is_some() { self.write_git(&args, stdin, true, ctx)? } else { self.write_git_pathless(&args, ctx)? };
+
+        let result = run(&stash_index, args, paths)?;
+        let mut step = self.finish_stash_push(result, before, Some(paths), include_untracked);
+        if step.status == OpStatus::Succeeded {
+            let publish = (|| {
+                if unrelated.is_empty() { copy_index(&stash_index, &mut lock_file)?; }
+                lock.publish(lock_file, &index)
+            })();
+            if let Err(error) = publish {
+                step.status = OpStatus::Failed;
+                step.message = format!("储藏已创建，但写回暂存区失败：{error}");
+            }
+        }
+        Ok(step)
+    }
+
+    fn finish_stash_push(&self, result: process::CallResult, before: Option<&str>, paths: Option<&[Vec<u8>]>, include_untracked: bool) -> Step {
         if result.cancelled {
-            return Ok(Step::cancelled("储藏已取消"));
+            return Step::cancelled("储藏已取消");
         }
         if !result.success {
-            return Ok(Step::failed(Self::failure_message(&result, "储藏")));
+            return Step::failed(Self::failure_message(&result, "储藏"));
         }
         let after = self.stash_top();
-        if after.is_none() || after == before {
-            return Ok(Step::failed("没有可储藏的改动（Git 未创建新的 stash）"));
+        if after.is_none() || after.as_deref() == before {
+            return Step::failed("没有可储藏的改动（Git 未创建新的 stash）");
         }
         let mut step = Step::ok(format!(
             "已储藏为 stash@{{0}}{}{}",
             paths.as_ref().map(|p| format!("（{} 个选中的路径）", p.len())).unwrap_or_default(),
             if include_untracked { "，包含未跟踪文件" } else { "" }
         ));
+        step.stash_oid = after;
         step.touched = paths.map(|p| p.iter().map(|x| display(x)).collect()).unwrap_or_default();
-        Ok(step)
+        step
     }
 
     /// apply / pop。`pop` 在 apply 成功且没有冲突后再核对身份并 drop。

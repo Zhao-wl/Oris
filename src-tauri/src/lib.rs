@@ -229,9 +229,9 @@ async fn write_ai_rules_file(path: String, content: String) -> Result<(), String
 }
 #[cfg(feature = "desktop")]
 #[tauri::command]
-async fn read_ai_changes(repo_id: String, registry: State<'_, RepositoryRegistry>) -> Result<serde_json::Value, String> {
+async fn read_ai_changes(repo_id: String, path_ids: Option<Vec<String>>, registry: State<'_, RepositoryRegistry>) -> Result<serde_json::Value, String> {
     let adapter = opened(&registry, &repo_id).map_err(|e| e.to_string())?.adapter.clone();
-    let context = tauri::async_runtime::spawn_blocking(move || adapter.ai_context(false)).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
+    let context = tauri::async_runtime::spawn_blocking(move || adapter.ai_context_for_paths(false, path_ids.as_deref())).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
     Ok(serde_json::json!({"revision":context.revision,"candidates":context.candidates,"text":context.text.chars().take(40000).collect::<String>(),"truncated":context.text.chars().count()>40000}))
 }
 

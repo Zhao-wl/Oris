@@ -322,7 +322,7 @@ describe("V2-D60：写操作后的历史重读", () => {
     expect(all(".log-row").length).toBe(4);
     expect(host.querySelectorAll(".log-row .ref-chip").length).toBe(0);
     expect(q(".log-current")?.textContent).toBe("当前工作分支：● …");
-    expect(all(".log-branch").map((b) => b.textContent)).toEqual(["全部分支"]);
+    expect(all(".log-branch").map((b) => b.textContent)).toEqual(["全部分支", "查看 Stash →"]);
     expect(button("跳到 HEAD").disabled).toBe(true);
     expect(q(".log-count")?.textContent).toContain("读取中");
     await act(async () => release(refsView(O("1")))); await flush();

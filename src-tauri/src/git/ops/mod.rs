@@ -253,6 +253,8 @@ pub struct OperationOutcome {
     pub snapshot: Option<RepositorySnapshot>,
     pub confirmation: Option<Confirmation>,
     pub backup: Option<BackupSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stash_oid: Option<String>,
     /// 操作结束后仍存在本次之前没有的 `index.lock`（通常是被取消的进程留下）；不会自动删除。
     pub lock_left: bool,
     /// 本次操作启动的写通道 Git 进程数（不含结束后的刷新 status）。
@@ -270,22 +272,23 @@ pub(super) struct Step {
     pub message: String,
     pub confirmation: Option<Confirmation>,
     pub backup: Option<BackupSummary>,
+    pub stash_oid: Option<String>,
     pub touched: Vec<String>,
 }
 
 impl Step {
     fn ok(message: impl Into<String>) -> Self {
-        Self { status: OpStatus::Succeeded, message: message.into(), confirmation: None, backup: None, touched: Vec::new() }
+        Self { status: OpStatus::Succeeded, message: message.into(), confirmation: None, backup: None, stash_oid: None, touched: Vec::new() }
     }
     fn failed(message: impl Into<String>) -> Self {
-        Self { status: OpStatus::Failed, message: message.into(), confirmation: None, backup: None, touched: Vec::new() }
+        Self { status: OpStatus::Failed, message: message.into(), confirmation: None, backup: None, stash_oid: None, touched: Vec::new() }
     }
     fn cancelled(message: impl Into<String>) -> Self {
-        Self { status: OpStatus::Cancelled, message: message.into(), confirmation: None, backup: None, touched: Vec::new() }
+        Self { status: OpStatus::Cancelled, message: message.into(), confirmation: None, backup: None, stash_oid: None, touched: Vec::new() }
     }
     fn confirm(reason: &'static str, message: impl Into<String>, paths: Vec<String>) -> Self {
         let message = message.into();
-        Self { status: OpStatus::NeedsConfirmation, message: message.clone(), confirmation: Some(Confirmation { reason, message, paths }), backup: None, touched: Vec::new() }
+        Self { status: OpStatus::NeedsConfirmation, message: message.clone(), confirmation: Some(Confirmation { reason, message, paths }), backup: None, stash_oid: None, touched: Vec::new() }
     }
 }
 
@@ -450,6 +453,7 @@ impl GitAdapter {
             snapshot,
             confirmation: step.confirmation,
             backup: step.backup,
+            stash_oid: step.stash_oid,
             lock_left,
             git_processes,
             elapsed_ms: started.elapsed().as_millis() as u64,

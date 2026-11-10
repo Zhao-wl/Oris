@@ -4,10 +4,10 @@ import { headCommitInfo, type BackupSummary, type HeadCommitInfo, type Operation
 import { loadDraft, operationLabels, saveDraft } from "./operations-model";
 import { errorText } from "./error-message";
 
-export type GitTab = "log" | "commit" | "output";
+export type GitTab = "log" | "commit" | "stash" | "output";
 
 export interface RunningOperation { opId: string; kind: OperationKind }
-export interface OperationRecord { kind: OperationKind; status: OperationStatus; message: string; output: string; outputTruncated?: boolean; at: number }
+export interface OperationRecord { kind: OperationKind; status: OperationStatus; message: string; output: string; outputTruncated?: boolean; stashOid?: string; at: number }
 
 interface Props {
   repoId: string | null;
@@ -32,8 +32,10 @@ interface Props {
   onUndoDiscard(backupId: string): void;
   onCancel(): void;
   onGenerateMessage?(): Promise<string>;
-  /** “历史”页内容（任务 04；V2-03 的 Stash 已并入其左侧）：挂载后保持，切换页签时只隐藏，保留已加载的历史与选择。 */
+  /** 历史挂载后保持，切换页签时只隐藏，保留已加载的历史与选择。 */
   logContent?: ReactNode;
+  stashContent?: ReactNode;
+  stashCount?: number;
   filesContent?: ReactNode;
   filesTools?: ReactNode;
 }
@@ -41,7 +43,7 @@ interface Props {
 const statusText: Record<OperationStatus, string> = { succeeded: "成功", failed: "失败", cancelled: "已取消", needsConfirmation: "等待确认" };
 const statusMark: Record<OperationStatus, string> = { succeeded: "✓", failed: "✗", cancelled: "■", needsConfirmation: "?" };
 
-/** 底部 Git 区（混合发布参考图）：可收起的“历史”“提交”与“操作输出”页签。 */
+/** 底部 Git 区：文件、历史和 Stash 页签。 */
 export default function GitPanel(props: Props) {
   const { repoId, tab, onTab } = props;
   const clampHeight = (height: number) => Math.max(160, Math.min(Math.max(160, window.innerHeight - 240), height));
@@ -58,10 +60,13 @@ export default function GitPanel(props: Props) {
     <div className="git-tabs" role="tablist" aria-label="仓库内容">
       <button type="button" role="tab" aria-selected={tab === "commit" || tab === "output"} className={tab === "commit" || tab === "output" ? "active" : ""} onClick={() => onTab("commit")}>文件</button>
       <button type="button" role="tab" aria-selected={tab === "log"} className={tab === "log" ? "active" : ""} onClick={() => onTab("log")}>历史</button>
+      <button type="button" role="tab" aria-label="Stash" aria-selected={tab === "stash"} className={tab === "stash" ? "active" : ""} onClick={() => onTab("stash")}>Stash{props.stashCount ? <small className="stash-count"> {props.stashCount}</small> : null}</button>
       <span className="spacer"/>{tab === "commit" && props.filesTools}
       <button type="button" className="git-fold" title={tab ? "收起下方区域" : "展开下方区域"} onClick={() => onTab(tab ? null : "commit")} aria-label={tab ? "收起 Git 区" : "展开 Git 区"}>{tab ? "⌄" : "⌃"}</button>
     </div>
     {props.logContent}
+    {props.stashContent}
+    {tab === "stash" && !repoId && <div className="log-empty">使用 + 添加项目</div>}
     {(tab === "commit" || tab === "output") && <div className="files-layout">{props.filesContent}{repoId ? <CommitTab key={repoId} {...props} repoId={repoId}/> : <div className="empty">使用 + 添加项目</div>}</div>}
     {tab === "output" && <div className="dialog-overlay"><section className="operation-dialog" role="dialog" aria-label="操作详情"><div className="panel-title"><strong>操作详情</strong><button onClick={() => onTab("commit")} aria-label="关闭操作详情">×</button></div><OutputTab {...props}/></section></div>}
   </section>;

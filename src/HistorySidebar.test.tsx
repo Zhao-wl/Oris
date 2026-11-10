@@ -14,7 +14,7 @@ const refs = (current: string): RefsView => ({
 });
 const render = async (view: RefsView | null, hidden: boolean) => {
   await act(async () => root.render(<HistorySidebar refs={view} refsError={null} headLabel="feature" current={null} hidden={hidden} filter={null} onFilter={() => {}}
-    stashes={[]} stashError={null} selectedStash={null} onStash={() => {}} blocked={null} onMenu={() => {}}/>));
+    blocked={null} onMenu={() => {}}/>));
 };
 let scrolled: string[];
 beforeEach(() => {

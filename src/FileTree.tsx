@@ -20,6 +20,7 @@ export interface FileActions {
   /** 选择变化；focus 为需要在 diff 中显示的文件（null 表示保持当前显示）。 */
   onSelection(pathIds: string[], focus: FileChange | null): void;
   onAction(action: FileAction, files: FileChange[]): void;
+  onStash?(files: FileChange[]): void;
   /** 在资源管理器中打开（`/` 分隔的仓库相对路径）；不提供时菜单不显示该项。只读，不受写入口状态限制。 */
   onReveal?(relative: string): void;
 }
@@ -155,7 +156,7 @@ function FileButton({ file, selectedPathId, onSelect, depth = 0, showPath = fals
  * 右键菜单（丢弃只在这里提供）：右键点在已选中的文件上时作用于全部选中项（批量）；点在未选中的文件上时先单选该文件。
  * 暂存 / 取消暂存作用于其中的普通文件，冲突文件另有“标记已解决”；有任一文件不能丢弃时“丢弃…”不可用并说明原因。
  */
-function MenuShell({ x, y, label, onClose, children }: { x: number; y: number; label: string; onClose(): void; children: ReactNode }) {
+export function MenuShell({ x, y, label, onClose, children }: { x: number; y: number; label: string; onClose(): void; children: ReactNode }) {
   const host = useRef<HTMLDivElement>(null);
   const position = useMenuPosition(host, x, y);
   useEffect(() => {
@@ -166,7 +167,15 @@ function MenuShell({ x, y, label, onClose, children }: { x: number; y: number; l
     window.addEventListener("keydown", key, true);
     return () => { window.removeEventListener("pointerdown", close, true); window.removeEventListener("keydown", key, true); };
   }, [onClose]);
-  return <div ref={host} className="file-menu" role="menu" style={position} aria-label={label}>{children}</div>;
+  return <div ref={host} className="file-menu" role="menu" style={position} aria-label={label} onKeyDown={(event) => {
+    if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+    const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")];
+    if (!items.length) return;
+    event.preventDefault();
+    const index = items.indexOf(document.activeElement as HTMLButtonElement);
+    const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : (index + (event.key === "ArrowUp" ? -1 : 1) + items.length) % items.length;
+    items[next].focus();
+  }}>{children}</div>;
 }
 
 function RevealItem({ relative, onClose }: { relative: string; onClose(): void }) {
@@ -192,6 +201,8 @@ function FileMenu({ menu, files, onClose }: { menu: { file: FileChange; x: numbe
   const stagingLabel = actions.scope === "staged" ? "取消暂存" : "暂存";
   const stagingReason = actions.scope === "all" ? "“全部”范围不区分暂存区，请在“未暂存”范围暂存" : !regular.length ? "所选都是冲突文件，请使用“标记已解决”" : null;
   return <MenuShell x={menu.x} y={menu.y} label="文件操作" onClose={onClose}>
+    {actions.onStash && <button type="button" role="menuitem" disabled={!!disabled || !!conflicts.length}
+      title={disabled ?? (conflicts.length ? "选中项包含冲突文件" : undefined)} onClick={() => { onClose(); actions.onStash?.(targets); }}>储藏所选文件…</button>}
     {targets.length > 1 && <span className="file-menu-note">已选中 {targets.length} 个文件</span>}
     <button type="button" role="menuitem" disabled={!!disabled || !!stagingReason} title={disabled ?? stagingReason ?? undefined} onClick={() => act(actions.scope === "staged" ? "unstage" : "stage", regular)}>{stagingLabel}{count(regular)}</button>
     {conflicts.length > 0 && <button type="button" role="menuitem" disabled={!!disabled} title={disabled ?? undefined} onClick={() => act("markResolved", conflicts)}>标记已解决{count(conflicts)}</button>}

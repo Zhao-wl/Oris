@@ -54,7 +54,17 @@ const click = async (element: Element | null | undefined) => { if (!element) thr
 const buttons = (label: string) => [...host.querySelectorAll(".hunk button")].filter((b) => b.textContent === label) as HTMLButtonElement[];
 const notices = () => [...host.querySelectorAll(".reading-notice p, .hunk-unavailable")].map((n) => n.textContent).join("\n");
 const settle = async () => { for (let i = 0; i < 40 && !host.querySelector('[data-testid="viewer"]'); i++) await flush(); };
-const mount = async () => { await act(async () => { root.render(<App />); }); await flush(); await click(host.querySelector('.active-scope .file[aria-label="a.txt"]')); await settle(); };
+const mount = async (whitespace: "keep" | "ignore" = "keep") => {
+  await act(async () => { root.render(<App />); });
+  await flush();
+  await click(host.querySelector('.active-scope .file[aria-label="a.txt"]'));
+  await settle();
+  if (whitespace === "keep") {
+    const select = host.querySelector<HTMLSelectElement>('select[aria-label="空白规则"]')!;
+    await act(async () => { select.value = whitespace; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    await flush();
+  }
+};
 
 beforeEach(() => {
   vi.resetAllMocks(); localStorage.clear();
@@ -120,10 +130,8 @@ describe("块操作（V2-05）", () => {
   });
 
   it("忽略空白与“全部”范围：不提供块操作，并说明原因", async () => {
-    await mount();
+    await mount("ignore");
     const select = host.querySelector('select[aria-label="空白规则"]') as HTMLSelectElement;
-    await act(async () => { select.value = "ignore"; select.dispatchEvent(new Event("change", { bubbles: true })); });
-    await flush();
     expect(host.querySelectorAll(".hunk")).toHaveLength(0);
     expect(notices()).toContain("忽略空白模式下不提供块操作");
     await act(async () => { select.value = "keep"; select.dispatchEvent(new Event("change", { bubbles: true })); });

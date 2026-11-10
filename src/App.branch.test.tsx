@@ -9,7 +9,8 @@ import { defaultAnchor, WORKSPACE_KEY } from "./workspace-model";
 
 const bridge = vi.hoisted(() => ({
   open: vi.fn(), refresh: vi.fn(), read: vi.fn(), diff: vi.fn(), operation: vi.fn(),
-  log: vi.fn(), changes: vi.fn(), refs: vi.fn(), revision: vi.fn(), stashList: vi.fn(), stashChanges: vi.fn(), checkName: vi.fn()
+  log: vi.fn(), changes: vi.fn(), refs: vi.fn(), revision: vi.fn(), stashList: vi.fn(), stashChanges: vi.fn(), checkName: vi.fn(),
+  aiChanges: vi.fn(), aiAnswer: vi.fn()
 }));
 vi.mock("./api", () => ({ discoverGroup: vi.fn(async () => ({ isGroup: false, members: [], selectedRepoId: null, ignored: [] })), memberChangeCount: vi.fn(async () => 0), watchGroup: vi.fn(async () => {}), setSubmodulePointers: vi.fn(async () => {}), openRepository: bridge.open, refreshRepository: bridge.refresh, readContentPair: bridge.read, closeRepository: vi.fn(async () => {}), cancelContentRead: vi.fn(async () => {}),
   repositoryDetails: vi.fn(async () => null), activateRepository: vi.fn(async () => true), loadSnapshot: vi.fn(async () => null), saveSnapshot: vi.fn(async () => true), removeSnapshot: vi.fn(async () => {}), decodeContentFrame: (x: unknown) => x }));
@@ -19,6 +20,8 @@ vi.mock("./history-api", async (importOriginal) => ({ ...(await importOriginal<t
   readLog: bridge.log, commitChanges: bridge.changes, compareRevisions: vi.fn(), fileHistory: vi.fn(), readRefs: bridge.refs, readRevisionPair: bridge.revision,
   stashList: bridge.stashList, stashChanges: bridge.stashChanges, checkBranchName: bridge.checkName }));
 vi.mock("./diff", () => ({ calculateDiff: bridge.diff }));
+vi.mock("./ai-api", async (importOriginal) => ({ ...(await importOriginal<typeof import("./ai-api")>()), readAiChanges: bridge.aiChanges, planAiAction: bridge.aiAnswer }));
+vi.mock("./ai-rules", async (importOriginal) => ({ ...(await importOriginal<typeof import("./ai-rules")>()), resolveStagedProfile: () => ({ id: "naming-profile" }) }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ isFocused: async () => false, onFocusChanged: async () => () => {} }) }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => {} }));
@@ -64,6 +67,12 @@ const openBranches = async () => { await click(q(".branch-button")); };
 const branchRow = (name: string) => all(".branch-row").find((row) => row.querySelector(".branch-row-name")?.textContent?.replace("● ", "") === name)!;
 const mount = async () => { await act(async () => { root.render(<App />); }); await flush(); };
 const openHistory = async () => { await click(all(".git-tabs button").find((b) => b.textContent === "历史")); };
+const openStashes = async () => { await click(q(".git-tabs [aria-label=Stash]")); };
+const contextMenu = async (element: Element | null | undefined) => {
+  expect(element).toBeTruthy();
+  await act(async () => { element!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })); });
+  await flush();
+};
 const sideRow = (group: string, name: string) => all(`[data-group='${group}'] .log-branch`).find((row) => row.querySelector(".log-branch-name")?.textContent?.replace("● ", "") === name)!;
 const dblclick = async (element: Element | null | undefined) => { expect(element).toBeTruthy(); await act(async () => { element!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true })); }); await flush(); };
 
@@ -293,13 +302,13 @@ describe("branch popover (B10)", () => {
   });
 });
 
-describe("history sidebar: branches, tags, remotes and stash (B09 / B10)", () => {
-  it("groups local branches, tags, remotes by remote and stashes; groups collapse and the state is remembered", async () => {
+describe("history sidebar and Stash tab (B09 / B10)", () => {
+  it("groups local branches, tags and remotes; links to the independent Stash tab", async () => {
     bridge.refs.mockResolvedValue({ ...refsView, tags: [{ fullName: "refs/tags/v1.0", name: "v1.0", oid: O("1"), annotated: true }] });
     await mount();
-    expect(all(".git-tabs button[role=tab]").map((b) => b.textContent)).toEqual(["文件", "历史"]);
+    expect(all(".git-tabs button[role=tab]").map((b) => b.textContent?.trim())).toEqual(["文件", "历史", "Stash 2"]);
     await openHistory();
-    expect(all(".log-group-head").map((b) => `${b.getAttribute("aria-expanded") === "true" ? "▾" : "▸"}${b.querySelector(".log-group-label")?.textContent}`)).toEqual(["▾本地分支 · 2", "▸标签 · 1", "▾远端分支 · 1", "▾origin · 1", "▾Stash · 2"]);
+    expect(all(".log-group-head").map((b) => `${b.getAttribute("aria-expanded") === "true" ? "▾" : "▸"}${b.querySelector(".log-group-label")?.textContent}`)).toEqual(["▾本地分支 · 2", "▸标签 · 1", "▾远端分支 · 1", "▾origin · 1"]);
     expect(all("[data-group='local'] .log-branch-name").map((b) => b.textContent)).toEqual(["● main", "feature"]);
     expect(all("[data-group='remote:origin'] .log-branch-name").map((b) => b.textContent)).toEqual(["feature"]);
     expect(all("[data-group='tags'] .log-branch")).toHaveLength(0);
@@ -309,20 +318,19 @@ describe("history sidebar: branches, tags, remotes and stash (B09 / B10)", () =>
     await click(q("[data-group='local'] .log-group-head"));
     expect(all("[data-group='local'] .log-branch")).toHaveLength(0);
     expect(JSON.parse(localStorage.getItem("oris.historySidebar.v1")!).collapsed.sort()).toEqual(["local"]);
+    await click(button("查看 Stash →"));
+    expect(q(".stash-layout")?.hasAttribute("hidden")).toBe(false);
+    expect(all(".log-stash")).toHaveLength(2);
     expect(requests()).toEqual([]);
   });
 
-  it("searches branches, tags and stashes; groups without matches are hidden while searching", async () => {
+  it("searches branches and tags; groups without matches are hidden while searching", async () => {
     bridge.refs.mockResolvedValue({ ...refsView, tags: [{ fullName: "refs/tags/feature-1", name: "feature-1", oid: O("2"), annotated: false }] });
     await mount();
     await openHistory();
     await type(q<HTMLInputElement>("input[aria-label=搜索分支]")!, "FEAT");
-    expect(all(".log-group-head").map((b) => `${b.getAttribute("aria-expanded") === "true" ? "▾" : "▸"}${b.querySelector(".log-group-label")?.textContent}`)).toEqual(["▾本地分支 · 1", "▾标签 · 1", "▾远端分支 · 1", "▾origin · 1", "▾Stash · 1"]);
-    // stash 也按储藏时所在的分支匹配（stash@{1} 储藏于 feature）。
-    expect(all(".log-branch-name").map((b) => b.textContent)).toEqual(["feature", "feature-1", "feature", "stash@{1} · debug"]);
-    await type(q<HTMLInputElement>("input[aria-label=搜索分支]")!, "debug");
-    expect(all(".log-group-head").map((b) => `${b.getAttribute("aria-expanded") === "true" ? "▾" : "▸"}${b.querySelector(".log-group-label")?.textContent}`)).toEqual(["▾Stash · 1"]);
-    expect(q(".log-stash")?.textContent).toContain("stash@{1} · debug");
+    expect(all(".log-group-head").map((b) => `${b.getAttribute("aria-expanded") === "true" ? "▾" : "▸"}${b.querySelector(".log-group-label")?.textContent}`)).toEqual(["▾本地分支 · 1", "▾标签 · 1", "▾远端分支 · 1", "▾origin · 1"]);
+    expect(all(".log-branch-name").map((b) => b.textContent)).toEqual(["feature", "feature-1", "feature"]);
   });
 
   it("switches on double click (single click only filters); a remote branch is checked out as a tracking branch; no fetch button in the sidebar", async () => {
@@ -339,32 +347,72 @@ describe("history sidebar: branches, tags, remotes and stash (B09 / B10)", () =>
     expect(requests()[1]).toEqual({ kind: "branchTrack", remote: "refs/remotes/origin/feature" });
   });
 
-  it("stashes with message / untracked / only the selected files, and applies, pops and drops by identity", async () => {
+  it("stashes the context menu target using the default name and locates the returned OID", async () => {
+    const saved = { ...stashes[0], index: 1, oid: O("d"), message: "saved" };
+    bridge.operation.mockImplementationOnce(async () => {
+      bridge.stashList.mockResolvedValue([{ ...stashes[0] }, saved]);
+      return outcome("stashPush", { stashOid: saved.oid });
+    });
     await mount();
-    await openHistory();
-    expect(all(".log-stash").map((r) => r.textContent)).toEqual([expect.stringContaining("stash@{0} · wip login"), expect.stringContaining("stash@{1} · debug")]);
-    await click(button("储藏…"));
-    await type(q<HTMLInputElement>("input[aria-label='stash 说明']")!, "half done");
-    await click(q("input[aria-label=包含未跟踪文件]"));
-    await click(q("input[aria-label=只储藏选中的文件]"));
+    expect(button("储藏当前改动…")).toBeUndefined();
+    await contextMenu(all(".change-column [role=option]").find((row) => row.textContent?.includes("b.txt")));
+    await click(button("储藏所选文件…"));
+    expect(q(".stash-form")?.textContent).toContain("将储藏 1 个文件");
     await click(button("储藏", q(".stash-form")!));
-    expect(requests()[0]).toEqual({ kind: "stashPush", message: "half done", includeUntracked: true, pathIds: ["id-a.txt"] });
+    expect(requests()[0]).toEqual({ kind: "stashPush", message: expect.stringMatching(/^main · \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/), includeUntracked: false, pathIds: ["id-b.txt"] });
     expect(q(".stash-form")).toBeNull();
-    await click(all(".log-stash")[0]);
-    const detail = () => q(".stash-detail")!;
-    await click(button("应用", detail()));
-    expect(requests()[1]).toEqual({ kind: "stashApply", index: 0, oid: O("a"), pop: false });
-    await click(button("弹出", detail()));
-    expect(requests()[2]).toEqual({ kind: "stashApply", index: 0, oid: O("a"), pop: true });
-    await click(button("删除…", detail()));
+    await click(button("查看 Stash"));
+    expect(q('.log-stash[aria-selected="true"]')?.textContent).toContain("saved");
+  });
+
+  it("names only selected and included paths with the existing AI profile and lets the user edit the result", async () => {
+    const snapshot = snap([change("a.txt"), change("b.txt"), { ...change("u.txt"), status: "untracked" }]);
+    bridge.open.mockResolvedValue(snapshot);
+    bridge.refresh.mockResolvedValue(snapshot);
+    bridge.aiChanges.mockResolvedValue({ revision: snapshot.revision, candidates: [], text: "selected diff", truncated: false });
+    bridge.aiAnswer.mockResolvedValue({ kind: "answer", message: "建议名称\n忽略第二行" });
+    await mount();
+    const row = (path: string) => all(".change-column [role=option]").find((item) => item.textContent?.includes(path))!;
+    await click(row("a.txt"));
+    await act(async () => { row("u.txt").dispatchEvent(new MouseEvent("click", { bubbles: true, ctrlKey: true })); });
+    await flush();
+    await contextMenu(row("a.txt"));
+    await click(button("储藏所选文件…"));
+    const generate = q('[aria-label="AI 生成储藏名称"]');
+    await click(generate);
+    expect(bridge.aiChanges).toHaveBeenLastCalledWith("a", ["id-a.txt"]);
+    await click(q(".stash-form input[type=checkbox]"));
+    await click(generate);
+    expect(bridge.aiChanges).toHaveBeenLastCalledWith("a", ["id-a.txt", "id-u.txt"]);
+    expect(bridge.aiAnswer).toHaveBeenLastCalledWith({ id: "naming-profile" }, expect.any(String), expect.objectContaining({ diff: "selected diff" }), expect.any(String), expect.any(String), true);
+    const name = q<HTMLInputElement>("#stash-name")!;
+    expect(name.value).toBe("建议名称");
+    await type(name, "手动改名");
+    await click(button("储藏", q(".stash-form")!));
+    expect(requests()[0]).toEqual({ kind: "stashPush", message: "手动改名", includeUntracked: true, pathIds: ["id-a.txt", "id-u.txt"] });
+  });
+
+  it("applies, pops and drops the right-clicked stash by identity", async () => {
+    await mount();
+    await openStashes();
+    expect(q(".stash-detail")?.textContent).not.toContain("应用并保留");
+    const menu = () => q('[aria-label="储藏操作"]')!;
+    await contextMenu(all(".log-stash")[1]);
+    await click(button("应用并保留", menu()));
+    expect(requests()[0]).toEqual({ kind: "stashApply", index: 1, oid: O("b"), pop: false });
+    await contextMenu(all(".log-stash")[0]);
+    await click(button("应用后移除", menu()));
+    expect(requests()[1]).toEqual({ kind: "stashApply", index: 0, oid: O("a"), pop: true });
+    await contextMenu(all(".log-stash")[1]);
+    await click(button("删除…", menu()));
     expect(q(".confirm-dialog")?.textContent).toContain("无法撤销");
     await click(button("删除 stash", q(".confirm-dialog")!));
-    expect(requests()[3]).toEqual({ kind: "stashDrop", index: 0, oid: O("a") });
+    expect(requests()[2]).toEqual({ kind: "stashDrop", index: 1, oid: O("b") });
   });
 
   it("opens tracked and untracked parts of a stash in the same diff reader", async () => {
     await mount();
-    await openHistory();
+    await openStashes();
     await click(all(".log-stash")[0]);
     expect(q(".stash-detail")?.textContent).toContain("未跟踪文件 · 1");
     const inputs = all('.stash-detail input[aria-label="搜索变化文件"]');
@@ -387,7 +435,7 @@ describe("history sidebar: branches, tags, remotes and stash (B09 / B10)", () =>
     const untracked = Array.from({ length: total }, (_, i) => ({ path: `Library/u${i}.bin`, oldPath: null, pathId: `id-u${i}`, oldPathId: null, status: "added" }));
     bridge.stashChanges.mockImplementation(async (_repo: string, oid: string) => ({ oid, base: O("1"), tracked: [{ path: "a.txt", oldPath: null, pathId: "id-a.txt", oldPathId: null, status: "modified" }], untrackedCommit: O("c"), untracked }));
     await mount();
-    await openHistory();
+    await openStashes();
     await click(all(".log-stash")[0]);
     expect(q(".stash-detail")?.textContent).toContain(`未跟踪文件 · ${total}`);
     expect(q(".stash-detail [data-virtual-count]")?.getAttribute("data-virtual-count")).toBe(String(total));

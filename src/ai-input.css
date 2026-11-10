@@ -12,6 +12,7 @@
 .ai-input-frame>textarea{resize:vertical;line-height:20px}
 .ai-input-frame.ai-input-with-prefix>input{padding-left:10px}
 .ai-input-frame .ai-entry-send{position:absolute;right:4px;bottom:4px;display:grid;place-items:center;width:24px;height:24px;padding:3px;border:0;border-radius:3px;background:transparent;color:var(--blue)}
+.ai-input-frame .ai-entry-send-text{width:auto;padding-inline:6px;white-space:nowrap}
 .ai-entry-send:disabled{opacity:.45}.ai-entry-send svg{width:16px;height:16px}
 .ai-entry-send .ai-spinner{border-color:var(--border);border-top-color:var(--blue);width:16px;height:16px}
 .ai-stop-square{position:absolute;width:6px;height:6px;background:currentColor}

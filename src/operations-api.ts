@@ -62,6 +62,7 @@ export interface BackupSummary {
 }
 
 export interface OperationOutcome {
+  stashOid?: string;
   opId: string;
   repoId: string;
   kind: OperationKind;

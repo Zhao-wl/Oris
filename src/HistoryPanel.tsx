@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { flatLayout, layoutGraph, type GraphLayout, type GraphRow } from "./history-graph";
-import { commitChanges, compareRevisions, fileHistory, readLog, locateLog, readRefs, shortOid, shortRef, statusLetter, type Branch, type ChangedFile, type CommitChanges, type CommitInfo, type Comparison, type FileHistory, type LogCursor, type RefsView, type SearchKind, type StashEntry } from "./history-api";
+import { commitChanges, compareRevisions, fileHistory, readLog, locateLog, readRefs, shortOid, shortRef, statusLetter, type Branch, type ChangedFile, type CommitChanges, type CommitInfo, type Comparison, type FileHistory, type LogCursor, type RefsView, type SearchKind } from "./history-api";
 import { ROW_HEIGHT, deferVersions, initialDeferred, isStale, movedEndpoint, nodeX, rowSegments, LANE_WIDTH, refOid, type DeferredVersions, type PinnedEndpoint } from "./history-model";
 import { errorText } from "./error-message";
 import HistorySidebar from "./HistorySidebar";
@@ -8,8 +8,6 @@ import PathText from "./PathText";
 import { useMenuPosition } from "./menu-position";
 import FileList, { ChangedFileSearch, filterChangedFiles } from "./ChangedFileList";
 import ClearableInput from "./ClearableInput";
-import { StashDetail, StashForm, useStashList, type StashPushOptions } from "./StashPanel";
-import type { FileChange } from "./types";
 
 /** 在主 diff 阅读器中打开的历史文件（两端都是固定的提交 OID；left 为 null 表示空树）。 */
 export interface HistoryFileOpen {
@@ -48,12 +46,7 @@ interface Props {
   /** 本地分支右键“删除分支”；左侧“清理…”：删除上游已消失的本地分支。 */
   onDeleteBranch?(branch: Branch): void;
   onPruneGone?(): void;
-  /** Stash（V2-03，原“Stash”页并入左侧）：stash 变化时递增的版本、“只储藏选中的文件”的选择与写操作。 */
-  stashVersion?: number;
-  selectedFiles?: FileChange[];
-  onStashPush?(options: StashPushOptions): Promise<boolean>;
-  onStashApply?(entry: StashEntry, pop: boolean): void;
-  onStashDrop?(entry: StashEntry): void;
+  onShowStash?(): void;
   /** 工作区（V2-D85）：父仓库提交中的子模块指针变化，切换到子仓库比较前后两个提交。 */
   onSubmoduleCompare?(file: ChangedFile): void;
   /** 由父仓库历史跳转过来的比较请求（只对 repoId 相同的面板生效）。 */
@@ -87,18 +80,16 @@ function saveColumns(columns: Columns) { try { localStorage.setItem(COLUMNS_KEY,
 type Mode =
   | { kind: "commit" }
   | { kind: "compare"; a: PinnedEndpoint; b: PinnedEndpoint; result: Comparison | null; error: string | null; hint?: string }
-  | { kind: "file"; request: FileHistoryRequest; history: FileHistory | null; loading: boolean; error: string | null; selected: string | null }
-  | { kind: "stash"; oid: string }
-  | { kind: "stashPush" };
+  | { kind: "file"; request: FileHistoryRequest; history: FileHistory | null; loading: boolean; error: string | null; selected: string | null };
 
 interface Menu { x: number; y: number; endpoint: PinnedEndpoint }
 
 /**
- * 底部 Git 区“历史”页（R-HISTORY / R-BRANCH / R-COMPARE / R-FILEHISTORY / R-STASH）：左侧引用（本地分支、标签、远端分支、Stash），
+ * 底部 Git 区“历史”页（R-HISTORY / R-BRANCH / R-COMPARE / R-FILEHISTORY）：左侧引用（本地分支、标签、远端分支），
  * 中间提交图与列表，右侧详情。单击引用只筛选历史，双击分支才切换；三栏宽度可拖动。
  */
 export default function HistoryPanel(props: Props) {
-  const { repoId, refsVersion, hidden, fileHistoryRequest, activeKey, onOpenFile, onRefs, onCheckout, onNewBranch, onMerge, writeBlocked, onSwitch, onTrack, onDeleteBranch, onPruneGone, stashVersion = 0, selectedFiles = [], onStashPush, onStashApply, onStashDrop, onSubmoduleCompare, compareRequest, lineJump, onReturnFromLine } = props;
+  const { repoId, refsVersion, hidden, fileHistoryRequest, activeKey, onOpenFile, onRefs, onCheckout, onNewBranch, onMerge, writeBlocked, onSwitch, onTrack, onDeleteBranch, onPruneGone, onShowStash, onSubmoduleCompare, compareRequest, lineJump, onReturnFromLine } = props;
   const [refs, setRefs] = useState<RefsView | null>(null);
   const [refsError, setRefsError] = useState<string | null>(null);
   const [lineJumpVersion, setLineJumpVersion] = useState(0);
@@ -123,13 +114,9 @@ export default function HistoryPanel(props: Props) {
   const [mode, setMode] = useState<Mode>({ kind: "commit" });
   const [menu, setMenu] = useState<Menu | null>(null);
   const [scrollTarget, setScrollTarget] = useState<string | null>(null);
-  // V2-D60：历史页不可见时 refs / stash 变化只标记失效，切回时再读（每次切回最多重读一次）。
-  const deferred = useDeferredVersions(hidden, refsVersion, stashVersion);
-  const shownRefs = deferred.refs, shownStash = deferred.stash;
-  const stash = useStashList(repoId, shownStash);
-  const stashStale = deferred.stashUntil !== null && stash.loaded < deferred.stashUntil;
-  // 正在查看的 stash 已被弹出 / 删除：回到提交详情。
-  useEffect(() => { if (stash.entries) setMode((current) => current.kind === "stash" && !stash.entries!.some((e) => e.oid === current.oid) ? { kind: "commit" } : current); }, [stash.entries]);
+  // V2-D60：历史页不可见时 refs 变化只标记失效，切回时再读。
+  const deferred = useDeferredVersions(hidden, refsVersion);
+  const shownRefs = deferred.refs;
   const [columns, setColumns] = useState(loadColumns);
   const columnsRef = useRef(columns);
   columnsRef.current = columns;
@@ -424,11 +411,10 @@ export default function HistoryPanel(props: Props) {
   const menuRemote = menu ? viewRefs?.remote.find((b) => b.fullName === menu.endpoint.ref) ?? null : null;
   const menuSwitch = menuBranch && onSwitch ? { label: `切换到 ${menuBranch.name}`, current: menuBranch.current, run: () => { setMenu(null); onSwitch(menuBranch); } }
     : menuRemote && onTrack ? { label: "检出为本地分支并切换", current: false, run: () => { setMenu(null); onTrack(menuRemote); } } : undefined;
-  const stashEntry = mode.kind === "stash" ? stash.entries?.find((e) => e.oid === mode.oid) ?? null : null;
 
   return <div ref={root} className="git-body log-layout" hidden={hidden} style={{ gridTemplateColumns: `${columns.left}px ${SPLITTER}px minmax(0, 1fr) ${SPLITTER}px ${columns.right}px` }} onContextMenu={(event) => { if (!(event.target as Element).closest("[data-endpoint]")) setMenu(null); }}>
     <HistorySidebar refs={viewRefs} refsError={refsError} headLabel={headLabel} current={current} hidden={hidden} filter={filter ?? null} onFilter={(value) => { setLineAnchor(null); setLineNote(null); setFilter(value); }}
-      stashes={stashStale ? null : stash.entries} stashError={stash.error} selectedStash={mode.kind === "stash" ? mode.oid : null} onStash={(entry) => setMode({ kind: "stash", oid: entry.oid })} onNewStash={onStashPush ? () => setMode({ kind: "stashPush" }) : undefined}
+      onShowStash={onShowStash}
       blocked={writeBlocked ?? null} onSwitch={onSwitch} onTrack={onTrack} onPruneGone={onPruneGone} onMenu={(x, y, endpoint) => setMenu({ x, y, endpoint })}/>
     {splitter("left")}
     <section className="log-commits-pane" aria-label={mode.kind === "file" ? "文件历史" : "提交历史"}>
@@ -463,10 +449,8 @@ export default function HistoryPanel(props: Props) {
       </>}
     </section>
     {splitter("right")}
-    <aside className="log-detail" aria-label={mode.kind === "stash" || mode.kind === "stashPush" ? "stash 内容" : "提交详情"}>
-      {mode.kind === "stash" ? <StashDetail key={mode.oid} repoId={repoId} entry={stashEntry} version={shownStash} blocked={writeBlocked ?? null} activeKey={activeKey} onApply={(entry, pop) => onStashApply?.(entry, pop)} onDrop={(entry) => onStashDrop?.(entry)} onOpenFile={onOpenFile}/>
-        : mode.kind === "stashPush" ? <StashForm selectedFiles={selectedFiles} blocked={writeBlocked ?? null} onPush={(options) => onStashPush ? onStashPush(options) : Promise.resolve(false)} onClose={() => setMode({ kind: "commit" })}/>
-        : mode.kind === "compare" ? <CompareDetail key={mode.result ? `${mode.result.left}:${mode.result.right}` : "pending"} mode={mode} moved={moved} activeKey={activeKey} onSwap={() => runCompare(mode.b, mode.a)} onRefresh={() => {
+    <aside className="log-detail" aria-label="提交详情">
+      {mode.kind === "compare" ? <CompareDetail key={mode.result ? `${mode.result.left}:${mode.result.right}` : "pending"} mode={mode} moved={moved} activeKey={activeKey} onSwap={() => runCompare(mode.b, mode.a)} onRefresh={() => {
         const renew = (endpoint: PinnedEndpoint) => { const oid = refOid(endpoint.ref, viewRefs); return oid ? { ...endpoint, oid } : endpoint; };
         runCompare(renew(mode.a), renew(mode.b));
       }} onClose={() => { setMode({ kind: "commit" }); setCompareStart(null); }} onOpen={(file) => mode.result && openCompareFile(mode.result, mode.a, mode.b, file)}/>
@@ -484,9 +468,9 @@ export default function HistoryPanel(props: Props) {
 }
 
 /** 见 `deferVersions`：同一输入幂等，渲染中直接推进。 */
-function useDeferredVersions(hidden: boolean, refs: number, stash: number): DeferredVersions {
+function useDeferredVersions(hidden: boolean, refs: number): DeferredVersions {
   const state = useRef<DeferredVersions | null>(null);
-  state.current = deferVersions(state.current ?? initialDeferred(refs, stash), hidden, refs, stash);
+  state.current = deferVersions(state.current ?? initialDeferred(refs, 0), hidden, refs, 0);
   return state.current;
 }
 

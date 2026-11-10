@@ -1,7 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { shortOid, trackingText, type Branch, type RefsView, type StashEntry, type Tag } from "./history-api";
+import { shortOid, trackingText, type Branch, type RefsView, type Tag } from "./history-api";
 import type { PinnedEndpoint } from "./history-model";
-import { stashLabel } from "./StashPanel";
 
 /** 分组折叠状态（全局，不区分仓库）：保存折叠的分组键。 */
 export const SIDEBAR_KEY = "oris.historySidebar.v1";
@@ -25,11 +24,7 @@ interface Props {
   /** 正在浏览（筛选历史）的引用完整名；null 为全部分支。 */
   filter: string | null;
   onFilter(ref: string | null): void;
-  stashes: StashEntry[] | null;
-  stashError: string | null;
-  selectedStash: string | null;
-  onStash(entry: StashEntry): void;
-  onNewStash?(): void;
+  onShowStash?(): void;
   blocked: string | null;
   /** 双击本地分支：切换到该分支。 */
   onSwitch?(branch: Branch): void;
@@ -40,9 +35,9 @@ interface Props {
   onMenu(x: number, y: number, endpoint: PinnedEndpoint): void;
 }
 
-/** 历史页左侧（参考 SourceTree 侧栏）：本地分支、标签、远端分支（按 remote 分组）、Stash，可搜索、可折叠。 */
+/** 历史页左侧：本地分支、标签、远端分支（按 remote 分组），可搜索、可折叠。 */
 export default function HistorySidebar(props: Props) {
-  const { refs, refsError, headLabel, current, hidden = false, filter, onFilter, stashes, stashError, selectedStash, onStash, onNewStash, blocked, onSwitch, onTrack, onPruneGone, onMenu } = props;
+  const { refs, refsError, headLabel, current, hidden = false, filter, onFilter, onShowStash, blocked, onSwitch, onTrack, onPruneGone, onMenu } = props;
   const [query, setQuery] = useState("");
   const [collapsed, setCollapsed] = useState(loadCollapsed);
   const list = useRef<HTMLDivElement>(null);
@@ -76,13 +71,12 @@ export default function HistorySidebar(props: Props) {
   }, [refs]);
   const remoteShown = remoteGroups.map(([remote, branches]) => [remote, branches.filter((b) => matches(b.name))] as const).filter(([, branches]) => !searching || branches.length > 0);
   const remoteCount = remoteShown.reduce((sum, [, branches]) => sum + branches.length, 0);
-  const stashShown = (stashes ?? []).filter((s) => matches(stashLabel(s), s.message, s.branch));
   // 搜索时展开全部分组，只列出匹配项。
   const open = (key: string) => searching || !collapsed.has(key);
   const endpoint = (ref: string, oid: string, label: string): PinnedEndpoint => ({ ref, oid, label });
   const rowTitle = (hint: string | null) => [hint, "单击筛选历史，右键比较"].filter(Boolean).join("；");
   return <aside className="log-branches" aria-label="分支">
-    <input className="log-ref-search" type="search" aria-label="搜索分支" placeholder="搜索分支、标签、stash" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape" && query) { event.preventDefault(); event.stopPropagation(); setQuery(""); } }}/>
+    <input className="log-ref-search" type="search" aria-label="搜索分支" placeholder="搜索分支、标签" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape" && query) { event.preventDefault(); event.stopPropagation(); setQuery(""); } }}/>
     <div className="log-current" title={current ? trackingText(current.tracking).title : undefined}>当前工作分支：<strong>● {headLabel}</strong>{current && <span className="log-track">{trackingText(current.tracking).short}</span>}</div>
     {refsError && <div className="log-error">{refsError}</div>}
     {refs?.shallow && <div className="log-note">浅克隆：领先 / 落后数不可靠，显示为未知</div>}
@@ -104,13 +98,7 @@ export default function HistorySidebar(props: Props) {
             title={rowTitle(blocked ?? "双击建立同名本地跟踪分支并切换")} onPick={() => onFilter(branch.fullName)} onOpen={!blocked && onTrack ? () => onTrack(branch) : undefined} onMenu={(x, y) => onMenu(x, y, endpoint(branch.fullName, branch.oid, branch.name))}/>)}
         </Group>)}
       </Group>
-      <Group id="stash" label="Stash" count={stashShown.length} open={open("stash")} searching={searching} onToggle={toggle}
-        action={onNewStash && <button type="button" className="log-group-action" disabled={!!blocked} title={blocked ?? "储藏当前改动"} onClick={onNewStash}>储藏…</button>}>
-        {stashError && <div className="log-error">{stashError}</div>}
-        {stashShown.map((entry) => <button key={entry.oid} type="button" role="option" aria-selected={entry.oid === selectedStash} className={`log-branch log-stash${entry.oid === selectedStash ? " browsing" : ""}`} title={`${stashLabel(entry)} · ${entry.message || "（无说明）"}\n${entry.branch || "—"} · ${shortOid(entry.oid)}${entry.untracked ? " · 含未跟踪" : ""}`} onClick={() => onStash(entry)}>
-          <span className="log-branch-name">{stashLabel(entry)} · {entry.message || "（无说明）"}</span>
-        </button>)}
-      </Group>
+      {!searching && onShowStash && <button type="button" className="log-branch" onClick={onShowStash}>查看 Stash →</button>}
     </div>
   </aside>;
 }

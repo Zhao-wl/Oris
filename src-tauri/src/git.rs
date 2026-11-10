@@ -409,11 +409,35 @@ impl GitAdapter {
 
     #[cfg(any(test, feature = "desktop"))]
     pub fn ai_context(&self, staged_only: bool) -> Result<AiRepositoryContext, GitError> {
+        self.ai_context_for_paths(staged_only, None)
+    }
+
+    #[cfg(any(test, feature = "desktop"))]
+    pub fn ai_context_for_paths(&self, staged_only: bool, path_ids: Option<&[String]>) -> Result<AiRepositoryContext, GitError> {
         let state = self.scan(false)?;
-        let all = if staged_only { state.lists.staged.clone() } else { self.details_for(&state)?.all.clone() };
-        let candidates: Vec<AiCandidate> = all.into_iter().filter(|file| file.status != FileStatus::Conflicted).take(200)
+        let selected = path_ids.map(|ids| ids.iter().map(String::as_str).collect::<std::collections::HashSet<_>>());
+        let in_scope = |path_id: &str| selected.as_ref().is_none_or(|ids| ids.contains(path_id));
+        let all = if staged_only { state.lists.staged.clone() } else if selected.is_some() { state.lists.all.clone() } else { self.details_for(&state)?.all.clone() };
+        let candidates: Vec<AiCandidate> = all.into_iter().filter(|file| file.status != FileStatus::Conflicted && in_scope(&file.path_id)).take(200)
             .map(|file| AiCandidate { path_id: file.path_id, display_path: file.display_path, old_path_id: file.old_path_id }).collect();
         let mut text = String::new();
+        let mut paths = Vec::new();
+        if let Some(ids) = selected.as_ref() {
+            let known_paths: std::collections::HashSet<_> = state.lists.all.iter().chain(&state.lists.staged).chain(&state.lists.unstaged)
+                .flat_map(|file| [Some(file.path_id.as_str()), file.old_path_id.as_deref()]).flatten()
+                .filter(|id| ids.contains(id)).collect();
+            let mut argument_size = 0;
+            for id in path_ids.unwrap_or_default().iter().filter(|id| known_paths.contains(id.as_str())) {
+                let Ok(bytes) = URL_SAFE_NO_PAD.decode(id) else { continue };
+                let Ok(path) = String::from_utf8(bytes) else { continue };
+                argument_size += path.len() + 3;
+                if paths.len() == 200 || argument_size > 12_000 {
+                    text.push_str("[文件较多，只读取部分已选路径的差异]\n");
+                    break;
+                }
+                paths.push(path);
+            }
+        }
         let sections: &[(&str, &[&str])] = if staged_only {
             &[("已暂存改动", &["diff", "--cached", "--no-ext-diff", "--no-textconv", "--unified=2", "--"])]
         } else {
@@ -421,13 +445,16 @@ impl GitAdapter {
               ("未暂存改动", &["diff-files", "-p", "--no-ext-diff", "--unified=2", "--"])]
         };
         for (label, args) in sections {
-            let output = run_required(&self.git, &self.worktree, args)?;
+            // 空路径列表不能传给 git diff，否则会读出全仓库的改动。
+            if selected.is_some() && paths.is_empty() { break; }
+            let args: Vec<_> = args.iter().copied().chain(paths.iter().map(String::as_str)).collect();
+            let output = run_required(&self.git, &self.worktree, &args)?;
             text.push_str("\n## "); text.push_str(label); text.push('\n');
             text.push_str(&String::from_utf8_lossy(&output.stdout[..output.stdout.len().min(90_000)]));
             if output.stdout.len() > 90_000 { text.push_str("\n[后续差异已截断]\n"); }
         }
         if !staged_only {
-            let untracked = state.lists.all.iter().filter(|file| file.status == FileStatus::Untracked).take(40);
+            let untracked = state.lists.all.iter().filter(|file| file.status == FileStatus::Untracked && in_scope(&file.path_id)).take(40);
             for file in untracked {
                 let Ok(bytes) = URL_SAFE_NO_PAD.decode(&file.path_id) else { continue };
                 let Ok(path) = std::str::from_utf8(&bytes) else { continue };
