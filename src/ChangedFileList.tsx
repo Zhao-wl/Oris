@@ -1,4 +1,4 @@
-import { useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useMemo, useRef, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { statusLetter, type ChangedFile } from "./history-api";
 import PathText from "./PathText";
 import VirtualRows, { VIRTUAL_THRESHOLD } from "./VirtualRows";
@@ -9,12 +9,15 @@ export function filterChangedFiles(files: ChangedFile[], query: string) {
   return text ? files.filter(file => file.path.toLocaleLowerCase().includes(text) || file.oldPath?.toLocaleLowerCase().includes(text)) : files;
 }
 
+export function ChangedFileSearch({ value, onChange }: { value: string; onChange(value: string): void }) {
+  return <div className="log-file-search">
+    <ClearableInput aria-label="搜索变化文件" placeholder="搜索变化文件" value={value} onValueChange={onChange} clearLabel="清除文件搜索"/>
+  </div>;
+}
+
 /** 提交 / 比较 / stash 的变化文件列表；文件很多时改用虚拟列表，滚动容器为外层 `.log-detail`。 */
-export default function FileList({ files: allFiles, filter, onFilterChange, activeKey, keyFor, onOpen, onHistory, onSubmodule }: { files: ChangedFile[]; filter?: string; onFilterChange?(value: string): void; activeKey: string | null; keyFor(file: ChangedFile): string; onOpen(file: ChangedFile): void; onHistory?(file: ChangedFile): void; /** 工作区（V2-D85）：在子仓库中比较子模块指针的前后两个提交。 */ onSubmodule?(file: ChangedFile): void }) {
-  const [draft, setDraft] = useState("");
-  const searchId = useId();
-  const query = filter ?? draft;
-  const files = useMemo(() => filterChangedFiles(allFiles, query), [allFiles, query]);
+export default function FileList({ files: allFiles, filter, label, context, emptyMessage = "没有文件变化", activeKey, keyFor, onOpen, onHistory, onSubmodule }: { files: ChangedFile[]; filter: string; label: string; context?: string; emptyMessage?: string; activeKey: string | null; keyFor(file: ChangedFile): string; onOpen(file: ChangedFile): void; onHistory?(file: ChangedFile): void; /** 工作区（V2-D85）：在子仓库中比较子模块指针的前后两个提交。 */ onSubmodule?(file: ChangedFile): void }) {
+  const files = useMemo(() => filterChangedFiles(allFiles, filter), [allFiles, filter]);
   const host = useRef<HTMLElement | null>(null);
   const move = (event: ReactKeyboardEvent<HTMLElement>, index: number) => {
     const delta = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
@@ -45,8 +48,8 @@ export default function FileList({ files: allFiles, filter, onFilterChange, acti
       return <div key={rowKey(file)} role="listitem" data-file-index={index} style={style} className={`log-file-row${activeKey === keyFor(file) ? " active" : ""}`}>{content(file, index)}</div>;
     }}/>
   </div> : <ul ref={(node) => { host.current = node; }} className="log-files" aria-label="变化文件">{files.map((file, index) => <li key={rowKey(file)} data-file-index={index} className={activeKey === keyFor(file) ? "active" : ""}>{content(file, index)}</li>)}</ul>;
-  return <><div className="log-file-search"><label className="log-file-search-label" htmlFor={searchId}><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8" cy="8" r="5"/><path d="m12 12 5 5"/></svg>搜索变化文件</label>
-    <div className="log-file-search-row"><ClearableInput id={searchId} aria-label="搜索变化文件" placeholder="输入文件名或路径" value={query} onValueChange={onFilterChange ?? setDraft} clearLabel="清除文件搜索"/>
-    {query && <span className="log-count">{files.length} / {allFiles.length}</span>}</div></div>
-    {files.length ? rows : <div className="log-empty">{allFiles.length ? "没有匹配的变化文件" : "没有文件变化"}</div>}</>;
+  return <>
+    <div className="log-group">{label} · {filter.trim() ? `${files.length} / ` : ""}{allFiles.length}{context}</div>
+    {files.length ? rows : <div className="log-empty">{allFiles.length ? "没有匹配的变化文件" : emptyMessage}</div>}
+  </>;
 }

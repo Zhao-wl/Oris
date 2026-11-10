@@ -6,7 +6,7 @@ import { errorText } from "./error-message";
 import HistorySidebar from "./HistorySidebar";
 import PathText from "./PathText";
 import { useMenuPosition } from "./menu-position";
-import FileList, { filterChangedFiles } from "./ChangedFileList";
+import FileList, { ChangedFileSearch, filterChangedFiles } from "./ChangedFileList";
 import ClearableInput from "./ClearableInput";
 import { StashDetail, StashForm, useStashList, type StashPushOptions } from "./StashPanel";
 import type { FileChange } from "./types";
@@ -464,9 +464,9 @@ export default function HistoryPanel(props: Props) {
     </section>
     {splitter("right")}
     <aside className="log-detail" aria-label={mode.kind === "stash" || mode.kind === "stashPush" ? "stash 内容" : "提交详情"}>
-      {mode.kind === "stash" ? <StashDetail repoId={repoId} entry={stashEntry} version={shownStash} blocked={writeBlocked ?? null} activeKey={activeKey} onApply={(entry, pop) => onStashApply?.(entry, pop)} onDrop={(entry) => onStashDrop?.(entry)} onOpenFile={onOpenFile}/>
+      {mode.kind === "stash" ? <StashDetail key={mode.oid} repoId={repoId} entry={stashEntry} version={shownStash} blocked={writeBlocked ?? null} activeKey={activeKey} onApply={(entry, pop) => onStashApply?.(entry, pop)} onDrop={(entry) => onStashDrop?.(entry)} onOpenFile={onOpenFile}/>
         : mode.kind === "stashPush" ? <StashForm selectedFiles={selectedFiles} blocked={writeBlocked ?? null} onPush={(options) => onStashPush ? onStashPush(options) : Promise.resolve(false)} onClose={() => setMode({ kind: "commit" })}/>
-        : mode.kind === "compare" ? <CompareDetail mode={mode} moved={moved} activeKey={activeKey} onSwap={() => runCompare(mode.b, mode.a)} onRefresh={() => {
+        : mode.kind === "compare" ? <CompareDetail key={mode.result ? `${mode.result.left}:${mode.result.right}` : "pending"} mode={mode} moved={moved} activeKey={activeKey} onSwap={() => runCompare(mode.b, mode.a)} onRefresh={() => {
         const renew = (endpoint: PinnedEndpoint) => { const oid = refOid(endpoint.ref, viewRefs); return oid ? { ...endpoint, oid } : endpoint; };
         runCompare(renew(mode.a), renew(mode.b));
       }} onClose={() => { setMode({ kind: "commit" }); setCompareStart(null); }} onOpen={(file) => mode.result && openCompareFile(mode.result, mode.a, mode.b, file)}/>
@@ -513,26 +513,33 @@ const CommitRow = memo(function CommitRow({ row, commit, top, graphWidth, loaded
 function CommitDetail({ commit, changes, error, fileFilter, onFileFilter, activeKey, onParent, onOpen, onHistory, onSubmodule }: { commit: CommitInfo; changes: CommitChanges | null; error: string | null; fileFilter: string; onFileFilter(text: string): void; activeKey: string | null; onParent(parent: string): void; onOpen(file: ChangedFile): void; onHistory(file: ChangedFile): void; onSubmodule?(file: ChangedFile): void }) {
   const current = changes?.oid === commit.oid ? changes : null;
   return <div className="log-detail-body">
-    <strong className="log-detail-subject">{commit.subject || "（无提交信息）"}</strong>
+    <div className="log-detail-header">
+      <strong className="log-detail-subject">{commit.subject || "（无提交信息）"}</strong>
+      {current && <ChangedFileSearch value={fileFilter} onChange={onFileFilter}/>}
+    </div>
     <div className="log-meta"><span className="log-sha-full" title="提交 SHA">{commit.oid}</span></div>
     <div className="log-meta">作者 {commit.authorName} &lt;{commit.authorEmail}&gt; · {time(commit.authorTime)}</div>
     {(commit.committerName !== commit.authorName || commit.committerTime !== commit.authorTime) && <div className="log-meta">提交者 {commit.committerName} · {time(commit.committerTime)}</div>}
     <div className="log-meta log-parents">{commit.parents.length === 0 ? "根提交：相对空树比较" : commit.parents.length === 1 ? <>父提交 {shortOid(commit.parents[0])}</> : <>合并提交，比较父节点：{commit.parents.map((p, i) => <button key={p} type="button" className={`parent-pick${current?.parent === p ? " active" : ""}`} aria-pressed={current?.parent === p} onClick={() => onParent(p)}>{i + 1} · {shortOid(p)}</button>)}</>}</div>
     {commit.body && <pre className="log-body">{commit.body}</pre>}
     {error && <div className="log-error">{error}</div>}
-    {current ? <><div className="log-group">变化文件 · {current.files.length}{current.parent ? ` · 相对 ${shortOid(current.parent)}` : " · 相对空树"}</div>
-      <FileList files={current.files} filter={fileFilter} onFilterChange={onFileFilter} activeKey={activeKey} keyFor={(file) => `commit:${commit.oid}:${current.parent ?? "root"}:${file.pathId}`} onOpen={onOpen} onHistory={onHistory} onSubmodule={onSubmodule}/></> : !error && <div className="log-empty">正在读取变化文件…</div>}
+    {current ? <FileList files={current.files} filter={fileFilter} label="变化文件" context={current.parent ? ` · 相对 ${shortOid(current.parent)}` : " · 相对空树"}
+      activeKey={activeKey} keyFor={(file) => `commit:${commit.oid}:${current.parent ?? "root"}:${file.pathId}`} onOpen={onOpen} onHistory={onHistory} onSubmodule={onSubmodule}/> : !error && <div className="log-empty">正在读取变化文件…</div>}
   </div>;
 }
 
 function CompareDetail({ mode, moved, activeKey, onSwap, onRefresh, onClose, onOpen }: { mode: Extract<Mode, { kind: "compare" }>; moved: string[]; activeKey: string | null; onSwap(): void; onRefresh(): void; onClose(): void; onOpen(file: ChangedFile): void }) {
+  const [fileFilter, setFileFilter] = useState("");
   return <div className="log-detail-body">
-    <div className="log-head"><strong>直接比较（非共同基线）</strong><span className="spacer"/><button type="button" onClick={onSwap} title="交换方向（仍使用已固定的 OID）">⇄ 交换方向</button><button type="button" className="quiet" onClick={onClose}>关闭</button></div>
+    <div className="log-detail-header">
+      <div className="log-head log-compare-head"><strong>直接比较（非共同基线）</strong><span className="spacer"/><button type="button" onClick={onSwap} title="交换方向（仍使用已固定的 OID）">⇄ 交换方向</button><button type="button" className="quiet" onClick={onClose}>关闭</button></div>
+      {mode.result && <ChangedFileSearch value={fileFilter} onChange={setFileFilter}/>}
+    </div>
     <div className="log-meta">A：{shortRef(mode.a.label)} · <span className="log-sha-full">{mode.a.oid}</span></div>
     <div className="log-meta">B：{shortRef(mode.b.label)} · <span className="log-sha-full">{mode.b.oid}</span></div>
     {moved.length > 0 && <div className="log-moved" role="status">{moved.join("；")}。当前比较仍使用上面固定的 OID。<button type="button" onClick={onRefresh}>按新位置重新比较</button></div>}
     {mode.error && <div className="log-error">{mode.error}</div>}
-    {mode.result ? <><div className="log-group">A → B 的变化文件 · {mode.result.files.length}</div><FileList files={mode.result.files} activeKey={activeKey} keyFor={(file) => `compare:${mode.result!.left}:${mode.result!.right}:${file.pathId}`} onOpen={onOpen}/></> : !mode.error && <div className="log-empty">正在比较…</div>}
+    {mode.result ? <FileList files={mode.result.files} filter={fileFilter} label="A → B 的变化文件" activeKey={activeKey} keyFor={(file) => `compare:${mode.result!.left}:${mode.result!.right}:${file.pathId}`} onOpen={onOpen}/> : !mode.error && <div className="log-empty">正在比较…</div>}
   </div>;
 }
 

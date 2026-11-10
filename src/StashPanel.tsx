@@ -3,7 +3,7 @@ import { shortOid, stashChanges, stashList, type ChangedFile, type StashChanges,
 import type { HistoryFileOpen } from "./HistoryPanel";
 import { isStale } from "./history-model";
 import { errorText } from "./error-message";
-import FileList from "./ChangedFileList";
+import FileList, { ChangedFileSearch } from "./ChangedFileList";
 import type { FileChange } from "./types";
 
 export interface StashPushOptions { message: string; includeUntracked: boolean; pathIds: string[] | null }
@@ -52,6 +52,7 @@ export function StashForm({ selectedFiles, blocked, onPush, onClose }: { selecte
 export function StashDetail({ repoId, entry, version, blocked, activeKey, onApply, onDrop, onOpenFile }: { repoId: string; entry: StashEntry | null; version: number; blocked: string | null; activeKey: string | null; onApply(entry: StashEntry, pop: boolean): void; onDrop(entry: StashEntry): void; onOpenFile(open: HistoryFileOpen): void }) {
   const [changes, setChanges] = useState<StashChanges | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [fileFilter, setFileFilter] = useState("");
   const oid = entry?.oid ?? null;
   useEffect(() => {
     if (!oid) { setChanges(null); return; }
@@ -72,9 +73,11 @@ export function StashDetail({ repoId, entry, version, blocked, activeKey, onAppl
       right: { oid: untrackedPart ? changes.untrackedCommit! : entry.oid, label: `${stashLabel(entry)}${untrackedPart ? " 未跟踪部分" : ""} ${shortOid(entry.oid)}` }
     });
   };
-  const fileRows = (files: ChangedFile[], part: "tracked" | "untracked") => <FileList files={files} activeKey={activeKey} keyFor={(file) => `stash:${entry.oid}:${part}:${file.pathId}`} onOpen={(file) => open(file, part)}/>;
   return <div className="log-detail-body stash-detail" aria-label="stash 内容">
-    <strong className="log-detail-subject">{stashLabel(entry)} · {entry.message || "（无说明）"}</strong>
+    <div className="log-detail-header">
+      <strong className="log-detail-subject">{stashLabel(entry)} · {entry.message || "（无说明）"}</strong>
+      {changes?.oid === entry.oid && <ChangedFileSearch value={fileFilter} onChange={setFileFilter}/>}
+    </div>
     <div className="log-meta">{entry.branch || "—"} · {time(entry.time)} · <span className="log-sha-full">{entry.oid}</span>{entry.untracked ? " · 含未跟踪" : ""}</div>
     <div className="stash-actions">
       <button type="button" disabled={!!blocked} title={blocked ?? "应用后保留这条 stash"} onClick={() => onApply(entry, false)}>应用</button>
@@ -83,9 +86,10 @@ export function StashDetail({ repoId, entry, version, blocked, activeKey, onAppl
     </div>
     {error && <div className="log-error">{error}</div>}
     {!changes || changes.oid !== entry.oid ? !error && <div className="log-empty">正在读取…</div> : <>
-      <div className="log-group">已跟踪文件 · {changes.tracked.length}（相对储藏时的 HEAD {shortOid(changes.base)}）</div>
-      {changes.tracked.length ? fileRows(changes.tracked, "tracked") : <div className="log-empty">没有已跟踪文件的改动</div>}
-      {changes.untrackedCommit && <><div className="log-group">未跟踪文件 · {changes.untracked.length}</div>{fileRows(changes.untracked, "untracked")}</>}
+      <FileList files={changes.tracked} filter={fileFilter} label="已跟踪文件" context={`（相对储藏时的 HEAD ${shortOid(changes.base)}）`} emptyMessage="没有已跟踪文件的改动"
+        activeKey={activeKey} keyFor={(file) => `stash:${entry.oid}:tracked:${file.pathId}`} onOpen={(file) => open(file, "tracked")}/>
+      {changes.untrackedCommit && <FileList files={changes.untracked} filter={fileFilter} label="未跟踪文件"
+        activeKey={activeKey} keyFor={(file) => `stash:${entry.oid}:untracked:${file.pathId}`} onOpen={(file) => open(file, "untracked")}/>}
     </>}
   </div>;
 }

@@ -367,6 +367,13 @@ describe("history sidebar: branches, tags, remotes and stash (B09 / B10)", () =>
     await openHistory();
     await click(all(".log-stash")[0]);
     expect(q(".stash-detail")?.textContent).toContain("未跟踪文件 · 1");
+    const inputs = all('.stash-detail input[aria-label="搜索变化文件"]');
+    expect(inputs).toHaveLength(1);
+    const input = inputs[0] as HTMLInputElement;
+    await type(input, "u.txt");
+    expect(all(".stash-detail .log-file")).toHaveLength(1);
+    expect(q(".stash-detail .log-file")?.textContent).toContain("u.txt");
+    await click(q('[aria-label="清除文件搜索"]'));
     await click(all(".stash-detail .log-file").find((b) => b.textContent?.includes("a.txt")));
     expect(bridge.revision).toHaveBeenLastCalledWith("a", O("1"), O("a"), "id-a.txt", null, expect.any(String));
     expect(q(".history-badge")?.textContent).toContain("stash@{0}");
