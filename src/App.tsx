@@ -221,6 +221,7 @@ export default function App() {
   const [mergeCommitOpen, setMergeCommitOpen] = useState(false);
   const [multiSelection, setMultiSelection] = useState<ReadonlySet<string>>(() => new Set());
   const [confirmState, setConfirmState] = useState<(ConfirmRequest & { resolve(ok: boolean): void }) | null>(null);
+  const [discardAllPending, setDiscardAllPending] = useState(false);
   const askConfirm = useCallback((request: ConfirmRequest) => new Promise<boolean>((resolve) => setConfirmState({ ...request, resolve })), []);
   const [switchState, setSwitchState] = useState<(SwitchRequest & { resolve(choice: SwitchChoice | null): void }) | null>(null);
   const askSwitch = useCallback((request: SwitchRequest) => new Promise<SwitchChoice | null>((resolve) => setSwitchState({ ...request, resolve })), []);
@@ -1061,6 +1062,14 @@ export default function App() {
   // ---------- 写操作入口 ----------
   const runningLabel = repoOps?.running ? operationLabels[repoOps.running.kind] : null;
   const writeBlocked = writeBlockedReason({ snapshot, verifying: !!runtime?.verifying, running: runningLabel });
+  // HEAD → 工作区的净差异可能省略仍需清理的暂存改动。
+  const discardAllFiles = useMemo(() => {
+    const lists = runtime?.snapshot?.scopes;
+    if (!lists) return [];
+    return [...new Map([...lists.unstaged, ...lists.staged].map(file => [file.pathId, file])).values()];
+  }, [runtime?.snapshot?.scopes]);
+  const discardAllBlocked = writeBlocked ?? (mergeInProgress ? "合并进行中" : null)
+    ?? (!discardAllFiles.some(file => file.status !== "conflicted" && !file.gitlink) ? "没有可丢弃的本地改动" : null);
   const inProgressNotice = unsupportedInProgress(snapshot);
   const stagedCount = runtime?.snapshot?.scopes?.staged.filter((file) => file.status !== "conflicted").length ?? 0;
   // 切换项目 / 范围时清空批量选择；已为空时保持同一引用，避免多余的重渲染。
@@ -1074,12 +1083,12 @@ export default function App() {
   const record = (outcome: OperationOutcome): OperationRecord => ({ kind: outcome.kind, status: outcome.status, message: outcome.message, output: outcome.output, outputTruncated: outcome.outputTruncated, stashOid: outcome.stashOid, at: Date.now() });
 
   /** 执行一个写操作：可选乐观更新 → IPC → 用返回的精确刷新快照替换（失败时即恢复实际状态）。 */
-  const runOp = async (request: OperationRequest, optimistic?: RepositorySnapshot): Promise<OperationOutcome | null> => {
+  const runOp = async (request: OperationRequest, optimistic?: RepositorySnapshot, confirmedAllDiscard = false): Promise<OperationOutcome | null> => {
     const repoId = currentRead.current.repo;
     if (!repoId) return null;
     const runtimeNow = projects.get(repoId);
     const matchesIgnored = createFileIgnoreMatcher(settings.get().fileIgnore.rules, repoId);
-    const hiddenTargets = "pathIds" in request && request.pathIds?.length && showIgnoredRepoRef.current !== repoId
+    const hiddenTargets = !(request.kind === "discard" && confirmedAllDiscard) && "pathIds" in request && request.pathIds?.length && showIgnoredRepoRef.current !== repoId
       ? runtimeNow?.snapshot?.scopes?.all.filter(f => matchesIgnored(f.displayPath) && (request.pathIds!.includes(f.pathId) || (!!f.oldPathId && request.pathIds!.includes(f.oldPathId)))) ?? [] : [];
     if (hiddenTargets.length) {
       const kind = request.kind === "commitSelected" ? "commit" : request.kind === "stageSelected" ? "stage" : request.kind;
@@ -1171,13 +1180,20 @@ export default function App() {
       if (ok) await resolveFiles(files, true);
     }
   };
-  const discardFiles = async (files: FileChange[], scopeOverride?: CompareScope) => {
+  const discardFiles = async (files: FileChange[], scopeOverride?: CompareScope, allChanges = false) => {
     const repoId = activeRepoId;
-    if (!repoId || writeBlocked) return;
+    if (!repoId || !snapshot || writeBlocked) return;
+    const sameCheckout = () => {
+      const live = projects.get(repoId)?.snapshot;
+      return activeIntent.current === repoId && currentRead.current.repo === repoId &&
+        live?.repo.branch === snapshot.repo.branch && live?.branchInfo?.oid === snapshot.branchInfo?.oid &&
+        !(allChanges && live.inProgress?.merge);
+    };
     const discardScope = scopeOverride ?? scope;
     let plan;
     try { plan = await prepareDiscard(repoId, discardScope, pathIdsFor(files, discardScope === "all")); }
     catch (error) { updateOps(repoId, { last: { kind: "discard", status: "failed", message: errorText(error), output: "", at: Date.now() } }); return; }
+    if (!sameCheckout()) return;
     if (!plan.files) {
       updateOps(repoId, { last: { kind: "discard", status: "failed", message: plan.blocked.length ? plan.blocked.map((b) => `${b.path}：${b.reason}`).join("；") : "所选文件已没有可丢弃的改动", output: "", at: Date.now() } });
       return;
@@ -1185,26 +1201,37 @@ export default function App() {
     const blocked = new Set(plan.blocked.map((b) => b.path));
     const unrecoverable = plan.unrecoverable.length > 0;
     const ok = await askConfirm({
-      title: `丢弃 ${plan.files} 个文件的改动`,
+      title: allChanges ? `丢弃全部本地改动（${plan.files} 个文件）` : `丢弃 ${plan.files} 个文件的改动`,
       message: discardScope === "all" ? "暂存区与工作区都会恢复到 HEAD（当前提交）；未跟踪文件会被删除。" : "工作区文件恢复到暂存区（Index）中的版本；未跟踪文件会被删除。暂存区不变。",
       items: plan.paths,
       notes: [
+        ...(allChanges ? [`当前分支：${snapshot.repo.branch}。范围包含被 Oris 筛选或隐藏的改动。`] : []),
         plan.untracked ? `其中 ${plan.untracked} 个是未跟踪文件，将被删除` : "不包含未跟踪文件",
         unrecoverable ? `以下 ${plan.unrecoverable.length} 个文件超过 50 MiB 备份预算，不会备份：${plan.unrecoverable.join("、")}` : "丢弃前会备份，之后可在状态栏或“操作输出”中撤销丢弃",
         ...plan.blocked.map((b) => `不会丢弃 ${b.path}：${b.reason}`)
       ],
       warning: unrecoverable ? `不可撤销：${plan.unrecoverable.length} 个文件丢弃后无法恢复` : undefined,
-      confirmLabel: unrecoverable ? "丢弃（含不可撤销）" : "丢弃",
+      confirmLabel: unrecoverable ? "丢弃（含不可撤销）" : allChanges ? "确认丢弃全部" : "丢弃",
       danger: true
     });
-    if (!ok) return;
+    if (!ok || !sameCheckout()) return;
     setMultiSelection(new Set());
     const targets = files.filter((file) => !blocked.has(file.displayPath));
-    let outcome = await runOp({ kind: "discard", scope: discardScope, pathIds: pathIdsFor(targets, discardScope === "all"), confirmedUnrecoverable: unrecoverable });
+    const pathIds = pathIdsFor(targets, discardScope === "all");
+    const outcome = await runOp({ kind: "discard", scope: discardScope, pathIds, confirmedUnrecoverable: unrecoverable }, undefined, allChanges);
     if (outcome?.status === "needsConfirmation" && outcome.confirmation) {
       // 确认框之后文件变大、超出预算：再次确认。
       const again = await askConfirm({ title: "丢弃不可撤销", message: outcome.confirmation.message, items: outcome.confirmation.paths, warning: "不可撤销", confirmLabel: "仍然丢弃", danger: true });
-      if (again) outcome = await runOp({ kind: "discard", scope: discardScope, pathIds: pathIdsFor(targets, discardScope === "all"), confirmedUnrecoverable: true });
+      if (again && sameCheckout()) await runOp({ kind: "discard", scope: discardScope, pathIds, confirmedUnrecoverable: true }, undefined, allChanges);
+    }
+  };
+  const discardAll = async () => {
+    if (discardAllBlocked || discardAllPending) return;
+    setDiscardAllPending(true);
+    try {
+      await discardFiles(discardAllFiles, "all", true);
+    } finally {
+      setDiscardAllPending(false);
     }
   };
   const undoDiscard = async (backupId: string, overwrite = false): Promise<void> => {
@@ -2018,7 +2045,7 @@ export default function App() {
       onRemoveManual={(member) => void changeManual(member.worktreePath, false)}
       onClose={() => setPickerOpen(false)}/>}</span> : <strong>{activeProject ? projectName(activeProject) : "Oris"}</strong>}{snapshot && <span className="branch-anchor"><button type="button" className="branch branch-button" aria-expanded={branchOpen} title="分支：搜索、切换、新建与管理" onClick={() => setBranchOpen((value) => !value)}>⑂ {snapshot.repo.branch} ▾</button>{branchOpen && activeRepoId && <BranchPopover repoId={activeRepoId} refsVersion={refsVersion} blocked={writeBlocked} actions={branchActions} onClose={() => setBranchOpen(false)}/>}</span>}{snapshot && activeRepoId && <SyncToolbar repoId={activeRepoId} branch={{ head: snapshot.branchInfo?.head ?? null, upstream: snapshot.branchInfo?.upstream ?? null, ahead: snapshot.branchInfo?.ahead ?? null, behind: snapshot.branchInfo?.behind ?? null }}
         blocked={writeBlocked} running={syncRunning} fetchAge={fetchAge} fetchTitle={fetchText} pullMode={pullMode} menu={syncMenu} onMenu={setSyncMenu}
-        onFetch={(remote) => void runFetch(remote)} onPull={() => void runPull()} onPush={() => void runPush()} onCancel={() => void cancelOperation(activeRepoId)} onPullMode={choosePullMode} onChangeUpstream={changeUpstream} onRemotes={(view) => setRemotesFetchHeadAt(view.fetchHeadAt)}/>}{stale && <span className="stale-badge">旧快照</span>}{runtime?.verifying && <span className="stale-badge verifying" title="显示上次保存的快照，正在后台校验；校验完成前写操作不可用">校验中</span>}{snapshot && <button className="icon-button" onClick={() => void refreshActive()} disabled={manualRefreshing} title="本地刷新" aria-label="本地刷新">⟳</button>}<span className="spacer"/><UpdateButton autoCheck={autoCheckUpdates} busyReason={busyOperation}/><button className="commit-entry" onClick={() => setAiOpen(true)} title="AI（Ctrl+P / ⌘P）">✦ AI</button><button className="settings-button" onClick={() => setSettingsOpen(true)} aria-label="设置" title="设置（Ctrl+,）">⚙ 设置</button></header>
+        onFetch={(remote) => void runFetch(remote)} onPull={() => void runPull()} onPush={() => void runPush()} onCancel={() => void cancelOperation(activeRepoId)} onPullMode={choosePullMode} onChangeUpstream={changeUpstream} onRemotes={(view) => setRemotesFetchHeadAt(view.fetchHeadAt)}/>}{stale && <span className="stale-badge">旧快照</span>}{runtime?.verifying && <span className="stale-badge verifying" title="显示上次保存的快照，正在后台校验；校验完成前写操作不可用">校验中</span>}{snapshot && <button className="icon-button" onClick={() => void refreshActive()} disabled={manualRefreshing} title="本地刷新" aria-label="本地刷新">⟳</button>}{snapshot && <button type="button" disabled={!!discardAllBlocked || discardAllPending || !!confirmState} title={discardAllBlocked ?? "丢弃当前分支的全部未提交改动"} onClick={() => void discardAll()}>丢弃</button>}<span className="spacer"/><UpdateButton autoCheck={autoCheckUpdates} busyReason={busyOperation}/><button className="commit-entry" onClick={() => setAiOpen(true)} title="AI（Ctrl+P / ⌘P）">✦ AI</button><button className="settings-button" onClick={() => setSettingsOpen(true)} aria-label="设置" title="设置（Ctrl+,）">⚙ 设置</button></header>
     <section className="projectbar" aria-label="项目切换"><div className="project-tabs">{visibleProjects.map(project => <ProjectTab key={project.repo.repoId} project={project} active={project.repo.repoId === activeTab}
       workspaceMembers={project.group ? groups[project.repo.repoId]?.members.filter((member) => member.kind === "submodule").length ?? null : undefined}
       onSelect={() => void switchProject(project.group ? groupEntry(workspaceState, project) : project)}

@@ -63,8 +63,9 @@ const menuItem = (prefix: string) => [...host.querySelectorAll(".file-menu butto
 const click = async (element: HTMLElement) => { await act(async () => element.click()); await flush(); };
 const clickWith = async (path: string, modifiers: MouseEventInit) => { await act(async () => { row(path).dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ...modifiers })); }); await flush(); };
 const selectedRows = () => [...host.querySelectorAll(".file.selected")].map((n) => n.getAttribute("aria-label"));
-const type = async (element: HTMLTextAreaElement, value: string) => {
-  await act(async () => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(element, value); element.dispatchEvent(new Event("input", { bubbles: true })); });
+const type = async (element: HTMLTextAreaElement | HTMLInputElement, value: string) => {
+  const prototype = element instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
+  await act(async () => { Object.getOwnPropertyDescriptor(prototype, "value")!.set!.call(element, value); element.dispatchEvent(new Event("input", { bubbles: true })); });
   await flush();
 };
 const mount = async () => {
@@ -380,6 +381,31 @@ describe("stage / unstage (B05, B16)", () => {
 });
 
 describe("discard (B06)", () => {
+  it("confirms a toolbar discard across both staging lists regardless of the file filter", async () => {
+    const modified = change("a.txt");
+    const untracked = change("new.txt", "untracked");
+    const stagedOnly = change("staged.txt", "added");
+    const current = snap([modified, untracked, change("staged.txt", "deleted")], [stagedOnly]);
+    current.scopes!.all = [modified, untracked];
+    bridge.open.mockResolvedValue(current);
+    bridge.prepareDiscard.mockResolvedValue({ scope: "all", files: 3, untracked: 1, paths: ["a.txt", "new.txt", "staged.txt"], unrecoverable: [], blocked: [] });
+    bridge.operation.mockResolvedValue(outcome("discard", snap([], [], "r2")));
+    await mount();
+    await type(host.querySelector<HTMLInputElement>('input[aria-label="按完整相对路径筛选"]')!, "a.txt");
+    const discard = host.querySelector<HTMLButtonElement>(".titlebar button[title='丢弃当前分支的全部未提交改动']")!;
+    await click(discard);
+    expect(bridge.operation).not.toHaveBeenCalled();
+    expect(host.querySelector(".confirm-dialog")?.textContent).toContain("staged.txt");
+    await click(button("取消"));
+    expect(bridge.operation).not.toHaveBeenCalled();
+    await click(discard);
+    await click(button("确认丢弃全部"));
+    expect(bridge.operation).toHaveBeenCalledWith("a", "unstaged", expect.any(String), {
+      kind: "discard", scope: "all", pathIds: ["id-a.txt", "id-new.txt", "id-staged.txt"], confirmedUnrecoverable: false,
+    });
+    expect(discard.disabled).toBe(true);
+  });
+
   it("confirms with the file count and untracked files; cancelling runs nothing; an over-budget file is marked irreversible", async () => {
     bridge.open.mockResolvedValue(snap([change("a.txt"), change("new.txt", "untracked")], []));
     bridge.prepareDiscard.mockResolvedValue({ scope: "unstaged", files: 2, untracked: 1, paths: ["a.txt", "new.txt"], unrecoverable: [], blocked: [] });

@@ -233,7 +233,22 @@ impl GitAdapter {
                 }
                 let mode = entry.worktree_mode.clone().filter(|m| m != "000000");
                 if entry.x == b'?' {
-                    push(&mut planned, Planned { path, path_id: id.clone(), action: Action::DeleteUntracked, index: IndexState::Untouched, worktree_mode: None });
+                    // Git can report a staged deletion and an untracked replacement at the same path.
+                    // The untracked entry wins in the scan's path map, but "all" must restore HEAD.
+                    let staged_deletion = if scope == CompareScope::All {
+                        state.lists.staged.iter().find(|file| file.path_id == *id && matches!(file.status, FileStatus::Deleted))
+                    } else {
+                        None
+                    };
+                    if let Some(file) = staged_deletion {
+                        if file.gitlink {
+                            blocked.push(BlockedPath { path: display(&path), reason: "子模块条目（gitlink）不提供丢弃，请在子模块中用命令行处理".into() });
+                            continue;
+                        }
+                        push(&mut planned, Planned { path, path_id: id.clone(), action: Action::RestoreFromHead, index: IndexState::Absent, worktree_mode: None });
+                    } else {
+                        push(&mut planned, Planned { path, path_id: id.clone(), action: Action::DeleteUntracked, index: IndexState::Untouched, worktree_mode: None });
+                    }
                     continue;
                 }
                 match scope {

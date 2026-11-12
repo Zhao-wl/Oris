@@ -343,8 +343,10 @@ fn b06_discard_all_scope_restores_head_and_undo_restores_index_and_worktree() {
     write(p, "a.txt", b"staged, then edited\n");
     write(p, "added.txt", b"added in index\n");
     git(p, &["add", "added.txt"]);
+    fs::remove_file(p.join("added.txt")).unwrap();
     git(p, &["mv", "old-name.txt", "moved.txt"]);
     git(p, &["rm", "-q", "del.txt"]);
+    write(p, "del.txt", b"untracked replacement\n");
     write(p, "untracked.txt", b"u\n");
     let h = Harness::new(p);
     let index_before = git(p, &["ls-files", "-s"]);
