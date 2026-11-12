@@ -218,18 +218,6 @@ pub fn expire_idle_readers() -> usize {
         .count()
 }
 
-/// 当前存活的常驻 cat-file 进程数（用于资源断言与诊断）。
-pub fn live_reader_count() -> usize {
-    let readers: Vec<_> = pool()
-        .entries
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .iter()
-        .filter_map(|e| e.reader.upgrade())
-        .collect();
-    readers.iter().filter(|r| r.is_live()).count()
-}
-
 struct Batch {
     child: Child,
     stdin: ChildStdin,

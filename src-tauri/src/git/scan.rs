@@ -357,32 +357,32 @@ impl GitAdapter {
             run_required(&self.git, &self.worktree, &args)?
         };
         let raw = output.stdout;
-        let (branch, mut files) = status_v2::parse(&raw)?;
+        let (branch, mut entries) = status_v2::parse(&raw)?;
         // 未跟踪的嵌套仓库目录（放在工作区里的 worktree、独立仓库）不作为未跟踪文件显示（V2-D81）。
         let mut nested_repos = Vec::new();
-        for list in [&mut files.all, &mut files.unstaged] {
-            list.retain(|entry| {
-                let nested = is_nested_repo(&self.worktree, entry);
-                if nested && !nested_repos.contains(&entry.path) {
-                    nested_repos.push(entry.path.clone());
-                }
-                !nested
-            });
-        }
-        let nested_repos: Vec<String> = nested_repos
+        entries.retain(|entry| {
+            if !is_nested_repo(&self.worktree, entry) {
+                return true;
+            }
+            if !nested_repos.contains(&entry.path) {
+                nested_repos.push(entry.path.clone());
+            }
+            false
+        });
+        let nested_repos = nested_repos
             .iter()
             .map(|path| String::from_utf8_lossy(path).trim_end_matches('/').to_owned())
             .collect();
         let has_head = branch.oid.is_some();
-        let mut lists = scope_lists(&files.all, has_head);
-        self.attach_pointers(&mut lists, &files.all);
+        let mut lists = scope_lists(&entries, has_head);
+        self.attach_pointers(&mut lists, &entries);
         let mut wt = HashMap::new();
         let mut revision = Sha256::new();
         revision.update(b"oris-v2-scan-1");
         revision.update((raw.len() as u64).to_le_bytes());
         revision.update(&raw);
         revision.update(&refs_digest);
-        let mut paths: Vec<&Entry> = files.all.iter().collect();
+        let mut paths: Vec<&Entry> = entries.iter().collect();
         paths.sort_by(|a, b| a.path.cmp(&b.path));
         for entry in &paths {
             for path in std::iter::once(&entry.path).chain(entry.old_path.iter()) {
@@ -402,8 +402,7 @@ impl GitAdapter {
         let in_progress = status_v2::detect_in_progress(&self.git_dir);
         revision.update([u8::from(in_progress.merge), u8::from(in_progress.rebase), u8::from(in_progress.cherry_pick), u8::from(in_progress.revert), u8::from(in_progress.bisect)]);
         let revision = hex::encode(revision.finalize());
-        let entries = files
-            .all
+        let entries = entries
             .into_iter()
             .map(|entry| (entry.path_id.clone(), entry))
             .collect();

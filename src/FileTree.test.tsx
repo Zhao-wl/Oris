@@ -2,7 +2,8 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import FileTree, { VIRTUAL_THRESHOLD, compareFiles } from "./FileTree";
+import FileTree, { compareFiles } from "./FileTree";
+import { VIRTUAL_THRESHOLD } from "./VirtualRows";
 import type { FileChange } from "./types";
 
 const make = (count: number): FileChange[] => Array.from({ length: count }, (_, i) => ({

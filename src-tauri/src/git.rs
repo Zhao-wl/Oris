@@ -10,7 +10,6 @@ pub mod ops;
 mod read_guard;
 pub mod refs;
 mod scan;
-#[allow(dead_code)]
 mod status_v2;
 #[allow(dead_code)]
 pub mod object_reader;
@@ -315,10 +314,8 @@ pub struct GitAdapter {
     git_dir: PathBuf,
     common_dir: PathBuf,
     repo_id: String,
-    #[cfg_attr(not(test), allow(dead_code))]
-    branch: String,
     version: String,
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     snapshots: Arc<Mutex<HashMap<CompareScope, Vec<read_guard::ReadSnapshot>>>>,
     scans: Arc<Mutex<Vec<Arc<scan::ScanState>>>>,
     reader: object_reader::SharedReader,
@@ -355,17 +352,6 @@ impl GitAdapter {
                 "Git 返回了意外的仓库信息".into(),
             ));
         }
-        let symbolic = run_readonly(
-            &git,
-            &worktree,
-            &["symbolic-ref", "--quiet", "--short", "HEAD"],
-        )?;
-        let branch = if symbolic.status.success() {
-            String::from_utf8_lossy(&symbolic.stdout).trim().to_owned()
-        } else {
-            let oid = run_required(&git, &worktree, &["rev-parse", "--short", "HEAD"])?;
-            format!("detached @ {}", String::from_utf8_lossy(&oid.stdout).trim())
-        };
         let repo_id = hash_bytes(worktree.to_string_lossy().as_bytes());
         let reader = object_reader::shared_reader(&git, &worktree, object_reader::DEFAULT_IDLE);
         Ok(Self {
@@ -374,8 +360,8 @@ impl GitAdapter {
             git_dir,
             common_dir,
             repo_id,
-            branch,
             version,
+            #[cfg(test)]
             snapshots: Arc::default(),
             scans: Arc::default(),
             reader,
@@ -623,26 +609,10 @@ impl GitAdapter {
         request_id: String,
         scope: CompareScope,
     ) -> Result<RepositorySnapshot, GitError> {
-        #[cfg(test)]
-        let started = std::time::Instant::now();
         let catalogs = self.guard_catalogs(scope, &[])?;
         let (files, raw) = self.list_changes(scope)?;
-        #[cfg(test)]
-        let listed = started.elapsed().as_millis();
         let revision = self.revision(scope, &raw, &files)?;
-        #[cfg(test)]
-        let revised = started.elapsed().as_millis();
         let saved = self.capture_read_snapshot(scope, revision.clone(), &files, catalogs)?;
-        #[cfg(test)]
-        if files.len() >= 5000 {
-            println!(
-                "SNAPSHOT_PHASE files={} list_ms={} revision_ms={} guards_ms={}",
-                files.len(),
-                listed,
-                revised - listed,
-                started.elapsed().as_millis() - revised
-            );
-        }
         {
             let mut snapshots = self
                 .snapshots
@@ -669,9 +639,7 @@ impl GitAdapter {
                 worktree_path: self.worktree.to_string_lossy().into_owned(),
                 git_dir: self.git_dir.to_string_lossy().into_owned(),
                 common_dir: self.common_dir.to_string_lossy().into_owned(),
-                branch: self
-                    .current_branch()
-                    .unwrap_or_else(|_| self.branch.clone()),
+                branch: self.current_branch()?,
             },
             scope,
             revision,
@@ -1223,6 +1191,7 @@ fn upsert_change(
     }
 }
 
+#[cfg(test)]
 fn update_modified(digest: &mut Sha256, metadata: &fs::Metadata) {
     if let Ok(modified) = metadata.modified() {
         if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {

@@ -24,7 +24,6 @@ interface Props {
   /** 正在浏览（筛选历史）的引用完整名；null 为全部分支。 */
   filter: string | null;
   onFilter(ref: string | null): void;
-  onShowStash?(): void;
   blocked: string | null;
   /** 双击本地分支：切换到该分支。 */
   onSwitch?(branch: Branch): void;
@@ -37,7 +36,7 @@ interface Props {
 
 /** 历史页左侧：本地分支、标签、远端分支（按 remote 分组），可搜索、可折叠。 */
 export default function HistorySidebar(props: Props) {
-  const { refs, refsError, headLabel, current, hidden = false, filter, onFilter, onShowStash, blocked, onSwitch, onTrack, onPruneGone, onMenu } = props;
+  const { refs, refsError, headLabel, current, hidden = false, filter, onFilter, blocked, onSwitch, onTrack, onPruneGone, onMenu } = props;
   const [query, setQuery] = useState("");
   const [collapsed, setCollapsed] = useState(loadCollapsed);
   const list = useRef<HTMLDivElement>(null);
@@ -98,7 +97,6 @@ export default function HistorySidebar(props: Props) {
             title={rowTitle(blocked ?? "双击建立同名本地跟踪分支并切换")} onPick={() => onFilter(branch.fullName)} onOpen={!blocked && onTrack ? () => onTrack(branch) : undefined} onMenu={(x, y) => onMenu(x, y, endpoint(branch.fullName, branch.oid, branch.name))}/>)}
         </Group>)}
       </Group>
-      {!searching && onShowStash && <button type="button" className="log-branch" onClick={onShowStash}>查看 Stash →</button>}
     </div>
   </aside>;
 }

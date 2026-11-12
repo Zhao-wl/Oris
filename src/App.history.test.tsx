@@ -14,7 +14,7 @@ const bridge = vi.hoisted(() => ({
 }));
 vi.mock("./api", () => ({ discoverGroup: vi.fn(async () => ({ isGroup: false, members: [], selectedRepoId: null, ignored: [] })), memberChangeCount: vi.fn(async () => 0), watchGroup: vi.fn(async () => {}), setSubmodulePointers: vi.fn(async () => {}), openRepository: bridge.open, refreshRepository: bridge.refresh, readContentPair: bridge.read, closeRepository: vi.fn(async () => {}), cancelContentRead: vi.fn(async () => {}),
   repositoryDetails: vi.fn(async () => null), activateRepository: vi.fn(async () => true), loadSnapshot: vi.fn(async () => null), saveSnapshot: vi.fn(async () => true), removeSnapshot: vi.fn(async () => {}), decodeContentFrame: (x: unknown) => x }));
-vi.mock("./operations-api", () => ({ runOperation: bridge.operation, cancelOperation: vi.fn(async () => true), lastOperation: vi.fn(async () => null),
+vi.mock("./operations-api", () => ({ runOperation: bridge.operation, cancelOperation: vi.fn(async () => true),
   prepareDiscard: vi.fn(), discardBackups: vi.fn(async () => []), headCommitInfo: vi.fn(async () => null) }));
 vi.mock("./history-api", async (importOriginal) => ({ ...(await importOriginal<typeof import("./history-api")>()),
   readLineAttribution: bridge.line, readLineChange: bridge.lineChange, locateLog: bridge.locate, readLog: bridge.log, commitChanges: bridge.changes, compareRevisions: bridge.compare, fileHistory: bridge.fileHistory, readRefs: bridge.refs, readRevisionPair: bridge.revision,
@@ -322,7 +322,7 @@ describe("V2-D60：写操作后的历史重读", () => {
     expect(all(".log-row").length).toBe(4);
     expect(host.querySelectorAll(".log-row .ref-chip").length).toBe(0);
     expect(q(".log-current")?.textContent).toBe("当前工作分支：● …");
-    expect(all(".log-branch").map((b) => b.textContent)).toEqual(["全部分支", "查看 Stash →"]);
+    expect(all(".log-branch").map((b) => b.textContent)).toEqual(["全部分支"]);
     expect(button("跳到 HEAD").disabled).toBe(true);
     expect(q(".log-count")?.textContent).toContain("读取中");
     await act(async () => release(refsView(O("1")))); await flush();

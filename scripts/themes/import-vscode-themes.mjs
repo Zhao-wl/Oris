@@ -1,14 +1,14 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { registry, resolveDefault, rgba, hex } from './registry.mjs';
+import { resolveDefault, rgba, hex } from './registry.mjs';
 
-export const commit = 'e81ea68fc0228ba2eb01fc9848c30d2e41a26d56';
+const commit = 'e81ea68fc0228ba2eb01fc9848c30d2e41a26d56';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const source = path.join(root, 'third_party/vscode-themes');
-const output = path.join(root, 'src/themes/generated');
+const defaultOutput = path.join(root, 'src/themes/generated');
 
-export const themes = [
+const themes = [
   ['dark-2026','Dark 2026','dark','theme-defaults/themes/2026-dark.json'],
   ['light-2026','Light 2026','light','theme-defaults/themes/2026-light.json'],
   ['dark-modern','Dark Modern','dark','theme-defaults/themes/dark_modern.json'],
@@ -68,7 +68,7 @@ export async function loadTheme(file, chain = new Set()) {
 }
 
 // 显式列出 TextMate 前缀与可传给 @lezer/highlight tags 的标识。
-export const scopeTags = {
+const scopeTags = {
   'comment': 'comment', 'punctuation.definition.comment': 'comment',
   'string.regexp': 'regexp', 'string': 'string', 'constant.character.escape': 'escape',
   'constant.numeric': 'number', 'constant.language.boolean': 'bool', 'constant.language.null': 'null',
@@ -81,18 +81,21 @@ export const scopeTags = {
   'support.type': 'typeName', 'support.constant': 'atom', 'punctuation': 'punctuation',
   'invalid': 'invalid', 'markup.heading': 'heading', 'markup.bold': 'strong', 'markup.italic': 'emphasis',
 };
-export function tagForScope(scope) {
-  return Object.entries(scopeTags).filter(([prefix]) => scope === prefix || scope.startsWith(prefix + '.'))
-    .sort((a, b) => b[0].length - a[0].length || a[0].localeCompare(b[0]))[0]?.[1] ?? null;
+const scopePrefixes = Object.entries(scopeTags).sort(([a], [b]) => b.length - a.length);
+
+function matchScope(scope) {
+  return scopePrefixes.find(([prefix]) => scope === prefix || scope.startsWith(prefix + '.'));
 }
+
 export function highlightRules(tokenColors) {
   const chosen = new Map();
   tokenColors.forEach((rule, index) => {
     const scopes = Array.isArray(rule.scope) ? rule.scope : typeof rule.scope === 'string' ? rule.scope.split(',') : [];
     for (const scope of scopes.map(s => s.trim())) {
-      const tag = tagForScope(scope);
-      if (!tag || !rule.settings) continue;
-      const specificity = Object.keys(scopeTags).filter(p => scope === p || scope.startsWith(p + '.')).sort((a,b) => b.length-a.length)[0]?.length ?? 0;
+      const match = matchScope(scope);
+      if (!match || !rule.settings) continue;
+      const [prefix, tag] = match;
+      const specificity = prefix.length;
       const old = chosen.get(tag);
       if (!old || specificity > old.specificity || specificity === old.specificity && index > old.index)
         chosen.set(tag, { specificity, index, color: rule.settings.foreground ?? null, fontStyle: rule.settings.fontStyle ?? null });
@@ -102,7 +105,7 @@ export function highlightRules(tokenColors) {
 }
 
 // §9.3 的完整映射；数组按优先级回退。值为 null 的注册表默认值不会遮蔽后续回退。
-export const mapping = {
+const mapping = {
   '--bg':['editor.background'], '--panel':['sideBar.background','panel.background','editor.background'],
   '--chrome':['titleBar.activeBackground','editorGroupHeader.tabsBackground','sideBar.background','editor.background'],
   '--text':['editor.foreground','foreground'], '--dim':['descriptionForeground','foreground'],
@@ -136,12 +139,12 @@ export const mapping = {
   '--widget-shadow':['widget.shadow'],
 };
 
-export function mix(a, b, weight = .5) {
+function mix(a, b, weight = .5) {
   const x = rgba(a), y = rgba(b);
   return hex(...[0,1,2].map(i => x[i] * weight + y[i] * (1-weight)));
 }
-export function withAlpha(color, alpha) { const c = rgba(color); return hex(c[0],c[1],c[2],Math.round(alpha*255)); }
-export function resolveTheme(colors, type) {
+function withAlpha(color, alpha) { const c = rgba(color); return hex(c[0],c[1],c[2],Math.round(alpha*255)); }
+function resolveTheme(colors, type) {
   const get = key => colors[key] ?? resolveDefault(key, type, colors);
   const pick = (...keys) => keys.map(get).find(v => v != null) ?? null;
   const variables = Object.fromEntries(Object.entries(mapping).map(([name, keys]) => [name, pick(...keys)]));
@@ -173,13 +176,14 @@ export function resolveTheme(colors, type) {
     if (!colors['editor.findMatchBackground']) variables['--search-match'] = 'transparent';
     variables['--same-word-border'] = pick('editor.selectionHighlightBorder', 'contrastActiveBorder') ?? 'transparent';
   }
+  const addedColors = { marker: added, line: pick('diffEditor.insertedLineBackground') ?? withAlpha(added,.2), word: pick('diffEditor.insertedTextBackground') ?? withAlpha(added,.3) };
   const oris = {
     modified: { marker: modified, line: withAlpha(modified, .23), word: withAlpha(modified, .34) },
-    added: { marker: added, line: pick('diffEditor.insertedLineBackground') ?? withAlpha(added,.2), word: pick('diffEditor.insertedTextBackground') ?? withAlpha(added,.3) },
+    added: addedColors,
     deleted: { marker: gray, line: withAlpha(gray,.22), word: withAlpha(gray,.35) },
   };
   const vscode = {
-    added: { marker: added, line: pick('diffEditor.insertedLineBackground') ?? withAlpha(added,.2), word: pick('diffEditor.insertedTextBackground') ?? withAlpha(added,.3) },
+    added: addedColors,
     deleted: { marker: pick('editorGutter.deletedBackground'), line: pick('diffEditor.removedLineBackground') ?? withAlpha(pick('editorGutter.deletedBackground'),.2), word: pick('diffEditor.removedTextBackground') ?? withAlpha(pick('editorGutter.deletedBackground'),.3) },
   };
   return { variables, diff: { oris, vscode }, ...(type.startsWith('hc') ? { contrastBorder: pick('contrastBorder'), contrastActiveBorder: pick('contrastActiveBorder') } : {}) };
@@ -190,7 +194,7 @@ function composite(foreground, background) {
   return [0,1,2].map(i => f[i]*a+b[i]*(1-a));
 }
 function luminance(rgb) { const v=rgb.map(c => { const s=c/255; return s <= .04045 ? s/12.92 : ((s+.055)/1.055)**2.4; }); return .2126*v[0]+.7152*v[1]+.0722*v[2]; }
-export function contrast(fg, bg, base = '#ffffff') {
+function contrast(fg, bg, base = '#ffffff') {
   const back=composite(bg,base), front=composite(fg,hex(...back));
   const a=luminance(front), b=luminance(back);
   return (Math.max(a,b)+.05)/(Math.min(a,b)+.05);
@@ -234,7 +238,7 @@ async function orisTheme(id, name, type, light) {
   return { id,name,type,source:{kind:'oris',path:'src/styles.css'},variables,diff:{...diff,vscode:null},highlight:[] };
 }
 
-export async function generate() {
+export async function generate(output = defaultOutput) {
   await mkdir(output,{recursive:true});
   const index=[], failed=[], missing=new Set();
   for (const [id,name,type,file] of themes) {

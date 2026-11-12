@@ -1,7 +1,6 @@
 //! Porcelain v2 状态快照。路径始终保存 Git 返回的原始字节。
-use super::{run_required, GitError};
+use super::GitError;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use sha2::{Digest, Sha256};
 use std::path::Path;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -42,21 +41,6 @@ pub struct Entry {
     pub conflict: Option<[Option<Stage>; 3]>,
     /// porcelain v2 的 `<sub>` 字段：`N...` 或 `S<c><m><u>`（子模块提交已变 / 有已跟踪修改 / 有未跟踪文件）。
     pub sub: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ScopeFiles {
-    pub unstaged: Vec<Entry>,
-    pub staged: Vec<Entry>,
-    pub all: Vec<Entry>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StatusSnapshot {
-    pub branch: BranchInfo,
-    pub files: ScopeFiles,
-    pub in_progress: InProgress,
-    pub revision: String,
 }
 
 fn bad() -> GitError {
@@ -106,9 +90,9 @@ fn entry(
 }
 
 /// 原始输出可包含任意非 UTF-8 路径；元数据必须是 Git 的 ASCII 字段。
-pub fn parse(raw: &[u8]) -> Result<(BranchInfo, ScopeFiles), GitError> {
+pub fn parse(raw: &[u8]) -> Result<(BranchInfo, Vec<Entry>), GitError> {
     let mut branch = BranchInfo::default();
-    let mut files = ScopeFiles::default();
+    let mut entries = Vec::new();
     let mut fields = raw.split(|b| *b == 0).peekable();
     while fields
         .peek()
@@ -200,15 +184,9 @@ pub fn parse(raw: &[u8]) -> Result<(BranchInfo, ScopeFiles), GitError> {
             b'?' => entry(token(&words, 1)?, None, b"??", None, None, None, None, None)?,
             _ => return Err(bad()),
         };
-        if value.conflict.is_some() || value.y != b'.' || kind == b'?' {
-            files.unstaged.push(value.clone());
-        }
-        if value.conflict.is_some() || value.x != b'.' && kind != b'?' {
-            files.staged.push(value.clone());
-        }
-        files.all.push(value);
+        entries.push(value);
     }
-    Ok((branch, files))
+    Ok((branch, entries))
 }
 
 pub fn detect_in_progress(git_dir: &Path) -> InProgress {
@@ -221,84 +199,10 @@ pub fn detect_in_progress(git_dir: &Path) -> InProgress {
     }
 }
 
-/// HEAD 与 refs 内容由调用方提供；长度前缀消除拼接歧义。
-pub fn revision(raw: &[u8], head: &[u8], refs: &[u8]) -> String {
-    let mut h = Sha256::new();
-    for bytes in [raw, head, refs] {
-        h.update((bytes.len() as u64).to_le_bytes());
-        h.update(bytes);
-    }
-    hex::encode(h.finalize())
-}
-
-pub fn read(
-    git: &Path,
-    worktree: &Path,
-    git_dir: &Path,
-    head: &[u8],
-    refs: &[u8],
-) -> Result<StatusSnapshot, GitError> {
-    let raw = run_required(
-        git,
-        worktree,
-        &[
-            "status",
-            "--porcelain=v2",
-            "-z",
-            "--branch",
-            "--untracked-files=all",
-            "--find-renames",
-        ],
-    )?
-    .stdout;
-    let (branch, files) = parse(&raw)?;
-    Ok(StatusSnapshot {
-        branch,
-        files,
-        in_progress: detect_in_progress(git_dir),
-        revision: revision(&raw, head, refs),
-    })
-}
-
-/// 首次显示“全部”范围时可调用；只返回 HEAD diff 可见的 rename。
-/// 未跟踪的新路径不会出现在该 diff 中，调用方需要按 V1 语义保留为删除 + 未跟踪。
-pub fn all_rename_pairs(git: &Path, worktree: &Path) -> Result<Vec<(String, String)>, GitError> {
-    let raw = run_required(
-        git,
-        worktree,
-        &[
-            "diff",
-            "--no-ext-diff",
-            "--no-textconv",
-            "HEAD",
-            "--name-status",
-            "-M",
-            "-z",
-            "--",
-        ],
-    )?
-    .stdout;
-    let fields: Vec<_> = raw.split(|b| *b == 0).filter(|f| !f.is_empty()).collect();
-    let mut pairs = Vec::new();
-    let mut i = 0;
-    while i < fields.len() {
-        let code = fields[i];
-        i += 1;
-        if code.starts_with(b"R") || code.starts_with(b"C") {
-            let old = *fields.get(i).ok_or_else(bad)?;
-            let new = *fields.get(i + 1).ok_or_else(bad)?;
-            pairs.push((URL_SAFE_NO_PAD.encode(old), URL_SAFE_NO_PAD.encode(new)));
-            i += 2;
-        } else {
-            i += 1;
-        }
-    }
-    Ok(pairs)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git::{run_required, scan::scope_lists, CompareScope, FileStatus};
     use std::{fs, path::Path, process::Command};
     fn git(dir: &Path, args: &[&str]) -> Vec<u8> {
         let out = Command::new("git")
@@ -320,7 +224,7 @@ mod tests {
         git(dir.path(), &["config", "user.email", "test@example.test"]);
         dir
     }
-    fn status(dir: &Path) -> (BranchInfo, ScopeFiles) {
+    fn status(dir: &Path) -> (BranchInfo, Vec<Entry>) {
         let raw = run_required(
             Path::new("git"),
             dir,
@@ -345,8 +249,8 @@ mod tests {
         git(p, &["add", "."]);
         let (branch, f) = status(p);
         assert!(branch.oid.is_none());
-        assert_eq!(f.staged.len(), 1);
-        assert_eq!(f.all.len(), 1);
+        assert_eq!(f.len(), 1);
+        assert_eq!([f[0].x, f[0].y], *b"A.");
         git(p, &["commit", "-qm", "init"]);
         fs::write(p.join("空 格.txt"), b"staged\n").unwrap();
         git(p, &["add", "."]);
@@ -354,10 +258,9 @@ mod tests {
         fs::write(p.join("untracked"), b"u").unwrap();
         let (branch, f) = status(p);
         assert!(branch.oid.is_some());
-        assert_eq!(f.staged.len(), 1);
-        assert_eq!(f.unstaged.len(), 2);
-        assert_eq!(f.all.len(), 2);
-        let e = &f.staged[0];
+        assert_eq!(f.len(), 2);
+        let e = f.iter().find(|entry| entry.path == "空 格.txt".as_bytes()).unwrap();
+        assert!(f.iter().any(|entry| entry.path == b"untracked" && [entry.x, entry.y] == *b"??"));
         assert_eq!(e.x, b'M');
         assert_eq!(e.y, b'M');
         assert!(e.head.is_some());
@@ -372,118 +275,15 @@ mod tests {
             .any(|w| w == "空 格.txt".as_bytes()));
     }
     #[test]
-    fn rename_deletion_and_untracked_match_v1_commands() {
-        let dir = repo();
-        let p = dir.path();
-        fs::write(p.join("old"), b"same\n").unwrap();
-        fs::write(p.join("delete"), b"gone\n").unwrap();
-        git(p, &["add", "."]);
-        git(p, &["commit", "-qm", "init"]);
-        fs::rename(p.join("old"), p.join("new")).unwrap();
-        fs::remove_file(p.join("delete")).unwrap();
-        let (_, f) = status(p);
-        assert!(f.unstaged.iter().any(|e| e.path == b"old" && e.y == b'D'));
-        assert!(f.unstaged.iter().any(|e| e.path == b"new" && e.x == b'?'));
-        assert!(f
-            .unstaged
-            .iter()
-            .any(|e| e.path == b"delete" && e.y == b'D'));
-        // 未跟踪的新路径不参与 git diff HEAD；V1 同样显示 D + ?。
-        let pairs = all_rename_pairs(Path::new("git"), p).unwrap();
-        assert!(pairs.is_empty());
-        git(p, &["add", "-A"]);
-        let (_, f) = status(p);
-        assert!(f
-            .staged
-            .iter()
-            .any(|e| e.path == b"new" && e.old_path.as_deref() == Some(b"old")));
-        assert!(all_rename_pairs(Path::new("git"), p).unwrap().contains(&(
-            URL_SAFE_NO_PAD.encode(b"old"),
-            URL_SAFE_NO_PAD.encode(b"new")
-        )));
-        let staged = git(p, &["diff", "--cached", "--name-status", "-M", "-z", "--"]);
-        assert!(staged.windows(3).any(|w| w == b"old"));
-    }
-    #[test]
-    fn conflict_stages_and_progress() {
-        let dir = repo();
-        let p = dir.path();
-        fs::write(p.join("file"), b"base\n").unwrap();
-        git(p, &["add", "."]);
-        git(p, &["commit", "-qm", "base"]);
-        git(p, &["checkout", "-qb", "side"]);
-        fs::write(p.join("file"), b"side\n").unwrap();
-        git(p, &["commit", "-qam", "side"]);
-        git(p, &["checkout", "-q", "main"]);
-        fs::write(p.join("file"), b"main\n").unwrap();
-        git(p, &["commit", "-qam", "main"]);
-        let out = Command::new("git")
-            .current_dir(p)
-            .args(["merge", "side"])
-            .output()
-            .unwrap();
-        assert!(!out.status.success());
-        let (_, f) = status(p);
-        let e = &f.all[0];
-        let stages = e.conflict.as_ref().unwrap();
-        assert!(stages.iter().all(Option::is_some));
-        let ls = git(p, &["ls-files", "--unmerged", "-z"]);
-        assert!(ls.windows(4).any(|w| w == b"file"));
-        let state = detect_in_progress(&p.join(".git"));
-        assert!(state.merge);
-    }
-    #[test]
-    fn raw_non_utf8_path_and_revision() {
+    fn raw_non_utf8_path_ignores_excluded_entries() {
         let raw = b"# branch.oid (initial)\0# branch.head main\0? odd\xff name\0! ignored\0";
         let (b, f) = parse(raw).unwrap();
         assert_eq!(b.head.as_deref(), Some("main"));
-        assert_eq!(f.all.len(), 1);
+        assert_eq!(f.len(), 1);
         assert_eq!(
-            URL_SAFE_NO_PAD.decode(&f.all[0].path_id).unwrap(),
+            URL_SAFE_NO_PAD.decode(&f[0].path_id).unwrap(),
             b"odd\xff name"
         );
-        assert_ne!(
-            revision(raw, b"head", b"refs"),
-            revision(raw, b"head2", b"refs")
-        );
-    }
-
-    #[test]
-    fn real_index_non_utf8_path_and_readonly_state() {
-        use std::io::Write;
-        let dir = repo();
-        let p = dir.path();
-        let mut hash = Command::new("git")
-            .current_dir(p)
-            .args(["hash-object", "-w", "--stdin"])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        hash.stdin.take().unwrap().write_all(b"content").unwrap();
-        let oid = String::from_utf8(hash.wait_with_output().unwrap().stdout)
-            .unwrap()
-            .trim()
-            .to_owned();
-        let mut child = Command::new("git")
-            .current_dir(p)
-            .args(["update-index", "-z", "--index-info"])
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        let mut input = format!("100644 {oid} 0\t").into_bytes();
-        input.extend_from_slice(b"odd\xff name\0");
-        child.stdin.take().unwrap().write_all(&input).unwrap();
-        assert!(child.wait().unwrap().success());
-        let paths = [".git/index", ".git/HEAD", ".git/config"];
-        let before = paths.map(|s| fs::read(p.join(s)).unwrap());
-        let (_, files) = status(p);
-        assert_eq!(files.all.len(), 1);
-        assert_eq!(
-            URL_SAFE_NO_PAD.decode(&files.all[0].path_id).unwrap(),
-            b"odd\xff name"
-        );
-        assert_eq!(before, paths.map(|s| fs::read(p.join(s)).unwrap()));
     }
 
     #[test]
@@ -520,11 +320,24 @@ mod tests {
                 .unwrap()
                 .success());
             let (_, f) = status(p);
-            let e = f.all.iter().find(|e| e.path == b"file").unwrap();
+            let e = f.iter().find(|e| e.path == b"file").unwrap();
             assert_eq!(&[e.x, e.y], shape.as_bytes());
-            assert!(e.conflict.is_some());
-            assert!(f.unstaged.iter().any(|e| e.path == b"file"));
-            assert!(f.staged.iter().any(|e| e.path == b"file"));
+            let expected_stages = [shape != "AA", shape != "DU", shape != "UD"];
+            assert_eq!(
+                e.conflict.as_ref().unwrap().each_ref().map(Option::is_some),
+                expected_stages,
+                "{shape}"
+            );
+            assert!(detect_in_progress(&p.join(".git")).merge, "{shape}");
+            let scopes = scope_lists(&f, true);
+            for scope in [CompareScope::Unstaged, CompareScope::Staged, CompareScope::All] {
+                assert!(
+                    scopes.get(scope).iter().any(|file| {
+                        file.display_path == "file" && file.status == FileStatus::Conflicted
+                    }),
+                    "{shape} in {scope:?}"
+                );
+            }
         }
     }
 
@@ -563,28 +376,11 @@ mod tests {
             assert!(child.wait().unwrap().success());
             fs::write(p.join("conflict"), b"working").unwrap();
             let (_, files) = status(p);
-            let e = files.all.iter().find(|e| e.path == b"conflict").unwrap();
+            let e = files.iter().find(|e| e.path == b"conflict").unwrap();
             let parsed = e.conflict.as_ref().unwrap();
             for stage in 1..=3 {
                 assert_eq!(parsed[stage - 1].is_some(), stages.contains(&stage));
             }
         }
-    }
-
-    #[test]
-    fn all_scope_can_cancel_across_index_and_worktree() {
-        let dir = repo();
-        let p = dir.path();
-        fs::write(p.join("file"), b"head").unwrap();
-        git(p, &["add", "."]);
-        git(p, &["commit", "-qm", "base"]);
-        fs::write(p.join("file"), b"index").unwrap();
-        git(p, &["add", "."]);
-        fs::write(p.join("file"), b"head").unwrap();
-        let (_, files) = status(p);
-        assert_eq!(files.staged.len(), 1);
-        assert_eq!(files.unstaged.len(), 1);
-        assert_eq!(files.all.len(), 1);
-        assert!(git(p, &["diff", "HEAD", "--name-status", "-z", "--"]).is_empty());
     }
 }

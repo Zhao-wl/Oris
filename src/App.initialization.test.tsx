@@ -23,7 +23,7 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: async (name: string, callback:
   if (name !== "repository-invalidated") return () => {};
   bridge.changed = callback; return () => { if (bridge.changed === callback) bridge.changed = null; };
 } }));
-vi.mock("./operations-api", () => ({ runOperation: bridge.operation, cancelOperation: vi.fn(async () => true), lastOperation: vi.fn(async () => null),
+vi.mock("./operations-api", () => ({ runOperation: bridge.operation, cancelOperation: vi.fn(async () => true),
   prepareDiscard: bridge.prepareDiscard, discardBackups: vi.fn(async () => []), headCommitInfo: vi.fn(async () => null) }));
 vi.mock("./DiffViewer", () => ({ default: ({ readingKey }: { readingKey: string }) => <div data-testid="readable">{readingKey}</div> }));
 vi.mock("./FileTree", () => ({
@@ -86,33 +86,39 @@ describe("empty repository loading state (no native windows)", () => {
     expect(bridge.read).not.toHaveBeenCalled();
   });
 
-  it("ends the pending read when switching to an empty local scope and ignores its late result", async () => {
-    const opening = snapshot("a");
-    bridge.open.mockResolvedValueOnce({ ...opening, scopes: { unstaged: opening.files, staged: [], all: opening.files } });
-    const reading = deferred<ContentPair>(); bridge.read.mockReturnValueOnce(reading.promise);
-    await mount();
+  it.each([
+    {
+      destination: "an empty local scope",
+      projects: ["a"],
+      initial: () => {
+        const opening = snapshot("a");
+        return { ...opening, scopes: { unstaged: opening.files, staged: [], all: opening.files } };
+      },
+      start: null,
+      leave: ".change-column:nth-child(2) .scope",
+      readingRepo: "a",
+    },
+    {
+      destination: "a cached empty project",
+      projects: ["a", "b"],
+      initial: () => empty("a"),
+      start: ".project-tab:nth-child(2) .project-switch",
+      leave: ".project-tab:nth-child(1) .project-switch",
+      readingRepo: "b",
+    },
+  ])("ends the pending read when switching to $destination and ignores the late result", async ({ projects, initial, start, leave, readingRepo }) => {
+    const reading = deferred<ContentPair>();
+    bridge.open.mockResolvedValueOnce(initial());
+    bridge.read.mockReturnValueOnce(reading.promise);
+    await mount(projects);
+    if (start) await click(start);
     expect(host.textContent).toContain("正在读取真实仓库");
-    await click('.change-column:nth-child(2) .scope');
-    expect(host.textContent).not.toContain("正在读取真实仓库");
-    expect(host.querySelector('.content')?.textContent).toContain("当前比较范围没有变化");
-    expect(host.textContent).not.toContain("取消读取");
-    reading.resolve(pair("a")); await flush();
-    expect(host.querySelector('[data-testid="readable"]')).toBeNull();
-    expect(bridge.diff).not.toHaveBeenCalled();
-  });
-
-  it("ends the pending read when returning to a cached empty project and ignores its late result", async () => {
-    bridge.open.mockResolvedValueOnce(empty("a"));
-    await mount(["a", "b"]);
-    const reading = deferred<ContentPair>(); bridge.read.mockReturnValueOnce(reading.promise);
-    await click('.project-tab:nth-child(2) .project-switch');
-    expect(host.textContent).toContain("正在读取真实仓库");
-    await click('.project-tab:nth-child(1) .project-switch');
+    await click(leave);
     expect(host.textContent).not.toContain("正在读取真实仓库");
     expect(host.querySelector('.content')?.textContent).toContain("当前比较范围没有变化");
     expect(host.textContent).not.toContain("取消读取");
     expect((host.querySelector('[aria-label="本地刷新"]') as HTMLButtonElement).disabled).toBe(false);
-    reading.resolve(pair("b")); await flush();
+    reading.resolve(pair(readingRepo)); await flush();
     expect(host.querySelector('[data-testid="readable"]')).toBeNull();
     expect(bridge.diff).not.toHaveBeenCalled();
   });

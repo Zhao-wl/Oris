@@ -31,7 +31,7 @@ beforeEach(() => {
 });
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); updater.store.set(initialUpdateState); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
-it("lists all 21 schemes (V2-D31), tags defaults and high contrast, and applies selections immediately", async () => {
+it("lists the supported schemes, applies choices immediately and restores the Oris defaults", async () => {
   await render();
   const options = host.querySelectorAll('[role="option"]');
   expect(options.length).toBe(schemeIndex.length);
@@ -45,10 +45,6 @@ it("lists all 21 schemes (V2-D31), tags defaults and high contrast, and applies 
   await click(dark2026);
   expect(store.get().appearance.darkScheme).toBe("dark-2026");
   expect(dark2026.getAttribute("aria-selected")).toBe("true");
-});
-
-it("has no diff color switch (V2-D30) and restores the Oris default schemes", async () => {
-  await render();
   expect(host.textContent).not.toContain("新增绿 · 删除红");
   await click([...host.querySelectorAll('[role="option"]')].find((o) => o.textContent?.includes("Light 2026"))!);
   await click([...host.querySelectorAll('[role="option"]')].find((o) => o.textContent?.includes("Monokai"))!);

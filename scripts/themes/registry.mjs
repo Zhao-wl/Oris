@@ -7,7 +7,7 @@ const alpha = (key, value) => ({ op: 'transparent', key, value });
 const lighten = (key, value) => ({ op: 'lighten', key, value });
 const darken = (key, value) => ({ op: 'darken', key, value });
 
-export const registry = {
+const registry = {
   'foreground': entry('baseColors', 13, '#CCCCCC', '#616161', '#FFFFFF', '#292929'),
   'descriptionForeground': entry('baseColors', 29, alpha('foreground', .7), '#717171', alpha('foreground', .7), alpha('foreground', .7)),
   'errorForeground': entry('baseColors', 25, '#F48771', '#A1260D', '#F48771', '#B5200D'),
@@ -64,8 +64,6 @@ export const registry = {
   'gitDecoration.untrackedResourceForeground': { source: 'extensions/git/package.json:4191', values: { dark: '#73C991', light: '#007100', hcDark: '#73C991', hcLight: '#007100' } },
   'gitDecoration.conflictingResourceForeground': { source: 'extensions/git/package.json:4231', values: { dark: '#e4676b', light: '#ad0707', hcDark: '#c74e39', hcLight: '#ad0707' } },
 };
-
-export const registrySources = Object.fromEntries(Object.entries(registry).map(([key, value]) => [key, value.source]));
 
 export function resolveDefault(key, type, overrides = {}, seen = new Set()) {
   if (overrides[key] != null) return overrides[key];

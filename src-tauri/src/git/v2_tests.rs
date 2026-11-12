@@ -158,7 +158,27 @@ fn b01_worktree_only_renames_empty_head_and_cancelled_layers_match_v1() {
     git(p, &["add", "c.txt"]);
     write(p, "c.txt", b"head\n");
     assert_matches_v1(p, "worktree-renames");
-    let all = adapter(p).snapshot_for_scope("all".into(), CompareScope::All).unwrap();
+    let adapter = adapter(p);
+    let unstaged = adapter
+        .snapshot_for_scope("unstaged".into(), CompareScope::Unstaged)
+        .unwrap();
+    for (path, status) in [
+        ("a.txt", FileStatus::Deleted),
+        ("a-moved.txt", FileStatus::Untracked),
+        ("b.txt", FileStatus::Deleted),
+    ] {
+        assert!(
+            unstaged.files.iter().any(|file| file.display_path == path && file.status == status),
+            "{path} should be {status:?}"
+        );
+    }
+    let staged = adapter.snapshot_for_scope("staged".into(), CompareScope::Staged).unwrap();
+    for snapshot in [&staged, &unstaged] {
+        assert!(snapshot.files.iter().any(|file| {
+            file.display_path == "c.txt" && file.status == FileStatus::Modified
+        }), "c.txt in {:?}", snapshot.scope);
+    }
+    let all = adapter.snapshot_for_scope("all".into(), CompareScope::All).unwrap();
     assert!(all.files.iter().any(|f| f.display_path == "b-staged.txt" && matches!(f.status, FileStatus::Renamed) && f.old_display_path.as_deref() == Some("b.txt")));
     assert!(!all.files.iter().any(|f| f.display_path == "c.txt"));
     // 暂存 rename 后工作区又删除新路径。
@@ -192,9 +212,12 @@ fn b01_non_utf8_index_path_and_external_operations_match_v1() {
     let mut input = format!("100644 {} 0\t", oid.trim()).into_bytes();
     input.extend_from_slice(b"odd\xff name\0");
     git_input(p, &["update-index", "-z", "--index-info"], &input);
+    let tracked_metadata = [".git/index", ".git/HEAD", ".git/config"];
+    let before = tracked_metadata.map(|path| fs::read(p.join(path)).unwrap());
     let state = adapter(p).snapshot_for_scope("odd".into(), CompareScope::Staged).unwrap();
     assert!(state.files.iter().any(|f| URL_SAFE_NO_PAD.decode(&f.path_id).unwrap() == b"odd\xff name"));
     assert_matches_v1(p, "non-utf8");
+    assert_eq!(before, tracked_metadata.map(|path| fs::read(p.join(path)).unwrap()));
     // B03 后端部分：关闭期间的外部修改 / 暂存 / 提交 / 切换分支后，重新扫描与 V1 一致。
     let dir = init();
     let p = dir.path();
@@ -370,6 +393,26 @@ fn b02_cache_survives_git_operations_and_cat_file_recovers_once() {
 /// 只有手动刷新（refresh_index=true）才回写 index 的 stat 缓存。
 #[test]
 fn b17_readonly_paths_never_write_index_and_manual_refresh_is_the_only_writeback() {
+    // The manual refresh permits Git's optional lock; the inherited process
+    // environment may disable it. Isolate the fixture without changing the
+    // environment of other tests running in parallel.
+    if std::env::var_os("GIT_OPTIONAL_LOCKS").is_some_and(|value| value != "1") {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "git::v2_tests::b17_readonly_paths_never_write_index_and_manual_refresh_is_the_only_writeback",
+            ])
+            .env("GIT_OPTIONAL_LOCKS", "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
     let dir = init();
     let p = dir.path();
     for i in 0..300 {

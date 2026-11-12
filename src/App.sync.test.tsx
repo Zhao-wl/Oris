@@ -12,7 +12,7 @@ const bridge = vi.hoisted(() => ({
 }));
 vi.mock("./api", () => ({ discoverGroup: vi.fn(async () => ({ isGroup: false, members: [], selectedRepoId: null, ignored: [] })), memberChangeCount: vi.fn(async () => 0), watchGroup: vi.fn(async () => {}), setSubmodulePointers: vi.fn(async () => {}), openRepository: bridge.open, refreshRepository: bridge.refresh, readContentPair: bridge.read, closeRepository: vi.fn(async () => {}), cancelContentRead: vi.fn(async () => {}),
   repositoryDetails: vi.fn(async () => null), activateRepository: vi.fn(async () => true), loadSnapshot: vi.fn(async () => null), saveSnapshot: vi.fn(async () => true), removeSnapshot: vi.fn(async () => {}), decodeContentFrame: (x: unknown) => x }));
-vi.mock("./operations-api", () => ({ runOperation: bridge.operation, removeStaleLocks: bridge.removeLocks, cancelOperation: vi.fn(async () => true), lastOperation: vi.fn(async () => null),
+vi.mock("./operations-api", () => ({ runOperation: bridge.operation, removeStaleLocks: bridge.removeLocks, cancelOperation: vi.fn(async () => true),
   prepareDiscard: vi.fn(), discardBackups: vi.fn(async () => []), headCommitInfo: vi.fn(async () => null) }));
 vi.mock("./history-api", async (importOriginal) => ({ ...(await importOriginal<typeof import("./history-api")>()),
   readLog: bridge.log, commitChanges: bridge.changes, compareRevisions: vi.fn(), fileHistory: vi.fn(), readRefs: bridge.refs, readRemotes: bridge.remotes, readRevisionPair: vi.fn(),

@@ -46,7 +46,6 @@ interface Props {
   /** 本地分支右键“删除分支”；左侧“清理…”：删除上游已消失的本地分支。 */
   onDeleteBranch?(branch: Branch): void;
   onPruneGone?(): void;
-  onShowStash?(): void;
   /** 工作区（V2-D85）：父仓库提交中的子模块指针变化，切换到子仓库比较前后两个提交。 */
   onSubmoduleCompare?(file: ChangedFile): void;
   /** 由父仓库历史跳转过来的比较请求（只对 repoId 相同的面板生效）。 */
@@ -89,7 +88,7 @@ interface Menu { x: number; y: number; endpoint: PinnedEndpoint }
  * 中间提交图与列表，右侧详情。单击引用只筛选历史，双击分支才切换；三栏宽度可拖动。
  */
 export default function HistoryPanel(props: Props) {
-  const { repoId, refsVersion, hidden, fileHistoryRequest, activeKey, onOpenFile, onRefs, onCheckout, onNewBranch, onMerge, writeBlocked, onSwitch, onTrack, onDeleteBranch, onPruneGone, onShowStash, onSubmoduleCompare, compareRequest, lineJump, onReturnFromLine } = props;
+  const { repoId, refsVersion, hidden, fileHistoryRequest, activeKey, onOpenFile, onRefs, onCheckout, onNewBranch, onMerge, writeBlocked, onSwitch, onTrack, onDeleteBranch, onPruneGone, onSubmoduleCompare, compareRequest, lineJump, onReturnFromLine } = props;
   const [refs, setRefs] = useState<RefsView | null>(null);
   const [refsError, setRefsError] = useState<string | null>(null);
   const [lineJumpVersion, setLineJumpVersion] = useState(0);
@@ -244,7 +243,6 @@ export default function HistoryPanel(props: Props) {
     if (!compareStart) { setCompareStart(endpoint); return; }
     runCompare(compareStart, endpoint);
   };
-  const refEndpoint = (branch: Branch): PinnedEndpoint => ({ ref: branch.fullName, oid: branch.oid, label: branch.name });
   const commitEndpoint = (commit: CommitInfo): PinnedEndpoint => ({ ref: commit.oid, oid: commit.oid, label: `${shortOid(commit.oid)} ${commit.subject}` });
 
   // ---------- 选择、键盘与滚动 ----------
@@ -414,7 +412,6 @@ export default function HistoryPanel(props: Props) {
 
   return <div ref={root} className="git-body log-layout" hidden={hidden} style={{ gridTemplateColumns: `${columns.left}px ${SPLITTER}px minmax(0, 1fr) ${SPLITTER}px ${columns.right}px` }} onContextMenu={(event) => { if (!(event.target as Element).closest("[data-endpoint]")) setMenu(null); }}>
     <HistorySidebar refs={viewRefs} refsError={refsError} headLabel={headLabel} current={current} hidden={hidden} filter={filter ?? null} onFilter={(value) => { setLineAnchor(null); setLineNote(null); setFilter(value); }}
-      onShowStash={onShowStash}
       blocked={writeBlocked ?? null} onSwitch={onSwitch} onTrack={onTrack} onPruneGone={onPruneGone} onMenu={(x, y, endpoint) => setMenu({ x, y, endpoint })}/>
     {splitter("left")}
     <section className="log-commits-pane" aria-label={mode.kind === "file" ? "文件历史" : "提交历史"}>

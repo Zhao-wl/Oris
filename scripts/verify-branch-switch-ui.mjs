@@ -68,7 +68,7 @@ try {
                 return { ...base, status: "succeeded", message: request.localChanges === "merge" ? "已切换到 feature；冲突需要手动解决" : `已切换到 feature；git stash apply ${oid}`, snapshot: snapshot(), confirmation: null };
               }
               // 无仓库内容、无真实配置/缓存/更新/窗口；这些可选只读桥返回空结果。
-              if (["load_snapshot", "last_operation", "repository_details", "head_commit_info", "load_ai_config", "load_ai_rules", "merge_message", "watch_group", "close_repository", "cancel_content_read", "set_submodule_pointers", "plugin:event|unlisten", "plugin:window|set_theme", "plugin:window|set_background_color"].includes(command)) return null;
+              if (["load_snapshot", "repository_details", "head_commit_info", "load_ai_config", "load_ai_rules", "merge_message", "watch_group", "close_repository", "cancel_content_read", "set_submodule_pointers", "plugin:event|unlisten", "plugin:window|set_theme", "plugin:window|set_background_color"].includes(command)) return null;
               window.__pr23.unknown.push(command);
               throw new Error(`Unmocked bridge command: ${command}`);
             }

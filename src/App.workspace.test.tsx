@@ -26,7 +26,7 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: async (name: string, callback:
   if (name !== "repository-invalidated") return () => {};
   bridge.changed = callback; return () => { if (bridge.changed === callback) bridge.changed = null; };
 } }));
-vi.mock("./operations-api", () => ({ runOperation: vi.fn(), cancelOperation: vi.fn(async () => true), lastOperation: vi.fn(async () => null),
+vi.mock("./operations-api", () => ({ runOperation: vi.fn(), cancelOperation: vi.fn(async () => true),
   prepareDiscard: vi.fn(), discardBackups: vi.fn(async () => []), headCommitInfo: vi.fn(async () => null) }));
 vi.mock("./DiffViewer", () => ({ default: ({ readingKey }: { readingKey: string }) => <div data-testid="readable">{readingKey}</div> }));
 vi.mock("./FileTree", () => ({
@@ -197,7 +197,7 @@ describe("工作区（V2-07）", () => {
     await addPath(ROOT);
     expect(text(".nested-repo")).toContain("独立仓库，未加入工作区");
     const standalone = member("standalone", "manual", { worktreePath: `${ROOT}/tools/standalone`, relativePath: "tools/standalone", repoId: "tools-standalone" });
-    bridge.discover.mockImplementation(async (path: string, manual: string[]) => ({ ...discovery(), members: [...discovery().members, ...(manual.length ? [standalone] : [])] }));
+    bridge.discover.mockImplementation(async (_path: string, manual: string[]) => ({ ...discovery(), members: [...discovery().members, ...(manual.length ? [standalone] : [])] }));
     await click(host.querySelector(".nested-repo button"));
     expect(bridge.discover).toHaveBeenLastCalledWith(ROOT, ["C:/ws/tools/standalone"], null);
     expect(saved().projects.find((p) => p.repo.repoId === "ws")!.group!.manual).toEqual(["C:/ws/tools/standalone"]);

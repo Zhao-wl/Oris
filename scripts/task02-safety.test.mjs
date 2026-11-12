@@ -9,20 +9,18 @@ const scriptDir = new URL("./", import.meta.url);
 const withoutComments = (source) => source.replace(/^\s*(?:\/\/|#).*$/gm, "").trim();
 const entries = readdirSync(scriptDir).filter((name) => /^task02-feedback-.*\.mjs$/.test(name));
 
-test("every legacy feedback entry consists only of the disabled guard", () => {
+test("legacy feedback entries only invoke the shared rejection", () => {
   assert.equal(entries.length, 6);
   for (const name of entries) {
     const file = new URL(name, scriptDir);
     assert.equal(withoutComments(readFileSync(file, "utf8")), 'import "./task02-gui-disabled.mjs";', name);
-    const result = spawnSync(process.execPath, [fileURLToPath(file), "9252", "nonexistent-fixture.json"], { encoding: "utf8", windowsHide: true });
-    assert.equal(result.status, 1, name);
-    assert.match(result.stderr, /Legacy GUI validation is disabled/, name);
-    assert.doesNotMatch(result.stderr, /ENOENT|fetch failed|ECONNREFUSED/, name);
   }
-});
-
-test("shared guard has no executable body before its rejection", () => {
   assert.match(withoutComments(readFileSync(new URL("task02-gui-disabled.mjs", scriptDir), "utf8")), /^throw new Error\('[^'\r\n]*'\);$/);
+  const file = fileURLToPath(new URL("task02-feedback-focus.mjs", scriptDir));
+  const result = spawnSync(process.execPath, [file, "9252", "nonexistent-fixture.json"], { encoding: "utf8", windowsHide: true });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Legacy GUI validation is disabled/);
+  assert.doesNotMatch(result.stderr, /ENOENT|fetch failed|ECONNREFUSED/);
 });
 
 test("native legacy helper rejects even a PID/title without any window code", { skip: process.platform !== "win32" }, () => {

@@ -116,21 +116,6 @@ function commitFixture() {
   put(repo, "one.txt", "one\n");
   return repo;
 }
-function mergeFixture() {
-  const repo = initRepo("merge");
-  put(repo, "m.txt", "base\n"); commitAll(repo, "base");
-  put(repo, "main.txt", "main\n"); commitAll(repo, "main work");
-  git(repo, ["switch", "-q", "-c", "side", "HEAD~1"]);
-  put(repo, "side.txt", "side\n"); commitAll(repo, "side");
-  git(repo, ["switch", "-q", "main"]);
-  git(repo, ["merge", "-q", "--no-ff", "--no-edit", "side"]);
-  return repo;
-}
-function rootFixture() {
-  const repo = initRepo("root");
-  put(repo, "root.txt", "root\n"); commitAll(repo, "root commit");
-  return repo;
-}
 function hooksFixture() {
   const repo = initRepo("hooks");
   put(repo, "h.txt", "base\n"); commitAll(repo, "base");
@@ -171,11 +156,13 @@ const V2_HELPERS = String.raw`
     setCommit(text) { const t = document.querySelector('textarea[aria-label="提交信息"]'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(t, text); t.dispatchEvent(new Event('input', { bubbles: true })); },
     commitText() { return document.querySelector('textarea[aria-label="提交信息"]')?.value ?? null; },
     tab(prefix) { return qa('.git-tabs button').find((b) => b.textContent.startsWith(prefix)) ?? null; },
-    staged() { return Number(/提交 · (\d+)/.exec(window.__v2.tab('提交')?.textContent ?? '')?.[1] ?? NaN); },
+    staged() {
+      const heading = qa('.change-heading').find((n) => n.querySelector('.scope-title')?.textContent === '已暂存');
+      return Number(heading?.querySelector('.dim')?.textContent ?? NaN);
+    },
     /** 领先 / 落后（V2-D64 后在推送 / 拉取主按钮上），格式 "↑a ↓b"；没有上游或执行中时为 null。 */
     counts() { const up = document.querySelector('.sync-push .sync-main .sync-count')?.textContent; const down = document.querySelector('.sync-pull .sync-main .sync-count')?.textContent; return up && down ? up + ' ' + down : null; },
     commitResult() { const n = document.querySelector('.commit-result'); return n ? { cls: n.className, text: n.textContent } : null; },
-    commitReason() { return document.querySelector('.commit-reason')?.textContent ?? null; },
     button(text) { return qa('button').find((b) => b.textContent === text) ?? null; },
     banner() { return document.querySelector('.op-banner')?.textContent ?? null; },
     backups() { return qa('.backup-row').map((n) => n.textContent); },
@@ -195,11 +182,6 @@ async function start(profile, extraEnv = {}) {
   await call("Page.addScriptToEvaluateOnNewDocument", { source: PAGE_HELPERS + ";" + V2_HELPERS });
   await call("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
   await evaluate(PAGE_HELPERS); await evaluate(V2_HELPERS);
-  // 按时间记录前端发出的 IPC（CDP Network 捕获 ipc.localhost 请求），用于解释等待。
-  const ipc = [];
-  app.cdp.on("Network.requestWillBeSent", (p) => { if (p.request.url.includes("ipc.localhost")) { const cmd = decodeURIComponent(new URL(p.request.url).pathname.slice(1)); if (!cmd.startsWith("plugin:")) { ipc.push({ at: Date.now(), cmd, id: p.requestId }); if (ipc.length > 400) ipc.shift(); } } });
-  app.cdp.on("Network.loadingFinished", (p) => { const e = ipc.find((x) => x.id === p.requestId && x.ms === undefined); if (e) e.ms = Date.now() - e.at; });
-  await call("Network.enable");
   log(`已启动 PID ${app.pid}，核验 ${q(app.identity)}`);
   const waitUntil = (expr, timeout = 30000) => evaluate(`window.__op.waitUntil(() => (${expr}), ${timeout})`, timeout + 5000).then((r) => { if (!r.ok) throw new Error(`等待失败：${expr}`); return r; });
   const measure = (action, predicate, timeout = 15000) => evaluate(`window.__op.measure(() => { ${action} }, () => (${predicate}), ${timeout})`, timeout + 5000);
@@ -213,13 +195,20 @@ async function start(profile, extraEnv = {}) {
     await sleep(400);
   };
   const scope = async (label) => {
-    const footer = await evaluate(`window.__op.footer()`);
-    if (!footer.includes(label)) await measure(`window.__op.scopeButton(${q(label)}).click()`, `window.__op.footer().includes(${q(label)}) || document.querySelector('.batch-bar')`, 15000);
+    const button = `window.__op.scopeButton(${q(label)})`;
+    if (!(await evaluate(`${button}?.classList.contains('selected')`))) {
+      await evaluate(`${button}.click()`);
+      await waitUntil(`${button}?.classList.contains('selected')`);
+    }
     await sleep(250);
   };
   const openTab = async (prefix) => { const active = await evaluate(`window.__v2.tab(${q(prefix)})?.classList.contains('active')`); if (!active) await evaluate(`window.__v2.tab(${q(prefix)}).click()`); await sleep(300); };
-  const recentIpc = (n = 20) => ipc.slice(-n).map((e) => ({ ago: Date.now() - e.at, cmd: e.cmd, ms: e.ms ?? "pending" }));
-  return { app, recentIpc, evaluate, waitUntil, measure, shot, settle, addProject, scope, openTab };
+  const openOutput = async () => {
+    await evaluate(`document.querySelector('button.op-status').click()`);
+    await waitUntil(`document.querySelector('.operation-dialog')`);
+  };
+  const closeOutput = () => evaluate(`document.querySelector('[aria-label="关闭操作详情"]').click()`);
+  return { app, evaluate, waitUntil, measure, shot, settle, addProject, scope, openTab, openOutput, closeOutput };
 }
 async function stop(ctx, force = false) {
   try { ctx.app.cdp.close(); } catch { /* 已关闭 */ }
@@ -233,7 +222,7 @@ const rows = (ctx) => ctx.evaluate(`window.__op.rows()`);
 async function functional() {
   const traceDir = path.join(runDir, "trace2");
   mkdirSync(traceDir, { recursive: true });
-  const repos = { stage: stageFixture(), unborn: unbornFixture(), discard: discardFixture(), discardAll: discardAllFixture(), commit: commitFixture(), merge: mergeFixture(), root: rootFixture(), hooks: hooksFixture(), readonly: readonlyFixture() };
+  const repos = { stage: stageFixture(), unborn: unbornFixture(), discard: discardFixture(), discardAll: discardAllFixture(), commit: commitFixture(), hooks: hooksFixture(), readonly: readonlyFixture() };
   report.fixtures = repos;
   const env = { GIT_TRACE2_EVENT: traceDir };
   let ctx = await start("functional", env);
@@ -381,7 +370,7 @@ async function functional() {
     check("B06 丢弃后文件又被修改：撤销前再次确认，取消不改动，确认后恢复", /又被修改/.test(modifiedDialog?.text ?? "") && cancelledSame && readFileSync(path.join(repos.discard, "a.txt"), "utf8") === "worktree edit\r\nwith CRLF\r\n", { modifiedDialog, cancelledSame, e });
     // 超出备份预算：不可撤销。
     writeFileSync(path.join(repos.discard, "huge.log.bin"), Buffer.alloc(50 * 1024 * 1024 + 1, 120));
-    await ctx.evaluate(`window.__op.button('↻ 本地刷新').click()`);
+    await ctx.evaluate(`document.querySelector('button[aria-label="本地刷新"]').click()`);
     await ctx.waitUntil(`!!window.__op.row('huge.log.bin')`, 20000);
     await ctx.settle();
     before = fingerprint(repos.discard);
@@ -393,61 +382,44 @@ async function functional() {
     await ctx.waitUntil(`window.__v2.opStatus()?.text.includes('已丢弃')`, 20000);
     await ctx.settle();
     e = evidence("discard 超出备份预算的文件", repos.discard, before, fingerprint(repos.discard), ["worktree", "index"]);
-    await ctx.openTab("操作输出");
+    await ctx.openOutput();
     const backupRows = await ctx.evaluate(`window.__v2.backups()`);
     check("B06 超出 50 MiB 备份预算：确认框标注不可撤销，丢弃记录标注不可撤销", /不可撤销/.test(hugeDialog?.warning ?? "") && !existsSync(path.join(repos.discard, "huge.log.bin")) && /不可撤销/.test(backupRows[0] ?? ""), { hugeDialog, backupRows, hugeShot, e, outputShot: await ctx.shot("b06-output-tab-backups") });
+    await ctx.closeOutput();
     // “全部”范围。
     await ctx.addProject(repos.discardAll);
-    await ctx.scope("全部");
     await ctx.settle();
-    const allRows = await rows(ctx);
     const indexBefore = gitOut(repos.discardAll, ["ls-files", "-s"]);
     before = fingerprint(repos.discardAll);
-    await ctx.evaluate(`window.__v2.select(${q(allRows)})`);
-    await sleep(200);
-    await ctx.evaluate(`window.__v2.menuAction(${q(allRows[0])}, '丢弃…')`);
+    await ctx.evaluate(`document.querySelector('button[title="丢弃当前分支的全部未提交改动"]').click()`);
     await ctx.waitUntil(`window.__v2.dialog()`, 10000);
     const allDialog = await ctx.evaluate(`window.__v2.dialog()`);
-    await traced("discard 全部范围", async () => { await ctx.evaluate(`window.__v2.dialogButton('丢弃')`); await ctx.waitUntil(`window.__v2.opStatus()?.text.includes('已丢弃')`, 15000); });
+    await traced("discard 全部范围", async () => { await ctx.evaluate(`window.__v2.dialogButton('确认丢弃全部')`); await ctx.waitUntil(`window.__v2.opStatus()?.text.includes('已丢弃')`, 15000); });
     await ctx.settle();
     e = evidence("discard 全部范围（暂存+工作区修改、index 新增、暂存 rename、暂存删除、未跟踪）", repos.discardAll, before, fingerprint(repos.discardAll), ["worktree", "index"]);
     const cleanAll = gitOut(repos.discardAll, ["status", "--porcelain", "--untracked-files=all"]);
-    check("B06 “全部”范围丢弃：index 与工作区都回到 HEAD", cleanAll === "" && /HEAD/.test(allDialog?.text ?? ""), { allRows, allDialog, cleanAll, e });
+    check("B06 “全部”范围丢弃：index 与工作区都回到 HEAD", cleanAll === "" && /HEAD/.test(allDialog?.text ?? ""), { allDialog, cleanAll, e });
     const beforeAllUndo = fingerprint(repos.discardAll);
-    await ctx.openTab("操作输出");
+    await ctx.openOutput();
     await ctx.evaluate(`document.querySelector('.backup-row button').click()`);
     await ctx.waitUntil(`window.__v2.opStatus()?.text.includes('已撤销丢弃')`, 15000);
     await ctx.settle();
+    await ctx.closeOutput();
     const afterAllUndo = fingerprint(repos.discardAll);
     e = evidence("撤销丢弃（全部范围）", repos.discardAll, beforeAllUndo, afterAllUndo, ["worktree", "index"]);
     check("B06 撤销“全部”范围丢弃：暂存内容（ls-files -s）与工作区都恢复", gitOut(repos.discardAll, ["ls-files", "-s"]) === indexBefore && q(worktreeOnly(afterAllUndo)) === q(worktreeOnly(before)), { e });
 
-    // ---------- B07 commit / undo ----------
+    // ---------- B07 commit ----------
     await ctx.addProject(repos.commit);
     await ctx.settle();
-    await ctx.openTab("提交");
-    await ctx.waitUntil(`(window.__v2.button('撤销最近提交…')?.title ?? '').includes('origin/main')`, 10000).catch(() => {});
-    check("B07 已推送的 HEAD：撤销不可用并说明原因", await ctx.evaluate(`(() => { const b = window.__v2.button('撤销最近提交…'); return b.disabled && /origin\\/main/.test(b.title); })()`), { title: await ctx.evaluate(`window.__v2.button('撤销最近提交…')?.title`), debug: await ctx.evaluate(`(async () => { const ws = JSON.parse(localStorage.getItem('oris.workspace.v2')); try { return { active: ws.activeRepoId, head: await window.__TAURI_INTERNALS__.invoke('head_commit_info', { repoId: ws.activeRepoId }), ipc: IPCLOG, side: { loaded: document.querySelector('.commit-side')?.dataset.headOid, snapshot: document.querySelector('.commit-side')?.dataset.snapshotHead }, git: gitHead }; } catch (e) { return { error: String(e?.message ?? JSON.stringify(e)) }; } })()`.replace("gitHead", q(gitOut(repos.commit, ["rev-parse", "HEAD"]))).replace("IPCLOG", q(ctx.recentIpc()))) });
-    const pushedShot = await ctx.shot("b07-pushed-protection");
+    await ctx.openTab("文件");
     await ctx.evaluate(`window.__v2.clickRow('one.txt', '暂存')`);
     await ctx.settle();
     await ctx.evaluate(`window.__v2.setCommit(${q("feat: 第一个本地提交\n\n正文 & \"引号\"")})`);
     before = fingerprint(repos.commit);
     const commitRun = await traced("commit（无 hooks）", () => ctx.measure(`window.__v2.button('提交').click()`, `window.__v2.commitResult()?.cls.includes('succeeded') && window.__v2.staged() === 0 && (window.__v2.counts() ?? '').includes('↑1')`, 15000));
     e = evidence("commit", repos.commit, before, fingerprint(repos.commit), ["index", "refs"]);
-    check("B07 commit：信息原样写入，文件列表、分支领先计数刷新，草稿清空", commitRun.ok && gitOut(repos.commit, ["log", "-1", "--format=%B"]) === "feat: 第一个本地提交\n\n正文 & \"引号\"" && (await ctx.evaluate(`window.__v2.commitText()`)) === "" && e.unexpected.length === 0, { commitRun, e, pushedShot, shot: await ctx.shot("b07-after-commit") });
-    // 撤销普通提交。
-    const headBeforeUndo = gitOut(repos.commit, ["rev-parse", "HEAD"]);
-    await ctx.waitUntil(`!window.__v2.button('撤销最近提交…').disabled && window.__v2.button('撤销最近提交…').title.includes(${q(headBeforeUndo.slice(0, 8))})`, 10000);
-    before = fingerprint(repos.commit);
-    await ctx.evaluate(`window.__v2.button('撤销最近提交…').click()`);
-    await ctx.waitUntil(`window.__v2.dialog()`, 10000);
-    const undoDialog = await ctx.evaluate(`window.__v2.dialog()`);
-    const undoShot = await ctx.shot("b07-undo-confirm");
-    await traced("撤销最近提交", async () => { await ctx.evaluate(`window.__v2.dialogButton('撤销提交')`); await ctx.waitUntil(`window.__v2.commitResult()?.text.includes('已撤销提交')`, 15000); });
-    await ctx.settle();
-    e = evidence("撤销最近提交（普通）", repos.commit, before, fingerprint(repos.commit), ["refs", "index"]);
-    check("B07 撤销普通提交：HEAD 回到上游，改动回到暂存区，工作区不变", /回退一个提交/.test(undoDialog?.text ?? "") && gitOut(repos.commit, ["rev-parse", "HEAD"]) === gitOut(repos.commit, ["rev-parse", "origin/main"]) && gitOut(repos.commit, ["diff", "--cached", "--name-only"]).split("\n").sort().join() === "one.txt" && !e.categories.includes("worktree") && headBeforeUndo !== gitOut(repos.commit, ["rev-parse", "HEAD"]), { undoDialog, undoShot, e });
+    check("B07 commit：信息原样写入，文件列表、分支领先计数刷新，草稿清空", commitRun.ok && gitOut(repos.commit, ["log", "-1", "--format=%B"]) === "feat: 第一个本地提交\n\n正文 & \"引号\"" && (await ctx.evaluate(`window.__v2.commitText()`)) === "" && e.unexpected.length === 0, { commitRun, e, shot: await ctx.shot("b07-after-commit") });
     // 草稿按项目保存、重启后恢复。
     await ctx.evaluate(`window.__v2.setCommit('草稿：重启后应恢复')`);
     await sleep(300);
@@ -455,33 +427,12 @@ async function functional() {
     ctx = await start("functional", env);
     await ctx.waitUntil(`window.__op.status().startsWith(${q(repos.commit)}) && !window.__op.loading()`, 30000);
     await ctx.settle();
-    await ctx.openTab("提交");
+    await ctx.openTab("文件");
     check("B07 草稿按项目保存并在重启后恢复", (await ctx.evaluate(`window.__v2.commitText()`)) === "草稿：重启后应恢复", await ctx.evaluate(`window.__v2.commitText()`));
-    // 合并提交与根提交的撤销。
-    for (const [key, name, expectHead, text] of [["merge", "撤销合并提交", () => gitOut(repos.merge, ["rev-parse", "HEAD^1"]), "第一个父提交"], ["root", "撤销根提交", () => null, "根提交"]]) {
-      const repo = repos[key];
-      const expected = expectHead();
-      await ctx.addProject(repo);
-      await ctx.settle();
-      await ctx.openTab("提交");
-      await ctx.waitUntil(`window.__v2.button('撤销最近提交…') && !window.__v2.button('撤销最近提交…').disabled`, 10000);
-      before = fingerprint(repo);
-      await ctx.evaluate(`window.__v2.button('撤销最近提交…').click()`);
-      await ctx.waitUntil(`window.__v2.dialog()`, 10000);
-      const dialog = await ctx.evaluate(`window.__v2.dialog()`);
-      await ctx.evaluate(`window.__v2.dialogButton('撤销提交')`);
-      await ctx.waitUntil(`window.__v2.commitResult()?.text.includes('已撤销')`, 15000);
-      await ctx.settle();
-      e = evidence(name, repo, before, fingerprint(repo), ["refs", "index"]);
-      const head = git(repo, ["rev-parse", "--verify", "--quiet", "HEAD"], { allowFail: true });
-      check(`B07 ${name}：确认框说明后果，结果正确`, dialog?.text.includes(text) && (expected ? head === expected : head === "") && !e.categories.includes("worktree"), { dialog: dialog?.text, head, e, shot: await ctx.shot(`b07-${key}-undo`) });
-    }
-    check("B07 根提交撤销后文件保留在暂存区", gitOut(repos.root, ["ls-files"]) === "root.txt" && existsSync(path.join(repos.root, "root.txt")));
-
     // ---------- B08 hooks、取消、签名 ----------
     await ctx.addProject(repos.hooks);
     await ctx.settle();
-    await ctx.openTab("提交");
+    await ctx.openTab("文件");
     writeFileSync(path.join(repos.hooks, ".git", "hooks", "pre-commit"), "#!/bin/sh\necho 'HOOK-FAIL-MARKER: lint failed' >&2\necho 'second line of hook output'\nexit 1\n");
     const hooksHead = gitOut(repos.hooks, ["rev-parse", "HEAD"]);
     await ctx.evaluate(`window.__v2.setCommit('will be blocked by hook')`);
@@ -496,7 +447,7 @@ async function functional() {
     const startedMarker = path.join(repos.hooks, ".git", "hook-started").replace(/\\/g, "/");
     writeFileSync(path.join(repos.hooks, ".git", "hooks", "pre-commit"), `#!/bin/sh\necho started > '${startedMarker}'\necho 'long hook running'\nsleep 20\necho finished > '${marker}'\n`);
     put(repos.hooks, "other.txt", "other\n");
-    await ctx.evaluate(`window.__op.button('↻ 本地刷新').click()`);
+    await ctx.evaluate(`document.querySelector('button[aria-label="本地刷新"]').click()`);
     await ctx.waitUntil(`!!window.__op.row('other.txt')`, 20000);
     await ctx.settle();
     before = fingerprint(repos.hooks);
@@ -536,10 +487,10 @@ async function functional() {
 
     // ---------- B16 不支持的进行中状态 ----------
     mkdirSync(path.join(repos.hooks, ".git", "rebase-merge"), { recursive: true });
-    await ctx.evaluate(`window.__op.button('↻ 本地刷新').click()`);
+    await ctx.evaluate(`document.querySelector('button[aria-label="本地刷新"]').click()`);
     await ctx.waitUntil(`window.__v2.banner()`, 20000);
     put(repos.hooks, "later.txt", "x\n");
-    await ctx.evaluate(`window.__op.button('↻ 本地刷新').click()`);
+    await ctx.evaluate(`document.querySelector('button[aria-label="本地刷新"]').click()`);
     await ctx.waitUntil(`!!window.__op.row('later.txt')`, 20000);
     const rebaseState = await ctx.evaluate(`({ banner: window.__v2.banner(), stage: window.__v2.rowButton('later.txt', '暂存')?.disabled, title: window.__v2.rowButton('later.txt', '暂存')?.title })`);
     check("B16 外部 rebase 进行中：横幅说明，写入口全部不可用，阅读正常", /rebase/.test(rebaseState.banner ?? "") && rebaseState.stage === true, { rebaseState, shot: await ctx.shot("b16-rebase-banner") });
@@ -551,11 +502,10 @@ async function functional() {
     const roBefore = fingerprint(repos.readonly);
     await ctx.addProject(repos.readonly);
     await ctx.settle();
-    for (const label of ["已暂存", "全部", "未暂存"]) await ctx.scope(label);
+    for (const label of ["已暂存", "未暂存"]) await ctx.scope(label);
     for (const p of (await rows(ctx)).slice(0, 2)) { await ctx.evaluate(`window.__op.row(${q(p)}).click()`); await sleep(400); }
-    await ctx.openTab("提交");
+    await ctx.openTab("文件");
     await sleep(600);
-    await ctx.openTab("操作输出");
     await ctx.evaluate(`window.__v2.menuAction('change.txt', '丢弃…')`);
     await ctx.waitUntil(`window.__v2.dialog()`, 10000);
     await ctx.evaluate(`window.__v2.dialogButton('取消')`);
@@ -573,7 +523,7 @@ async function functional() {
     const browseChanged = diffFingerprints(roBefore, roAfterBrowse);
     const restartChanged = diffFingerprints(roBefore, roAfterRestart);
     check("B17 浏览、切换范围 / 文件 / 项目、打开提交页与丢弃确认框、重启与快照恢复：工作区、index、refs、config 都不变", browseChanged.length === 0 && restartChanged.length === 0, { browseChanged, restartChanged });
-    await ctx.evaluate(`window.__op.button('↻ 本地刷新').click()`);
+    await ctx.evaluate(`document.querySelector('button[aria-label="本地刷新"]').click()`);
     await sleep(2500);
     const manualChanged = diffFingerprints(roBefore, fingerprint(repos.readonly));
     check("B17 stat 缓存回写只出现在限定时机：手动刷新只改 .git/index", manualChanged.join() === ".git/index", manualChanged);
@@ -634,16 +584,16 @@ async function latency() {
     const conflicted = s1.manifest.manifest.filter((m) => m.type === "conflicted").map((m) => m.path);
     for (let i = 0; i < conflicted.length; i += 200) git(repo, ["add", "--", ...conflicted.slice(i, i + 200)]);
     git(repo, ["commit", "-q", "-m", "fixture: commit staged dataset changes"]);
-    await ctx.evaluate(`window.__op.button('↻ 本地刷新').click()`);
+    await ctx.evaluate(`document.querySelector('button[aria-label="本地刷新"]').click()`);
     await ctx.waitUntil(`window.__v2.staged() === 0`, 20000);
     await ctx.settle();
     await ctx.scope("未暂存");
-    await ctx.openTab("提交");
+    await ctx.openTab("文件");
     const commits = [];
     for (let i = 0; i < iterations; i++) {
       const rel = `probe-commit/c-${String(i).padStart(3, "0")}.txt`;
       put(repo, rel, `commit probe ${i}\n`);
-      await ctx.evaluate(`window.__op.button('↻ 本地刷新').click()`);
+      await ctx.evaluate(`document.querySelector('button[aria-label="本地刷新"]').click()`);
       await ctx.waitUntil(`!!window.__op.row(${q(rel)})`, 20000);
       await ctx.settle();
       await ctx.evaluate(`window.__v2.clickRow(${q(rel)}, '暂存')`);

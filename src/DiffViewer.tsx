@@ -1164,7 +1164,7 @@ function installSplitResize(
   split: SplitView,
   separator: HTMLElement,
   initialRatio: number,
-  onLayoutChange: (ratio: number, leftWidth: number) => void,
+  onLayoutChange: (ratio: number) => void,
   onGeometryChange: () => void
 ) {
   let leftWidth = 0;
@@ -1187,7 +1187,7 @@ function installSplitResize(
       onGeometryChange();
     }
     if (remember && available > 0) ratio = next / available;
-    onLayoutChange(ratio, next + DIFF_RAIL_WIDTH);
+    onLayoutChange(ratio);
     separator.setAttribute("aria-valuemin", String(Math.round(Math.min(DIFF_PANE_MIN_WIDTH, available / 2))));
     separator.setAttribute("aria-valuemax", String(Math.round(Math.max(0, available - DIFF_PANE_MIN_WIDTH))));
     separator.setAttribute("aria-valuenow", String(next));
@@ -1809,7 +1809,7 @@ function createSplitView(
   collapsed: boolean,
   alignChanges: boolean,
   initialRatio: number,
-  onLayoutChange: (ratio: number, leftWidth: number) => void,
+  onLayoutChange: (ratio: number) => void,
   onPositionChange: (position: number, total: number) => void,
   pool: EditorPool = {}
 ): SplitController {
@@ -2046,7 +2046,6 @@ interface Props {
   wrap: boolean;
   alignChanges: boolean;
   onPositionChange(position: number, total: number): void;
-  onSplitLayoutChange(ratio: number, leftWidth: number): void;
   /** 块操作标题行（V2-05）；为 null 时不显示（“全部”范围、历史阅读、不可操作的文件）。 */
   hunkHeaders?: HunkHeaders | null;
   onLineSelect?(selection: DiffLineSelection): void;
@@ -2054,7 +2053,7 @@ interface Props {
 }
 
 const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
-  { readingKey, presentation, left, right, document, mode, highlight, collapsed, wrap, alignChanges, onPositionChange, onSplitLayoutChange, hunkHeaders = null, onLineSelect, selectedLine = null },
+  { readingKey, presentation, left, right, document, mode, highlight, collapsed, wrap, alignChanges, onPositionChange, hunkHeaders = null, onLineSelect, selectedLine = null },
   ref
 ) {
   const host = useRef<HTMLDivElement>(null);
@@ -2211,10 +2210,7 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
     } else if (mode === "split") {
       split = createSplitView(
         host.current, left, right, document, shared, highlight, collapsed, alignChanges, splitRatio.current,
-        (ratio, leftWidth) => {
-          splitRatio.current = ratio;
-          onSplitLayoutChange(ratio, leftWidth);
-        },
+        (ratio) => { splitRatio.current = ratio; },
         onPositionChange,
         pool.current
       );
@@ -2305,7 +2301,7 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
       runtime.current = { position: 0 };
       if (host.current) host.current.replaceChildren();
     };
-  }, [layoutKey, left, right, document, mode, highlight, collapsed, wrap, alignChanges, onPositionChange, onSplitLayoutChange, presentation]);
+  }, [layoutKey, left, right, document, mode, highlight, collapsed, wrap, alignChanges, onPositionChange, presentation]);
 
   useEffect(() => { applyHunkHeaders.current(); }, [hunkHeaders]);
   useEffect(() => {

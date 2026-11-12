@@ -314,19 +314,6 @@ impl<'a> OpContext<'a> {
 #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
 pub struct Runner {
     active: Arc<Mutex<HashMap<String, Arc<CancelHandle>>>>,
-    last: Arc<Mutex<HashMap<String, LastOperation>>>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LastOperation {
-    pub op_id: String,
-    pub kind: &'static str,
-    pub status: OpStatus,
-    pub message: String,
-    pub output: String,
-    pub output_truncated: bool,
-    pub finished_at: u64,
 }
 
 #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
@@ -366,25 +353,6 @@ impl Runner {
             }
             None => false,
         }
-    }
-
-    pub fn record(&self, outcome: &OperationOutcome) {
-        let entry = LastOperation {
-            op_id: outcome.op_id.clone(),
-            kind: outcome.kind,
-            status: outcome.status,
-            message: outcome.message.clone(),
-            output: outcome.output.clone(),
-            output_truncated: outcome.output_truncated,
-            finished_at: now_ms(),
-        };
-        if let Ok(mut last) = self.last.lock() {
-            last.insert(outcome.repo_id.clone(), entry);
-        }
-    }
-
-    pub fn last(&self, repo_id: &str) -> Option<LastOperation> {
-        self.last.lock().ok()?.get(repo_id).cloned()
     }
 }
 

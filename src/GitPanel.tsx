@@ -17,9 +17,8 @@ interface Props {
   ignoredStagedPaths?: string[];
   /** HEAD / 上游变化的键：变化时重新读取 HEAD 信息。 */
   headKey: string;
-  /** 当前快照中的 HEAD OID；HEAD 信息与之不一致时视为正在读取，撤销暂不可用。 */
+  /** 当前快照中的 HEAD OID，用来过滤迟到的旧 HEAD 信息。 */
   headOid: string | null;
-  mergeInProgress: boolean;
   blockedReason: string | null;
   running: RunningOperation | null;
   lines: string[];
@@ -28,7 +27,6 @@ interface Props {
   backups: BackupSummary[];
   /** push：提交成功后推送当前分支。 */
   onCommit(message: string, push: boolean): Promise<OperationOutcome | null>;
-  onUndoCommit(head: HeadCommitInfo): void;
   onUndoDiscard(backupId: string): void;
   onCancel(): void;
   onGenerateMessage?(): Promise<string>;
@@ -72,15 +70,14 @@ export default function GitPanel(props: Props) {
   </section>;
 }
 
-function CommitTab({ repoId, stagedCount, ignoredStagedPaths = [], headKey, headOid, mergeInProgress, blockedReason, running, lines, lastCommit, onCommit, onUndoCommit, onCancel, onGenerateMessage }: Props & { repoId: string }) {
+function CommitTab({ repoId, stagedCount, ignoredStagedPaths = [], headKey, headOid, blockedReason, running, lines, lastCommit, onCommit, onCancel, onGenerateMessage }: Props & { repoId: string }) {
   const [message, setMessage] = useState(() => loadDraft(localStorage, repoId));
   const [push, setPush] = useState(false);
   const [aiGenerating, setAiGenerating] = useState(false);
   const [aiError, setAiError] = useState("");
   const [loadedHead, setHead] = useState<HeadCommitInfo | null>(null);
-  // 只使用与当前快照 HEAD 一致的信息，避免对旧 HEAD 执行撤销（后端还会按 expectedHead 再核对一次）。
+  // 只使用与当前快照 HEAD 一致的信息来判断是否可推送。
   const head = loadedHead && loadedHead.oid === headOid ? loadedHead : null;
-  const headLoading = !!headOid && !head;
   const [headError, setHeadError] = useState<string | null>(null);
   useEffect(() => {
     let live = true;
@@ -92,12 +89,10 @@ function CommitTab({ repoId, stagedCount, ignoredStagedPaths = [], headKey, head
     try { saveDraft(localStorage, repoId, value); } catch { /* 存储可选 */ }
   };
   const committing = running && (running.kind === "commit" || running.kind === "undoCommit");
-  const pushedReason = head?.pushed ? `HEAD 已包含在上游 ${head.upstream ?? ""} 中：撤销需要强制推送，Oris 不支持，请在命令行处理` : null;
   const pushReason = head?.detached ? "分离 HEAD：不能推送" : null;
   const commitBlocked = blockedReason
     ?? (stagedCount === 0 ? "没有已暂存的内容，请先暂存改动" : null)
     ?? (!message.trim() ? "请填写提交信息（首行为摘要）" : null);
-  const undoBlocked = blockedReason ?? (headLoading ? "正在读取 HEAD…" : null) ?? (!head ? "还没有提交" : null) ?? pushedReason ?? (mergeInProgress ? "合并进行中不能撤销提交" : null) ?? (head?.detached && head.parents.length === 0 ? "分离 HEAD 上的根提交不能撤销" : null);
   const submit = async () => {
     if (commitBlocked) return;
     const outcome = await onCommit(message, push && !pushReason);

@@ -55,7 +55,7 @@ server.middlewares.use("/__aligned_scroll", async (req, res, next) => {
       root.render(React.createElement(DiffViewer, {readingKey:String(id), presentation:{kind:'compare'},
         left,right,document,mode:'split',highlight:'words',collapsed:!!options.collapsed,wrap:!!options.wrap,alignChanges:options.aligned !== false,
         hunkHeaders:options.headers?{items:document.hunks.map((_,index)=>({index,state:'ready'})),actions:[],disabledReason:null,onAction:noop,onIntent:noop}:null,
-        onPositionChange:noop,onSplitLayoutChange:noop}));
+        onPositionChange:noop}));
     };
     window.views = () => [...document.querySelectorAll('.cm-editor')].map(n => EditorView.findFromDOM(n));
     window.snapshot = () => {

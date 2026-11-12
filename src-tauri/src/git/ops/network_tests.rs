@@ -301,9 +301,10 @@ fn a10_no_output_timeout_ends_the_process_tree_and_reports_refs() {
     commit(&r.other, "b.txt", "x\n", "x");
     git_in(&r.other, &["push", "-q", "origin", "main"]);
     let marker = slow_upload_pack(&r, 6);
+    let harness = Harness::new(&r.local);
     let before = fingerprint(&r.local);
     let started = Instant::now();
-    let outcome = Harness::new(&r.local).run_with(fetch("origin"), Arc::new(CancelHandle::default()), Some(Duration::from_millis(1500))).unwrap();
+    let outcome = harness.run_with(fetch("origin"), Arc::new(CancelHandle::default()), Some(Duration::from_millis(1500))).unwrap();
     assert_eq!(outcome.status, OpStatus::Failed, "{}", outcome.message);
     assert!(outcome.message.contains("没有任何输出") && outcome.message.contains("远端跟踪引用没有变化"), "{}", outcome.message);
     assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());

@@ -58,12 +58,11 @@ function render(file: { left: string; right: string }, document: DiffDocument, r
   act(() => root.render(
     <DiffViewer ref={ref} readingKey={readingKey} presentation={{ kind: "compare" }} left={file.left} right={file.right} document={document}
       mode={mode} highlight="words" collapsed={collapsed} wrap={false} alignChanges={aligned} hunkHeaders={hunkHeaders}
-      onPositionChange={onPositionChange} onSplitLayoutChange={onSplitLayoutChange} />
+      onPositionChange={onPositionChange} />
   ));
   return ref;
 }
 const onPositionChange = () => {};
-const onSplitLayoutChange = () => {};
 const editors = () => [...host.querySelectorAll<HTMLElement>(".cm-editor")].map((dom) => EditorView.findFromDOM(dom)!);
 
 describe("对齐滚动的输入与回声隔离（模拟几何）", () => {

@@ -125,10 +125,3 @@ export function saveDraft(storage: Pick<Storage, "getItem" | "setItem">, repoId:
   if (text) value[repoId] = text; else delete value[repoId];
   storage.setItem(DRAFTS_KEY, JSON.stringify(value));
 }
-
-/** 撤销最近提交的确认文案（普通 / 合并 / 根提交）。 */
-export function undoCommitText(head: { subject: string; parents: string[]; oid: string }): string {
-  if (head.parents.length === 0) return `HEAD（${head.oid.slice(0, 8)} ${head.subject}）是根提交。撤销后仓库回到没有提交的状态，所有文件保留在暂存区，工作区不变。`;
-  if (head.parents.length > 1) return `HEAD（${head.oid.slice(0, 8)} ${head.subject}）是合并提交。撤销后 HEAD 回到第一个父提交 ${head.parents[0].slice(0, 8)}，合并带来的改动回到暂存区，工作区不变；被合并的提交之后只能通过 reflog 找回。`;
-  return `HEAD 回退一个提交（${head.oid.slice(0, 8)} ${head.subject}），这次提交的改动回到暂存区，工作区不变。`;
-}

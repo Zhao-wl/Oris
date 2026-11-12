@@ -1,7 +1,6 @@
 import { ConflictBlocks } from "./ConflictBlocks";
-import FileViewSelect from "./FileViewSelect";
 import { compactConversation, contextIndex, describeNode } from "./context-selection/compression";
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -23,10 +22,10 @@ import { createStore, useStore } from "./store";
 import ConfirmDialog, { type ConfirmRequest } from "./ConfirmDialog";
 import SwitchDialog, { type SwitchChoice, type SwitchRequest } from "./SwitchDialog";
 import GitPanel, { type GitTab, type OperationRecord, type RunningOperation } from "./GitPanel";
-import { cancelOperation, discardBackups, headCommitInfo, hunkMap as readHunkMap, prepareDiscard, removeStaleLocks, runOperation, type BackupSummary, type HeadCommitInfo, type HunkMap, type OperationOutcome, type OperationRequest } from "./operations-api";
+import { cancelOperation, discardBackups, headCommitInfo, hunkMap as readHunkMap, prepareDiscard, removeStaleLocks, runOperation, type BackupSummary, type HunkMap, type OperationOutcome, type OperationRequest } from "./operations-api";
 import { fileLevelBlock, hunkMapKey, latin1View, matchHunks } from "./hunk-model";
 import type { HunkHeaderAction, HunkHeaders } from "./DiffViewer";
-import { operationLabels, optimisticMove, pathIdsFor, refsKinds, selectionAfterOperation, stashKinds, switchKinds, undoCommitText, unsupportedInProgress, writeBlockedReason } from "./operations-model";
+import { operationLabels, optimisticMove, pathIdsFor, refsKinds, selectionAfterOperation, stashKinds, switchKinds, unsupportedInProgress, writeBlockedReason } from "./operations-model";
 import SettingsDialog from "./SettingsDialog";
 import { applyFileIgnoreOperation, createFileIgnoreMatcher, filterReadableFiles, fileIgnoreOperationSummary, type FileIgnoreRule } from "./file-ignore";
 import AiCommitDialog from "./AiCommitDialog";
@@ -63,8 +62,6 @@ const BURST_WINDOW_MS = 150;
 const BURST_DELAY_MS = 80;
 const isImagePath = (path: string) => /\.(png|jpe?g|webp)$/i.test(path);
 const editorText = (text: string) => text.replace(/\r\n?/g, "\n");
-const SIDEBAR_MIN_WIDTH = 180;
-const DIFF_MIN_WIDTH = 480;
 const versionLabels: Record<ConflictVersion, string> = { stage1: "Base · stage 1", stage2: "第一方 · stage 2", stage3: "第二方 · stage 3", workingTree: "当前 Working Tree" };
 const scopeLabels: Record<CompareScope, { short: string; endpoints: [string, string] }> = {
   unstaged: { short: "未暂存", endpoints: ["Index（暂存区）", "Working Tree（工作区）"] },
@@ -95,8 +92,6 @@ export default function App() {
   const refreshPending = useRef(false);
   const lastCheck = useRef(0);
   const currentRead = useRef<{ pair: ContentPair | null; scope: CompareScope; selected: string | null; repo: string | null; versions: [ConflictVersion, ConflictVersion] }>({ pair: null, scope: "unstaged", selected: null, repo: null, versions: ["stage2", "stage3"] });
-  const [path, setPath] = useState("");
-  const [gitExecutable, setGitExecutable] = useState("");
   const [selectedPathId, setSelectedPathId] = useState<string | null>(null);
   const [conflictData, setConflictData] = useState<ContentPair | null>(null);
   const [conflictFull, setConflictFull] = useState(false);
@@ -105,7 +100,6 @@ export default function App() {
   const displayedFiles = useRef(new WeakMap<ContentPair, FileChange>());
   const [diffDocument, setDiffDocument] = useState<DiffDocument | null>(null);
   const [loading, setLoading] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [stale, setStale] = useState(false);
@@ -145,8 +139,6 @@ export default function App() {
   const [fileView, setFileView] = useState<"flat" | "tree">("flat");
   const [scope, setScope] = useState<CompareScope>("unstaged");
   const [position, setPosition] = useState({ current: 0, total: 0 });
-  const [splitLayout, setSplitLayout] = useState({ ratio: 0.5, leftWidth: 0 });
-  const [projectMessages, setProjectMessages] = useState<Record<string, string>>({});
   const repositoryGate = useRef(new RequestGate());
   const contentGate = useRef(new RequestGate());
   const restored = useRef(false);
@@ -282,8 +274,8 @@ export default function App() {
     }, clearPreview);
   };
   /** 空闲时预取列表中上下相邻各 1 个 ≤256 KiB 的文本文件（后端做大小检查）。 */
-  const schedulePrefetch = useRef((_snapshot: RepositorySnapshot, _file: FileChange, _git: string) => {});
-  schedulePrefetch.current = (nextSnapshot: RepositorySnapshot, file: FileChange, effectiveGitExecutable: string) => {
+  const schedulePrefetch = useRef((_snapshot: RepositorySnapshot, _file: FileChange) => {});
+  schedulePrefetch.current = (nextSnapshot: RepositorySnapshot, file: FileChange) => {
     window.clearTimeout(prefetchTimer.current);
     if (!nextSnapshot.scopes) return;
     prefetchTimer.current = window.setTimeout(() => {
@@ -308,7 +300,7 @@ export default function App() {
     }, 150);
   };
 
-  const selectFile = useCallback(async (nextSnapshot: RepositorySnapshot, file: FileChange, effectiveGitExecutable: string, restoreHunk = 0, automatic = false, requestedVersions?: [ConflictVersion, ConflictVersion], keepPreviousDiff = false) => {
+  const selectFile = useCallback(async (nextSnapshot: RepositorySnapshot, file: FileChange, restoreHunk = 0, automatic = false, requestedVersions?: [ConflictVersion, ConflictVersion], keepPreviousDiff = false) => {
     setReviewReading(null); pendingReviewLine.current = null;
     setConflictData(null);
     if (currentRead.current.selected !== file.pathId || currentRead.current.repo !== nextSnapshot.repo.repoId) setConflictFull(false);
@@ -316,7 +308,7 @@ export default function App() {
     const prior = currentRead.current;
     requestedVersions ??= prior.repo === nextSnapshot.repo.repoId && prior.selected === file.pathId ? prior.versions : ["stage2", "stage3"];
     setVersions(requestedVersions);
-    if (!automatic && repositoryGate.current.cancelAutomatic()) setRefreshing(false);
+    if (!automatic) repositoryGate.current.cancelAutomatic();
     contentPending.current = true;
     const requestId = newRequestId();
     contentGate.current.activate(requestId, automatic);
@@ -367,7 +359,7 @@ export default function App() {
         displayedFiles.current.set(result, file);
         setPair(result); setDiffDocument(computed);
         if (!sameFile && restoreHunk > 0) requestAnimationFrame(() => viewer.current?.navigateTo(restoreHunk));
-        if (file.status !== "conflicted") schedulePrefetch.current(nextSnapshot, file, effectiveGitExecutable);
+        if (file.status !== "conflicted") schedulePrefetch.current(nextSnapshot, file);
       } else {
         displayedFiles.current.set(result, file);
         setPair(result); setDiffDocument(null);
@@ -409,12 +401,12 @@ export default function App() {
       const grouping = latest ? { groupId: latest.groupId, group: latest.group, showSubmodulePointers: latest.showSubmodulePointers } : {};
       return upsertProject(current, { ...project, ...grouping, customName: latest?.customName ?? project.customName, pinned: latest?.pinned ?? project.pinned, repo: result.repo, lastOpenedAt: Date.now(), anchor: nextAnchor });
     });
-    setScope(result.scope); setPath(result.repo.worktreePath); setGitExecutable(project.gitExecutable); setFilter(anchor.filter); setFileView(anchor.fileView); setStale(false);
+    setScope(result.scope); setFilter(anchor.filter); setFileView(anchor.fileView); setStale(false);
     const selected = selection.selected;
     // 主阅读器正在显示历史版本（任务 04）：刷新只更新本地列表与阅读位置，不替换正在阅读的历史内容。
     if (historyRef.current && result.repo.repoId === currentRead.current.repo) { setSelectedPathId(selected?.pathId ?? null); updateAnchor({ selectedPathId: selected?.pathId ?? null }); return; }
     if (historyRef.current) { historyRef.current = null; setHistoryReading(null); }
-    if (selected) await selectFile(result, selected, project.gitExecutable, selection.invalidated ? 0 : anchor.hunk, automatic, undefined, options?.keepPreviousDiff);
+    if (selected) await selectFile(result, selected, selection.invalidated ? 0 : anchor.hunk, automatic, undefined, options?.keepPreviousDiff);
     else {
       // 空范围没有后续 selectFile 来结束加载，同时作废此前尚未返回的内容请求。
       contentGate.current.activate(requestId); contentGate.current.finish(requestId);
@@ -429,16 +421,13 @@ export default function App() {
 
   const loadProject = useCallback(async (project: ProjectRecord, anchor = project.anchor, restoring = false) => {
     const requestId = newRequestId(); repositoryGate.current.activate(requestId); contentGate.current.activate(requestId);
-    setRefreshing(false);
     setLoading(true); setError(null); setNotice(null); setPair(null); setDiffDocument(null); setSelectedPathId(anchor.selectedPathId);
-    setProjectMessages((current) => ({ ...current, [project.repo.repoId]: restoring ? "正在恢复" : "正在核对" }));
     if (restoring && !projects.get(project.repo.repoId)?.snapshot) {
       // 再次打开：先显示上次保存的快照并标“校验中”；校验完成前写入口不可用（V2-D08）。
       const persisted = parsePersistedSnapshot(await loadSnapshot(project.repo.worktreePath).catch(() => null), project.repo.worktreePath);
       if (persisted && repositoryGate.current.accepts(requestId)) {
         projects.update(project.repo.repoId, { snapshot: persisted, details: null, verifying: true, dirty: false });
-        setScope(anchor.scope); setPath(project.repo.worktreePath); setFilter(anchor.filter); setFileView(anchor.fileView);
-        setProjectMessages((current) => ({ ...current, [project.repo.repoId]: "校验中" }));
+        setScope(anchor.scope); setFilter(anchor.filter); setFileView(anchor.fileView);
       }
     }
     try {
@@ -446,15 +435,12 @@ export default function App() {
       const result = await openRepository(project.repo.worktreePath, anchor.scope, settings.get().git.executable || null, requestId, pointers);
       if (!repositoryGate.current.accepts(requestId)) return;
       await acceptSnapshot(result, project, anchor, requestId);
-      if (!repositoryGate.current.accepts(requestId)) return;
-      setProjectMessages((current) => ({ ...current, [result.repo.repoId]: "已同步" }));
     } catch (nextError) {
       if (!repositoryGate.current.accepts(requestId)) return;
       const message = errorText(nextError);
       // 重启时显示的上次快照没有通过校验（例如路径已失效）：不再作为“校验中”的列表保留，只显示原因（项目记录保留）。
       if (restoring && projects.get(project.repo.repoId)?.verifying) projects.update(project.repo.repoId, { snapshot: null, details: null, verifying: false });
       setError(restoring ? `项目恢复失败：${message}。记录已保留，请修复路径后手动载入。` : message);
-      setProjectMessages((current) => ({ ...current, [project.repo.repoId]: "读取失败" }));
     } finally { if (repositoryGate.current.accepts(requestId)) { setLoading(false); repositoryGate.current.finish(requestId); contentGate.current.finish(requestId); } }
   }, [acceptSnapshot]);
 
@@ -513,7 +499,6 @@ export default function App() {
       discovery.ignored.length ? `.gitmodules 中有 ${discovery.ignored.length} 个条目已忽略，见仓库选择器` : null
     ].filter(Boolean);
     const title = existingRoot ? `已切换到工作区 ${rootName}` : selected && selected.kind !== "superproject" ? `${selected.name} 属于工作区 ${rootName}` : `已作为工作区添加 ${rootName}`;
-    setProjectMessages((current) => ({ ...current, [applied.selected]: existingRoot ? "已存在，已切换" : "已添加" }));
     setGroupToast({ id: ++syncToastSeq, kind: "fetch", status: "succeeded", title, detail: details.join("；") || null, actions: [] });
   }, [loadProject, startGroupWatch]);
 
@@ -532,7 +517,6 @@ export default function App() {
       finally { if (repositoryGate.current.accepts(requestId)) { repositoryGate.current.finish(requestId); contentGate.current.finish(requestId); } }
       return;
     }
-    setRefreshing(false);
     setLoading(true); setError(null);
     try {
       const result = await openRepository(repositoryPath.trim(), "unstaged", effectiveGitExecutable || null, requestId);
@@ -540,8 +524,6 @@ export default function App() {
       const existing = workspaceState.projects.find((project) => project.repo.repoId === result.repo.repoId);
       const project: ProjectRecord = existing ?? { repo: result.repo, gitExecutable: effectiveGitExecutable, pinned: false, lastOpenedAt: Date.now(), anchor: defaultAnchor() };
       await acceptSnapshot(result, { ...project, gitExecutable: effectiveGitExecutable }, project.anchor, requestId);
-      if (!repositoryGate.current.accepts(requestId)) return;
-      setProjectMessages((current) => ({ ...current, [result.repo.repoId]: existing ? "已存在，已切换" : "已添加" }));
     } catch (nextError) { if (repositoryGate.current.accepts(requestId)) setError(errorText(nextError)); }
     finally { if (repositoryGate.current.accepts(requestId)) { setLoading(false); repositoryGate.current.finish(requestId); contentGate.current.finish(requestId); } }
   }, [acceptSnapshot, addGroup, workspaceState.projects]);
@@ -567,7 +549,7 @@ export default function App() {
     if (reason === "前台核对" && Date.now() - lastCheck.current < 3000) return;
     refreshBusy.current = true; lastCheck.current = Date.now();
     const requestId = newRequestId(); repositoryGate.current.activate(requestId, automatic);
-    setRefreshing(true); if (!contentReadFailed.current) setError(null); setProjectMessages((current) => ({ ...current, [activeRepoId]: `${reason}中` }));
+    if (!contentReadFailed.current) setError(null);
     try {
       const result = await refreshRepository(activeRepoId, scope, requestId, !automatic);
       if (!repositoryGate.current.accepts(requestId) || activeIntent.current !== activeRepoId) return;
@@ -581,16 +563,14 @@ export default function App() {
       }
       if (!repositoryGate.current.accepts(requestId)) return;
       setStale(false);
-      setProjectMessages((current) => ({ ...current, [activeRepoId]: "已同步" }));
     } catch (nextError) {
       if (!repositoryGate.current.accepts(requestId)) return;
       setStale(true); setError(`${reason}失败：${errorText(nextError)}。保留上一份快照并标为旧。`);
-      setProjectMessages((current) => ({ ...current, [activeRepoId]: "旧快照" }));
     } finally {
       refreshBusy.current = false;
       if (!automatic) setManualRefreshing(false);
       autoNotBefore.current = Date.now() + 1500;
-      if (repositoryGate.current.accepts(requestId)) { setRefreshing(false); repositoryGate.current.finish(requestId); }
+      if (repositoryGate.current.accepts(requestId)) { repositoryGate.current.finish(requestId); }
       window.clearTimeout(completionTimer.current);
       if (manualPending.current === currentRead.current.repo) { completionTimer.current = window.setTimeout(() => void refreshLatest.current("手动刷新"), 0); }
       else if (isForeground() && refreshPending.current) { completionTimer.current = window.setTimeout(() => void refreshLatest.current("合并变化"), 1500); }
@@ -609,7 +589,6 @@ export default function App() {
       const legacy = JSON.parse(localStorage.getItem("oris.recentRepository.v1") ?? "null") as { path?: unknown; gitExecutable?: unknown } | null;
       if (legacy && typeof legacy.path === "string" && legacy.path.trim()) {
         const executable = typeof legacy.gitExecutable === "string" ? legacy.gitExecutable : "";
-        setPath(legacy.path); setGitExecutable(executable);
         void addRepository(legacy.path, executable);
       }
     } catch { /* invalid legacy state is ignored once */ }
@@ -618,7 +597,7 @@ export default function App() {
   useEffect(() => {
     manualPending.current = null; setManualRefreshing(false);
     if (!activeProject) return;
-    setScope(activeProject.anchor.scope); setFilter(activeProject.anchor.filter); setFileView(activeProject.anchor.fileView); setPath(activeProject.repo.worktreePath); setGitExecutable(activeProject.gitExecutable);
+    setScope(activeProject.anchor.scope); setFilter(activeProject.anchor.filter); setFileView(activeProject.anchor.fileView);
   }, [activeProject?.repo.repoId]);
 
   // 工作区：第一次进入时读取成员并建立共用 watcher；记住当前成员，切回标签或重启后恢复（V2-D78）。
@@ -664,9 +643,8 @@ export default function App() {
       refreshPending.current = true;
       // Only automatic updates are cancelled. Required initialization and
       // explicit reads retain their request IDs and complete or report errors.
-      const cancelledRepository = repositoryGate.current.cancelAutomatic();
+      repositoryGate.current.cancelAutomatic();
       const cancelledContent = contentGate.current.cancelAutomatic();
-      if (cancelledRepository) setRefreshing(false);
       if (cancelledContent) setLoading(false);
     };
     let disposed = false;
@@ -757,7 +735,7 @@ export default function App() {
       await loadProject(project);
       return;
     }
-    setScope(project.anchor.scope); setFilter(project.anchor.filter); setFileView(project.anchor.fileView); setPath(project.repo.worktreePath); setGitExecutable(project.gitExecutable);
+    setScope(project.anchor.scope); setFilter(project.anchor.filter); setFileView(project.anchor.fileView);
     const files = stored && cached.scope !== "all" ? stagingList(cached, stored, cached.scope) : cached.files;
     const readable = filterReadableFiles(files, createFileIgnoreMatcher(settings.get().fileIgnore.rules, project.repo.repoId), project.anchor.filter, showIgnoredRepoRef.current === project.repo.repoId).sort(compareFiles);
     const selection = resolveReadingSelection(readable, project.anchor.selectedPathId);
@@ -769,7 +747,7 @@ export default function App() {
     const cachedInvalidationNotice = selected
       ? `此前选中的文件已不在缓存快照中，已改为第一个可用变化文件：${selected.displayPath}`
       : "此前选中的文件已不在缓存快照中；当前范围没有可阅读的变化，已清除阅读位置。";
-    if (selected) await selectFile(cached, selected, project.gitExecutable, selection.invalidated ? 0 : project.anchor.hunk);
+    if (selected) await selectFile(cached, selected, selection.invalidated ? 0 : project.anchor.hunk);
     else { contentReadFailed.current = false; contentPending.current = false; setLoading(false); setSelectedPathId(null); setPair(null); setDiffDocument(null); updateAnchor({ selectedPathId: null, hunk: 0 }); }
     if (!repositoryGate.current.accepts(switchingId)) return;
     repositoryGate.current.finish(switchingId); contentGate.current.finish(switchingId);
@@ -786,7 +764,6 @@ export default function App() {
     } else if (Date.now() - (checkedAt.current.get(`${project.repo.repoId}:${cached.scope}`) ?? cached.scannedAt) < 3000 && unchangedSinceScan) return;
     if (missingSelection) setNotice(cachedInvalidationNotice);
     const requestId = newRequestId(); repositoryGate.current.activate(requestId);
-    setRefreshing(true);
     try {
       const result = await refreshRepository(project.repo.repoId, project.anchor.scope, requestId);
       if (!repositoryGate.current.accepts(requestId)) return;
@@ -794,13 +771,11 @@ export default function App() {
       if (result.revision !== cached.revision) cache.current.clearRepo(project.repo.repoId);
       if (result.revision !== cached.revision) await acceptSnapshot(result, { ...project, anchor: nextAnchor }, { ...nextAnchor, selectedPathId: currentRead.current.selected }, requestId);
       if (missingSelection) setNotice(cachedInvalidationNotice);
-      setProjectMessages((current) => ({ ...current, [project.repo.repoId]: "已同步" }));
     } catch (nextError) {
       if (repositoryGate.current.accepts(requestId)) {
         setStale(true); setError(`项目核对失败：${errorText(nextError)}。保留上一份快照并标为旧。`);
-        setProjectMessages((current) => ({ ...current, [project.repo.repoId]: "旧快照" }));
       }
-    } finally { if (repositoryGate.current.accepts(requestId)) { setRefreshing(false); repositoryGate.current.finish(requestId); } }
+    } finally { if (repositoryGate.current.accepts(requestId)) { repositoryGate.current.finish(requestId); } }
   };
   const setCompareScope = async (nextScope: CompareScope, selectedFile?: FileChange) => {
     const wasReview = !!reviewReading;
@@ -809,7 +784,7 @@ export default function App() {
       currentRead.current = { ...currentRead.current, pair: null }; setPair(null); setDiffDocument(null);
       if (nextScope === scope && snapshot) {
         const file = snapshot.files.find(f => f.pathId === selectedPathId) ?? snapshot.files[0];
-        if (file) await selectFile(snapshot, file, activeProject?.gitExecutable ?? "");
+        if (file) await selectFile(snapshot, file);
         return;
       }
     }
@@ -862,7 +837,7 @@ export default function App() {
     for (const id of removedIds) { try { await closeRepository(id); } catch { /* local record removal is complete */ } }
     if (activeRemoved) {
       const requestId = newRequestId(); repositoryGate.current.activate(requestId); contentGate.current.activate(requestId); setPair(null); setDiffDocument(null); setSelectedPathId(null); setError(null);
-      setLoading(false); setRefreshing(false); contentPending.current = false;
+      setLoading(false); contentPending.current = false;
       repositoryGate.current.finish(requestId); contentGate.current.finish(requestId);
       if (nextProject) await loadProject(nextProject);
     }
@@ -951,7 +926,6 @@ export default function App() {
     // 用户显式切换：立即重新扫描当前仓库（不走受前台状态约束的自动刷新；不回写 index stat 缓存）。
     const project = workspaceRef.current.projects.find((entry) => entry.repo.repoId === repoId) ?? activeProject;
     const requestId = newRequestId(); repositoryGate.current.activate(requestId);
-    setRefreshing(true);
     try {
       const result = await refreshRepository(repoId, scope, requestId, false);
       if (!repositoryGate.current.accepts(requestId)) return;
@@ -959,7 +933,7 @@ export default function App() {
       cache.current.clearRepo(repoId);
       await acceptSnapshot(result, project, { ...project.anchor, selectedPathId: currentRead.current.selected }, requestId);
     } catch (nextError) { if (repositoryGate.current.accepts(requestId)) setError(errorText(nextError)); }
-    finally { if (repositoryGate.current.accepts(requestId)) { setRefreshing(false); repositoryGate.current.finish(requestId); } }
+    finally { if (repositoryGate.current.accepts(requestId)) { repositoryGate.current.finish(requestId); } }
   };
   const nestedRepos = snapshot?.nestedRepos ?? [];
   const nestedMember = (relative: string) => snapshot && activeGroup ? activeGroup.members.find((member) => samePath(member.worktreePath, joinPath(snapshot.repo.worktreePath, relative))) : undefined;
@@ -1009,7 +983,7 @@ export default function App() {
     if (!source.history && snapshot && snapshot.revision !== source.revision) {
       const restored = scopeView(snapshot, runtime?.details ?? null, source.read.scope);
       const file = restored.files.find(file => file.pathId === source.read.selected);
-      if (file) void selectFile(restored, file, activeProject?.gitExecutable ?? "");
+      if (file) void selectFile(restored, file);
       else { setPair(null); setDiffDocument(null); setNotice("来源文件已不在当前比较范围中，请重新选择文件。"); }
     }
   };
@@ -1023,10 +997,6 @@ export default function App() {
     : { kind: "compare" }, [readingStatus, pair]);
   const conflictBlocksActive = selectedFile?.status === "conflicted" && !historyReading && !reviewReading && !conflictFull;
   const singleFile = presentation.kind === "single";
-  const singleTextSide = singleFile && pair ? (presentation.side === "a" ? pair.left : pair.right) : null;
-  const singleEndpointLabel = singleFile
-    ? presentation.side === "a" ? (pair?.left.endpoint === "emptyTree" ? "空树" : endpoints[0]) : endpoints[1]
-    : "";
   const diffModes = availableDiffModes(presentation);
   // 单字节（Latin-1）显示：两侧都能还原为原始字节时才启用；差异与块操作按原始字节计算。
   const latin1Key = pair ? `${pair.repoId}:${pair.pathId}:${pair.left.contentId}:${pair.right.contentId}` : "";
@@ -1392,7 +1362,7 @@ export default function App() {
     leaveHistory();
     if (scope !== "unstaged") await setCompareScope("unstaged");
     const stored = projects.get(repoId)?.snapshot;
-    if (stored) void selectFile(scopeView(stored, projects.get(repoId)?.details, "unstaged"), first, activeProject?.gitExecutable ?? "");
+    if (stored) void selectFile(scopeView(stored, projects.get(repoId)?.details, "unstaged"), first);
   };
   const syncRunning = networkRunning && repoOps?.running ? repoOps.running.kind as SyncKind : null;
   /** 切换类操作：Git 因工作区改动拒绝时让用户选择“放弃修改后切换”或“带着改动切换”。 */
@@ -1531,10 +1501,6 @@ export default function App() {
     const ok = await askConfirm({ title: `删除 stash@{${entry.index}}`, message: `${entry.message || "（无说明）"} · ${entry.branch || "—"} · ${entry.oid.slice(0, 8)}`, warning: "删除后 Oris 无法撤销；结果中会给出用 git stash store 找回的命令（悬空对象被 git gc 清理前有效）", confirmLabel: "删除 stash", danger: true });
     if (ok && repoId === activeIntent.current && repoId === currentRead.current.repo) await runOp({ kind: "stashDrop", index: entry.index, oid: entry.oid });
   };
-  const undoCommit = async (head: HeadCommitInfo) => {
-    const ok = await askConfirm({ title: "撤销最近提交", message: undoCommitText(head), confirmLabel: "撤销提交", danger: true, notes: ["只移动 HEAD（reset --soft），不改动工作区；撤销的提交仍可通过 reflog 找回"] });
-    if (ok) await runOp({ kind: "undoCommit", expectedHead: head.oid });
-  };
   const onFileAction = (action: FileAction, files: FileChange[]) => {
     if (!files.length) return;
     if (action === "stage" || action === "unstage") stageFiles(action, files);
@@ -1612,7 +1578,7 @@ export default function App() {
       : null;
     if (nextScope !== scope) { void setCompareScope(nextScope, file); return; }
     leaveHistory();
-    if (snapshot) void selectFile(snapshot, file, activeProject?.gitExecutable ?? "");
+    if (snapshot) void selectFile(snapshot, file);
   };
   /** 在主阅读器中打开历史版本（两端为固定的提交 OID）；本地阅读位置保留，可随时返回。 */
   const openHistoryFile = async (open: HistoryFileOpen) => {
@@ -1649,7 +1615,7 @@ export default function App() {
     if (!snapshot) return;
     const pathId = reading?.returnTo.pathId ?? null;
     const { selected: target, invalidated } = resolveReadingSelection(visibleFiles, pathId, isExplicitFoldedSelection(snapshot.repo.repoId, scope, pathId));
-    if (target) void selectFile(snapshot, target, activeProject?.gitExecutable ?? "", invalidated ? 0 : reading?.returnTo.hunk ?? 0);
+    if (target) void selectFile(snapshot, target, invalidated ? 0 : reading?.returnTo.hunk ?? 0);
     else {
       const cancelled = newRequestId(); contentGate.current.activate(cancelled); contentGate.current.finish(cancelled);
       contentPending.current = false; setLoading(false); setSelectedPathId(null); setPair(null); setDiffDocument(null);
@@ -1934,7 +1900,6 @@ export default function App() {
     return () => { cancelled = true; };
   }, [whitespace, pair, diffDocument]);
   const handlePositionChange = useCallback((current: number, total: number) => { setPosition({ current, total }); if (current > 0 && !reviewReading) updateAnchor({ hunk: current - 1 }); }, [updateAnchor, reviewReading]);
-  const handleSplitLayoutChange = useCallback((ratio: number, leftWidth: number) => { setSplitLayout((current) => Math.abs(current.ratio - ratio) < .0001 && current.leftWidth === leftWidth ? current : { ratio, leftWidth }); }, []);
 
   // 单字节显示的差异文档：与普通文本相同的规则计算（空白规则、DiffCache），内容标识加前缀区分。
   useEffect(() => {
@@ -2063,8 +2028,8 @@ export default function App() {
         {selectedFile?.status === "conflicted" && !historyReading && !reviewReading && <div className="conflict-toolbar"><button aria-pressed={!conflictFull} onClick={() => setConflictFull(false)}>实际冲突块</button><button aria-pressed={conflictFull} onClick={() => setConflictFull(true)}>全文件比较（辅助）</button><span>只读 · 外部解决后标记已解决</span></div>}
         {conflictBlocksActive && <div className="content">{loading ? <p role="status">正在读取冲突…</p> : error ? <p role="alert">{error}</p> : conflictData && pair ? <ConflictBlocks key={`${conflictData.repoId}:${conflictData.pathId}:${conflictData.right.contentId}`} pair={conflictData} branch={snapshot?.repo.branch ?? ""}/> : <p>等待冲突内容</p>}</div>}
         {!conflictBlocksActive && <>
-        {selectedFile?.status === "conflicted" && <div className="conflict-toolbar"><strong>未合并 index · 只读版本查看（替代普通范围比较）</strong>{versions.map((value, index) => <select key={index} aria-label={index === 0 ? "冲突左版本" : "冲突右版本"} value={value} onChange={event => { const next: [ConflictVersion, ConflictVersion] = [...versions]; next[index] = event.target.value as ConflictVersion; if (snapshot) void selectFile(snapshot, selectedFile, activeProject?.gitExecutable ?? "", 0, false, next); }}>{Object.entries(versionLabels).map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select>)}{pair && <div className="conflict-identities">{[pair.left, pair.right].map((side,index) => <div key={index}>{endpoints[index]} · {side.encoding === "missing" ? "缺失 / 删除" : side.details?.sizeKnown === false ? "字节数未知" : `${side.byteLength} 字节`} · mode {side.details?.mode ?? "—"} · OID {side.details?.oid ?? "—"}{side.details?.reason && <p>{side.details.reason}</p>}</div>)}</div>}</div>}
-        <div className="content">{notice && <SelectionNotice message={notice} onDismiss={() => setNotice(null)}/>}{loading && !diffDocument && <div className="state loading" role="status"><span className="loading-spinner" aria-hidden="true"/><span>正在读取真实仓库…</span></div>}{error && <div className="state error"><strong>无法显示差异</strong><p>{error}</p></div>}{!loading && !error && pair?.left.encoding === "missing" && pair.right.encoding === "missing" && <div className="state">所选两端均缺失，没有可比较内容。</div>}{!loading && !error && pair?.degradation && !special && !latin1Active && <div className="state warning"><strong>内容已降级</strong><p>{pair.degradation}</p></div>}{!loading && !error && special && <SpecialFileView description={special} compact={!!availableText} action={latin1Available ? { label: "按单字节（Latin-1）显示", onClick: () => setLatin1Keys((current) => new Set([...current, latin1Key])) } : undefined}/>}{(!loading || viewDocument) && !error && readingNotices.length > 0 && <div className="reading-notice" role="status">{readingNotices.map((text, index) => <p key={index}>{text}</p>)}</div>}{!loading && !error && pair && (pair.left.details?.image || pair.right.details?.image || /\.(png|jpe?g|webp)$/i.test(pair.displayPath)) && <ImageViewer key={`${pair.repoId}:${pair.pathId}:${pair.left.contentId}:${pair.right.contentId}`} left={pair.left} right={pair.right} labels={endpoints}/>} {!loading && !error && availableText && pair && !latin1Active && <><div className="partial-notice">仅显示可用文本端；另一侧不可用，跨侧差异计数与导航不可计算。{special ? "" : pair.degradation}</div><DiffViewer ref={reviewReading ? viewer : undefined} readingKey={`${pair.repoId}:${pair.pathId}:${availableText.endpoint}`} presentation={{kind:"compare"}} left={editorText(availableText.text!)} right={editorText(availableText.text!)} document={{requestId:pair.requestId,contentIds:[availableText.contentId,availableText.contentId],changes:[],hunks:[],elapsedMs:0}} mode="unified" highlight={highlight} collapsed={false} wrap={wrap} alignChanges={false} onPositionChange={() => {}} onSplitLayoutChange={() => {}}/></>} {!error && viewTexts && pair && viewDocument && <DiffViewer readingKey={reviewReading ? `${pair.repoId}:review:${pair.revision}:${pair.pathId}` : historyReading ? `${pair.repoId}:history:${historyReading.key}` : `${pair.repoId}:${scope}:${pair.pathId}`} presentation={presentation} ref={viewer} left={viewTexts[0]} right={viewTexts[1]} document={viewDocument} hunkHeaders={hunkHeaders} onLineSelect={onLineSelect} selectedLine={lineContext && lineSelection?.key === lineHistoryKey(lineContext) ? lineSelection.value : null} mode={mode} highlight={highlight} collapsed={collapsed} wrap={wrap} alignChanges={alignChanges} onPositionChange={handlePositionChange} onSplitLayoutChange={handleSplitLayoutChange}/>} {!loading && !error && !pair && <div className="state">{snapshot && !snapshot.files.length ? "当前比较范围没有变化" : "选择一个变化文件开始阅读"}</div>}</div>{lineInfoEnabled && lineContext && viewTexts && !latin1Active && !error && <LineHistoryBar context={lineContext} selection={lineSelection} onJump={jumpFromLine}/>}</>}</section>
+        {selectedFile?.status === "conflicted" && <div className="conflict-toolbar"><strong>未合并 index · 只读版本查看（替代普通范围比较）</strong>{versions.map((value, index) => <select key={index} aria-label={index === 0 ? "冲突左版本" : "冲突右版本"} value={value} onChange={event => { const next: [ConflictVersion, ConflictVersion] = [...versions]; next[index] = event.target.value as ConflictVersion; if (snapshot) void selectFile(snapshot, selectedFile, 0, false, next); }}>{Object.entries(versionLabels).map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select>)}{pair && <div className="conflict-identities">{[pair.left, pair.right].map((side,index) => <div key={index}>{endpoints[index]} · {side.encoding === "missing" ? "缺失 / 删除" : side.details?.sizeKnown === false ? "字节数未知" : `${side.byteLength} 字节`} · mode {side.details?.mode ?? "—"} · OID {side.details?.oid ?? "—"}{side.details?.reason && <p>{side.details.reason}</p>}</div>)}</div>}</div>}
+        <div className="content">{notice && <SelectionNotice message={notice} onDismiss={() => setNotice(null)}/>}{loading && !diffDocument && <div className="state loading" role="status"><span className="loading-spinner" aria-hidden="true"/><span>正在读取真实仓库…</span></div>}{error && <div className="state error"><strong>无法显示差异</strong><p>{error}</p></div>}{!loading && !error && pair?.left.encoding === "missing" && pair.right.encoding === "missing" && <div className="state">所选两端均缺失，没有可比较内容。</div>}{!loading && !error && pair?.degradation && !special && !latin1Active && <div className="state warning"><strong>内容已降级</strong><p>{pair.degradation}</p></div>}{!loading && !error && special && <SpecialFileView description={special} compact={!!availableText} action={latin1Available ? { label: "按单字节（Latin-1）显示", onClick: () => setLatin1Keys((current) => new Set([...current, latin1Key])) } : undefined}/>}{(!loading || viewDocument) && !error && readingNotices.length > 0 && <div className="reading-notice" role="status">{readingNotices.map((text, index) => <p key={index}>{text}</p>)}</div>}{!loading && !error && pair && (pair.left.details?.image || pair.right.details?.image || /\.(png|jpe?g|webp)$/i.test(pair.displayPath)) && <ImageViewer key={`${pair.repoId}:${pair.pathId}:${pair.left.contentId}:${pair.right.contentId}`} left={pair.left} right={pair.right} labels={endpoints}/>} {!loading && !error && availableText && pair && !latin1Active && <><div className="partial-notice">仅显示可用文本端；另一侧不可用，跨侧差异计数与导航不可计算。{special ? "" : pair.degradation}</div><DiffViewer ref={reviewReading ? viewer : undefined} readingKey={`${pair.repoId}:${pair.pathId}:${availableText.endpoint}`} presentation={{kind:"compare"}} left={editorText(availableText.text!)} right={editorText(availableText.text!)} document={{requestId:pair.requestId,contentIds:[availableText.contentId,availableText.contentId],changes:[],hunks:[],elapsedMs:0}} mode="unified" highlight={highlight} collapsed={false} wrap={wrap} alignChanges={false} onPositionChange={() => {}}/></>} {!error && viewTexts && pair && viewDocument && <DiffViewer readingKey={reviewReading ? `${pair.repoId}:review:${pair.revision}:${pair.pathId}` : historyReading ? `${pair.repoId}:history:${historyReading.key}` : `${pair.repoId}:${scope}:${pair.pathId}`} presentation={presentation} ref={viewer} left={viewTexts[0]} right={viewTexts[1]} document={viewDocument} hunkHeaders={hunkHeaders} onLineSelect={onLineSelect} selectedLine={lineContext && lineSelection?.key === lineHistoryKey(lineContext) ? lineSelection.value : null} mode={mode} highlight={highlight} collapsed={collapsed} wrap={wrap} alignChanges={alignChanges} onPositionChange={handlePositionChange}/>} {!loading && !error && !pair && <div className="state">{snapshot && !snapshot.files.length ? "当前比较范围没有变化" : "选择一个变化文件开始阅读"}</div>}</div>{lineInfoEnabled && lineContext && viewTexts && !latin1Active && !error && <LineHistoryBar context={lineContext} selection={lineSelection} onJump={jumpFromLine}/>}</>}</section>
     </section>
     <GitPanel filesContent={<>{(["unstaged", "staged"] as const).map(listScope => {
       const source = runtime?.snapshot?.scopes ? stagingList(runtime.snapshot, runtime, listScope) : snapshot?.scope === listScope ? snapshot.files : [];
@@ -2081,15 +2046,14 @@ export default function App() {
         <div className="files" role="listbox" aria-label={`${scopeLabels[listScope].short}变更`}><FileTree files={files} selectedPathId={active && !historyReading ? selectedPathId : null} mode={fileView} statsPending={pendingStats} onSelect={file => userSelect(file, listScope)} actions={actions}/>{!files.length && <div className="empty">{filter ? "筛选无匹配文件" : "暂无文件"}</div>}</div>
       </section>;
     })}</>} filesTools={<>{nestedRepos.length > 0 && <details className="nested-repos"><summary title="嵌套仓库">◫ {nestedRepos.length}</summary><div className="nested-popover">{nestedRepos.map(relative => { const member = nestedMember(relative); return <div className="nested-repo" key={relative}><span>{relative}{!member && <small>独立仓库，未加入工作区</small>}</span>{member?.repoId ? <button onClick={() => { const project = workspaceState.projects.find(p => p.repo.repoId === member.repoId); if (project) void switchProject(project); }}>切换</button> : <button onClick={() => void changeManual(joinPath(snapshot!.repo.worktreePath, relative), true)}>加入工作区</button>}</div>; })}</div></details>}<input className="compact-filter" aria-label="按完整相对路径筛选" placeholder="筛选文件路径" value={filter} onChange={event => { setFilter(event.target.value); updateAnchor({ filter: event.target.value }); }}/><select aria-label="文件显示方式" value={fileView} onChange={event => { const value = event.target.value as "flat" | "tree"; setFileView(value); updateAnchor({ fileView: value }); }}><option value="flat">☷</option><option value="tree">⑂</option></select>{snapshot?.hasSubmodules && <button role="switch" aria-checked={!!activeProject?.showSubmodulePointers} title="显示子模块指针变化" onClick={() => void toggleSubmodulePointers()}>子模块指针</button>}</>} ignoredStagedPaths={ignoredStagedPaths} repoId={backendRepoId} tab={gitTab} onTab={setGitTab} stagedCount={stagedCount} headOid={runtime?.snapshot?.branchInfo?.oid ?? null} headKey={`${snapshot?.branchInfo?.oid ?? ""}:${snapshot?.branchInfo?.upstream ?? ""}:${snapshot?.branchInfo?.ahead ?? ""}:${snapshot?.branchInfo?.behind ?? ""}`}
-      mergeInProgress={!!snapshot?.inProgress?.merge} blockedReason={writeBlocked && !repoOps?.running ? writeBlocked : null} running={repoOps?.running ?? null} lines={repoOps?.lines ?? []} last={repoOps?.last ?? null} lastCommit={repoOps?.lastCommit ?? null} backups={repoOps?.backups ?? []}
-      onCommit={commit} onGenerateMessage={aiMessage} onUndoCommit={(head) => void undoCommit(head)} onUndoDiscard={(id) => void undoDiscard(id)} onCancel={() => { if (activeRepoId) void cancelOperation(activeRepoId); }}
+      blockedReason={writeBlocked && !repoOps?.running ? writeBlocked : null} running={repoOps?.running ?? null} lines={repoOps?.lines ?? []} last={repoOps?.last ?? null} lastCommit={repoOps?.lastCommit ?? null} backups={repoOps?.backups ?? []}
+      onCommit={commit} onGenerateMessage={aiMessage} onUndoDiscard={(id) => void undoDiscard(id)} onCancel={() => { if (activeRepoId) void cancelOperation(activeRepoId); }}
       stashCount={stashes.entries?.length} stashContent={backendRepoId && (gitTab === "stash" || stashMounted === backendRepoId) ? <StashPanel key={backendRepoId}
         repoId={backendRepoId} list={stashes} hidden={gitTab !== "stash"} blocked={writeBlocked} activeKey={historyReading?.key ?? null} reveal={stashReveal?.repoId === backendRepoId ? stashReveal : null}
         onApply={(entry, pop) => void runOp({ kind: "stashApply", index: entry.index, oid: entry.oid, pop })} onDrop={(entry) => void stashDrop(entry)} onOpenFile={(open) => void openHistoryFile(open)}/> : null}
       logContent={backendRepoId && logMounted === backendRepoId ? <HistoryPanel key={backendRepoId} repoId={backendRepoId} lineJump={lineJump} onReturnFromLine={returnFromLine} compareRequest={historyCompare} onSubmoduleCompare={activeGroup ? compareInSubmodule : undefined} refsVersion={refsVersion} hidden={gitTab !== "log"} fileHistoryRequest={fileHistoryRequest} activeKey={historyReading?.key ?? null} onOpenFile={(open) => void openHistoryFile(open)} onRefs={setRefsView}
         writeBlocked={writeBlocked} onCheckout={(oid) => void runSwitch({ kind: "checkout", commit: oid })} onNewBranch={(start) => { loadRefsView(); setNewBranch({ initial: start }); }} onMerge={detachedOid ? undefined : startMerge}
-        onSwitch={branchActions.onSwitch} onTrack={branchActions.onTrack} onDeleteBranch={(branch) => void deleteBranch(branch)} onPruneGone={() => void pruneGoneBranches()}
-        onShowStash={() => setGitTab("stash")}/> : null}/>
+        onSwitch={branchActions.onSwitch} onTrack={branchActions.onTrack} onDeleteBranch={(branch) => void deleteBranch(branch)} onPruneGone={() => void pruneGoneBranches()}/> : null}/>
     {stashDraft && stashDraft.repoId === backendRepoId && <StashForm selectedFiles={stashDraft.files} blocked={writeBlocked}
       onPush={(options) => stashPush(stashDraft, options)} onGenerate={(files, requestId) => stashName(stashDraft, files, requestId)}
       onClose={() => setStashDraft((current) => current === stashDraft ? null : current)}/>}

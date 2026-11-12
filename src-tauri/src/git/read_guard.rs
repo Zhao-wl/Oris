@@ -1,6 +1,6 @@
-#![cfg_attr(not(test), allow(dead_code))]
 use super::*;
 
+#[cfg(test)]
 #[derive(Clone)]
 pub(super) struct ReadSnapshot {
     pub revision: String,
@@ -39,6 +39,7 @@ impl GitAdapter {
         };
         Ok((index, head))
     }
+    #[cfg(test)]
     fn file_guard(
         &self,
         scope: CompareScope,
@@ -84,6 +85,7 @@ impl GitAdapter {
         }
         Ok(hex::encode(hash.finalize()))
     }
+    #[cfg(test)]
     pub(super) fn capture_read_snapshot(
         &self,
         scope: CompareScope,
@@ -104,6 +106,7 @@ impl GitAdapter {
             files: guards,
         })
     }
+    #[cfg(test)]
     pub(super) fn selected_guard(
         &self,
         scope: CompareScope,

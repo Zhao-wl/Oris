@@ -520,5 +520,5 @@ pub fn change_count(git: &Path, worktree: &Path, show_submodule_pointers: bool) 
     }
     let raw = run_required(git, worktree, &args)?.stdout;
     let (_, files) = super::status_v2::parse(&raw)?;
-    Ok(files.all.iter().filter(|entry| !super::scan::is_nested_repo(worktree, entry)).count())
+    Ok(files.iter().filter(|entry| !super::scan::is_nested_repo(worktree, entry)).count())
 }

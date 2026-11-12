@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type JSX, type ReactNode, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
+import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
 import type { CompareScope, ContentUnchanged, FileChange } from "./types";
 import { rowActions } from "./operations-model";
 import PathText from "./PathText";
@@ -85,8 +85,6 @@ interface Props {
   /** 写操作入口；不提供时文件行只用于阅读。 */
   actions?: FileActions;
 }
-
-export { VIRTUAL_THRESHOLD };
 
 function FileButton({ file, selectedPathId, onSelect, depth = 0, showPath = false, statsPending = false, style }: {
   file: FileChange;

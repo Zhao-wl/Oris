@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DRAFTS_KEY, loadDraft, optimisticMove, pathIdsFor, rowActions, saveDraft, selectionAfterOperation, undoCommitText, unsupportedInProgress, writeBlockedReason } from "./operations-model";
+import { DRAFTS_KEY, loadDraft, optimisticMove, pathIdsFor, rowActions, saveDraft, selectionAfterOperation, unsupportedInProgress, writeBlockedReason } from "./operations-model";
 import type { FileChange, RepositorySnapshot } from "./types";
 
 const file = (path: string, status: FileChange["status"], extra: Partial<FileChange> = {}): FileChange => ({ pathId: `id:${path}`, displayPath: path, oldPathId: null, oldDisplayPath: null, status, additions: 1, deletions: 0, ...extra });
@@ -84,10 +84,4 @@ describe("commit drafts are saved per project", () => {
     saveDraft(storage, "c", "fresh");
     expect(loadDraft(storage, "c")).toBe("fresh");
   });
-});
-
-it("explains undoing a normal, merge and root commit differently (B07)", () => {
-  expect(undoCommitText({ oid: "a".repeat(40), subject: "s", parents: ["b".repeat(40)] })).toContain("回退一个提交");
-  expect(undoCommitText({ oid: "a".repeat(40), subject: "s", parents: ["b".repeat(40), "c".repeat(40)] })).toContain("第一个父提交 bbbbbbbb");
-  expect(undoCommitText({ oid: "a".repeat(40), subject: "s", parents: [] })).toContain("根提交");
 });

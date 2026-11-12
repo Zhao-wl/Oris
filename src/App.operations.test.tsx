@@ -13,7 +13,7 @@ const bridge = vi.hoisted(() => ({
 }));
 vi.mock("./api", () => ({ discoverGroup: vi.fn(async () => ({ isGroup: false, members: [], selectedRepoId: null, ignored: [] })), memberChangeCount: vi.fn(async () => 0), watchGroup: vi.fn(async () => {}), setSubmodulePointers: vi.fn(async () => {}), openRepository: bridge.open, refreshRepository: bridge.refresh, readContentPair: bridge.read, closeRepository: vi.fn(async () => {}), cancelContentRead: vi.fn(async () => {}),
   repositoryDetails: bridge.details, revealInFileManager: bridge.reveal, activateRepository: bridge.activate, loadSnapshot: bridge.loadSnapshot, saveSnapshot: vi.fn(async () => true), removeSnapshot: vi.fn(async () => {}) }));
-vi.mock("./operations-api", () => ({ runOperation: bridge.operation, cancelOperation: vi.fn(async () => true), lastOperation: vi.fn(async () => null),
+vi.mock("./operations-api", () => ({ runOperation: bridge.operation, cancelOperation: vi.fn(async () => true),
   prepareDiscard: bridge.prepareDiscard, discardBackups: bridge.backups, headCommitInfo: bridge.head }));
 vi.mock("./diff", () => ({ calculateDiff: bridge.diff }));
 vi.mock("./ai-api", () => ({ planAiAction: bridge.planAi, generateAiCommit: vi.fn(), cancelAiGeneration: vi.fn(async () => {}) }));
@@ -554,16 +554,8 @@ describe("commit panel (B07)", () => {
 
   it("omits the undo-commit entry from the compact composer", async () => {
     bridge.open.mockResolvedValue(snap([], [change("a.txt", "added")]));
-    bridge.head.mockResolvedValue({ oid: "h".repeat(40), parents: ["p".repeat(40)], message: "original message", subject: "original message", pushed: true, upstream: "origin/main", detached: false });
     await mount();
     await click(commitTab());
-    expect(button("撤销最近提交…")).toBeUndefined();
-    expect(button("撤销最近提交…")).toBeUndefined();
-    await act(async () => root.unmount()); root = createRoot(host);
-    bridge.head.mockResolvedValue({ oid: "o".repeat(40), parents: ["p".repeat(40)], message: "old head", subject: "old head", pushed: null, upstream: null, detached: false });
-    await mount();
-    await click(commitTab());
-    expect(button("撤销最近提交…")).toBeUndefined();
     expect(button("撤销最近提交…")).toBeUndefined();
   });
 

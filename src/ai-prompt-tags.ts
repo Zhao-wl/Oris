@@ -39,13 +39,3 @@ export function insertPromptTag(text: string, match: PromptTagMatch, tag: AiProm
   const next = `${before}${inserted}${after}`;
   return { text: next, caret: before.length + tag.label.length + 1 };
 }
-
-/** 提示词注入仅识别两侧为空白或文本边界的完整标签。 */
-export function mentionedPromptTags(text: string, tags: readonly AiPromptTag[] = AI_PROMPT_TAGS): Set<string> {
-  const found = new Set<string>();
-  for (const match of text.matchAll(/(?:^|\s)@([\p{L}\p{N}_-]+)(?=\s|$)/gu)) {
-    const tag = tags.find(t => t.name.toLowerCase() === match[1].toLowerCase());
-    if (tag) found.add(tag.name);
-  }
-  return found;
-}

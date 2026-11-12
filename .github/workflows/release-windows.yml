@@ -73,7 +73,9 @@ jobs:
       - name: 安装依赖
         run: npm ci
       - name: 前端回归
-        run: npx vitest run --no-file-parallelism
+        run: npm test -- --no-file-parallelism
+      - name: 主题生成和样式回归
+        run: npm run test:themes
       - name: 旧 GUI 入口安全回归
         run: npm run test:gui-safety
       - name: 发布签名核验回归

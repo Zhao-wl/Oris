@@ -1,6 +1,6 @@
 import { attachmentEvidence } from "./evidence";
 import { invoke } from "@tauri-apps/api/core";
-import { cancelAiGeneration, planAiAction } from "../ai-api";
+import { planAiAction } from "../ai-api";
 import { CONTEXT_BUDGET, compactEvidence, contextIndex, describeNode, evidencePages, tokenEstimate, type IndexNode } from "./compression";
 import { reviewContext, reviewInventory, type ReviewContext, type ReviewRequest } from "../ai-review/model";
 import type { CommitInfo, LogCursor, LogPage } from "../history-api";
@@ -126,7 +126,6 @@ export async function assistSelection(profile: AiProfile, prompt: string, candid
   return {ids:[...resultIds],mode:routed.mode,reason:[...new Set(reasons)].join("；").slice(0,1600)+`；请求 ${meter.calls} 次，总耗时 ${((performance.now()-started)/1000).toFixed(1)} 秒；逐轮耗时 ${meter.timings.map(t=>`${t.round}: ${(t.ms/1000).toFixed(1)}s`).join("、")}；保守 token 估算 ${meter.tokens}`};
 }
 
-export { cancelAiGeneration };
 
 /** 选择不设 16 文件上限；内容读取按有界批次进行，并准确报告未覆盖附件。 */
 export async function loadAttachmentContext(repoId: string, attachments: Attachment[], valid: () => boolean = () => true) {

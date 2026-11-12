@@ -98,16 +98,6 @@ export interface HeadCommitInfo {
   detached: boolean;
 }
 
-export interface LastOperation {
-  opId: string;
-  kind: OperationKind;
-  status: OperationStatus;
-  message: string;
-  output: string;
-  outputTruncated: boolean;
-  finishedAt: number;
-}
-
 /** 某一块在两侧的行范围（0 起、左闭右开）与 Git 输出的内容摘要（V2-05）。 */
 export interface HunkRef { oldStart: number; oldEnd: number; newStart: number; newEnd: number; digest: string }
 
@@ -121,7 +111,6 @@ export const runOperation = (repoId: string, scope: CompareScope, opId: string, 
 export const cancelOperation = (repoId: string) => invoke<boolean>("cancel_operation", { repoId });
 /** 删除用户确认过的残留锁文件（只接受仓库 Git 目录内的 *.lock）；返回实际删除的路径。 */
 export const removeStaleLocks = (repoId: string, paths: string[]) => invoke<string[]>("remove_stale_locks", { repoId, paths });
-export const lastOperation = (repoId: string) => invoke<LastOperation | null>("last_operation", { repoId });
 export const prepareDiscard = (repoId: string, scope: CompareScope, pathIds: string[]) => invoke<DiscardPlan>("prepare_discard", { repoId, scope, pathIds });
 export const discardBackups = (repoId: string) => invoke<BackupSummary[]>("discard_backups", { repoId });
 export const headCommitInfo = (repoId: string) => invoke<HeadCommitInfo | null>("head_commit_info", { repoId });

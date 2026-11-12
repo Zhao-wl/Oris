@@ -29,7 +29,9 @@ describe("AI rule routing", () => {
     expect(() => resolveAiRoute(settings, "@审查 继续", "a")).toThrow("停用");
     settings.ruleSet.commands = settings.ruleSet.commands.filter(c => c.id !== "review");
     expect(() => resolveAiRoute(settings, "@审查 继续")).toThrow("未知指令");
-    expect(resolveAiRoute(ai(), "mail@example.com @审查, 是普通文本").commandId).toBeNull();
+    expect(resolveAiRoute(ai(), "mail@example.com @审查, @设置好。").commandId).toBeNull();
+    expect(resolveAiRoute(ai(), "请 @设置 调大字号").commandId).toBe("settings");
+    expect(resolveAiRoute(ai(), "前缀@Git @提交, @合并\n处理").commandId).toBe("merge");
   });
 });
 describe("portable AI rules", () => {

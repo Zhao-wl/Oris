@@ -738,7 +738,6 @@ async fn run_operation(
     if let Some(suppression) = &suppression {
         suppression.begin_operation();
     }
-    let runner = runner.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let backups = app.state::<Backups>();
         let emitter = app.clone();
@@ -753,9 +752,6 @@ async fn run_operation(
             suppression.end_operation(opened.adapter.worktree(), touched, OPERATION_ECHO_TAIL);
         }
         drop(guard);
-        if let Ok(outcome) = &outcome {
-            runner.record(outcome);
-        }
         outcome
     })
     .await
@@ -782,12 +778,6 @@ async fn remove_stale_locks(repo_id: String, paths: Vec<String>, registry: State
 #[tauri::command]
 fn cancel_operation(repo_id: String, runner: State<'_, ops::Runner>) -> bool {
     runner.cancel(&repo_id)
-}
-
-#[cfg(feature = "desktop")]
-#[tauri::command]
-fn last_operation(repo_id: String, runner: State<'_, ops::Runner>) -> Option<ops::LastOperation> {
-    runner.last(&repo_id)
 }
 
 /// 提交历史的一页（R-HISTORY）：第一页按查询固定起点 OID，续读传回上一页的游标。
@@ -1082,7 +1072,6 @@ pub fn run() {
             run_operation,
             cancel_operation,
             remove_stale_locks,
-            last_operation,
             prepare_discard,
             discard_backups,
             head_commit_info,

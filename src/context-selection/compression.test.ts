@@ -2,7 +2,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { contextIndex, describeNode, evidencePages, compactEvidence, tokenEstimate, CONTEXT_BUDGET, type IndexNode } from "./compression";
 import { assistSelection, commitAttachment, newContextMeter, routeCandidates, type Attachment } from "./model";
 import { withAttachmentReads } from "./reader";
-import { reviewAttachments } from "./review";
+import { reviewAttachments } from "../ai-review/review";
 import { context } from "../ai-review/fixtures";
 const invoke=vi.hoisted(()=>vi.fn());
 vi.mock("@tauri-apps/api/core",()=>({invoke}));

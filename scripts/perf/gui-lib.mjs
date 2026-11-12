@@ -43,7 +43,7 @@ function powershell(script) {
  * 由平铺进程表构造以 rootPid 为根的树。Windows 会复用 PID：父进程退出后，其 PID 可能分配给无关进程，
  * 于是更早启动的无关进程会“看起来”是它的子进程。因此要求子进程创建时间不早于父进程（created 为 FILETIME）。
  */
-export function buildTree(all, rootPid) {
+function buildTree(all, rootPid) {
   const children = new Map();
   for (const p of all) { if (!children.has(p.ppid)) children.set(p.ppid, []); children.get(p.ppid).push(p); }
   const root = all.find((p) => p.pid === rootPid);
@@ -71,13 +71,13 @@ export function processTree(rootPid) {
     processes: tree.map((p) => ({ pid: p.ProcessId, ppid: p.ParentProcessId, name: p.Name, workingSetMiB: round(mib(Number(p.WorkingSetSize))), privateMiB: round(mib(Number(p.PrivatePageCount))) })),
     workingSetMiB: round(mib(tree.reduce((sum, p) => sum + Number(p.WorkingSetSize), 0))),
     privateMiB: round(mib(tree.reduce((sum, p) => sum + Number(p.PrivatePageCount), 0))),
-    git: tree.filter((p) => /^git(-remote.*)?\.exe$/i.test(p.Name) || /^git\.exe$/i.test(p.Name)).length,
+    git: tree.filter((p) => /^git(-remote.*)?\.exe$/i.test(p.Name)).length,
     catFile: null
   };
 }
 
 /** WebView2 / Git 进程的角色：由命令行 `--type=` 与 `--utility-sub-type=` 判断。 */
-export function processRole(name, commandLine = "") {
+function processRole(name, commandLine = "") {
   const lower = name.toLowerCase();
   if (lower === "oris.exe") return "oris";
   if (lower === "git.exe") return /cat-file --batch/.test(commandLine) ? "git-cat-file" : "git";
@@ -230,7 +230,7 @@ $owner = (Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction Sil
   const verified = path.resolve(identity.path).toLowerCase() === exePath.toLowerCase() && identity.mainWindowHandle !== 0 && identity.mainWindowTitle === "Oris" && ownsPort;
   if (!verified) {
     log(`身份核验失败：${JSON.stringify(identity)}`);
-    await killOris({ pid, exePath, child, force: true, skipWindowCheck: true });
+    await killOris({ pid, exePath, child, force: true });
     throw new Error("测试实例身份核验失败，已结束本实例");
   }
   const cdp = await connectCdp(target.webSocketDebuggerUrl);

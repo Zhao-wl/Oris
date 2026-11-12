@@ -32,7 +32,7 @@ it("discards cancellation but retains verified snapshot results after later cont
   let active = true;
   await expect(reviewAttachments("repo", [attachment("price.ts")], () => active, async wire => { active = false; return response(wire); }, "")).rejects.toThrow("取消");
   active = true; let reads = 0;
-  invoke.mockImplementation(async (cmd, args) => cmd === "review_inventory" ? original("price.ts", "unstaged").inventory : { ...original("price.ts", "unstaged"), sources: [{ ...original("price.ts", "unstaged").sources[0], contentId: ++reads > 1 ? "changed" : "original" }] });
+  invoke.mockImplementation(async (cmd) => cmd === "review_inventory" ? original("price.ts", "unstaged").inventory : { ...original("price.ts", "unstaged"), sources: [{ ...original("price.ts", "unstaged").sources[0], contentId: ++reads > 1 ? "changed" : "original" }] });
   const changed = await reviewAttachments("repo", [attachment("price.ts")], () => true, async wire => response(wire), "");
   expect(changed.result?.context.sources[0].contentId).toBe("original");
   expect(changed.result?.context.warnings.join()).toContain("本轮结论保留");

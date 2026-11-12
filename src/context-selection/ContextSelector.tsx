@@ -6,7 +6,8 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { readRefs, type LogCursor } from "../history-api";
 import { errorText } from "../error-message";
 import type { AiProfile } from "../settings";
-import { assistSelection, cancelAiGeneration, changeSelection, commitAttachment, emptyFilter, fileAttachments, selectionCommits, type Attachment, type CommitFilter, type SelectionKind, type ContextLimits } from "./model";
+import { cancelAiGeneration } from "../ai-api";
+import { assistSelection, changeSelection, commitAttachment, emptyFilter, fileAttachments, selectionCommits, type Attachment, type CommitFilter, type SelectionKind, type ContextLimits } from "./model";
 import "./selection.css";
 
 interface Props {
