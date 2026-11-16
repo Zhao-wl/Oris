@@ -15,6 +15,8 @@ export interface FileActions {
   scope: CompareScope;
   /** 写入口不可用的原因（校验中、其他写操作进行中、不支持的进行中状态）；null 为可用。 */
   disabledReason: string | null;
+  stagingSyncing?: boolean;
+  stagingDisabledReason?: string | null;
   /** 显式选择集合；空集合时回退到当前阅读文件。 */
   selection: ReadonlySet<string>;
   /** 选择变化；focus 为需要在 diff 中显示的文件（null 表示保持当前显示）。 */
@@ -99,6 +101,9 @@ function FileButton({ file, selectedPathId, onSelect, depth = 0, showPath = fals
   const label = showPath ? file.displayPath : file.displayPath.split("/").at(-1) ?? file.displayPath;
   const actions = useContext(ActionsContext);
   const allowed = actions ? rowActions(actions.scope, file) : null;
+  const staging = allowed?.primary === "stage" || allowed?.primary === "unstage";
+  const actionDisabled = staging && actions?.stagingSyncing ? actions.stagingDisabledReason : actions?.disabledReason;
+  const pending = file.pending && !actions?.stagingSyncing;
   const run = (event: ReactMouseEvent, action: FileAction) => { event.stopPropagation(); actions?.onAction(action, [file]); };
   const selected = isSelected(actions, file.pathId, selectedPathId);
   const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -118,7 +123,7 @@ function FileButton({ file, selectedPathId, onSelect, depth = 0, showPath = fals
       aria-selected={selected}
       aria-label={file.displayPath}
       title={file.oldDisplayPath ? `${file.oldDisplayPath} → ${file.displayPath}` : file.displayPath}
-      className={`file${selected ? " selected" : ""}${file.pending ? " pending" : ""}`}
+      className={`file${selected ? " selected" : ""}${pending ? " pending" : ""}`}
       style={{ "--tree-depth": depth, ...style } as CSSProperties}
       onClick={(event) => { if (actions) actions.clickRow(file, { toggle: event.ctrlKey || event.metaKey, range: event.shiftKey }); else onSelect(file); }}
       onMouseDown={(event) => { if (event.shiftKey) event.preventDefault(); }}
@@ -129,7 +134,7 @@ function FileButton({ file, selectedPathId, onSelect, depth = 0, showPath = fals
       <PathText path={label} className="file-path" title={file.displayPath}/>
       {file.oldDisplayPath && <PathText path={file.oldDisplayPath} prefix="← " className="old-path"/>}
       {file.submodule && <span className="submodule-pointer" title={`子模块提交指针：${file.submodule.old ?? "（无）"} → ${file.submodule.new ?? "（无）"}`}>{file.submodule.old?.slice(0, 7) ?? "（新增）"} → {file.submodule.new?.slice(0, 7) ?? "（未知）"}</span>}
-      {file.pending ? <span className="line-stat pending-mark" title="等待 Git 确认">确认中</span>
+      {file.pending ? pending && <span className="line-stat pending-mark" title="等待 Git 确认">确认中</span>
         : file.contentUnchanged ? <span className="line-stat unchanged" title={contentUnchangedLabels[file.contentUnchanged].detail}>{contentUnchangedLabels[file.contentUnchanged].short}</span>
         : file.additions !== null ? <span className="line-stat">+{file.additions} −{file.deletions ?? 0}</span>
         : statsPending && file.status !== "conflicted" && <span className="line-stat pending" title="增删统计正在后台补齐">…</span>}
@@ -137,9 +142,9 @@ function FileButton({ file, selectedPathId, onSelect, depth = 0, showPath = fals
         {allowed.primary && <button
           type="button"
           className="file-action"
-          disabled={!!actions.disabledReason || file.pending}
+          disabled={!!actionDisabled || pending}
           aria-label={actionLabels[allowed.primary]}
-          title={actions.disabledReason ?? `${actionLabels[allowed.primary]} ${file.displayPath}`}
+          title={actionDisabled ?? `${actionLabels[allowed.primary]} ${file.displayPath}`}
           onClick={(event) => run(event, allowed.primary!)}
         >
           {allowed.primary === "stage" ? "+" : allowed.primary === "unstage" ? "-" : actionLabels[allowed.primary]}
@@ -194,6 +199,7 @@ function FileMenu({ menu, files, onClose }: { menu: { file: FileChange; x: numbe
   const blocked = targets.map((file) => rowActions(actions.scope, file)).find((a) => !a.discard)?.discardBlocked ?? null;
   const pending = targets.some((file) => file.pending) ? "等待 Git 确认上一次操作" : null;
   const disabled = actions.disabledReason ?? pending;
+  const stagingDisabled = actions.stagingSyncing ? actions.stagingDisabledReason : disabled;
   const act = (action: FileAction, list: FileChange[]) => { onClose(); actions.onAction(action, list); };
   const count = (list: FileChange[]) => (targets.length > 1 ? `（${list.length} 个文件）` : "");
   const stagingLabel = actions.scope === "staged" ? "取消暂存" : "暂存";
@@ -202,7 +208,7 @@ function FileMenu({ menu, files, onClose }: { menu: { file: FileChange; x: numbe
     {actions.onStash && <button type="button" role="menuitem" disabled={!!disabled || !!conflicts.length}
       title={disabled ?? (conflicts.length ? "选中项包含冲突文件" : undefined)} onClick={() => { onClose(); actions.onStash?.(targets); }}>储藏所选文件…</button>}
     {targets.length > 1 && <span className="file-menu-note">已选中 {targets.length} 个文件</span>}
-    <button type="button" role="menuitem" disabled={!!disabled || !!stagingReason} title={disabled ?? stagingReason ?? undefined} onClick={() => act(actions.scope === "staged" ? "unstage" : "stage", regular)}>{stagingLabel}{count(regular)}</button>
+    <button type="button" role="menuitem" disabled={!!stagingDisabled || !!stagingReason} title={stagingDisabled ?? stagingReason ?? undefined} onClick={() => act(actions.scope === "staged" ? "unstage" : "stage", regular)}>{stagingLabel}{count(regular)}</button>
     {conflicts.length > 0 && <button type="button" role="menuitem" disabled={!!disabled} title={disabled ?? undefined} onClick={() => act("markResolved", conflicts)}>标记已解决{count(conflicts)}</button>}
     {actions.scope !== "staged" && <button type="button" role="menuitem" className="danger" disabled={!!disabled || !!blocked} title={disabled ?? blocked ?? "丢弃前会备份，可撤销"} onClick={() => act("discard", targets)}>丢弃…{count(targets)}</button>}
     {actions.scope === "staged" && <span className="file-menu-note">已暂存范围不提供丢弃，请先取消暂存</span>}

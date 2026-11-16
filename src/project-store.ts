@@ -16,6 +16,8 @@ export interface ProjectRuntime {
   details: RepositoryDetails | null;
   /** 新统计到达前，仅在暂存列表中保留未操作文件的显示信息。 */
   stagingPreview?: StagingPreview | null;
+  /** Git 已更新索引，重新读取文件列表失败，旧快照只能阅读。 */
+  stagingOutOfDate?: boolean;
   /** 显示的是持久化快照，后台校验尚未完成（V2-D08）。 */
   verifying: boolean;
   /** 项目在后台期间收到了变化，切回时需要刷新。 */

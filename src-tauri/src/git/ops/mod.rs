@@ -251,6 +251,7 @@ pub struct OperationOutcome {
     pub output: String,
     pub output_truncated: bool,
     pub snapshot: Option<RepositorySnapshot>,
+    pub snapshot_deferred: bool,
     pub confirmation: Option<Confirmation>,
     pub backup: Option<BackupSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -299,13 +300,14 @@ pub struct OpContext<'a> {
     pub log: OutputLog<'a>,
     pub backups: &'a BackupStore,
     pub processes: AtomicU32,
+    pub defer_staging_snapshot: bool,
     /// 网络操作的无输出超时（默认 60 s，见 `network.rs`）。
     pub network_idle: std::time::Duration,
 }
 
 impl<'a> OpContext<'a> {
     pub fn new(op_id: String, cancel: Arc<CancelHandle>, backups: &'a BackupStore, sink: &'a (dyn Fn(&str) + Sync)) -> Self {
-        Self { op_id, cancel, log: OutputLog::new(sink), backups, processes: AtomicU32::new(0), network_idle: network::network_idle() }
+        Self { op_id, cancel, log: OutputLog::new(sink), backups, processes: AtomicU32::new(0), defer_staging_snapshot: false, network_idle: network::network_idle() }
     }
 }
 
@@ -385,7 +387,7 @@ pub(super) fn display(path: &[u8]) -> String {
 }
 
 impl GitAdapter {
-    /// 执行一个写操作：前置检查 → 操作 → 一次精确刷新（允许回写 stat 缓存）。
+    /// 执行一个写操作。桌面端可在暂存写入成功后单独请求精确刷新。
     /// 前置检查失败（进行中状态、外部锁、已推送保护）以错误返回，仓库未被改动。
     pub fn run_operation(&self, request: OperationRequest, view_scope: CompareScope, ctx: &OpContext) -> Result<OperationOutcome, GitError> {
         let started = std::time::Instant::now();
@@ -395,9 +397,14 @@ impl GitAdapter {
             Some(step) => step,
             None => self.dispatch(&request, ctx)?,
         };
+        let snapshot_deferred = ctx.defer_staging_snapshot
+            && step.status == OpStatus::Succeeded
+            && matches!(request, OperationRequest::Stage { .. } | OperationRequest::Unstage { .. }
+                | OperationRequest::HunkStage { .. } | OperationRequest::HunkUnstage { .. }
+                | OperationRequest::StageSelected { .. } | OperationRequest::MarkResolved { .. });
         let git_processes = ctx.processes.load(std::sync::atomic::Ordering::SeqCst);
-        // 需要确认时没有任何改动，不必刷新；其余结局（含失败与取消）都重新读取实际状态并如实报告。
-        let snapshot = if step.status == OpStatus::NeedsConfirmation {
+        // 需要确认时无需刷新。失败和取消仍在返回前重新读取实际状态。
+        let snapshot = if snapshot_deferred || step.status == OpStatus::NeedsConfirmation {
             None
         } else {
             self.snapshot_v2(ctx.op_id.clone(), view_scope, true)
@@ -419,6 +426,7 @@ impl GitAdapter {
             output,
             output_truncated,
             snapshot,
+            snapshot_deferred,
             confirmation: step.confirmation,
             backup: step.backup,
             stash_oid: step.stash_oid,

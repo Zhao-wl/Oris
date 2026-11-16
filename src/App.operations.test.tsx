@@ -680,6 +680,110 @@ it.each(["stage", "unstage"] as const)("bulk %s includes all files even when the
     kind, pathIds: kind === "stage" ? ["id-a.txt", "id-b.txt"] : ["id-a.txt", "id-b.txt", "id-old.txt"]
   });
 });
+
+it.each(["row", "multi", "bulk"] as const)("confirms %s staging before status and accepts the reverse operation while scanning", async entry => {
+  const modified = change("a.txt");
+  const untracked = change("new.txt", "untracked");
+  const files = [modified, untracked];
+  const staged = entry === "row" ? [modified] : [modified, change("new.txt", "added")];
+  const remaining = entry === "row" ? [untracked] : [];
+  const stageResult = deferred<OperationOutcome>();
+  const stageScan = deferred<RepositorySnapshot>();
+  const unstageScan = deferred<RepositorySnapshot>();
+  bridge.open.mockResolvedValue(snap(files, []));
+  bridge.operation.mockReturnValueOnce(stageResult.promise).mockResolvedValueOnce(outcome("unstage", null, { snapshotDeferred: true }));
+  bridge.refresh.mockReturnValueOnce(stageScan.promise).mockReturnValueOnce(unstageScan.promise);
+  await mount();
+
+  const multiAction = async (label: string) => {
+    await click(row("a.txt"));
+    await clickWith("new.txt", { ctrlKey: true });
+    await contextMenu("a.txt");
+    await click(menuItem(label)!);
+  };
+  if (entry === "multi") await multiAction("暂存");
+  else await click(entry === "bulk" ? button("全部加入暂存") : rowButton("a.txt", "暂存"));
+  expect(host.querySelectorAll(".pending-mark")).toHaveLength(staged.length);
+  expect(bridge.refresh).not.toHaveBeenCalled();
+  stageResult.resolve(outcome("stage", null, { snapshotDeferred: true }));
+  await flush();
+  expect(bridge.refresh).toHaveBeenCalledWith("a", "unstaged", expect.any(String), false);
+  expect(host.querySelector(".pending-mark")).toBeNull();
+  expect(host.querySelector(".op-status.succeeded")).not.toBeNull();
+  if (entry === "multi") {
+    await click(button("已暂存"));
+    await multiAction("取消暂存");
+  } else {
+    const unstage = entry === "bulk" ? button("全部取消暂存") :
+      host.querySelector<HTMLButtonElement>('.change-column:nth-child(2) .file[aria-label="a.txt"] button[aria-label="取消暂存"]')!;
+    expect(unstage.disabled).toBe(false);
+    await click(unstage);
+  }
+  expect(host.textContent).toContain("取消暂存已排队");
+  expect(bridge.operation).toHaveBeenCalledTimes(1);
+  stageScan.resolve(snap(remaining, staged, "r2"));
+  await flush();
+  expect(bridge.operation).toHaveBeenLastCalledWith("a", entry === "multi" ? "staged" : "unstaged", expect.any(String), {
+    kind: "unstage", pathIds: staged.map(file => file.pathId)
+  });
+  expect(host.querySelector(".pending-mark")).toBeNull();
+  expect(host.textContent).not.toContain("已排队");
+  unstageScan.resolve(snap(files, [], "r3"));
+  await flush();
+  if (entry === "multi") await click(button("未暂存"));
+  expect(rows()).toEqual(["a.txt", "new.txt"]);
+  expect(row("new.txt").querySelector(".status")?.textContent).toBe("?");
+  expect(button("全部加入暂存").disabled).toBe(false);
+});
+
+it("can unstage the confirmed part of a queued batch when a staged preview entry is already in the desired state", async () => {
+  const file = change("a.txt");
+  const scan = deferred<RepositorySnapshot>();
+  bridge.operation.mockResolvedValueOnce(outcome("stage", null, { snapshotDeferred: true }))
+    .mockResolvedValueOnce(outcome("unstage", snap([file], [], "r3")));
+  bridge.refresh.mockReturnValueOnce(scan.promise);
+  await mount();
+  await click(button("全部加入暂存"));
+  await click(button("全部取消暂存"));
+  scan.resolve(snap([], [file], "r2"));
+  await flush();
+  expect(bridge.operation).toHaveBeenLastCalledWith("a", "unstaged", expect.any(String), { kind: "unstage", pathIds: [file.pathId] });
+});
+
+it("cancels a queued unstage when Git reports a rename partner outside the selected paths", async () => {
+  const file = change("a.txt", "untracked");
+  const scan = deferred<RepositorySnapshot>();
+  bridge.open.mockResolvedValue(snap([file], []));
+  bridge.operation.mockResolvedValue(outcome("stage", null, { snapshotDeferred: true }));
+  bridge.refresh.mockReturnValueOnce(scan.promise);
+  await mount();
+  await click(button("全部加入暂存"));
+  await click(button("全部取消暂存"));
+  scan.resolve(snap([], [{ ...file, status: "renamed", oldDisplayPath: "old.txt", oldPathId: "id-old.txt" }], "r2"));
+  await flush();
+  expect(bridge.operation).toHaveBeenCalledTimes(1);
+  expect(host.querySelector(".op-status.cancelled")?.textContent).toContain("文件状态已变化");
+  expect(button("全部取消暂存").disabled).toBe(false);
+});
+
+it("requires a fresh snapshot after the background staging refresh fails", async () => {
+  const scan = deferred<RepositorySnapshot>();
+  bridge.operation.mockResolvedValue(outcome("stage", null, { snapshotDeferred: true }));
+  bridge.refresh.mockReturnValueOnce(scan.promise);
+  await mount();
+  await click(button("全部加入暂存"));
+  await click(button("全部取消暂存"));
+  scan.reject(new Error("status unavailable"));
+  await flush();
+  expect(bridge.operation).toHaveBeenCalledTimes(1);
+  expect(host.querySelector(".pending-mark")).toBeNull();
+  expect(host.querySelector(".op-status.succeeded")?.textContent).toContain("文件列表刷新失败");
+  expect(button("全部加入暂存").disabled).toBe(true);
+  await click(button("已暂存"));
+  expect(button("全部加入暂存").disabled).toBe(true);
+  await click(button("未暂存"));
+  expect(button("全部加入暂存").disabled).toBe(true);
+});
 it("Shift uses the current single selection after keyboard navigation and keeps its anchor", async () => {
   bridge.open.mockResolvedValue(snap([change("a.txt"), change("b.txt"), change("c.txt"), change("d.txt")], []));
   await mount();

@@ -167,7 +167,11 @@ export default function App() {
   const pendingStats = statsPending(runtime?.snapshot, runtime?.details);
 
   // ---------- 写操作（V2-02）：每个仓库的运行中操作、实时输出、最近结果与可撤销的丢弃 ----------
-  interface RepoOps { running: RunningOperation | null; lines: string[]; last: OperationRecord | null; lastCommit: OperationRecord | null; backups: BackupSummary[]; lastBackup: BackupSummary | null }
+  interface RepoOps {
+    running: RunningOperation | null; lines: string[]; last: OperationRecord | null; lastCommit: OperationRecord | null; backups: BackupSummary[]; lastBackup: BackupSummary | null;
+    reconciling?: string | null;
+    queuedStage?: { kind: "stage" | "unstage"; pathIds: string[] } | null;
+  }
   const opStore = useRef(createStore<Record<string, RepoOps>>({})).current;
   const repoOps = useStore(opStore, (map) => (activeRepoId ? map[activeRepoId] : undefined));
   /** 任一仓库正在运行的写操作；重启更新前需要确认。 */
@@ -178,8 +182,13 @@ export default function App() {
       return { ...map, [repoId]: { ...current, ...(typeof patch === "function" ? patch(current) : patch) } };
     });
   }, [opStore]);
-  /** 写操作进行中的仓库：期间不发起自动刷新（watcher 事件在后端屏蔽，结束时返回精确刷新的快照）。 */
+  /** 写操作及其列表刷新进行中的仓库，期间合并 watcher 触发的自动刷新。 */
   const opRunning = useRef(new Set<string>());
+  const cancelStagingRefresh = (repoId: string) => {
+    if (!opStore.get()[repoId]?.reconciling) return;
+    opRunning.current.delete(repoId);
+    updateOps(repoId, { reconciling: null, queuedStage: null });
+  };
   const [gitTab, setGitTab] = useState<GitTab | null>("commit");
   // ---------- 历史阅读（任务 04）：主阅读器显示按提交 OID 读取的版本，本地阅读位置保留以便返回 ----------
   const [historyReading, setHistoryReading] = useState<(HistoryFileOpen & { returnTo: { pathId: string | null; hunk: number } }) | null>(null);
@@ -257,7 +266,7 @@ export default function App() {
       window.clearTimeout(persistTimer.current);
       persistTimer.current = window.setTimeout(() => {
         const current = projects.get(repoId);
-        if (!current?.snapshot?.scopes || current.verifying) return;
+        if (!current?.snapshot?.scopes || current.verifying || current.stagingOutOfDate || opRunning.current.has(repoId)) return;
         void saveSnapshot(current.snapshot.repo.worktreePath, persistableSnapshot(current.snapshot, current.details)).catch(() => {});
       }, 1000);
     };
@@ -390,6 +399,7 @@ export default function App() {
       snapshot: result,
       details: current.details?.revision === result.revision ? current.details : null,
       stagingPreview: options ? options.stagingPreview : current.stagingPreview?.revision === result.revision ? current.stagingPreview : null,
+      stagingOutOfDate: options ? false : current.stagingOutOfDate,
       verifying: false,
       dirty: false
     }));
@@ -557,7 +567,9 @@ export default function App() {
       const priorRevision = projects.get(activeRepoId)?.snapshot?.revision;
       // Manual refresh re-reads content, e.g. LFS objects fetched after a pointer was shown.
       if (!automatic || (priorRevision && priorRevision !== result.revision)) cache.current.clearRepo(activeRepoId);
-      if (!automatic || priorRevision !== result.revision || contentPending.current) {
+      const stagingOutOfDate = projects.get(activeRepoId)?.stagingOutOfDate;
+      if (stagingOutOfDate) projects.update(activeRepoId, { stagingOutOfDate: false });
+      if (!automatic || priorRevision !== result.revision || contentPending.current || stagingOutOfDate) {
         const live = currentRead.current;
         await acceptSnapshot(result, activeProject, { ...activeProject.anchor, selectedPathId: live.selected }, requestId, automatic);
       }
@@ -829,6 +841,7 @@ export default function App() {
       cache.current.clearRepo(id); opened.current.delete(id); setOpenedRepos(new Set(opened.current));
       for (const key of scopeSnapshots.current.keys()) if (key.startsWith(`${id}:`)) scopeSnapshots.current.delete(key);
       const removedPath = projects.get(id)?.snapshot?.repo.worktreePath;
+      cancelStagingRefresh(id);
       projects.remove(id);
       if (removedPath) void removeSnapshot(removedPath).catch(() => {});
     }
@@ -908,7 +921,13 @@ export default function App() {
     workspaceRef.current = next;
     setWorkspaceState(next);
     await refreshGroup(rootId);
-    if (removedMember?.repoId) { projects.remove(removedMember.repoId); opened.current.delete(removedMember.repoId); setOpenedRepos(new Set(opened.current)); void closeRepository(removedMember.repoId).catch(() => {}); }
+    if (removedMember?.repoId) {
+      cancelStagingRefresh(removedMember.repoId);
+      projects.remove(removedMember.repoId);
+      opened.current.delete(removedMember.repoId);
+      setOpenedRepos(new Set(opened.current));
+      void closeRepository(removedMember.repoId).catch(() => {});
+    }
     const name = memberPath.split(/[\\/]/).filter(Boolean).pop() ?? memberPath;
     setGroupToast({ id: ++syncToastSeq, kind: "fetch", status: "succeeded", title: add ? `已把 ${name} 加入工作区` : `已把 ${name} 移出工作区`, detail: add ? "出现在仓库选择器的“手动加入”分组，可随时移出；不修改仓库" : "只移除 Oris 记录，不删除目录", actions: [] });
   };
@@ -1031,7 +1050,13 @@ export default function App() {
 
   // ---------- 写操作入口 ----------
   const runningLabel = repoOps?.running ? operationLabels[repoOps.running.kind] : null;
-  const writeBlocked = writeBlockedReason({ snapshot, verifying: !!runtime?.verifying, running: runningLabel });
+  const stagingSyncing = !!repoOps?.reconciling;
+  const writeBlocked = stagingSyncing
+    ? "正在刷新文件列表"
+    : writeBlockedReason({ snapshot, verifying: !!runtime?.verifying, running: runningLabel, stale: runtime?.stagingOutOfDate });
+  const stagingBlocked = stagingSyncing
+    ? (repoOps?.queuedStage ? "已有一项暂存操作排队" : null)
+    : writeBlocked;
   // HEAD → 工作区的净差异可能省略仍需清理的暂存改动。
   const discardAllFiles = useMemo(() => {
     const lists = runtime?.snapshot?.scopes;
@@ -1065,7 +1090,12 @@ export default function App() {
       updateOps(repoId, { last: { kind, status: "failed", message: "操作包含被忽略文件，请先显示并核对操作范围", output: "", at: Date.now() } });
       return null;
     }
-    const blocked = writeBlockedReason({ snapshot: runtimeNow?.snapshot, verifying: !!runtimeNow?.verifying, running: opStore.get()[repoId]?.running ? operationLabels[opStore.get()[repoId]!.running!.kind] : null });
+    const repoOperations = opStore.get()[repoId];
+    const blocked = repoOperations?.reconciling ? "正在刷新文件列表" : writeBlockedReason({
+      snapshot: runtimeNow?.snapshot, verifying: !!runtimeNow?.verifying,
+      running: repoOperations?.running ? operationLabels[repoOperations.running.kind] : null,
+      stale: runtimeNow?.stagingOutOfDate
+    });
     const kind = request.kind === "commitSelected" ? "commit" : request.kind === "stageSelected" ? "stage" : request.kind;
     if (blocked) { updateOps(repoId, { last: { kind, status: "failed", message: blocked, output: "", at: Date.now() } }); return null; }
     const opId = newRequestId();
@@ -1090,7 +1120,7 @@ export default function App() {
       if (repositoryGate.current.accepts(requestId)) repositoryGate.current.finish(requestId);
       return null;
     }
-    opRunning.current.delete(repoId);
+    if (!outcome.snapshotDeferred) opRunning.current.delete(repoId);
     // 写操作期间 watcher 屏蔽了 refs 事件：结束后由这里触发分支列表与日志重读。
     if (currentRead.current.repo === repoId) {
       if (refsKinds.has(outcome.kind)) setRefsVersion((value) => value + 1);
@@ -1100,17 +1130,21 @@ export default function App() {
     // 状态栏的“撤销丢弃”只针对本次丢弃返回的备份，不依赖异步刷新的备份列表。
     const succeeded = outcome.status === "succeeded";
     const backupPatch = (outcome.kind === "discard" || outcome.kind === "hunkDiscard") && succeeded && outcome.backup ? { lastBackup: outcome.backup } : request.kind === "undoDiscard" && succeeded && opStore.get()[repoId]?.lastBackup?.id === request.backupId ? { lastBackup: null } : {};
-    updateOps(repoId, { running: null, last: record(outcome), ...backupPatch, ...(commitKind ? { lastCommit: record(outcome) } : {}) });
+    updateOps(repoId, { running: null, reconciling: outcome.snapshotDeferred ? opId : null, last: record(outcome), ...backupPatch, ...(commitKind ? { lastCommit: record(outcome) } : {}) });
     if (outcome.kind === "discard" || outcome.kind === "hunkDiscard" || outcome.kind === "undoDiscard") void discardBackups(repoId).then((backups) => updateOps(repoId, { backups }), () => {});
-    if (outcome.snapshot) {
-      const result = outcome.snapshot;
+    const applyOperationSnapshot = async (result: RepositorySnapshot) => {
       // Git 已确认，统计仍在后台补齐；只在文件列表暂时沿用未操作行的显示信息。
       const previous = projects.get(repoId);
       const stagingPreview = succeeded && prior && previous?.snapshot?.revision === prior.revision
         && (request.kind === "stage" || request.kind === "unstage" || request.kind === "stageSelected")
         ? retainStagingPreview(previous, result, request.pathIds) : null;
       if (prior?.revision !== result.revision) cache.current.clearRepo(repoId);
-      if (currentRead.current.repo === repoId && repositoryGate.current.accepts(requestId)) {
+      const active = currentRead.current.repo === repoId && activeIntent.current === repoId;
+      // 在后台读取期间，用户可能已经用本地缓存切换了比较范围。
+      const acceptId = repositoryGate.current.accepts(requestId) ? requestId :
+        active && outcome.snapshotDeferred && currentRead.current.scope !== viewScope ? newRequestId() : null;
+      if (active && acceptId) {
+        if (acceptId !== requestId) repositoryGate.current.activate(acceptId);
         refreshPending.current = false;
         const project = workspaceRef.current.projects.find((entry) => entry.repo.repoId === repoId);
         const scopeNow = currentRead.current.scope;
@@ -1123,13 +1157,55 @@ export default function App() {
         const keepPreviousDiff = kind === "stage" || kind === "unstage" || kind === "hunkStage" || kind === "hunkUnstage";
         if (project) {
           const hunk = keepPreviousDiff && selected !== currentSelection ? 0 : project.anchor.hunk;
-          await acceptSnapshot(view, project, { ...project.anchor, scope: scopeNow, selectedPathId: selected, hunk }, requestId, false, { stagingPreview, keepPreviousDiff });
+          await acceptSnapshot(view, project, { ...project.anchor, scope: scopeNow, selectedPathId: selected, hunk }, acceptId, false, { stagingPreview, keepPreviousDiff });
         }
-        if (repositoryGate.current.accepts(requestId)) repositoryGate.current.finish(requestId);
+        if (repositoryGate.current.accepts(acceptId)) repositoryGate.current.finish(acceptId);
       } else {
-        projects.update(repoId, { snapshot: result, details: null, stagingPreview, verifying: false, dirty: false });
+        projects.update(repoId, { snapshot: result, details: null, stagingPreview, stagingOutOfDate: false, verifying: false, dirty: false });
         loadDetails.current(result);
       }
+    };
+    if (outcome.snapshotDeferred) {
+      // 仓库写锁已释放，重新读取在独立的只读请求中完成。
+      const finishReconcile = () => {
+        const { queuedStage } = opStore.get()[repoId] ?? {};
+        opRunning.current.delete(repoId);
+        updateOps(repoId, { reconciling: null, queuedStage: null });
+        return queuedStage;
+      };
+      void refreshRepository(repoId, viewScope, newRequestId(), false).then(result => {
+        if (opStore.get()[repoId]?.reconciling !== opId) return;
+        const queued = finishReconcile();
+        if (!workspaceRef.current.projects.some(project => project.repo.repoId === repoId)) {
+          if (repositoryGate.current.accepts(requestId)) repositoryGate.current.finish(requestId);
+          return;
+        }
+        void applyOperationSnapshot(result);
+        if (!queued) return;
+        const targetIds = new Set(queued.pathIds);
+        const files = (result.scopes?.[queued.kind === "stage" ? "unstaged" : "staged"] ?? []).filter(file =>
+          file.status !== "conflicted" && targetIds.has(file.pathId));
+        const actual = pathIdsFor(files, queued.kind === "unstage");
+        if (activeIntent.current !== repoId || currentRead.current.repo !== repoId ||
+            !actual.length || actual.some(id => !targetIds.has(id))) {
+          updateOps(repoId, { last: { kind: queued.kind, status: "cancelled", message: "项目或文件状态已变化，已取消排队操作", output: "", at: Date.now() } });
+          return;
+        }
+        stageFiles(queued.kind, files);
+      }, error => {
+        if (opStore.get()[repoId]?.reconciling !== opId) return;
+        const queued = finishReconcile();
+        if (workspaceRef.current.projects.some(project => project.repo.repoId === repoId)) {
+          projects.update(repoId, current => ({
+            snapshot: optimistic && current.snapshot?.revision === optimistic.revision ? prior : current.snapshot,
+            stagingOutOfDate: true, dirty: true
+          }));
+          updateOps(repoId, { last: { ...record(outcome), message: `${outcome.message}，文件列表刷新失败${queued ? "，已取消排队操作" : ""}。请刷新后继续操作：${errorText(error)}` } });
+        }
+        if (repositoryGate.current.accepts(requestId)) repositoryGate.current.finish(requestId);
+      });
+    } else if (outcome.snapshot) {
+      await applyOperationSnapshot(outcome.snapshot);
     } else {
       if (optimistic && prior) projects.update(repoId, { snapshot: prior });
       if (repositoryGate.current.accepts(requestId)) repositoryGate.current.finish(requestId);
@@ -1138,9 +1214,17 @@ export default function App() {
   };
 
   const stageFiles = (kind: "stage" | "unstage", files: FileChange[]) => {
-    const current = runtime?.snapshot;
+    const repoId = currentRead.current.repo;
+    if (!repoId || activeIntent.current !== repoId || !files.length) return;
+    const pathIds = pathIdsFor(files, kind === "unstage");
+    const operations = opStore.get()[repoId];
+    if (operations?.reconciling) {
+      if (!operations.queuedStage) updateOps(repoId, { queuedStage: { kind, pathIds } });
+      return;
+    }
+    const current = projects.get(repoId)?.snapshot;
     setMultiSelection(new Set());
-    void runOp({ kind, pathIds: pathIdsFor(files, kind === "unstage") }, current ? optimisticMove(current, kind, files) : undefined);
+    void runOp({ kind, pathIds }, current ? optimisticMove(current, kind, files) : undefined);
   };
   const resolveFiles = async (files: FileChange[], confirmed = false): Promise<void> => {
     setMultiSelection(new Set());
@@ -2035,13 +2119,13 @@ export default function App() {
       const source = runtime?.snapshot?.scopes ? stagingList(runtime.snapshot, runtime, listScope) : snapshot?.scope === listScope ? snapshot.files : [];
       const files = filterReadableFiles(source, ignoreMatcher, filter, showIgnored).sort(compareFiles);
       const active = scope === listScope;
-      const actions: FileActions = { ...fileActions, scope: listScope, selection: active ? multiSelection : new Set<string>(),
+      const actions: FileActions = { ...fileActions, scope: listScope, stagingSyncing, stagingDisabledReason: stagingBlocked, selection: active ? multiSelection : new Set<string>(),
         onSelection: (ids, focus) => { setMultiSelection(new Set(ids)); if (focus) userSelect(focus, listScope); },
         onStash: openStashDraft,
         onAction: (action, targets) => { if (action === "discard") void discardFiles(targets, listScope); else onFileAction(action, targets); } };
       return <section className={`change-column${active ? " active-scope" : ""}`} key={listScope}>
         <div className="change-heading"><button className={`scope scope-title${active ? " selected" : ""}`} onClick={() => void setCompareScope(listScope)}>{scopeLabels[listScope].short}</button><span className="dim">{files.length}</span>{active && selectedCount > 1 && <span className="batch-count">已选 {selectedCount} 个</span>}<span className="spacer"/>
-          <button className="icon-button" aria-label={listScope === "unstaged" ? "全部加入暂存" : "全部取消暂存"} title={writeBlocked ?? (listScope === "unstaged" ? "全部暂存（不受筛选影响）" : "全部取消暂存（不受筛选影响）")} disabled={!!writeBlocked || !source.some(f => f.status !== "conflicted")} onClick={() => stageFiles(listScope === "unstaged" ? "stage" : "unstage", source.filter(f => f.status !== "conflicted"))}>{listScope === "unstaged" ? "⇥" : "⇤"}</button>
+          <button className="icon-button" aria-label={listScope === "unstaged" ? "全部加入暂存" : "全部取消暂存"} title={stagingBlocked ?? (listScope === "unstaged" ? "全部暂存（不受筛选影响）" : "全部取消暂存（不受筛选影响）")} disabled={!!stagingBlocked || !source.some(f => f.status !== "conflicted")} onClick={() => stageFiles(listScope === "unstaged" ? "stage" : "unstage", source.filter(f => f.status !== "conflicted"))}>{listScope === "unstaged" ? "⇥" : "⇤"}</button>
         </div>
         <div className="files" role="listbox" aria-label={`${scopeLabels[listScope].short}变更`}><FileTree files={files} selectedPathId={active && !historyReading ? selectedPathId : null} mode={fileView} statsPending={pendingStats} onSelect={file => userSelect(file, listScope)} actions={actions}/>{!files.length && <div className="empty">{filter ? "筛选无匹配文件" : "暂无文件"}</div>}</div>
       </section>;
@@ -2080,6 +2164,6 @@ export default function App() {
       if (action.kind === "fileIgnore") return `忽略规则已保存 · ${ignoreDetail}`;
       return action.kind === "git" ? opStore.get()[turn.repoId ?? ""]?.last?.message || "Git 操作已完成" : "应用操作已完成";
     }} onCancelGeneration={cancelAiGeneration} onCommit={aiCommit}/>}
-    <footer className="statusbar">{snapshot ? <span className="status-location"><PathText path={snapshot.repo.worktreePath}/><span className="status-suffix">{` · ${snapshot.repo.branch} · ${scopeLabels[scope].short}`}</span></span> : <span>多项目 → 本地差异浏览</span>}<span className="spacer"/>{repoOps?.running ? <><span className="op-status running" role="status">⟳ 正在{operationLabels[repoOps.running.kind]}…{fetchProgress ? ` ${fetchProgress.text}` : ""}</span>{networkRunning && <button type="button" className="op-undo" onClick={() => { if (activeRepoId) void cancelOperation(activeRepoId); }}>取消</button>}</> : repoOps?.last && <button type="button" className={`op-status ${repoOps.last.status}`} title="查看最近一次操作的 Git 输出" onClick={() => setGitTab("output")}>{repoOps.last.status === "succeeded" ? "✓" : repoOps.last.status === "cancelled" ? "■" : repoOps.last.status === "needsConfirmation" ? "?" : "✗"} {repoOps.last.message}</button>}{!repoOps?.running && repoOps?.last?.stashOid && backendRepoId && <button type="button" className="op-undo" onClick={() => { setStashReveal({ repoId: backendRepoId, oid: repoOps.last!.stashOid! }); setGitTab("stash"); }}>查看 Stash</button>}{!repoOps?.running && repoOps?.lastBackup && <button type="button" className="op-undo" disabled={!!writeBlocked} title={`撤销刚才丢弃的 ${repoOps.lastBackup.files} 个文件`} onClick={() => void undoDiscard(repoOps.lastBackup!.id)}>撤销丢弃</button>}{!repoOps?.running && repoOps?.last?.kind === "push" && repoOps.last.status === "failed" && repoOps.last.message.includes("被拒绝") && <button type="button" className="op-undo push-rejected-pull" disabled={!!writeBlocked} title={writeBlocked ?? `按默认方式（${pullMode === "ffOnly" ? "仅快进" : "合并远端改动"}）拉取；不会自动再推送`} onClick={() => void runPull()}>拉取</button>}<span>本机 Git · 缓存 {cache.current.stats().entries}/{cache.current.stats().budget / 1024 / 1024} MiB</span></footer>
+    <footer className="statusbar">{snapshot ? <span className="status-location"><PathText path={snapshot.repo.worktreePath}/><span className="status-suffix">{` · ${snapshot.repo.branch} · ${scopeLabels[scope].short}`}</span></span> : <span>多项目 → 本地差异浏览</span>}<span className="spacer"/>{repoOps?.queuedStage && <span className="op-status running" role="status">{operationLabels[repoOps.queuedStage.kind]}已排队</span>}{repoOps?.running ? <><span className="op-status running" role="status">⟳ 正在{operationLabels[repoOps.running.kind]}…{fetchProgress ? ` ${fetchProgress.text}` : ""}</span>{networkRunning && <button type="button" className="op-undo" onClick={() => { if (activeRepoId) void cancelOperation(activeRepoId); }}>取消</button>}</> : repoOps?.last && <button type="button" className={`op-status ${repoOps.last.status}`} title="查看最近一次操作的 Git 输出" onClick={() => setGitTab("output")}>{repoOps.last.status === "succeeded" ? "✓" : repoOps.last.status === "cancelled" ? "■" : repoOps.last.status === "needsConfirmation" ? "?" : "✗"} {repoOps.last.message}</button>}{!repoOps?.running && repoOps?.last?.stashOid && backendRepoId && <button type="button" className="op-undo" onClick={() => { setStashReveal({ repoId: backendRepoId, oid: repoOps.last!.stashOid! }); setGitTab("stash"); }}>查看 Stash</button>}{!repoOps?.running && repoOps?.lastBackup && <button type="button" className="op-undo" disabled={!!writeBlocked} title={`撤销刚才丢弃的 ${repoOps.lastBackup.files} 个文件`} onClick={() => void undoDiscard(repoOps.lastBackup!.id)}>撤销丢弃</button>}{!repoOps?.running && repoOps?.last?.kind === "push" && repoOps.last.status === "failed" && repoOps.last.message.includes("被拒绝") && <button type="button" className="op-undo push-rejected-pull" disabled={!!writeBlocked} title={writeBlocked ?? `按默认方式（${pullMode === "ffOnly" ? "仅快进" : "合并远端改动"}）拉取；不会自动再推送`} onClick={() => void runPull()}>拉取</button>}<span>本机 Git · 缓存 {cache.current.stats().entries}/{cache.current.stats().budget / 1024 / 1024} MiB</span></footer>
   </main>;
 }

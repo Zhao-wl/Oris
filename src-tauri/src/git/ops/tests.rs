@@ -182,6 +182,28 @@ fn ai_commit_selected_rejects_stale_plan_without_touching_index() {
 // ------------------------------ B05 ------------------------------
 
 #[test]
+fn b05_can_confirm_stage_and_unstage_before_the_status_scan() {
+    let dir = base_repo();
+    let root = dir.path();
+    write(root, "a.txt", b"changed\n");
+    let h = Harness::new(root);
+    let mut ctx = OpContext::new("deferred-stage".into(), Arc::new(CancelHandle::default()), &h.store, &|_| {});
+    ctx.defer_staging_snapshot = true;
+    let path_ids = vec![id("a.txt")];
+    let staged = h.adapter.run_operation(OperationRequest::Stage { path_ids: path_ids.clone() }, CompareScope::Staged, &ctx).unwrap();
+    assert_eq!(staged.status, OpStatus::Succeeded);
+    assert!(staged.snapshot_deferred && staged.snapshot.is_none());
+    assert_eq!(staged_names(root), "M\ta.txt");
+
+    let unstaged = h.adapter.run_operation(OperationRequest::Unstage { path_ids }, CompareScope::Unstaged, &ctx).unwrap();
+    assert_eq!(unstaged.status, OpStatus::Succeeded);
+    assert!(unstaged.snapshot_deferred && unstaged.snapshot.is_none());
+    assert_eq!(staged_names(root), "");
+    let snapshot = h.adapter.snapshot_v2("after-unstage".into(), CompareScope::Unstaged, false).unwrap();
+    assert_eq!(snapshot.files[0].display_path, "a.txt");
+}
+
+#[test]
 fn b05_stage_and_unstage_added_deleted_renamed_untracked_special_paths_in_batches() {
     let dir = base_repo();
     let p = dir.path();

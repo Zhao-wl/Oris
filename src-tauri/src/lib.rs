@@ -718,7 +718,7 @@ fn remove_snapshot(worktree_path: String, store: State<'_, Snapshots>) {
     store.0.remove(&worktree_path);
 }
 
-/// 执行一个写操作（R-OPSAFE）：仓库级写锁（忙时直接拒绝）、watcher 屏蔽窗口、输出逐行推送、结束后精确刷新。
+/// 执行一个写操作（R-OPSAFE）：仓库级写锁、watcher 屏蔽窗口、输出逐行推送。暂存成功后由前端单独请求刷新。
 #[cfg(feature = "desktop")]
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
@@ -745,7 +745,8 @@ async fn run_operation(
         let sink = move |line: &str| {
             let _ = emitter.emit("operation-output", OperationLine { repo_id: line_repo.clone(), op_id: line_op.clone(), line: line.to_owned() });
         };
-        let ctx = ops::OpContext::new(op_id, guard.cancel.clone(), &backups.0, &sink);
+        let mut ctx = ops::OpContext::new(op_id, guard.cancel.clone(), &backups.0, &sink);
+        ctx.defer_staging_snapshot = true;
         let outcome = opened.adapter.run_operation(request, scope, &ctx);
         if let Some(suppression) = &suppression {
             let touched = outcome.as_ref().map(|o| o.touched.clone()).unwrap_or_default();

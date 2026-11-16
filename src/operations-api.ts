@@ -71,6 +71,7 @@ export interface OperationOutcome {
   output: string;
   outputTruncated: boolean;
   snapshot: RepositorySnapshot | null;
+  snapshotDeferred?: boolean;
   confirmation: Confirmation | null;
   backup: BackupSummary | null;
   lockLeft: boolean;
