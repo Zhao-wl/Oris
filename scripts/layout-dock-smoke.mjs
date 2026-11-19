@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import assert from 'node:assert/strict';
-const output = resolve('artifacts/layout-0.9.5');
+const output = resolve(process.env.ORIS_LAYOUT_SNAPSHOTS || 'artifacts/layout-0.9.5');
 process.env.ORIS_LAYOUT_SNAPSHOTS = output;
 const { startVitest } = await import('vitest/node');
 let runner;
@@ -32,6 +32,29 @@ try {
   assert.ok(layout.composer.right<=width+1);assert.ok(layout.reader.height>=100);assert.equal(layout.toolbarHidden,true);
   assert.equal(layout.bodyWidth,width);results.push({width,height,layout});
   await page.screenshot({path:join(output,`files-${width}.png`)});
+
+  const pushFailure = await page.evaluate(() => {
+   const statusbar = document.querySelector('.statusbar');
+   const message = document.createElement('button');
+   message.className = 'op-status failed';
+   message.textContent = '✗ 推送 dev_X15-2978 到 origin/dev_X15-2978 被拒绝\n' + 'remote: 更新远端引用失败。'.repeat(80);
+   const pull = document.createElement('button');
+   pull.className = 'op-undo push-rejected-pull';
+   pull.textContent = '拉取';
+   statusbar.lastElementChild.before(message, pull);
+   return {
+    readerWidth: document.querySelector('.workspace').getBoundingClientRect().width,
+    composerRight: document.querySelector('.commit-layout').getBoundingClientRect().right,
+    statusbarWidth: statusbar.getBoundingClientRect().width,
+    pullRight: pull.getBoundingClientRect().right,
+    messageTruncated: message.scrollWidth > message.clientWidth,
+   };
+  });
+  assert.equal(pushFailure.readerWidth,width);
+  assert.equal(pushFailure.statusbarWidth,width);
+  assert.ok(pushFailure.composerRight<=width && pushFailure.pullRight<=width);
+  assert.ok(pushFailure.messageTruncated);
+  results.at(-1).pushFailure = pushFailure;
  }
  await page.setViewportSize({width:1920,height:1080});
  await page.setContent(readFileSync(join(output,'history.html'),'utf8'));
