@@ -28,6 +28,8 @@ npm run build                    # TypeScript 检查和前端生产构建
 npm run tauri -- build           # 构建当前平台的桌面应用和安装包
 ```
 
+提交前运行 `node scripts/local-ci.mjs`。该命令执行 TypeScript 检查、前端构建和回归，以及主题、旧 GUI 入口安全回归和发布工具测试。任何一步失败都会返回非零退出码。
+
 ## 项目文档
 
 - [文档入口](docs/README.md)
