@@ -12,6 +12,7 @@ vi.mock("./ai-api", () => ({ detectAiTools: vi.fn(), listAiModels: vi.fn(), setA
 let host: HTMLDivElement;
 let root: Root;
 let settings: SettingsStore;
+let storage: Pick<Storage, "getItem" | "setItem">;
 const click = async (element: Element) => { await act(async () => { (element as HTMLElement).click(); }); };
 
 beforeEach(async () => {
@@ -19,7 +20,8 @@ beforeEach(async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
   const values = new Map<string, string>();
-  settings = new SettingsStore({ getItem: (key) => values.get(key) ?? null, setItem: (key, value) => void values.set(key, value) }, createSettingsRegistry({ schemes: schemeIndex }));
+  storage = { getItem: (key) => values.get(key) ?? null, setItem: (key, value) => void values.set(key, value) };
+  settings = new SettingsStore(storage, createSettingsRegistry({ schemes: schemeIndex }));
   await act(async () => root.render(<SettingsDialog settings={settings} gitInUse={null} onClose={() => {}}/>));
   await click(host.querySelector('[aria-controls="settings-ai-subnav"]')!);
 });
@@ -51,6 +53,12 @@ it("shows the Codex version warning from detection and model checks", async () =
 });
 
 it("edits and resets each operation's system prompt independently", async () => {
+  const advanced = host.querySelector<HTMLDetailsElement>(".ai-prompt-settings")!;
+  const summary = advanced.querySelector("summary")!;
+  expect(advanced.open).toBe(false);
+  await click(summary);
+  expect(advanced.open).toBe(true);
+  expect(advanced.querySelectorAll("textarea")).toHaveLength(3);
   const staged = host.querySelector<HTMLTextAreaElement>('[aria-label="根据暂存内容生成提交信息系统提示词"]')!;
   const described = host.querySelector<HTMLTextAreaElement>('[aria-label="根据描述选择文件并生成提交信息系统提示词"]')!;
   await act(async () => {
@@ -59,6 +67,12 @@ it("edits and resets each operation's system prompt independently", async () => 
   });
   expect(settings.get().ai.prompts.stagedMessage).toBe("只写英文摘要");
   expect(settings.get().ai.prompts.describedCommit).toBe(DEFAULT_AI_PROMPTS.describedCommit);
+  await click(summary);
+  expect(advanced.open).toBe(false);
+  await click(summary);
+  expect(advanced.open).toBe(true);
+  expect(staged.value).toBe("只写英文摘要");
+  expect(new SettingsStore(storage, settings.registry).get().ai.prompts.stagedMessage).toBe("只写英文摘要");
   await click(staged.closest(".ai-prompt-field")!.querySelector("button")!);
   expect(settings.get().ai.prompts.stagedMessage).toBe(DEFAULT_AI_PROMPTS.stagedMessage);
   expect(described.value).toBe(DEFAULT_AI_PROMPTS.describedCommit);
