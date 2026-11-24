@@ -17,8 +17,8 @@ export function assertOutside(dir) {
 }
 
 const gitEnv = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "Oris GUI", GIT_AUTHOR_EMAIL: "oris-gui@example.invalid", GIT_COMMITTER_NAME: "Oris GUI", GIT_COMMITTER_EMAIL: "oris-gui@example.invalid", GIT_AUTHOR_DATE: "1700000000 +0000", GIT_COMMITTER_DATE: "1700000000 +0000" };
-export function git(cwd, args, { input, allowFail = false } = {}) {
-  const result = spawnSync("git", ["-c", "core.autocrlf=false", "-c", "commit.gpgsign=false", "-c", "merge.conflictstyle=merge", ...args], { cwd, env: gitEnv, input, encoding: input instanceof Buffer ? undefined : "utf8", maxBuffer: 64 * 1024 * 1024 });
+export function git(cwd, args, { input, allowFail = false, extraEnv } = {}) {
+  const result = spawnSync("git", ["-c", "core.autocrlf=false", "-c", "commit.gpgsign=false", "-c", "merge.conflictstyle=merge", ...args], { cwd, env: { ...gitEnv, ...extraEnv }, input, encoding: input instanceof Buffer ? undefined : "utf8", windowsHide: true, maxBuffer: 64 * 1024 * 1024 });
   if (result.status !== 0 && !allowFail) throw new Error(`git ${args.join(" ")} 失败：${result.stderr}`);
   return typeof result.stdout === "string" ? result.stdout.trim() : result.stdout;
 }

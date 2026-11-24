@@ -2,7 +2,8 @@
 // 安全边界（AGENTS.md）：不调用 SetForegroundWindow / ShowWindow / AppActivate，不枚举或操作其他应用窗口；
 // 所有交互通过 CDP 在页面内派发 DOM 事件；原生层只做只读查询（进程、端口、主窗口句柄）与结束本实例进程树。
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { inflateSync, deflateSync, crc32 } from "node:zlib";
 
@@ -32,11 +33,11 @@ function powershell(script) {
   // 本机负载高时 powershell 偶发启动失败（lc5 冒烟时见过一次），只读查询重试两次再报错。
   let result;
   for (let attempt = 0; attempt < 3; attempt++) {
-    result = spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    result = spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", `[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)\n${script}`], { encoding: "utf8", windowsHide: true, maxBuffer: 64 * 1024 * 1024 });
     if (result.status === 0) return result.stdout;
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300);
   }
-  throw new Error(`powershell failed: ${result.stderr}`);
+  throw new Error(`powershell failed: ${result.error?.message ?? result.stderr}`);
 }
 
 /**
@@ -68,7 +69,9 @@ export function processTree(rootPid) {
   const mib = (bytes) => bytes / 1024 / 1024;
   return {
     alive: true,
-    processes: tree.map((p) => ({ pid: p.ProcessId, ppid: p.ParentProcessId, name: p.Name, workingSetMiB: round(mib(Number(p.WorkingSetSize))), privateMiB: round(mib(Number(p.PrivatePageCount))) })),
+    processes: tree.map((p) => ({ pid: p.ProcessId, ppid: p.ParentProcessId, name: p.Name, path: p.ExecutablePath,
+      started: Math.round((Number(p.created) - 116444736000000000) / 10000),
+      workingSetMiB: round(mib(Number(p.WorkingSetSize))), privateMiB: round(mib(Number(p.PrivatePageCount))) })),
     workingSetMiB: round(mib(tree.reduce((sum, p) => sum + Number(p.WorkingSetSize), 0))),
     privateMiB: round(mib(tree.reduce((sum, p) => sum + Number(p.PrivatePageCount), 0))),
     git: tree.filter((p) => /^git(-remote.*)?\.exe$/i.test(p.Name)).length,
@@ -160,7 +163,7 @@ $disk = Get-PhysicalDisk | Select-Object -First 1 FriendlyName,MediaType,BusType
 }
 
 export function sha256File(file) {
-  return powershell(`(Get-FileHash -Algorithm SHA256 -LiteralPath '${file.replace(/'/g, "''")}').Hash`).trim();
+  return createHash("sha256").update(readFileSync(file)).digest("hex").toUpperCase();
 }
 
 async function fetchJson(url) {
@@ -172,7 +175,7 @@ async function fetchJson(url) {
  * 启动一个隔离的 Oris 测试实例：独立 WebView2 profile、CDP 端口；
  * 核验 PID、可执行文件完整路径、主窗口句柄以及 CDP 端口属于本实例进程树。
  */
-export async function launchOris({ exe, profileDir, port, extraEnv = {}, log = () => {}, browserArgs: extraArgs = "", productDefaults = true }) {
+export async function launchOris({ exe, profileDir, port, extraEnv = {}, log = () => {}, browserArgs: extraArgs = "", productDefaults = true, trackCleanup = false }) {
   const exePath = path.resolve(exe);
   if (!existsSync(exePath)) throw new Error(`exe 不存在：${exePath}`);
   mkdirSync(profileDir, { recursive: true });
@@ -187,6 +190,7 @@ export async function launchOris({ exe, profileDir, port, extraEnv = {}, log = (
     else others.push(token);
   }
   const browserArgs = [
+    "--remote-debugging-address=127.0.0.1",
     `--remote-debugging-port=${port}`,
     // 测试窗口可能被其他窗口遮挡；关闭遮挡/后台节流，保证 rAF 与计时器不被暂停。所有对比使用同一配置。
     `--disable-features=${[...new Set(features)].join(",")}`,
@@ -198,54 +202,73 @@ export async function launchOris({ exe, profileDir, port, extraEnv = {}, log = (
   const env = { ...process.env, WEBVIEW2_USER_DATA_FOLDER: profileDir, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: browserArgs, ...extraEnv };
   const spawnedAt = Date.now();
   const child = spawn(exePath, [], { env, stdio: "ignore", detached: false, windowsHide: false });
+  let startupError;
+  child.on("error", error => { startupError = error; });
   const pid = child.pid;
   if (!pid) throw new Error("Oris 启动失败");
   let exited = false;
   child.on("exit", () => { exited = true; });
-  let target = null;
-  const deadline = Date.now() + 30000;
-  while (!target && Date.now() < deadline) {
-    if (exited) throw new Error("Oris 测试实例提前退出");
+  let startedTree = [];
+  try {
+    let target = null;
+    const deadline = Date.now() + 30000;
+    while (!target && Date.now() < deadline) {
+      if (startupError) throw startupError;
+      if (exited) throw new Error("Oris 测试实例提前退出");
+      try {
+        const targets = await fetchJson(`http://127.0.0.1:${port}/json`);
+        target = targets.find((item) => item.type === "page" && item.title === "Oris" && /^(https?|tauri):\/\//.test(item.url)) ?? null;
+      } catch { /* not ready */ }
+      if (!target) await sleep(20);
+    }
+    if (!target) throw new Error("未找到 Oris WebView2 CDP 页面");
+    const cdpFoundAt = Date.now();
+    // 身份核验（只读）：可执行文件路径、主窗口句柄、端口归属。
+    let identity = null;
+    for (let attempt = 0; attempt < 50; attempt++) {
+      const raw = powershell(`
+  $p = Get-Process -Id ${pid} -ErrorAction Stop
+  $owner = (Get-NetTCPConnection -State Listen -ErrorAction Stop | Where-Object { $_.LocalPort -eq ${port} -and $_.LocalAddress -eq '127.0.0.1' } | Select-Object -First 1).OwningProcess
+  [pscustomobject]@{ path = $p.Path; started = ([DateTimeOffset]$p.StartTime).ToUnixTimeMilliseconds(); mainWindowHandle = [int64]$p.MainWindowHandle; mainWindowTitle = $p.MainWindowTitle; portOwner = $owner } | ConvertTo-Json -Compress`);
+      identity = JSON.parse(raw);
+      if (identity.mainWindowHandle !== 0) break;
+      await sleep(100);
+    }
+    const tree = processTree(pid);
+    const ownsPort = tree.processes.some((p) => p.pid === identity.portOwner);
+    const verified = identity.path && path.resolve(identity.path).toLowerCase() === exePath.toLowerCase() &&
+      identity.started >= spawnedAt && identity.mainWindowHandle !== 0 && identity.mainWindowTitle === "Oris" && ownsPort;
+    if (!verified) {
+      log(`身份核验失败：${JSON.stringify(identity)}`);
+      throw new Error("测试实例身份核验失败");
+    }
+    if (trackCleanup) startedTree = tree.processes;
+    const endpoint = new URL(target.webSocketDebuggerUrl);
+    if (endpoint.protocol !== "ws:" || endpoint.hostname !== "127.0.0.1" || endpoint.port !== String(port)) throw new Error("CDP WebSocket 不属于本次测试端口");
+    const cdp = await connectCdp(endpoint.href);
+    return { pid, exePath, child, cdp, profileDir, port, spawnedAt, cdpFoundAt, startedTree, trackCleanup, identity: { ...identity, verified, ownsPort } };
+  } catch (error) {
     try {
-      const targets = await fetchJson(`http://127.0.0.1:${port}/json`);
-      target = targets.find((item) => item.type === "page" && item.title === "Oris" && /^(https?|tauri):\/\//.test(item.url)) ?? null;
-    } catch { /* not ready */ }
-    if (!target) await sleep(20);
+      const result = await killOris({ pid, exePath, child, spawnedAt, profileDir, port, startedTree, trackCleanup, force: true });
+      if (!result.closed) throw new Error("测试进程未退出");
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], `无法清理本轮 Oris 测试进程 ${pid}，请保留测试目录`);
+    }
+    throw error;
   }
-  if (!target) throw new Error("未找到 Oris WebView2 CDP 页面");
-  const cdpFoundAt = Date.now();
-  // 身份核验（只读）：可执行文件路径、主窗口句柄、端口归属。
-  let identity = null;
-  for (let attempt = 0; attempt < 50; attempt++) {
-    const raw = powershell(`
-$p = Get-Process -Id ${pid} -ErrorAction Stop
-$owner = (Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1).OwningProcess
-[pscustomobject]@{ path = $p.Path; mainWindowHandle = [int64]$p.MainWindowHandle; mainWindowTitle = $p.MainWindowTitle; portOwner = $owner } | ConvertTo-Json -Compress`);
-    identity = JSON.parse(raw);
-    if (identity.mainWindowHandle !== 0) break;
-    await sleep(100);
-  }
-  const tree = processTree(pid);
-  const ownsPort = tree.processes.some((p) => p.pid === identity.portOwner);
-  const verified = path.resolve(identity.path).toLowerCase() === exePath.toLowerCase() && identity.mainWindowHandle !== 0 && identity.mainWindowTitle === "Oris" && ownsPort;
-  if (!verified) {
-    log(`身份核验失败：${JSON.stringify(identity)}`);
-    await killOris({ pid, exePath, child, force: true });
-    throw new Error("测试实例身份核验失败，已结束本实例");
-  }
-  const cdp = await connectCdp(target.webSocketDebuggerUrl);
-  return { pid, exePath, child, cdp, profileDir, port, spawnedAt, cdpFoundAt, identity: { ...identity, verified, ownsPort } };
 }
 
 /** 结束本轮测试实例：再次核验 PID 与可执行文件路径后，先温和关闭，超时再强制结束整棵进程树。 */
-export async function killOris({ pid, exePath, child, force = false }) {
+export async function killOris({ pid, exePath, child, spawnedAt, identity, profileDir, port, startedTree, trackCleanup = false, force = false }) {
   if (!pid) return { closed: true, how: "none" };
-  let current;
-  try {
-    current = JSON.parse(powershell(`$p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($p) { [pscustomobject]@{ path = $p.Path; handle = [int64]$p.MainWindowHandle } | ConvertTo-Json -Compress } else { 'null' }`));
-  } catch { current = null; }
+  if (trackCleanup) return stopTrackedTree({ pid, exePath, spawnedAt, identity, profileDir, port, startedTree });
+  if (child && (child.exitCode !== null || child.signalCode !== null)) return { closed: true, how: "already-exited" };
+  const current = JSON.parse(powershell(`$p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($p) { [pscustomobject]@{ path = $p.Path; started = ([DateTimeOffset]$p.StartTime).ToUnixTimeMilliseconds(); handle = [int64]$p.MainWindowHandle } | ConvertTo-Json -Compress } else { 'null' }`));
   if (!current) return { closed: true, how: "already-exited" };
-  if (path.resolve(current.path).toLowerCase() !== path.resolve(exePath).toLowerCase()) throw new Error(`PID ${pid} 已不是本轮 Oris 实例，拒绝结束`);
+  if (!current.path || path.resolve(current.path).toLowerCase() !== path.resolve(exePath).toLowerCase() ||
+      (identity ? current.started !== identity.started : spawnedAt !== undefined && current.started < spawnedAt)) {
+    throw new Error(`PID ${pid} 的路径或启动时间不匹配，拒绝结束`);
+  }
   const waitExit = async (ms) => {
     const until = Date.now() + ms;
     while (Date.now() < until) {
@@ -256,7 +279,7 @@ export async function killOris({ pid, exePath, child, force = false }) {
     }
     return false;
   };
-  if (!force && current.handle !== 0) {
+  if (!force && current.handle !== 0 && current.handle === identity?.mainWindowHandle) {
     // taskkill 无 /F：只向该 PID 的顶层窗口发送关闭消息，让 WebView2 正常落盘 localStorage。
     spawnSync("taskkill", ["/PID", String(pid)], { encoding: "utf8" });
     if (await waitExit(10000)) return { closed: true, how: "graceful" };
@@ -266,6 +289,39 @@ export async function killOris({ pid, exePath, child, force = false }) {
   const tree = (processTree(pid).processes ?? []).filter((p) => p.pid === pid || own.test(p.name));
   for (const p of tree.reverse()) spawnSync("taskkill", ["/PID", String(p.pid), "/F"], { encoding: "utf8" });
   return { closed: await waitExit(10000), how: "forced-verified-tree", killed: tree.map((p) => `${p.name}:${p.pid}`) };
+}
+
+function stopTrackedTree({ pid, exePath, spawnedAt, identity, profileDir, port, startedTree }) {
+  const live = processTree(pid).processes;
+  const root = live.find(process => process.pid === pid);
+  // FILETIME converted from JSON may be rounded to the next millisecond.
+  const identityMatches = root?.path && path.resolve(root.path).toLowerCase() === exePath.toLowerCase() &&
+    (identity ? Math.abs(root.started - identity.started) <= 1 : root.started >= spawnedAt);
+  const tracked = new Map((startedTree ?? []).map(process => [process.pid, process]));
+  if (identityMatches) for (const process of live) tracked.set(process.pid, process);
+  const candidates = [...tracked.values()].filter(process =>
+    process.pid === pid || /^(msedgewebview2|git|git-remote-.*|conhost)\.exe$/i.test(process.name));
+  candidates.sort((a, b) => Number(b.pid === pid) - Number(a.pid === pid));
+  const payload = JSON.stringify({ candidates, profileDir, port }).replace(/'/g, "''");
+  const result = powershell(`
+$expected = ConvertFrom-Json -InputObject '${payload}'
+$remaining = @(${root && !root.path ? pid : ""})
+foreach ($entry in $expected.candidates) {
+  $p = Get-Process -Id $entry.pid -ErrorAction SilentlyContinue
+  if (-not $p) { continue }
+  try {
+    $null = $p.SafeHandle
+    if (-not $p.Path -or -not $entry.path) { $remaining += $p.Id; continue }
+    if ($p.Path -ne $entry.path -or [Math]::Abs(([DateTimeOffset]$p.StartTime).ToUnixTimeMilliseconds() - $entry.started) -gt 1) { continue }
+    $p.Kill()
+    if (-not $p.WaitForExit(3000)) { $remaining += $p.Id }
+  } catch { if (-not $p.HasExited) { $remaining += $p.Id } }
+}
+$profile = $expected.profileDir
+$browser = @(Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" -ErrorAction Stop | Where-Object { $profile -and $_.CommandLine -and $_.CommandLine.Contains($profile) })
+$listener = @(Get-NetTCPConnection -State Listen -ErrorAction Stop | Where-Object LocalPort -eq $expected.port)
+[pscustomobject]@{ closed = ($remaining.Count -eq 0 -and $browser.Count -eq 0 -and $listener.Count -eq 0); remaining = @($remaining + @($browser.ProcessId) + @($listener.OwningProcess)) } | ConvertTo-Json -Compress`);
+  return { ...JSON.parse(result), how: "verified-test-tree" };
 }
 
 export function removeDir(dir, allowedRoot) {
@@ -279,31 +335,59 @@ export function removeDir(dir, allowedRoot) {
 
 export async function connectCdp(url) {
   const socket = new WebSocket(url);
-  await new Promise((resolve, reject) => {
-    socket.addEventListener("open", resolve, { once: true });
-    socket.addEventListener("error", reject, { once: true });
-  });
+  const opening = new AbortController();
+  let connectTimeout;
+  try {
+    await new Promise((resolve, reject) => {
+      connectTimeout = setTimeout(() => reject(new Error("CDP 连接超时")), 10000);
+      socket.addEventListener("open", resolve, { once: true, signal: opening.signal });
+      socket.addEventListener("error", () => reject(new Error("CDP 连接失败")), { once: true, signal: opening.signal });
+      socket.addEventListener("close", () => reject(new Error("CDP 在连接时断开")), { once: true, signal: opening.signal });
+    });
+  } catch (error) {
+    socket.close();
+    throw error;
+  } finally {
+    clearTimeout(connectTimeout);
+    opening.abort();
+  }
   let sequence = 0;
   const pending = new Map();
   const listeners = new Map();
+  const failPending = () => {
+    for (const { timer, reject } of pending.values()) {
+      clearTimeout(timer);
+      reject(new Error("CDP 连接已断开"));
+    }
+    pending.clear();
+  };
+  socket.addEventListener("close", failPending);
+  socket.addEventListener("error", failPending);
   socket.addEventListener("message", ({ data }) => {
     const message = JSON.parse(data);
     if (message.id && pending.has(message.id)) {
-      const { resolve, reject } = pending.get(message.id);
+      const { timer, resolve, reject } = pending.get(message.id);
       pending.delete(message.id);
+      clearTimeout(timer);
       if (message.error) reject(new Error(message.error.message));
       else resolve(message.result);
     } else if (message.method) {
       for (const listener of listeners.get(message.method) ?? []) listener(message.params);
     }
   });
-  const call = (method, params = {}) => new Promise((resolve, reject) => {
+  const call = (method, params = {}, timeoutMs = 30000) => new Promise((resolve, reject) => {
+    if (socket.readyState !== WebSocket.OPEN) { reject(new Error("CDP 连接未打开")); return; }
     const id = ++sequence;
-    pending.set(id, { resolve, reject });
-    socket.send(JSON.stringify({ id, method, params }));
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      reject(new Error(`CDP 调用超时：${method}`));
+    }, timeoutMs);
+    pending.set(id, { timer, resolve, reject });
+    try { socket.send(JSON.stringify({ id, method, params })); }
+    catch (error) { clearTimeout(timer); pending.delete(id); reject(error); }
   });
   const evaluate = async (expression, timeoutMs = 120000) => {
-    const response = await call("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true, timeout: timeoutMs });
+    const response = await call("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true, timeout: timeoutMs }, timeoutMs + 2000);
     if (response.exceptionDetails) throw new Error(`${response.exceptionDetails.exception?.description ?? response.exceptionDetails.text}\n表达式：${expression.slice(0, 400)}`);
     return response.result.value;
   };
