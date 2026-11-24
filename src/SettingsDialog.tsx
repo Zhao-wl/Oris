@@ -223,21 +223,23 @@ function AiPage({ settings }: { settings: SettingsStore }) {
       <div className="settings-row"><label htmlFor="ai-model-manual">模型 ID</label><input id="ai-model-manual" value={selected.model} placeholder="也可手动输入模型 ID" onChange={(event) => change({ model: event.target.value })}/></div>
       <p className="settings-note">测试连接会向该模型发送一次简短请求，可能产生少量用量费用；最长等待约 30 秒。{selected.kind === "api" && "使用已保存的 API Key；输入新密钥后请先保存。"}</p>
     </>}
-    <section className="ai-prompt-settings" aria-label="操作系统提示词">
-      <h4>操作系统提示词</h4>
-      <p className="settings-note">按操作分别设置，切换 AI 组合时沿用这些提示词；输出格式与文件范围仍由 Oris 校验。</p>
-      {([
-        ["stagedMessage", "根据暂存内容生成提交信息"],
-        ["describedCommit", "根据描述选择文件并生成提交信息"],
-        ["commandCenter", "AI 操作入口"],
-      ] as const).map(([key, label]) => <div className="ai-prompt-field" key={key}>
-        <div className="settings-row-head"><label htmlFor={`ai-prompt-${key}`}>{label}</label><button type="button" disabled={ai.prompts[key] === DEFAULT_AI_PROMPTS[key]} onClick={() => settings.update("ai", "prompts", { ...ai.prompts, [key]: DEFAULT_AI_PROMPTS[key] })}>恢复默认</button></div>
-        <textarea id={`ai-prompt-${key}`} aria-label={`${label}系统提示词`} value={ai.prompts[key]} maxLength={10_000} onChange={(event) => settings.update("ai", "prompts", { ...ai.prompts, [key]: event.target.value })}/>
-      </div>)}
-    </section>
     {warning && <p className="settings-warning" role="status">{warning}</p>}
     {error && <p className="settings-error" role="alert">{error}</p>}
     <p className="settings-note">列表只显示已添加的配置，新增项会自动保存。API Key 保存在系统凭据存储中；模型查询失败时可手动输入模型 ID。</p>
+    <details className="ai-prompt-settings">
+      <summary>高级设置 · 操作提示词</summary>
+      <div className="ai-prompt-fields">
+        <p className="settings-note">修改会自动保存，切换 AI 组合时继续沿用。输出格式与文件范围由 Oris 校验。</p>
+        {([
+          ["stagedMessage", "根据暂存内容生成提交信息"],
+          ["describedCommit", "根据描述选择文件并生成提交信息"],
+          ["commandCenter", "AI 操作入口"],
+        ] as const).map(([key, label]) => <div className="ai-prompt-field" key={key}>
+          <div className="settings-row-head"><label htmlFor={`ai-prompt-${key}`}>{label}</label><button type="button" disabled={ai.prompts[key] === DEFAULT_AI_PROMPTS[key]} onClick={() => settings.update("ai", "prompts", { ...ai.prompts, [key]: DEFAULT_AI_PROMPTS[key] })}>恢复默认</button></div>
+          <textarea id={`ai-prompt-${key}`} aria-label={`${label}系统提示词`} value={ai.prompts[key]} maxLength={10_000} onChange={(event) => settings.update("ai", "prompts", { ...ai.prompts, [key]: event.target.value })}/>
+        </div>)}
+      </div>
+    </details>
     <div className="settings-note ai-data-note" aria-label="AI 发送的数据">
       <p>AI 为可选功能：只有在你生成提交信息、发送 AI 指令、查询模型或测试连接时，Oris 才会把下列内容发送给当前 AI 组合（API 服务或本机的 codex / claude 工具），不会在后台自动发送。</p>
       <ul>

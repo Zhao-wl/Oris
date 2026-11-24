@@ -359,8 +359,9 @@ button.danger:not(:disabled):hover { color:var(--error, #ff7b72); border-color:v
 .ai-profile-card button { white-space:nowrap; }
 .ai-profile-card button:disabled { opacity:.5; }
 .ai-profile-card .ai-profile-remove { flex:none; width:27px; height:27px; padding:0; color:var(--dim); font-size:18px; line-height:1; }
-.ai-prompt-settings { display:flex; flex-direction:column; gap:9px; padding-top:12px; border-top:1px solid var(--border); }
-.ai-prompt-settings h4 { margin:0; font-size:13px; }
+.ai-prompt-settings { padding-top:12px; border-top:1px solid var(--border); }
+.ai-prompt-settings summary { cursor:pointer; font-size:13px; font-weight:600; }
+.ai-prompt-fields { display:flex; flex-direction:column; gap:9px; margin-top:9px; }
 .ai-prompt-settings .settings-note { margin:0; }
 .ai-data-note { margin-top:6px; }
 .ai-data-note p { margin:0 0 4px; }
