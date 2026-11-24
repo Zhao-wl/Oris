@@ -73,6 +73,62 @@ const mount = async (repos = [repo]) => {
   await act(async () => { root.render(<App />); }); await flush();
 };
 
+it("tracks read files by repository, comparison scope and the versions of both sides", async () => {
+  const repoB = { ...repo, repoId: "b", displayName: "b", worktreePath: "C:/b", gitDir: "C:/b/.git", commonDir: "C:/b/.git" };
+  const files = [change("a.txt"), change("b.txt")];
+  const staged = [change("a.txt")];
+  const current = snap(files, staged);
+  const snapshotB = { ...snap([change("b.txt")], []), repo: repoB };
+  bridge.open.mockImplementation(async (path: string) => path === repoB.worktreePath ? snapshotB : current);
+  bridge.refresh.mockImplementation(async (repoId: string) => repoId === repoB.repoId ? snapshotB : current);
+  bridge.read.mockImplementation(async (repoId: string, _scope: string, revision: string, pathId: string) => {
+    const content = { ...pair(pathId, revision), repoId };
+    if (revision === "r2" && pathId === "id-b.txt") content.right = { ...content.right, contentId: "updated-b" };
+    return content;
+  });
+
+  const readButton = () => button("标记已阅");
+  const isRead = () => readButton().getAttribute("aria-pressed");
+  await mount([repo, repoB]);
+  expect(isRead()).toBe("false");
+  await click(readButton());
+  expect(isRead()).toBe("true");
+  await click(button("下一个待阅"));
+  expect(host.querySelector(".tab-path")?.textContent).toBe("b.txt");
+  await click(readButton());
+  await click(button("下一个待阅"));
+  expect(host.textContent).toContain("当前筛选结果均已阅");
+
+  await click(button("已暂存"));
+  expect(host.querySelector(".tab-path")?.textContent).toBe("a.txt");
+  expect(isRead()).toBe("false");
+  await click(button("未暂存"));
+  await click(host.querySelector<HTMLElement>('.project-tab[data-repo-id="b"] .project-switch')!);
+  expect(host.querySelector(".tab-path")?.textContent).toBe("b.txt");
+  expect(isRead()).toBe("false");
+  await click(host.querySelector<HTMLElement>('.project-tab[data-repo-id="a"] .project-switch')!);
+  expect(isRead()).toBe("true");
+
+  await click(row("a.txt"));
+  bridge.refresh.mockResolvedValue(snap(files, staged, "r2"));
+  await click(button("本地刷新"));
+  expect(isRead()).toBe("true");
+  await click(button("下一个待阅"));
+  expect(host.querySelector(".tab-path")?.textContent).toBe("b.txt");
+  expect(isRead()).toBe("false");
+  expect(bridge.operation).not.toHaveBeenCalled();
+});
+
+it("cannot mark a worktree version whose bytes exceed the read budget", async () => {
+  bridge.read.mockImplementation(async (_repo: string, _scope: string, revision: string, pathId: string) => {
+    const content = pair(pathId, revision);
+    return { ...content, right: { ...content.right, text: null, kind: "tooLarge",
+      details: { state: "overBudget", reason: "超过读取预算", oid: null, mode: "100644", image: null } } };
+  });
+  await mount();
+  expect(button("标记已阅").disabled).toBe(true);
+});
+
 // 可选导出真实 React 标记供无窗口 Chromium 复测 CSS；仓库/内容仍为本文件的替身。
 const captureLayout = (name: string) => {
   const capture = (globalThis as { orisLayoutCapture?: (name: string, html: string) => void }).orisLayoutCapture;
