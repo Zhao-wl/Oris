@@ -73,6 +73,41 @@ const mount = async (repos = [repo]) => {
   await act(async () => { root.render(<App />); }); await flush();
 };
 
+it("switches from the local JSON diff to structure and returns to the chosen raw side and line", async () => {
+  const input = vi.fn();
+  const terminate = vi.fn();
+  vi.stubGlobal("Worker", class {
+    onmessage?: (message: { data: unknown }) => void;
+    postMessage(data: unknown) {
+      input(data);
+      queueMicrotask(() => this.onmessage?.({ data: { result: { changes: [
+        { kind: "modified", path: '$["a"]', left: { line: 2, label: "1" }, right: { line: 3, label: "2" } },
+      ], reorderedKeys: [], originalChanged: true } } }));
+    }
+    terminate = terminate;
+  });
+  bridge.open.mockResolvedValue(snap([change("config.json")], []));
+  bridge.read.mockImplementation(async (_repo: string, _scope: string, revision: string, pathId: string) => {
+    const content = pair(pathId, revision);
+    return { ...content, left: { ...content.left, text: '{\n "a": 1\n}' }, right: { ...content.right, text: '{\n\n "a": 2\n}' } };
+  });
+  await mount();
+  expect(host.querySelector("[data-testid=readable]")).not.toBeNull();
+  await click(button("结构差异"));
+  expect(input).toHaveBeenCalledWith({ format: "json", left: '{\n "a": 1\n}', right: '{\n\n "a": 2\n}' });
+  expect(host.querySelector('[aria-label="结构差异"]')?.textContent).toContain('$["a"]');
+  expect(host.querySelector("[data-testid=readable]")).toBeNull();
+  await click(button("标记已阅"));
+  await click(button("下一个待阅"));
+  expect(host.querySelector(".structured-container .selection-notice")?.textContent).toContain("当前筛选结果均已阅");
+  await click(button("右侧第 3 行"));
+  await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)); });
+  expect(host.querySelector("[data-testid=readable]")).not.toBeNull();
+  expect(bridge.goToLine).toHaveBeenCalledWith("right", 3);
+  expect(bridge.operation).not.toHaveBeenCalled();
+  expect(terminate).toHaveBeenCalled();
+});
+
 it("tracks read files by repository, comparison scope and the versions of both sides", async () => {
   const repoB = { ...repo, repoId: "b", displayName: "b", worktreePath: "C:/b", gitDir: "C:/b/.git", commonDir: "C:/b/.git" };
   const files = [change("a.txt"), change("b.txt")];

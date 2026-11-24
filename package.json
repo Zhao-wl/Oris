@@ -19,8 +19,8 @@
   },
   "dependencies": {
     "@codemirror/commands": "6.8.1",
-    "@codemirror/language": "6.12.4",
     "@codemirror/lang-javascript": "6.2.5",
+    "@codemirror/language": "6.12.4",
     "@codemirror/merge": "6.12.2",
     "@codemirror/search": "6.7.2",
     "@codemirror/state": "6.5.2",
@@ -29,8 +29,10 @@
     "@lezer/highlight": "1.2.3",
     "@tauri-apps/api": "2.11.1",
     "@tauri-apps/plugin-dialog": "2.7.3",
+    "jsonc-parser": "3.3.1",
     "react": "19.1.1",
-    "react-dom": "19.1.1"
+    "react-dom": "19.1.1",
+    "yaml": "2.9.1"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.11.5",
