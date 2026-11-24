@@ -7,7 +7,7 @@ import { errorText } from "./error-message";
 export type GitTab = "log" | "commit" | "stash" | "output";
 
 export interface RunningOperation { opId: string; kind: OperationKind }
-export interface OperationRecord { kind: OperationKind; status: OperationStatus; message: string; output: string; outputTruncated?: boolean; stashOid?: string; at: number }
+export interface OperationRecord { kind: OperationKind; status: OperationStatus; message: string; output: string; outputTruncated?: boolean; stashOid?: string; summaryPath?: string; shortMessage?: string; at: number }
 
 interface Props {
   repoId: string | null;
@@ -36,6 +36,7 @@ interface Props {
   stashCount?: number;
   filesContent?: ReactNode;
   filesTools?: ReactNode;
+  contentCacheStats?: { entries: number; bytes: number; budget: number };
 }
 
 const statusText: Record<OperationStatus, string> = { succeeded: "成功", failed: "失败", cancelled: "已取消", needsConfirmation: "等待确认" };
@@ -128,7 +129,8 @@ function CommitTab({ repoId, stagedCount, ignoredStagedPaths = [], headKey, head
   </div>;
 }
 
-function OutputTab({ running, lines, last, backups, blockedReason, onUndoDiscard, onCancel }: Props) {
+function OutputTab({ running, lines, last, backups, blockedReason, onUndoDiscard, onCancel, contentCacheStats }: Props) {
+  const mib = (bytes: number) => (bytes / 1024 ** 2).toFixed(2);
   return <div className="git-body output-layout">
     <div className="output-main">
       {running ? <>
@@ -137,10 +139,17 @@ function OutputTab({ running, lines, last, backups, blockedReason, onUndoDiscard
       </> : last ? <>
         <div className="output-head"><strong className={`output-status ${last.status}`}>{statusMark[last.status]} {operationLabels[last.kind]} · {statusText[last.status]}</strong><span>{new Date(last.at).toLocaleTimeString()}</span></div>
         <p className="output-message">{last.message}</p>
+        {last.summaryPath && <p className="output-message">{last.summaryPath}</p>}
         {last.output ? <pre aria-label="操作输出">{last.output}{last.outputTruncated ? "\n…（输出超过 256 KiB，已截断）" : ""}</pre> : <p className="output-empty">Git 没有输出</p>}
       </> : <p className="output-empty">最近一次写操作的 Git 输出在这里显示；失败时保留错误摘要。</p>}
     </div>
-    <aside className="output-backups" aria-label="可撤销的丢弃">
+    <aside className="output-backups" aria-label="诊断与可撤销的丢弃">
+      {contentCacheStats && <section className="cache-diagnostics" aria-label="缓存诊断">
+        <strong>缓存诊断</strong>
+        <div>内容缓存条目 · {contentCacheStats.entries} 项</div>
+        <div>已用容量 · {mib(contentCacheStats.bytes)} MiB</div>
+        <div>容量预算 · {mib(contentCacheStats.budget)} MiB</div>
+      </section>}
       <strong>可撤销的丢弃</strong>
       {backups.length === 0 && <p className="output-empty">没有丢弃记录</p>}
       {backups.map((backup) => <div key={backup.id} className="backup-row">
