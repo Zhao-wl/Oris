@@ -3,7 +3,7 @@ import { parseConflictBlocks } from "./conflict-blocks";
 describe("actual conflict markers", () => {
   it("excludes clean differences and retains both sources and working-file lines", () => {
     const blocks = parseConflictBlocks("clean\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> feature\nclean");
-    expect(blocks).toEqual([{ line: 2, endLine: 6, ours: "ours", theirs: "theirs", base: null, oursLabel: "HEAD", theirsLabel: "feature" }]);
+    expect(blocks).toEqual([{ line: 2, endLine: 6, ours: "ours", theirs: "theirs", base: null, oursLines: ["ours"], theirsLines: ["theirs"], oursLabel: "HEAD", theirsLabel: "feature" }]);
   });
   it("reads diff3 ancestors, empty sides, CRLF and custom marker widths", () => {
     const blocks = parseConflictBlocks("<<<<<<<< HEAD\r\n|||||||| base\r\nold\r\n========\r\nnew\r\n>>>>>>>> topic");

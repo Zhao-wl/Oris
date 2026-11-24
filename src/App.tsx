@@ -1,4 +1,5 @@
 import { ConflictBlocks } from "./ConflictBlocks";
+import ConflictEditor, { conflictSource, type ConflictSource } from "./conflict-editor/ConflictEditor";
 import { compactConversation, contextIndex, describeNode } from "./context-selection/compression";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -98,6 +99,28 @@ export default function App() {
   const [selectedPathId, setSelectedPathId] = useState<string | null>(null);
   const [conflictData, setConflictData] = useState<ContentPair | null>(null);
   const [conflictFull, setConflictFull] = useState(false);
+  const [conflictEditor, setConflictEditor] = useState<{ repoId: string; pathId: string; key: number; source?: ConflictSource; busy: boolean; message: string | null } | null>(null);
+  const conflictDialog = useRef<HTMLElement>(null);
+  const conflictEditorGeneration = useRef(0);
+  const closeConflictEditor = useCallback(() => { conflictEditorGeneration.current++; setConflictEditor(null); }, []);
+  const conflictDialogOpen = !!conflictEditor;
+  useEffect(() => {
+    if (!conflictDialogOpen) return;
+    if (!conflictDialog.current?.contains(document.activeElement)) conflictDialog.current?.focus();
+    const trapTab = (event: KeyboardEvent) => {
+      if (event.key !== "Tab") return;
+      const dialog = document.querySelector<HTMLElement>('.dialog-overlay [role="alertdialog"]') ?? conflictDialog.current;
+      if (!dialog) return;
+      const controls = [...dialog.querySelectorAll<HTMLButtonElement | HTMLTextAreaElement>("button, textarea")].filter(control => !control.disabled);
+      const active = document.activeElement;
+      if (!controls.length || !dialog.contains(active) || active === dialog || active === (event.shiftKey ? controls[0] : controls.at(-1))) {
+        event.preventDefault();
+        (controls[event.shiftKey ? controls.length - 1 : 0] ?? dialog).focus();
+      }
+    };
+    window.addEventListener("keydown", trapTab, true);
+    return () => window.removeEventListener("keydown", trapTab, true);
+  }, [conflictDialogOpen]);
   const [versions, setVersions] = useState<[ConflictVersion, ConflictVersion]>(["stage2", "stage3"]);
   const [pair, setPair] = useState<ContentPair | null>(null);
   const displayedFiles = useRef(new WeakMap<ContentPair, FileChange>());
@@ -1080,6 +1103,11 @@ export default function App() {
   const networkRunning = !!repoOps?.running && ["fetch", "pull", "push"].includes(repoOps.running.kind);
   const fetchProgress = networkRunning ? parseProgress(repoOps?.lines ?? []) : null;
   const mergeInProgress = !!snapshot?.inProgress?.merge;
+  useEffect(() => {
+    if (conflictEditor && (conflictEditor.repoId !== activeRepoId || conflictEditor.pathId !== selectedPathId || !mergeInProgress)) {
+      closeConflictEditor();
+    }
+  }, [activeRepoId, closeConflictEditor, conflictEditor, mergeInProgress, selectedPathId]);
   const mergeConflicts = runtime?.snapshot?.scopes?.unstaged.filter((file) => file.status === "conflicted").length ?? 0;
 
   // ---------- 写操作入口 ----------
@@ -1115,12 +1143,12 @@ export default function App() {
   const runOp = async (request: OperationRequest, optimistic?: RepositorySnapshot, confirmedAllDiscard = false): Promise<OperationOutcome | null> => {
     const repoId = currentRead.current.repo;
     if (!repoId) return null;
+    const kind = request.kind === "commitSelected" ? "commit" : request.kind === "stageSelected" ? "stage" : request.kind;
     const runtimeNow = projects.get(repoId);
     const matchesIgnored = createFileIgnoreMatcher(settings.get().fileIgnore.rules, repoId);
     const hiddenTargets = !(request.kind === "discard" && confirmedAllDiscard) && "pathIds" in request && request.pathIds?.length && showIgnoredRepoRef.current !== repoId
       ? runtimeNow?.snapshot?.scopes?.all.filter(f => matchesIgnored(f.displayPath) && (request.pathIds!.includes(f.pathId) || (!!f.oldPathId && request.pathIds!.includes(f.oldPathId)))) ?? [] : [];
     if (hiddenTargets.length) {
-      const kind = request.kind === "commitSelected" ? "commit" : request.kind === "stageSelected" ? "stage" : request.kind;
       updateOps(repoId, { last: { kind, status: "failed", message: "操作包含被忽略文件，请先显示并核对操作范围", output: "", at: Date.now() } });
       return null;
     }
@@ -1130,7 +1158,6 @@ export default function App() {
       running: repoOperations?.running ? operationLabels[repoOperations.running.kind] : null,
       stale: runtimeNow?.stagingOutOfDate
     });
-    const kind = request.kind === "commitSelected" ? "commit" : request.kind === "stageSelected" ? "stage" : request.kind;
     if (blocked) { updateOps(repoId, { last: { kind, status: "failed", message: blocked, output: "", at: Date.now() } }); return null; }
     const opId = newRequestId();
     const prior = runtimeNow?.snapshot ?? null;
@@ -1163,14 +1190,15 @@ export default function App() {
     const commitKind = ["commit", "undoCommit"].includes(outcome.kind);
     // 状态栏的“撤销丢弃”只针对本次丢弃返回的备份，不依赖异步刷新的备份列表。
     const succeeded = outcome.status === "succeeded";
-    const backupPatch = (outcome.kind === "discard" || outcome.kind === "hunkDiscard") && succeeded && outcome.backup ? { lastBackup: outcome.backup } : request.kind === "undoDiscard" && succeeded && opStore.get()[repoId]?.lastBackup?.id === request.backupId ? { lastBackup: null } : {};
+    const hasBackup = outcome.kind === "discard" || outcome.kind === "hunkDiscard" || outcome.kind === "conflictSave";
+    const backupPatch = hasBackup && succeeded && outcome.backup ? { lastBackup: outcome.backup } : request.kind === "undoDiscard" && succeeded && opStore.get()[repoId]?.lastBackup?.id === request.backupId ? { lastBackup: null } : {};
     const stagingScope = request.kind === "unstage" ? "staged" : "unstaged";
     const summaryPath = succeeded && (request.kind === "stage" || request.kind === "stageSelected" || request.kind === "unstage")
       ? (prior?.scopes?.[stagingScope] ?? prior?.files)?.find(file => file.pathId === request.pathIds[0])?.displayPath
       : undefined;
     const last = { ...record(outcome), summaryPath };
     updateOps(repoId, { running: null, reconciling: outcome.snapshotDeferred ? opId : null, last, ...backupPatch, ...(commitKind ? { lastCommit: last } : {}) });
-    if (outcome.kind === "discard" || outcome.kind === "hunkDiscard" || outcome.kind === "undoDiscard") void discardBackups(repoId).then((backups) => updateOps(repoId, { backups }), () => {});
+    if (hasBackup || outcome.kind === "undoDiscard") void discardBackups(repoId).then((backups) => updateOps(repoId, { backups }), () => {});
     const reconciliation = reconcileOperation({
       repoId, request, kind, outcome, requestId, viewScope, prior, optimistic, beforeFiles, selectedBefore,
       projects, gate: repositoryGate.current,
@@ -1228,6 +1256,54 @@ export default function App() {
       const ok = await askConfirm({ title: "标记已解决", message: outcome.confirmation.message, items: outcome.confirmation.paths, warning: "文件中仍有冲突标记", confirmLabel: "仍然标记已解决", danger: true });
       if (ok) await resolveFiles(files, true);
     }
+  };
+  const loadConflictEditor = async (repoId: string, pathId: string, from?: RepositorySnapshot | null, message: string | null = null) => {
+    const key = ++conflictEditorGeneration.current;
+    const active = () => conflictEditorGeneration.current === key && activeIntent.current === repoId && currentRead.current.selected === pathId;
+    setConflictEditor(previous => ({ repoId, pathId, key: previous?.key ?? key, source: previous?.source, busy: true, message }));
+    try {
+      const view = from ?? await refreshRepository(repoId, currentRead.current.scope, newRequestId(), false);
+      if (!active()) return;
+      if (view.repo.repoId !== repoId || !view.inProgress?.merge || !(view.scopes?.all ?? view.files).some(file => file.pathId === pathId && file.status === "conflicted")) {
+        throw new Error("当前文件的合并冲突已变化，请回到文件列表刷新。");
+      }
+      const load = (endpoints: [ConflictVersion, ConflictVersion]) => readContentPair(repoId, view.scope, view.revision, pathId, null, newRequestId(), endpoints);
+      const base = await load(["stage1", "workingTree"]);
+      if (!active()) return;
+      const sides = await load(["stage2", "stage3"]);
+      if (!active()) return;
+      setConflictEditor({ repoId, pathId, key, source: conflictSource(base, sides), busy: false, message });
+    } catch (error) {
+      if (active()) setConflictEditor({ repoId, pathId, key, busy: false, message: [message, errorText(error)].filter(Boolean).join("。") });
+    }
+  };
+  const writeConflictEditor = async (request: Extract<OperationRequest, { kind: "conflictSave" | "conflictMarkResolved" | "undoDiscard" }>) => {
+    if (!conflictEditor?.source || conflictEditor.busy) return;
+    const { repoId, pathId, key } = conflictEditor;
+    const current = () => conflictEditorGeneration.current === key && activeIntent.current === repoId && currentRead.current.repo === repoId && currentRead.current.selected === pathId;
+    if (!current()) return;
+    setConflictEditor({ ...conflictEditor, busy: true, message: null });
+    try {
+      let outcome = await runOp(request);
+      if (!current()) return;
+      if (request.kind === "conflictMarkResolved" && outcome?.status === "needsConfirmation" && outcome.confirmation) {
+        const ok = await askConfirm({ title: "标记已解决", message: outcome.confirmation.message, items: outcome.confirmation.paths,
+          warning: "文件中仍有冲突标记", confirmLabel: "仍然标记已解决", danger: true });
+        if (!current()) return;
+        if (ok) outcome = await runOp({ ...request, confirmed: true });
+      }
+      if (!current()) return;
+      if (outcome?.status === "succeeded") {
+        if (request.kind === "conflictMarkResolved") closeConflictEditor();
+        else await loadConflictEditor(repoId, pathId, outcome.snapshot, outcome.message);
+      } else setConflictEditor({ ...conflictEditor, busy: false, message: outcome?.message ?? opStore.get()[repoId]?.last?.message ?? "无法更新冲突结果" });
+    } catch (error) {
+      if (current()) setConflictEditor({ ...conflictEditor, busy: false, message: errorText(error) });
+    }
+  };
+  const dismissConflictEditor = async (dirty: boolean) => {
+    if (dirty && !await askConfirm({ title: "关闭冲突编辑器", message: "未保存的草稿将丢失。", confirmLabel: "放弃草稿并关闭", danger: true })) return;
+    closeConflictEditor();
   };
   const discardFiles = async (files: FileChange[], scopeOverride?: CompareScope, allChanges = false) => {
     const repoId = activeRepoId;
@@ -1992,6 +2068,7 @@ export default function App() {
   };
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (conflictEditor) return;
       // 设置与字号快捷键不与文字输入冲突，焦点在输入框（如 diff 搜索框）时也生效（V2-D25）。
       if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key === ",") { event.preventDefault(); setSettingsOpen(true); return; }
       if ((event.ctrlKey || event.metaKey) && !event.altKey && ["=", "+", "-", "0"].includes(event.key)) {
@@ -2158,7 +2235,7 @@ export default function App() {
       onRemove={() => void deleteProject(project.repo.repoId)}
       onReorder={target => setWorkspaceState(current => moveProject(current, project.repo.repoId, target))}/>)}{!visibleProjects.length && <span className="project-empty">{workspaceState.projects.length ? "没有匹配项目" : "尚未添加项目"}</span>}</div><button className="icon-button" onClick={chooseRepository} title="添加项目" aria-label="添加项目">＋</button></section>
     <section className="workspace" ref={workspace}>
-      <section className="editor">{inProgressNotice && <div className="op-banner" role="status">{inProgressNotice}</div>}{mergeInProgress && <div className="op-banner merge-banner" role="status"><strong>合并进行中 · {mergeConflicts} 个冲突文件</strong><span>{mergeConflicts ? "冲突只读查看；在外部工具中解决后，在文件列表中“标记已解决”" : "冲突已全部标记解决，可以完成合并"}</span><span className="spacer"/>{mergeConflicts > 0 && <button type="button" onClick={() => void viewConflicts()}>查看冲突</button>}{mergeConflicts === 0 && <button type="button" className="primary" disabled={!!writeBlocked} title={writeBlocked ?? undefined} onClick={() => setMergeCommitOpen(true)}>完成合并…</button>}<button type="button" className="danger" disabled={!!writeBlocked} title={writeBlocked ?? undefined} onClick={() => void abortMerge()}>中止合并…</button></div>}{detachedOid && <div className="op-banner detached-banner" role="status"><span>分离 HEAD：当前检出提交 {detachedOid.slice(0, 8)}，不在任何分支上；在此提交会不属于任何分支。</span><button type="button" disabled={!!writeBlocked} title={writeBlocked ?? undefined} onClick={() => { loadRefsView(); setNewBranch({ initial: { ref: "HEAD", label: `当前 HEAD ${detachedOid.slice(0, 8)}` } }); }}>从这里新建分支…</button></div>}<div className="tabbar">{selectedFile ? <strong className="tab-path"><PathText path={selectedFile.displayPath}/></strong> : <strong>Diff</strong>}{selectedFile?.oldDisplayPath && <PathText path={selectedFile.oldDisplayPath} prefix="← " className="rename-path"/>}
+      <section className="editor">{inProgressNotice && <div className="op-banner" role="status">{inProgressNotice}</div>}{mergeInProgress && <div className="op-banner merge-banner" role="status"><strong>合并进行中 · {mergeConflicts} 个冲突文件</strong><span>{mergeConflicts ? "可以在 Oris 中编辑文本冲突，也可在外部处理后标记已解决" : "冲突已全部标记解决，可以完成合并"}</span><span className="spacer"/>{mergeConflicts > 0 && <button type="button" onClick={() => void viewConflicts()}>查看冲突</button>}{mergeConflicts === 0 && <button type="button" className="primary" disabled={!!writeBlocked} title={writeBlocked ?? undefined} onClick={() => setMergeCommitOpen(true)}>完成合并…</button>}<button type="button" className="danger" disabled={!!writeBlocked} title={writeBlocked ?? undefined} onClick={() => void abortMerge()}>中止合并…</button></div>}{detachedOid && <div className="op-banner detached-banner" role="status"><span>分离 HEAD：当前检出提交 {detachedOid.slice(0, 8)}，不在任何分支上；在此提交会不属于任何分支。</span><button type="button" disabled={!!writeBlocked} title={writeBlocked ?? undefined} onClick={() => { loadRefsView(); setNewBranch({ initial: { ref: "HEAD", label: `当前 HEAD ${detachedOid.slice(0, 8)}` } }); }}>从这里新建分支…</button></div>}<div className="tabbar">{selectedFile ? <strong className="tab-path"><PathText path={selectedFile.displayPath}/></strong> : <strong>Diff</strong>}{selectedFile?.oldDisplayPath && <PathText path={selectedFile.oldDisplayPath} prefix="← " className="rename-path"/>}
         {selectedReadingKey && <div className="reading-review-actions">
           <button type="button" className="quiet" aria-label="标记已阅" aria-pressed={selectedIsRead} disabled={!selectedReadingVersion || checkingUnread}
             title={!selectedReadingVersion && !loading ? "无法确认当前差异的内容版本" : undefined} onClick={toggleRead}>
@@ -2177,7 +2254,12 @@ export default function App() {
           <span className="diff-position" aria-live="polite">{position.current} / {position.total}</span>
         </div>}
         {!historyReading && localReadingFile?.gitlink && (() => { const member = submoduleMember(localReadingFile.displayPath); const record = member?.repoId ? workspaceState.projects.find((project) => project.repo.repoId === member.repoId) : undefined; return record ? <button type="button" className="quiet" title={`切换到子仓库 ${member!.name}`} onClick={() => void switchProject(record)}>切换到该仓库</button> : null; })()}{reviewReading && <span className="history-badge">审查定位 · {reviewReading.endpoint} · 只读</span>}{historyReading && <span className="history-badge" title="主阅读器正在显示历史版本：两端为固定的提交 OID，只读">历史 · {historyReading.source}</span>}<span className="spacer"/>{historyReading || reviewReading ? <button type="button" onClick={returnToLocal} title="回到进入历史之前的本地文件与阅读位置">← 返回本地变化</button> : localReadingFile && localReadingFile.status !== "untracked" && <button type="button" className="quiet" onClick={() => openFileHistory(localReadingFile)} title="在底部“历史”页查看该文件的提交历史（从 HEAD 开始）">文件历史</button>}{selectedFile?.contentUnchanged && <span className="unchanged-note" title={contentUnchangedLabels[selectedFile.contentUnchanged].detail}>{contentUnchangedLabels[selectedFile.contentUnchanged].short}：Git 规范化后内容一致</span>}{loading && contentPending.current && <button onClick={() => { const cancelled = newRequestId(); contentGate.current.activate(cancelled); contentGate.current.finish(cancelled); contentPending.current = false; setLoading(false); setPair(null); setDiffDocument(null); void cancelContentRead().catch(() => {}); }}>取消读取</button>}{!conflictBlocksActive && diffDocument && <span>{diffDocument.hunks.length} 处差异 · Worker {diffDocument.elapsedMs.toFixed(1)} ms</span>}{pair && <details className="file-info"><summary title="版本、编码与块操作说明" aria-label="文件版本信息">ⓘ</summary><div className="file-info-popover"><div className="endpoints"><span className="left-endpoint">{endpoints[0]} <span className="encoding">{sideLabel(pair.left)}</span></span><span className="right-endpoint">{endpoints[1]} <span className="encoding">{sideLabel(pair.right)}</span></span></div>{hunkReason && <p className="hunk-unavailable">块操作不可用：{hunkReason}</p>}</div></details>}<button className="icon-button" title={diffToolsOpen ? "折叠 Diff 工具栏" : "展开 Diff 工具栏"} aria-label="Diff 工具栏" aria-expanded={diffToolsOpen} onClick={() => setDiffToolsOpen(value => !value)}>☷</button></div>{!structuredActive && !conflictBlocksActive && viewTexts && <div className="toolbar" hidden={!diffToolsOpen}><select value={singleFile ? "single" : mode} disabled={singleFile} onChange={(event) => { const value = event.target.value; if (value === "split" || value === "unified") setMode(value); }} aria-label="Diff 布局">{diffModes.includes("single") && <option value="single">单文件视图</option>}{diffModes.includes("split") && <option value="split">并排视图</option>}{diffModes.includes("unified") && <option value="unified">统一视图</option>}</select><select value={highlight} disabled={singleFile} onChange={(event) => setHighlight(event.target.value as "words" | "lines")} aria-label="高亮粒度"><option value="words">按词高亮</option><option value="lines">按行高亮</option></select><ToggleButton label="折叠上下文" pressed={collapsed} disabled={singleFile} onClick={() => setCollapsed((value) => !value)}/><ToggleButton label="自动换行" pressed={wrap} onClick={() => setWrap((value) => !value)}/><ToggleButton label="对齐变化" pressed={alignChanges} disabled={singleFile} onClick={() => setAlignChanges((value) => !value)}/><select value={whitespace} disabled={singleFile} onChange={(event) => setWhitespace(event.target.value as WhitespaceMode)} aria-label="空白规则" title="空白规则只影响显示，不修改仓库"><option value="keep">保留空白</option><option value="ignore">忽略空白</option></select>{collapsed && !singleFile && <button type="button" onClick={() => viewer.current?.expandAll()} title="展开当前文件中全部折叠的未变化内容">全部展开</button>}<ToggleButton label="行提交信息" pressed={lineInfoEnabled} onClick={() => setLineInfoEnabled(value => { localStorage.setItem("oris.lineHistory.v1", value ? "off" : "on"); return !value; })}/><ToggleButton label="专注" pressed={focusMode} title={`专注 diff：只保留阅读器（${shortcut("Ctrl+Shift+Enter")} 切换，Esc 退出）`} onClick={() => setFocusMode((value) => !value)}/>{latin1Active && <button type="button" onClick={() => setLatin1Keys((current) => { const next = new Set(current); next.delete(latin1Key); return next; })}>退出单字节显示</button>}{ignoredWhitespace !== null && <span className="filter-badge" role="status" title="只影响显示；差异计数、高亮与导航按同一规则计算">已忽略空白 · 略去 {ignoredWhitespace} 处</span>}</div>}
-        {selectedFile?.status === "conflicted" && !historyReading && !reviewReading && <div className="conflict-toolbar"><button aria-pressed={!conflictFull} onClick={() => setConflictFull(false)}>实际冲突块</button><button aria-pressed={conflictFull} onClick={() => setConflictFull(true)}>全文件比较（辅助）</button><span>只读 · 外部解决后标记已解决</span></div>}
+        {selectedFile?.status === "conflicted" && !historyReading && !reviewReading && <div className="conflict-toolbar">
+          <button aria-pressed={!conflictFull} onClick={() => setConflictFull(false)}>实际冲突块</button>
+          <button aria-pressed={conflictFull} onClick={() => setConflictFull(true)}>全文件比较（辅助）</button>
+          {mergeInProgress && snapshot && <button type="button" disabled={!!writeBlocked || loading} onClick={() => void loadConflictEditor(snapshot.repo.repoId, selectedFile.pathId, snapshot)}>编辑冲突</button>}
+          <span>保存后可单独标记已解决</span>
+        </div>}
         {conflictBlocksActive && <div className="content">{loading ? <p role="status">正在读取冲突…</p> : error ? <p role="alert">{error}</p> : conflictData && pair ? <ConflictBlocks key={`${conflictData.repoId}:${conflictData.pathId}:${conflictData.right.contentId}`} pair={conflictData} branch={snapshot?.repo.branch ?? ""}/> : <p>等待冲突内容</p>}</div>}
         {!conflictBlocksActive && (structuredActive && structuredFormat && pair ? <div className="structured-container">
           {notice && <SelectionNotice message={notice} onDismiss={() => setNotice(null)}/>}
@@ -2228,6 +2310,21 @@ export default function App() {
       onSwitchExisting={() => { const choice = trackChoice; setTrackChoice(null); void runSwitch({ kind: "branchSwitch", name: `refs/heads/${choice.existing}` }); }}
       onTrackAs={(name) => { const choice = trackChoice; setTrackChoice(null); void runSwitch({ kind: "branchTrack", remote: choice.remote.fullName, localName: name }); }}/>}
     {switchState && <SwitchDialog request={switchState} onChoose={(choice) => { switchState.resolve(choice); setSwitchState(null); }} onCancel={() => { switchState.resolve(null); setSwitchState(null); }}/>}
+    {conflictEditor && (conflictEditor.source ? (() => {
+      const source = conflictEditor.source;
+      const backup = repoOps?.lastBackup?.conflictSave && repoOps.lastBackup.paths.includes(source.path) ? repoOps.lastBackup : null;
+      return <ConflictEditor key={conflictEditor.key} source={source} dialogRef={conflictDialog} busy={conflictEditor.busy} message={conflictEditor.message}
+        onSave={result => writeConflictEditor({ kind: "conflictSave", pathId: source.pathId, expected: source.identity, result })}
+        onUndo={backup ? () => void writeConflictEditor({ kind: "undoDiscard", backupId: backup.id, overwrite: false }) : undefined}
+        onReload={() => void loadConflictEditor(source.repoId, source.pathId)} onClose={dirty => void dismissConflictEditor(dirty)}
+        onResolve={() => void writeConflictEditor({ kind: "conflictMarkResolved", pathId: source.pathId, expected: source.identity })}/>;
+    })() : <div className="dialog-overlay"><section ref={conflictDialog} tabIndex={-1} className="confirm-dialog" role="dialog" aria-label="冲突编辑器" aria-modal="true">
+      <h3>编辑冲突</h3><p role="status">{conflictEditor.busy ? "正在读取四个版本…" : conflictEditor.message}</p>
+      <div className="confirm-footer">
+        <button type="button" onClick={closeConflictEditor}>关闭</button>
+        {!conflictEditor.busy && <button type="button" onClick={() => void loadConflictEditor(conflictEditor.repoId, conflictEditor.pathId)}>重新读取</button>}
+      </div>
+    </section></div>)}
     {confirmState && <ConfirmDialog request={confirmState} onConfirm={() => { confirmState.resolve(true); setConfirmState(null); }} onCancel={() => { confirmState.resolve(false); setConfirmState(null); }}/>}
     {settingsOpen && <SettingsDialog key={activeRepoId} ignorePreview={{ showIgnored, ignoredCount, onChange: value => setShowIgnoredRepo(value ? activeRepoId : null) }} repoId={activeRepoId} repoName={activeProject ? projectName(activeProject) : ""} settings={settings} onClose={() => setSettingsOpen(false)} gitInUse={snapshot ? { executable: snapshot.git.executable, version: snapshot.git.version, minimumVersion: snapshot.git.minimumVersion } : null}/>}
     {aiOpen && <AiCommitDialog settings={settings} onLocateReview={locateReview} project={snapshot && activeRepoId ? { repoId: activeRepoId, name: snapshot.repo.displayName, branch: snapshot.repo.branch } : null} onClose={() => setAiOpen(false)} onGenerate={aiPlan} onPlanAction={planAction} onExecuteAction={async (action, turn) => {
@@ -2250,7 +2347,9 @@ export default function App() {
         {repoOps.last.summaryPath && <PathText path={repoOps.last.summaryPath}/>}
       </button>}
       {!repoOps?.running && repoOps?.last?.stashOid && backendRepoId && <button type="button" className="op-undo" onClick={() => { setStashReveal({ repoId: backendRepoId, oid: repoOps.last!.stashOid! }); setGitTab("stash"); }}>查看 Stash</button>}
-      {!repoOps?.running && repoOps?.lastBackup && <button type="button" className="op-undo" disabled={!!writeBlocked} title={`撤销刚才丢弃的 ${repoOps.lastBackup.files} 个文件`} onClick={() => void undoDiscard(repoOps.lastBackup!.id)}>撤销丢弃</button>}
+      {!repoOps?.running && repoOps?.lastBackup && <button type="button" className="op-undo" disabled={!!writeBlocked}
+        title={repoOps.lastBackup.conflictSave ? "恢复编辑保存前的冲突文件" : `撤销刚才丢弃的 ${repoOps.lastBackup.files} 个文件`}
+        onClick={() => void undoDiscard(repoOps.lastBackup!.id)}>{repoOps.lastBackup.conflictSave ? "撤销保存" : "撤销丢弃"}</button>}
       {!repoOps?.running && repoOps?.last?.kind === "push" && repoOps.last.status === "failed" && repoOps.last.message.includes("被拒绝") && <button type="button" className="op-undo push-rejected-pull" disabled={!!writeBlocked} title={writeBlocked ?? `按默认方式（${pullMode === "ffOnly" ? "仅快进" : "合并远端改动"}）拉取；不会自动再推送`} onClick={() => void runPull()}>拉取</button>}
       <button type="button" className="op-undo" disabled={!!repoOps?.running} onClick={() => setGitTab("output")}>诊断</button>
     </footer>

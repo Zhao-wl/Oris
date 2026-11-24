@@ -1,0 +1,14 @@
+.conflict-editor { display:grid; gap:8px; grid-template-rows:auto minmax(70px,1fr) auto auto minmax(100px,2fr) auto auto; padding:12px; width:min(1100px,94vw); height:min(780px,94vh); background:var(--panel); border:1px solid var(--border); border-radius:6px; }
+.conflict-editor .panel-title { display:flex; gap:8px; min-width:0; }
+.conflict-editor .panel-title span { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.conflict-editor-sources { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; min-height:0; }
+.conflict-editor-sources section { display:flex; flex-direction:column; min-width:0; overflow:hidden; }
+.conflict-editor h3, .conflict-editor p { font-size:13px; margin:0; }
+.conflict-editor > p { grid-row:6; }
+.conflict-editor pre { margin:0; padding:6px; min-height:0; overflow:auto; background:var(--bg); border:1px solid var(--border); }
+.conflict-editor mark { color:inherit; background:color-mix(in srgb, var(--blue) 25%, transparent); }
+.conflict-editor-block, .conflict-editor-footer { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
+.conflict-editor-block-preview { grid-row:4; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; max-height:10vh; }
+.conflict-editor-footer { grid-row:7; }
+.conflict-result { grid-row:5; display:flex; flex-direction:column; min-height:0; gap:4px; }
+.conflict-result textarea { flex:1; min-height:0; resize:none; color:var(--text); background:var(--bg); font:13px/20px monospace; }

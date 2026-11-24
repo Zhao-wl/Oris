@@ -4,6 +4,7 @@
 //! 写入对象库（原始字节，不经过 filter），暂存内容只记录 OID 与 mode；备份记录写入应用数据目录，
 //! 每个仓库最多 20 次。单文件超过 50 MiB 不备份，需明确确认“不可撤销”。gitlink 与冲突文件不丢弃。
 use super::*;
+use super::conflict::{ConflictBackup, ExpectedStage};
 
 pub const BACKUP_FILE_LIMIT: u64 = 50 * 1024 * 1024;
 pub const BACKUP_RECORDS_PER_REPO: usize = 20;
@@ -58,6 +59,8 @@ struct BackupRecord {
     entries: Vec<BackupEntry>,
     /// 丢弃命令全部执行完成；未完成的记录仍可用于撤销已执行的部分。
     complete: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    conflict_stages: Option<[Option<ExpectedStage>; 3]>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -77,6 +80,7 @@ pub struct BackupSummary {
     pub files: usize,
     pub unrecoverable: usize,
     pub paths: Vec<String>,
+    pub conflict_save: bool,
 }
 
 impl From<&BackupRecord> for BackupSummary {
@@ -88,6 +92,7 @@ impl From<&BackupRecord> for BackupSummary {
             files: record.entries.len(),
             unrecoverable: record.entries.iter().filter(|e| e.unrecoverable).count(),
             paths: record.entries.iter().take(8).map(|e| e.display_path.clone()).collect(),
+            conflict_save: record.conflict_stages.is_some(),
         }
     }
 }
@@ -390,7 +395,7 @@ impl GitAdapter {
     }
 
     /// 工作区内的绝对路径；上级目录中不允许出现符号链接（防止越过仓库边界）。
-    fn checked_worktree_path(&self, relative: &str) -> Result<PathBuf, GitError> {
+    pub(super) fn checked_worktree_path(&self, relative: &str) -> Result<PathBuf, GitError> {
         let mut path = self.worktree.clone();
         let components: Vec<_> = Path::new(relative).components().collect();
         for (i, component) in components.iter().enumerate() {
@@ -453,7 +458,7 @@ impl GitAdapter {
             })
             .collect();
         let record_id = ctx.op_id.clone();
-        let mut record = BackupRecord { id: record_id, created_at: now_ms(), scope, entries: entries.clone(), complete: false };
+        let mut record = BackupRecord { id: record_id, created_at: now_ms(), scope, entries: entries.clone(), complete: false, conflict_stages: None };
         // 2. 先落盘备份记录，再执行破坏性命令。
         ctx.backups.upsert(&self.repo_id, &self.worktree, record.clone())?;
         // 3. 丢弃。
@@ -513,38 +518,47 @@ impl GitAdapter {
 
     /// 块级丢弃（V2-05）的安全网：先把整个工作区文件（原始字节）写入对象库并记录，再执行 `run`；
     /// 撤销时与文件级丢弃相同，恢复整个文件。超过 50 MiB 备份预算时需要明确确认“不可撤销”。
-    pub(super) fn with_worktree_backup(&self, path: &[u8], path_id: &str, confirmed_unrecoverable: bool, ctx: &OpContext, run: impl FnOnce(&OpContext) -> Result<Step, GitError>) -> Result<Step, GitError> {
-        let size = self.worktree_size(path);
-        let unrecoverable = size.is_some_and(|s| s > BACKUP_FILE_LIMIT);
+    pub(super) fn with_worktree_backup(&self, path: &[u8], path_id: &str, confirmed_unrecoverable: bool, conflict: Option<ConflictBackup>, ctx: &OpContext, run: impl FnOnce(&OpContext) -> Result<Step, GitError>) -> Result<Step, GitError> {
+        let action = if conflict.is_some() { "保存" } else { "丢弃" };
+        let unrecoverable = conflict.is_none() && self.worktree_size(path).is_some_and(|s| s > BACKUP_FILE_LIMIT);
         if unrecoverable && !confirmed_unrecoverable {
             return Ok(Step::confirm("unrecoverable", "文件超过 50 MiB 备份预算，丢弃这一块后不可撤销", vec![display(path)]));
         }
-        let worktree = if unrecoverable {
+        let worktree = if let Some(backup) = &conflict {
+            let result = self.write_git(&["hash-object", "-w", "--no-filters", "--stdin"], Some(backup.original.clone()), false, ctx)?;
+            if !result.success { return Ok(Step::failed(format!("{}；未保存", Self::failure_message(&result, "备份")))); }
+            let oid = String::from_utf8_lossy(&result.stdout).trim().to_owned();
+            Some(BlobRef { oid, mode: executable_mode(&self.worktree, path) })
+        } else if unrecoverable {
             None
         } else {
             let oids = match self.backup_worktree(&[path], ctx)? {
                 Ok(oids) => oids,
-                Err(message) => return Ok(Step::failed(format!("{message}；未丢弃"))),
+                Err(message) => return Ok(Step::failed(format!("{message}；未{action}"))),
             };
             let mode = std::str::from_utf8(path).ok().and_then(|r| fs::symlink_metadata(self.worktree.join(r)).ok()).filter(|m| m.file_type().is_symlink()).map(|_| "120000".to_owned()).unwrap_or_else(|| executable_mode(&self.worktree, path));
             Some(BlobRef { oid: oids[0].clone(), mode })
         };
         if ctx.cancel.is_cancelled() {
-            return Ok(Step::cancelled("丢弃已取消；未改动文件"));
+            return Ok(Step::cancelled(format!("{action}已取消；未改动文件")));
         }
+        let after = conflict.as_ref().map(|backup| Fingerprint { exists: true, sha256: Some(backup.saved_sha256.clone()) });
         let mut record = BackupRecord {
             id: ctx.op_id.clone(),
             created_at: now_ms(),
             scope: CompareScope::Unstaged,
-            entries: vec![BackupEntry { path_id: path_id.to_owned(), display_path: display(path), worktree, unrecoverable, index: IndexState::Untouched, after: None }],
-            complete: false,
+            entries: vec![BackupEntry { path_id: path_id.to_owned(), display_path: display(path), worktree, unrecoverable, index: IndexState::Untouched, after }],
+            complete: conflict.is_some(),
+            conflict_stages: conflict.map(|backup| backup.stages),
         };
         ctx.backups.upsert(&self.repo_id, &self.worktree, record.clone())?;
         let mut step = run(ctx)?;
         if step.status == OpStatus::Succeeded {
-            record.entries[0].after = Some(self.fingerprint(path));
-            record.complete = true;
-            ctx.backups.upsert(&self.repo_id, &self.worktree, record.clone())?;
+            if record.conflict_stages.is_none() {
+                record.entries[0].after = Some(self.fingerprint(path));
+                record.complete = true;
+                ctx.backups.upsert(&self.repo_id, &self.worktree, record.clone())?;
+            }
             step.message.push_str(if unrecoverable { "（不可撤销）" } else { "，可撤销" });
             step.backup = Some(BackupSummary::from(&record));
         } else {
@@ -556,9 +570,21 @@ impl GitAdapter {
 
     pub(super) fn op_undo_discard(&self, backup_id: &str, overwrite: bool, ctx: &OpContext) -> Result<Step, GitError> {
         let Some(record) = ctx.backups.get(&self.repo_id, backup_id) else {
-            return Ok(Step::failed("找不到该丢弃记录（可能已撤销或超出保留数量）"));
+            return Ok(Step::failed("找不到该备份记录（可能已撤销或超出保留数量）"));
         };
+        let action = if let Some(stages) = &record.conflict_stages {
+            let scan = self.scan(false)?;
+            let entry = record.entries.first();
+            if !scan.in_progress.merge || entry.is_none_or(|entry| Self::verify_conflict_stages(&scan, &entry.path_id, stages).is_err()) {
+                return Ok(Step::failed("冲突状态已变化或备份不完整，无法撤销保存"));
+            }
+            "保存"
+        } else { "丢弃" };
         let paths: Vec<Vec<u8>> = record.entries.iter().map(|e| decode_path_id(&e.path_id)).collect::<Result<_, _>>()?;
+        if record.conflict_stages.is_some() && record.entries.iter().zip(&paths)
+            .any(|(entry, path)| entry.after.as_ref().is_none_or(|after| *after != self.fingerprint(path))) {
+            return Ok(Step::failed("工作区在保存后又有修改，无法撤销保存"));
+        }
         // 丢弃之后又被修改的文件：再次确认覆盖。
         if !overwrite {
             let modified: Vec<String> = record
@@ -569,7 +595,7 @@ impl GitAdapter {
                 .map(|(e, _)| e.display_path.clone())
                 .collect();
             if !modified.is_empty() {
-                return Ok(Step::confirm("modifiedSinceDiscard", format!("{} 个文件在丢弃之后又被修改，撤销会覆盖这些修改", modified.len()), modified));
+                return Ok(Step::confirm("modifiedSinceDiscard", format!("{} 个文件在{action}之后又被修改，撤销会覆盖这些修改", modified.len()), modified));
             }
         }
         // 对象仍然存在（未被 gc 清理）。
@@ -660,7 +686,7 @@ impl GitAdapter {
             return Ok(Step::failed(message));
         }
         if ctx.cancel.is_cancelled() {
-            return Ok(Step::cancelled("撤销丢弃已取消；未改动任何文件"));
+            return Ok(Step::cancelled(format!("撤销{action}已取消；未改动任何文件")));
         }
         // 1. 恢复暂存内容（“全部”范围）：update-index --index-info，mode 0 表示从 index 移除。
         let zero = "0".repeat(self.head_oid().ok().flatten().map(|o| o.len()).unwrap_or(40));
@@ -679,7 +705,7 @@ impl GitAdapter {
         if !index_info.is_empty() {
             let result = self.write_git(&["update-index", "-z", "--index-info"], Some(index_info), true, ctx)?;
             if result.cancelled {
-                return Ok(Step::cancelled("撤销丢弃已取消"));
+                return Ok(Step::cancelled(format!("撤销{action}已取消")));
             }
             if !result.success {
                 return Ok(Step::failed(Self::failure_message(&result, "恢复暂存内容")));
@@ -697,15 +723,31 @@ impl GitAdapter {
                 None => self.remove_worktree_path(path)?,
                 Some(blob) => {
                     let bytes = contents.get(&blob.oid).ok_or_else(|| GitError::Io("备份内容缺失".into()))?;
-                    self.write_worktree_file(relative, bytes, &blob.mode)?;
+                    if let Some(stages) = &record.conflict_stages {
+                        let restored = self.replace_conflict_worktree(relative, bytes, || {
+                            let scan = self.scan(false)?;
+                            if !scan.in_progress.merge || entry.after.as_ref().is_none_or(|after| *after != self.fingerprint(path)) {
+                                return Err(GitError::StaleRequest);
+                            }
+                            Self::verify_conflict_stages(&scan, &entry.path_id, stages)?;
+                            if ctx.cancel.is_cancelled() { return Err(GitError::WriteBlocked("已取消撤销保存".into())); }
+                            Ok(())
+                        });
+                        if restored.is_err() && ctx.cancel.is_cancelled() {
+                            return Ok(Step::cancelled("已取消撤销保存；工作区未改动"));
+                        }
+                        restored?;
+                    } else {
+                        self.write_worktree_file(relative, bytes, &blob.mode)?;
+                    }
                 }
             }
         }
         ctx.backups.remove(&self.repo_id, backup_id)?;
         let mut step = Step::ok(if skipped.is_empty() {
-            format!("已撤销丢弃，恢复 {} 个文件", record.entries.len())
+            format!("已撤销{action}，恢复 {} 个文件", record.entries.len())
         } else {
-            format!("已撤销丢弃；{} 个文件超出备份预算未能恢复：{}", skipped.len(), skipped.join("、"))
+            format!("已撤销{action}；{} 个文件超出备份预算未能恢复：{}", skipped.len(), skipped.join("、"))
         });
         step.touched = record.entries.iter().map(|e| e.display_path.clone()).collect();
         Ok(step)

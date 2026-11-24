@@ -7,6 +7,8 @@ export type OperationRequest =
   | { kind: "stageSelected"; pathIds: string[]; expectedRevision: string }
   | { kind: "unstage"; pathIds: string[] }
   | { kind: "markResolved"; pathIds: string[]; confirmed?: boolean }
+  | { kind: "conflictSave"; pathId: string; expected: ConflictIdentity; result: string }
+  | { kind: "conflictMarkResolved"; pathId: string; expected: ConflictIdentity; confirmed?: boolean }
   | { kind: "discard"; scope: CompareScope; pathIds: string[]; confirmedUnrecoverable?: boolean }
   | { kind: "undoDiscard"; backupId: string; overwrite?: boolean }
   | { kind: "hunkStage"; pathId: string; contentIds: [string, string]; hunk: HunkRef }
@@ -37,7 +39,15 @@ export interface StashFirst { stashFirst?: boolean; stashUntracked?: boolean }
 /** Git 因本地改动拒绝切换、用户选择后再次请求：放弃修改后切换（先备份）或带着改动切换（switch --merge）。 */
 export interface SwitchLocalChanges { localChanges?: "keep" | "discard" | "merge"; includeUntracked?: boolean }
 
-export type OperationKind = "stageSelected" | "stage" | "unstage" | "markResolved" | "discard" | "undoDiscard" | "commit" | "commitSelected" | "undoCommit" | "fetch"
+export interface ConflictIdentity {
+  repoId: string;
+  revision: string;
+  stages: [ConflictStage | null, ConflictStage | null, ConflictStage | null];
+  worktreeContentId: string;
+}
+interface ConflictStage { oid: string; mode: string }
+
+export type OperationKind = "stageSelected" | "stage" | "unstage" | "markResolved" | "conflictSave" | "conflictMarkResolved" | "discard" | "undoDiscard" | "commit" | "commitSelected" | "undoCommit" | "fetch"
   | "hunkStage" | "hunkUnstage" | "hunkDiscard"
   | "stashPush" | "stashApply" | "stashPop" | "stashDrop"
   | "branchCreate" | "branchSwitch" | "branchTrack" | "checkout" | "branchRename" | "branchDelete" | "setUpstream"
@@ -59,6 +69,7 @@ export interface BackupSummary {
   files: number;
   unrecoverable: number;
   paths: string[];
+  conflictSave?: boolean;
 }
 
 export interface OperationOutcome {
