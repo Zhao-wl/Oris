@@ -310,6 +310,9 @@ function UnchangedFold({ files, selectedPathId, mode, onSelect }: Omit<Props, "s
 export default function FileTree({ files, selectedPathId, mode, statsPending = false, onSelect, actions }: Props) {
   const changed = useMemo(() => files.filter((file) => !file.contentUnchanged), [files]);
   const unchanged = useMemo(() => files.filter((file) => file.contentUnchanged), [files]);
+  const sortedChanged = useMemo(() => mode === "flat" ? [...changed].sort(compareFiles) : changed, [changed, mode]);
+  const sortedUnchanged = useMemo(() => [...unchanged].sort(compareFiles), [unchanged]);
+  const changedTree = useMemo(() => mode === "tree" ? buildTree(changed) : null, [changed, mode]);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const anchor = useRef<string | null>(null);
   // 最新的选择（含尚未重渲染的连续点击），每次渲染按 props 重置。
@@ -324,12 +327,11 @@ export default function FileTree({ files, selectedPathId, mode, statsPending = f
   }, [selectedPathId, actions?.selection, actions?.scope]);
   // 列表的显示顺序（Shift 连续选择按此计算）。
   const order = useMemo(() => {
-    const sortedUnchanged = [...unchanged].sort(compareFiles);
-    if (mode === "flat") return [...[...changed].sort(compareFiles), ...sortedUnchanged].map((file) => file.pathId);
+    if (!changedTree) return [...sortedChanged, ...sortedUnchanged].map((file) => file.pathId);
     const rows: Row[] = [];
-    flattenTree(buildTree(changed), 0, new Set(), rows);
+    flattenTree(changedTree, 0, new Set(), rows);
     return [...rows.flatMap((row) => (row.kind === "file" ? [row.file.pathId] : [])), ...sortedUnchanged.map((file) => file.pathId)];
-  }, [changed, unchanged, mode]);
+  }, [changedTree, sortedChanged, sortedUnchanged]);
   const context = useMemo<ActionsContextValue | null>(() => {
     if (!actions) return null;
     const byId = new Map(files.map((file) => [file.pathId, file]));
@@ -370,28 +372,28 @@ export default function FileTree({ files, selectedPathId, mode, statsPending = f
   // Keep the main list at a stable keyed position when background normalization
   // adds/removes the fold. Switching between a list and a fragment remounts every row.
   return <ActionsContext.Provider value={context}>
-    <FileList key="changes" files={changed} selectedPathId={selectedPathId} mode={mode} statsPending={statsPending} onSelect={onSelect} />
-    <UnchangedFold key="unchanged" files={unchanged} selectedPathId={selectedPathId} mode={mode} onSelect={onSelect} />
+    <FileList key="changes" files={sortedChanged} preparedTree={changedTree} selectedPathId={selectedPathId} mode={mode} statsPending={statsPending} onSelect={onSelect} />
+    <UnchangedFold key="unchanged" files={mode === "flat" ? sortedUnchanged : unchanged} selectedPathId={selectedPathId} mode={mode} onSelect={onSelect} />
     {menu && context && ("directory" in menu ? <DirectoryMenu menu={menu} onClose={closeMenu}/> : <FileMenu menu={menu} files={files} onClose={closeMenu}/>)}
   </ActionsContext.Provider>;
 }
 
-function FileList({ files, selectedPathId, mode, statsPending = false, onSelect }: Props) {
+function FileList({ files, preparedTree, selectedPathId, mode, statsPending = false, onSelect }: Props & { preparedTree?: DirectoryNode | null }) {
   const actions = useContext(ActionsContext);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
-  const sorted = useMemo(() => [...files].sort(compareFiles), [files]);
+  const tree = useMemo(() => mode === "tree" ? preparedTree ?? buildTree(files) : null, [mode, preparedTree, files]);
   const virtual = files.length > VIRTUAL_THRESHOLD;
   const treeRows = useMemo(() => {
-    if (!virtual || mode !== "tree") return [];
+    if (!virtual || !tree) return [];
     const rows: Row[] = [];
-    flattenTree(buildTree(files), 0, collapsed, rows);
+    flattenTree(tree, 0, collapsed, rows);
     return rows;
-  }, [virtual, mode, files, collapsed]);
-  if (mode === "flat") {
-    if (virtual) return <VirtualRows scrollParent=".files" sampleRow=".file, .tree-row" count={sorted.length} render={(index, style) => (
-      <FileButton key={sorted[index].pathId} file={sorted[index]} selectedPathId={selectedPathId} onSelect={onSelect} showPath statsPending={statsPending} style={style} />
+  }, [virtual, tree, collapsed]);
+  if (!tree) {
+    if (virtual) return <VirtualRows scrollParent=".files" sampleRow=".file, .tree-row" count={files.length} render={(index, style) => (
+      <FileButton key={files[index].pathId} file={files[index]} selectedPathId={selectedPathId} onSelect={onSelect} showPath statsPending={statsPending} style={style} />
     )} />;
-    return <>{sorted.map((file) => (
+    return <>{files.map((file) => (
       <FileButton key={file.pathId} file={file} selectedPathId={selectedPathId} onSelect={onSelect} showPath statsPending={statsPending} />
     ))}</>;
   }
@@ -406,6 +408,5 @@ function FileList({ files, selectedPathId, mode, statsPending = false, onSelect 
       </div>;
     }} />;
   }
-  const tree = buildTree(files);
   return <Directory node={tree} depth={0} selectedPathId={selectedPathId} onSelect={onSelect} statsPending={statsPending} />;
 }

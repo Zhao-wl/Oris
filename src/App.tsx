@@ -890,10 +890,21 @@ export default function App() {
   const showIgnored = !!activeRepoId && showIgnoredRepo === activeRepoId;
   const ignoredCount = useMemo(() => snapshot?.files.filter(f => ignoreMatcher(f.displayPath)).length ?? 0, [snapshot, ignoreMatcher]);
   const ignoredStagedPaths = useMemo(() => runtime?.snapshot?.scopes?.staged.filter(f => ignoreMatcher(f.displayPath)).map(f => f.displayPath) ?? [], [runtime, ignoreMatcher]);
+  const stagingSources = useMemo(() => {
+    const current = runtime?.snapshot;
+    const sourceFor = (listScope: Exclude<CompareScope, "all">) => current?.scopes && runtime
+      ? stagingList(current, runtime, listScope)
+      : current?.scope === listScope ? current.files : [];
+    return { unstaged: sourceFor("unstaged"), staged: sourceFor("staged") };
+  }, [runtime]);
+  const stagingFiles = useMemo(() => {
+    const order = (files: FileChange[]) => filterReadableFiles(files, ignoreMatcher, filter, showIgnored).sort(compareFiles);
+    return { unstaged: order(stagingSources.unstaged), staged: order(stagingSources.staged) };
+  }, [stagingSources, filter, ignoreMatcher, showIgnored]);
   const visibleFiles = useMemo(() => {
-    const files = snapshot && runtime && scope !== "all" ? stagingList(snapshot, runtime, scope) : snapshot?.files ?? [];
-    return filterReadableFiles(files, ignoreMatcher, filter, showIgnored).sort(compareFiles);
-  }, [snapshot, runtime, scope, filter, ignoreMatcher, showIgnored]);
+    if (runtime?.snapshot?.scopes && scope !== "all") return stagingFiles[scope];
+    return filterReadableFiles(snapshot?.files ?? [], ignoreMatcher, filter, showIgnored).sort(compareFiles);
+  }, [snapshot, runtime, scope, stagingFiles, filter, ignoreMatcher, showIgnored]);
   visibleFilesRef.current = visibleFiles;
   // 工作区成员不单独占标签（V2-D76）；工作区标签也按成员名称匹配搜索。
   const visibleProjects = useMemo(() => { const query = projectFilter.trim().toLocaleLowerCase(); return tabProjects(workspaceState).filter((project) => `${projectName(project)} ${project.repo.worktreePath} ${project.group ? workspaceState.projects.filter((member) => member.groupId === project.repo.repoId).map(projectName).join(" ") : ""}`.toLocaleLowerCase().includes(query)); }, [projectFilter, workspaceState]);
@@ -2271,8 +2282,8 @@ export default function App() {
         <div className="content">{notice && <SelectionNotice message={notice} onDismiss={() => setNotice(null)}/>}{loading && !diffDocument && <div className="state loading" role="status"><span className="loading-spinner" aria-hidden="true"/><span>正在读取真实仓库…</span></div>}{error && <div className="state error"><strong>无法显示差异</strong><p>{error}</p></div>}{!loading && !error && pair?.left.encoding === "missing" && pair.right.encoding === "missing" && <div className="state">所选两端均缺失，没有可比较内容。</div>}{!loading && !error && pair?.degradation && !special && !latin1Active && <div className="state warning"><strong>内容已降级</strong><p>{pair.degradation}</p></div>}{!loading && !error && special && <SpecialFileView description={special} compact={!!availableText} action={latin1Available ? { label: "按单字节（Latin-1）显示", onClick: () => setLatin1Keys((current) => new Set([...current, latin1Key])) } : undefined}/>}{(!loading || viewDocument) && !error && readingNotices.length > 0 && <div className="reading-notice" role="status">{readingNotices.map((text, index) => <p key={index}>{text}</p>)}</div>}{!loading && !error && pair && (pair.left.details?.image || pair.right.details?.image || /\.(png|jpe?g|webp)$/i.test(pair.displayPath)) && <ImageViewer key={`${pair.repoId}:${pair.pathId}:${pair.left.contentId}:${pair.right.contentId}`} left={pair.left} right={pair.right} labels={endpoints}/>} {!loading && !error && availableText && pair && !latin1Active && <><div className="partial-notice">仅显示可用文本端；另一侧不可用，跨侧差异计数与导航不可计算。{special ? "" : pair.degradation}</div><DiffViewer ref={reviewReading ? viewer : undefined} readingKey={`${pair.repoId}:${pair.pathId}:${availableText.endpoint}`} presentation={{kind:"compare"}} left={editorText(availableText.text!)} right={editorText(availableText.text!)} document={{requestId:pair.requestId,contentIds:[availableText.contentId,availableText.contentId],changes:[],hunks:[],elapsedMs:0}} mode="unified" highlight={highlight} collapsed={false} wrap={wrap} alignChanges={false} onPositionChange={() => {}}/></>} {!error && viewTexts && pair && viewDocument && <DiffViewer readingKey={reviewReading ? `${pair.repoId}:review:${pair.revision}:${pair.pathId}` : historyReading ? `${pair.repoId}:history:${historyReading.key}` : `${pair.repoId}:${scope}:${pair.pathId}`} presentation={presentation} ref={viewer} left={viewTexts[0]} right={viewTexts[1]} document={viewDocument} hunkHeaders={hunkHeaders} onLineSelect={onLineSelect} selectedLine={lineContext && lineSelection?.key === lineHistoryKey(lineContext) ? lineSelection.value : null} mode={mode} highlight={highlight} collapsed={collapsed} wrap={wrap} alignChanges={alignChanges} onPositionChange={handlePositionChange}/>} {!loading && !error && !pair && <div className="state">{snapshot && !snapshot.files.length ? "当前比较范围没有变化" : "选择一个变化文件开始阅读"}</div>}</div>{lineInfoEnabled && lineContext && viewTexts && !latin1Active && !error && <LineHistoryBar context={lineContext} selection={lineSelection} onJump={jumpFromLine}/>}</>)}</section>
     </section>
     <GitPanel filesContent={<>{(["unstaged", "staged"] as const).map(listScope => {
-      const source = runtime?.snapshot?.scopes ? stagingList(runtime.snapshot, runtime, listScope) : snapshot?.scope === listScope ? snapshot.files : [];
-      const files = filterReadableFiles(source, ignoreMatcher, filter, showIgnored).sort(compareFiles);
+      const source = stagingSources[listScope];
+      const files = stagingFiles[listScope];
       const active = scope === listScope;
       const actions: FileActions = { ...fileActions, scope: listScope, stagingSyncing, stagingDisabledReason: stagingBlocked, selection: active ? multiSelection : new Set<string>(),
         onSelection: (ids, focus) => { setMultiSelection(new Set(ids)); if (focus) userSelect(focus, listScope); },

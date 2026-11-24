@@ -79,6 +79,24 @@ it("sorts content-unchanged files after real changes and uses one fold label for
   await act(async () => root.unmount());
 });
 
+it("keeps Shift ranges in tree display order when directories precede root files", async () => {
+  const root = createRoot(host);
+  const files = make(3).map((file, index) => ({ ...file, displayPath: ["root.txt", "b/nested.txt", "z/nested.txt"][index] }));
+  const onSelection = vi.fn();
+  const actions = { scope: "unstaged" as const, disabledReason: null, selection: new Set<string>(), onSelection, onAction() {} };
+  await act(async () => root.render(<FileTree files={files} selectedPathId={files[1].pathId} mode="tree" onSelect={() => {}} actions={actions} />));
+  expect([...host.querySelectorAll(".file")].map(row => row.getAttribute("aria-label"))).toEqual(["b/nested.txt", "z/nested.txt", "root.txt"]);
+  const rangeTo = async (path: string) => {
+    const row = host.querySelector(`.file[aria-label="${path}"]`)!;
+    await act(async () => row.dispatchEvent(new MouseEvent("click", { bubbles: true, shiftKey: true })));
+  };
+  await rangeTo("root.txt");
+  expect(onSelection).toHaveBeenLastCalledWith(["p1", "p2", "p0"], files[0]);
+  await rangeTo("z/nested.txt");
+  expect(onSelection).toHaveBeenLastCalledWith(["p1", "p2"], files[2]);
+  await act(async () => root.unmount());
+});
+
 it("shows a placeholder, never 0, while background stats are pending", async () => {
   const root = createRoot(host);
   const files = make(2);
