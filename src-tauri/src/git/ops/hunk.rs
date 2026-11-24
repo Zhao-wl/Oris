@@ -480,7 +480,7 @@ impl GitAdapter {
             }
         };
         let mut step = if action == HunkAction::Discard {
-            self.with_worktree_backup(&source.path, path_id, confirmed_unrecoverable, ctx, discard)?
+            self.with_worktree_backup(&source.path, path_id, confirmed_unrecoverable, None, ctx, discard)?
         } else {
             apply(ctx)?
         };

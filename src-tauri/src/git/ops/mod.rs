@@ -5,6 +5,7 @@
 //! `--pathspec-from-file=- --pathspec-file-nul` 传递。任何写操作都不自动重试。
 mod branch;
 mod commit;
+mod conflict;
 mod discard;
 mod hunk;
 mod locks;
@@ -65,6 +66,8 @@ pub enum OperationRequest {
         #[serde(default)]
         confirmed: bool,
     },
+    ConflictSave { path_id: String, expected: conflict::ConflictIdentity, result: String },
+    ConflictMarkResolved { path_id: String, expected: conflict::ConflictIdentity, #[serde(default)] confirmed: bool },
     Discard {
         scope: CompareScope,
         path_ids: Vec<String>,
@@ -193,6 +196,8 @@ impl OperationRequest {
             Self::StageSelected { .. } => "stage",
             Self::Unstage { .. } => "unstage",
             Self::MarkResolved { .. } => "markResolved",
+            Self::ConflictSave { .. } => "conflictSave",
+            Self::ConflictMarkResolved { .. } => "conflictMarkResolved",
             Self::Discard { .. } => "discard",
             Self::UndoDiscard { .. } => "undoDiscard",
             Self::HunkStage { .. } => "hunkStage",
@@ -401,7 +406,7 @@ impl GitAdapter {
             && step.status == OpStatus::Succeeded
             && matches!(request, OperationRequest::Stage { .. } | OperationRequest::Unstage { .. }
                 | OperationRequest::HunkStage { .. } | OperationRequest::HunkUnstage { .. }
-                | OperationRequest::StageSelected { .. } | OperationRequest::MarkResolved { .. });
+                | OperationRequest::StageSelected { .. } | OperationRequest::MarkResolved { .. } | OperationRequest::ConflictMarkResolved { .. });
         let git_processes = ctx.processes.load(std::sync::atomic::Ordering::SeqCst);
         // 需要确认时无需刷新。失败和取消仍在返回前重新读取实际状态。
         let snapshot = if snapshot_deferred || step.status == OpStatus::NeedsConfirmation {
@@ -446,6 +451,8 @@ impl GitAdapter {
                 self.op_stage(path_ids, false, true, ctx)
             },
             OperationRequest::MarkResolved { path_ids, confirmed } => self.op_stage(path_ids, true, *confirmed, ctx),
+            OperationRequest::ConflictSave { path_id, expected, result } => self.op_conflict_save(path_id, expected, result, ctx),
+            OperationRequest::ConflictMarkResolved { path_id, expected, confirmed } => self.op_conflict_mark_resolved(path_id, expected, *confirmed, ctx),
             OperationRequest::Unstage { path_ids } => self.op_unstage(path_ids, ctx),
             OperationRequest::Discard { scope, path_ids, confirmed_unrecoverable } => self.op_discard(*scope, path_ids, *confirmed_unrecoverable, ctx),
             OperationRequest::UndoDiscard { backup_id, overwrite } => self.op_undo_discard(backup_id, *overwrite, ctx),

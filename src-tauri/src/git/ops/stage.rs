@@ -4,9 +4,12 @@ use super::*;
 
 /// 冲突标记（行首）：`<<<<<<< `、`=======`、`>>>>>>> `。
 fn has_conflict_markers(bytes: &[u8]) -> bool {
+    let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
     bytes.split(|b| *b == b'\n').any(|line| {
         let line = line.strip_suffix(b"\r").unwrap_or(line);
-        line.starts_with(b"<<<<<<< ") || line == b"<<<<<<<" || line == b"=======" || line.starts_with(b">>>>>>> ") || line == b">>>>>>>"
+        let Some(first @ (b'<' | b'>' | b'=' | b'|')) = line.first().copied() else { return false; };
+        let width = line.iter().take_while(|byte| **byte == first).count();
+        width >= 7 && (width == line.len() || (first != b'=' && line[width] == b' '))
     })
 }
 
@@ -78,6 +81,7 @@ mod tests {
     fn conflict_marker_detection_is_line_based() {
         assert!(has_conflict_markers(b"a\n<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> theirs\n"));
         assert!(has_conflict_markers(b"a\r\n=======\r\n"));
+        assert!(has_conflict_markers(b"<<<<<<<< HEAD\n|||||||| base\n========\n>>>>>>>> side\n"));
         assert!(!has_conflict_markers(b"a <<<<<<< in text\n== not a marker\n"));
     }
 }

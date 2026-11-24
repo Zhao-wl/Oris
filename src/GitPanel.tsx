@@ -143,18 +143,18 @@ function OutputTab({ running, lines, last, backups, blockedReason, onUndoDiscard
         {last.output ? <pre aria-label="操作输出">{last.output}{last.outputTruncated ? "\n…（输出超过 256 KiB，已截断）" : ""}</pre> : <p className="output-empty">Git 没有输出</p>}
       </> : <p className="output-empty">最近一次写操作的 Git 输出在这里显示；失败时保留错误摘要。</p>}
     </div>
-    <aside className="output-backups" aria-label="诊断与可撤销的丢弃">
+    <aside className="output-backups" aria-label="诊断与可恢复的工作区备份">
       {contentCacheStats && <section className="cache-diagnostics" aria-label="缓存诊断">
         <strong>缓存诊断</strong>
         <div>内容缓存条目 · {contentCacheStats.entries} 项</div>
         <div>已用容量 · {mib(contentCacheStats.bytes)} MiB</div>
         <div>容量预算 · {mib(contentCacheStats.budget)} MiB</div>
       </section>}
-      <strong>可撤销的丢弃</strong>
-      {backups.length === 0 && <p className="output-empty">没有丢弃记录</p>}
+      <strong>工作区备份</strong>
+      {backups.length === 0 && <p className="output-empty">没有备份记录</p>}
       {backups.map((backup) => <div key={backup.id} className="backup-row">
         <span title={backup.paths.join("\n")}>{new Date(backup.createdAt).toLocaleTimeString()} · {backup.files} 个文件{backup.unrecoverable ? `（${backup.unrecoverable} 个不可撤销）` : ""}<small>{backup.paths.slice(0, 3).join("、")}{backup.files > 3 ? " …" : ""}</small></span>
-        <button type="button" disabled={!!blockedReason} title={blockedReason ?? "恢复丢弃前的工作区与暂存内容"} onClick={() => onUndoDiscard(backup.id)}>撤销丢弃</button>
+        <button type="button" disabled={!!blockedReason} title={blockedReason ?? (backup.conflictSave ? "恢复编辑保存前的冲突文件" : "恢复丢弃前的工作区与暂存内容")} onClick={() => onUndoDiscard(backup.id)}>{backup.conflictSave ? "撤销保存" : "撤销丢弃"}</button>
       </div>)}
     </aside>
   </div>;

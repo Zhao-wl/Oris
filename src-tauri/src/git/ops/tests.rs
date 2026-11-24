@@ -79,6 +79,104 @@ impl Harness {
     }
 }
 
+fn merge_conflict(mode: &str) -> tempfile::TempDir {
+    let dir = init();
+    let root = dir.path();
+    write(root, "base.txt", b"initial\n");
+    if mode != "add/add" { write(root, "conflict.txt", b"base\n"); }
+    git(root, &["add", "."]);
+    git(root, &["commit", "-qm", "base"]);
+    git(root, &["switch", "-qc", "side"]);
+    write(root, "conflict.txt", b"side\n");
+    git(root, &["add", "."]);
+    git(root, &["commit", "-qm", "side"]);
+    git(root, &["switch", "-q", "main"]);
+    if mode == "modify/delete" { git(root, &["rm", "conflict.txt"]); }
+    else { write(root, "conflict.txt", b"main\n"); git(root, &["add", "."]); }
+    git(root, &["commit", "-qm", "main"]);
+    let merge = Command::new("git").arg("-C").arg(root).args(["merge", "--no-edit", "side"]).output().unwrap();
+    assert!(!merge.status.success() && root.join(".git/MERGE_HEAD").is_file());
+    dir
+}
+
+fn conflict_identity(h: &Harness, root: &Path) -> conflict::ConflictIdentity {
+    let scope = CompareScope::Unstaged;
+    let revision = h.adapter.snapshot_for_scope("conflict-view".into(), scope).unwrap().revision;
+    let read = |versions| h.adapter.read_content_pair_versions("conflict-read".into(), scope, revision.clone(), id("conflict.txt"), Some(versions)).unwrap();
+    let base = read([ConflictVersion::Stage1, ConflictVersion::WorkingTree]);
+    let sides = read([ConflictVersion::Stage2, ConflictVersion::Stage3]);
+    assert!(!base.stale && !sides.stale && base.revision == sides.revision);
+    let stage = |side: TextSide| {
+        if side.encoding == "missing" { return None; }
+        let details = side.details.unwrap();
+        Some(conflict::ExpectedStage { oid: details.oid.unwrap(), mode: details.mode.unwrap() })
+    };
+    assert_eq!(base.right.content_id, hash_bytes(&fs::read(root.join("conflict.txt")).unwrap()));
+    conflict::ConflictIdentity {
+        repo_id: base.repo_id,
+        revision: base.revision,
+        stages: [stage(base.left), stage(sides.left), stage(sides.right)],
+        worktree_content_id: base.right.content_id,
+    }
+}
+
+#[test]
+fn conflict_editor_saves_worktree_then_resolves_and_commits_real_merge_cases() {
+    for mode in ["modify/modify", "add/add", "modify/delete"] {
+        let dir = merge_conflict(mode);
+        let root = dir.path();
+        let actual = git(root, &["ls-files", "-u"]);
+        let h = Harness::new(root);
+        let save = h.run(OperationRequest::ConflictSave {
+            path_id: id("conflict.txt"), expected: conflict_identity(&h, root), result: "resolved\n".into(),
+        });
+        assert_eq!(save.status, OpStatus::Succeeded, "{mode}: {}", save.message);
+        assert!(save.backup.is_some());
+        assert_eq!(git(root, &["ls-files", "-u"]), actual);
+        assert_eq!(fs::read(root.join("conflict.txt")).unwrap(), b"resolved\n");
+        let marked = h.run(OperationRequest::ConflictMarkResolved { path_id: id("conflict.txt"), expected: conflict_identity(&h, root), confirmed: false });
+        assert_eq!(marked.status, OpStatus::Succeeded, "{mode}: {}", marked.message);
+        assert!(git(root, &["ls-files", "-u"]).is_empty());
+        assert_eq!(h.run(OperationRequest::MergeCommit { message: "resolved merge".into() }).status, OpStatus::Succeeded);
+        assert_eq!(git_text(root, &["rev-list", "--parents", "-n", "1", "HEAD"]).split_whitespace().count(), 3);
+    }
+}
+
+#[test]
+fn conflict_save_preserves_bom_crlf_and_rejects_stale_bytes_or_stages() {
+    let dir = merge_conflict("modify/modify");
+    let root = dir.path();
+    let initial = b"\xef\xbb\xbf<<<<<<< HEAD\r\nmain\r\n=======\r\nside\r\n>>>>>>> side\r\n";
+    write(root, "conflict.txt", initial);
+    let h = Harness::new(root);
+    let mut stale_stage = conflict_identity(&h, root);
+    stale_stage.stages[1] = None;
+    assert!(h.try_run(OperationRequest::ConflictSave { path_id: id("conflict.txt"), expected: stale_stage, result: "stale".into() }).is_err());
+    let stale_worktree = conflict_identity(&h, root);
+    write(root, "conflict.txt", b"external edit\n");
+    assert!(h.try_run(OperationRequest::ConflictSave { path_id: id("conflict.txt"), expected: stale_worktree, result: "stale".into() }).is_err());
+    assert_eq!(fs::read(root.join("conflict.txt")).unwrap(), b"external edit\n");
+    write(root, "conflict.txt", initial);
+    let oversized = "x".repeat(MAX_LINE_CHARS + 1);
+    assert!(h.try_run(OperationRequest::ConflictSave { path_id: id("conflict.txt"), expected: conflict_identity(&h, root), result: oversized }).is_err());
+    assert_eq!(fs::read(root.join("conflict.txt")).unwrap(), initial);
+    let save = h.run(OperationRequest::ConflictSave {
+        path_id: id("conflict.txt"), expected: conflict_identity(&h, root), result: "merged\nwithout final newline".into(),
+    });
+    assert_eq!(save.status, OpStatus::Succeeded, "{}", save.message);
+    assert_eq!(fs::read(root.join("conflict.txt")).unwrap(), b"\xef\xbb\xbfmerged\r\nwithout final newline");
+    let backup_id = save.backup.unwrap().id;
+    let saved_identity = conflict_identity(&h, root);
+    write(root, "conflict.txt", b"later edit\n");
+    assert!(h.try_run(OperationRequest::ConflictMarkResolved { path_id: id("conflict.txt"), expected: saved_identity, confirmed: false }).is_err());
+    assert_eq!(h.run(OperationRequest::UndoDiscard { backup_id: backup_id.clone(), overwrite: false }).status, OpStatus::Failed);
+    assert_eq!(h.run(OperationRequest::UndoDiscard { backup_id: backup_id.clone(), overwrite: true }).status, OpStatus::Failed);
+    assert_eq!(fs::read(root.join("conflict.txt")).unwrap(), b"later edit\n");
+    write(root, "conflict.txt", b"\xef\xbb\xbfmerged\r\nwithout final newline");
+    assert_eq!(h.run(OperationRequest::UndoDiscard { backup_id, overwrite: false }).status, OpStatus::Succeeded);
+    assert_eq!(fs::read(root.join("conflict.txt")).unwrap(), initial);
+}
+
 /// 仓库状态指纹：分为 index、HEAD 与 refs、config、工作区（不含 .git/objects 与 .git/logs）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Fingerprint(BTreeMap<String, String>);

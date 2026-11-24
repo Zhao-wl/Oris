@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ContentPair, FileChange, InProgressSummary, RepositorySnapshot } from "./types";
+import type { ConflictVersion, ContentPair, FileChange, InProgressSummary, RepositorySnapshot, TextSide } from "./types";
 import type { OperationOutcome, OperationRequest } from "./operations-api";
 import type { RefsView } from "./history-api";
 import { defaultAnchor, WORKSPACE_KEY } from "./workspace-model";
@@ -322,6 +322,98 @@ describe("decision follow-ups (V2-D48 / V2-D49)", () => {
 });
 
 describe("merge (B13 / B14)", () => {
+  it("edits conflict blocks, saves worktree results, and marks resolved only as a separate action", async () => {
+    const conflict = snap([change("c.txt", "conflicted"), change("d.txt")], { ...idle, merge: true });
+    bridge.open.mockResolvedValue(conflict);
+    const block = (first: string, second: string) => `<<<<<<< HEAD\n${first}\n=======\n${second}\n>>>>>>> topic`;
+    let worktree = `header\n${block("", "theirs 1")}\nmiddle\n${block("ours 2", "theirs 2")}\n`;
+    let worktreeId = "initial-worktree";
+    const data = { stage1: "base content", stage2: "first content", stage3: "second content" };
+    const oid = { stage1: O("a"), stage2: O("b"), stage3: O("c") };
+    const side = (endpoint: ConflictVersion): TextSide => ({
+      endpoint, text: endpoint === "workingTree" ? worktree : data[endpoint], byteLength: 24,
+      kind: "text", encoding: "utf-8", eol: "lf", hasFinalNewline: true,
+      contentId: endpoint === "workingTree" ? worktreeId : `contents-${endpoint}`,
+      details: { state: "ready", reason: null, oid: endpoint === "workingTree" ? null : oid[endpoint], mode: "100644", image: null },
+    });
+    bridge.read.mockImplementation(async (_repo: string, _scope: string, revision: string, pathId: string, _git: unknown, _request: string, endpoints?: [ConflictVersion, ConflictVersion]) => endpoints ? ({
+      ...pair(pathId), revision, displayPath: "c.txt", left: side(endpoints[0]), right: side(endpoints[1]),
+    }) : pair(pathId));
+    bridge.operation.mockImplementation(async (_repo: string, _scope: string, _op: string, request: OperationRequest) => {
+      if (request.kind === "conflictSave") {
+        worktree = request.result;
+        worktreeId += "-saved";
+        return outcome(request.kind, { snapshot: conflict, message: "已保存冲突结果" });
+      }
+      return outcome("conflictMarkResolved", { snapshot: snap([change("d.txt")], { ...idle, merge: true }) });
+    });
+
+    await mount();
+    await click(button("编辑冲突"));
+    const dialog = () => q('[aria-label="冲突编辑器"]')!;
+    const draft = () => dialog().querySelector("textarea")!;
+    expect(dialog().textContent).toContain("base content");
+    expect(dialog().textContent).toContain("first content");
+    expect(dialog().textContent).toContain("second content");
+    await click(button("采用第一方", dialog()));
+    expect(draft().value).toBe(`header\n\nmiddle\n${block("ours 2", "theirs 2")}\n`);
+    await act(async () => {
+      const save = button("保存结果", dialog());
+      save.focus();
+      expect(document.activeElement).toBe(save);
+      const tab = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+      save.dispatchEvent(tab);
+      expect(tab.defaultPrevented).toBe(true);
+    });
+    expect(document.activeElement?.getAttribute("aria-label")).toBe("关闭冲突编辑器");
+    await act(async () => { button("保存结果", dialog()).dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", altKey: true, bubbles: true })); });
+    expect(draft().value).toBe(`header\n\nmiddle\n${block("ours 2", "theirs 2")}\n`);
+    expect(dialog().textContent).toContain("未处理 1 块");
+    await click(button("保存结果", dialog()));
+    expect(requests()[0]).toMatchObject({ kind: "conflictSave", pathId: "id-c.txt", expected: {
+      repoId: "a", revision: conflict.revision, worktreeContentId: "initial-worktree",
+      stages: [{ oid: oid.stage1 }, { oid: oid.stage2 }, { oid: oid.stage3 }],
+    } });
+    expect(button("标记已解决", dialog()).disabled).toBe(true);
+    await click(button("依次保留两方", dialog()));
+    expect(draft().value).toBe("header\n\nmiddle\nours 2\ntheirs 2\n");
+    expect(button("标记已解决", dialog()).disabled).toBe(true);
+    await click(button("保存结果", dialog()));
+    expect(requests().map(request => request.kind)).toEqual(["conflictSave", "conflictSave"]);
+    await click(button("标记已解决", dialog()));
+    expect(requests().map(request => request.kind)).toEqual(["conflictSave", "conflictSave", "conflictMarkResolved"]);
+    expect(requests()[2]).toMatchObject({ expected: { worktreeContentId: "initial-worktree-saved-saved" } });
+    expect(dialog()).toBeNull();
+  });
+  it.each(["aborting the merge", "switching projects"])("discards a late editor read after %s", async (action) => {
+    const conflict = snap([change("c.txt", "conflicted")], { ...idle, merge: true });
+    const otherRepo = { ...repo, repoId: "b", displayName: "b", worktreePath: "C:/b", gitDir: "C:/b/.git", commonDir: "C:/b/.git" };
+    bridge.open.mockImplementation(async (path: string) => path === "C:/b" ? { ...snap(), repo: otherRepo } : conflict);
+    localStorage.setItem(WORKSPACE_KEY, JSON.stringify({ version: 2, activeRepoId: "a", projects: [repo, otherRepo].map(entry => ({
+      repo: entry, gitExecutable: "", pinned: false, lastOpenedAt: 0, anchor: defaultAnchor(),
+    })) }));
+    await mount();
+    const resolveRead = vi.fn<() => void>();
+    bridge.read.mockImplementationOnce(() => new Promise(resolve => {
+      resolveRead.mockImplementation(() => resolve(pair("id-c.txt")));
+    }));
+    const dialog = () => q('[aria-label="冲突编辑器"]');
+    await click(button("编辑冲突"));
+    expect(dialog()).toBeTruthy();
+    if (action === "aborting the merge") {
+      bridge.operation.mockResolvedValueOnce(outcome("mergeAbort", { snapshot: snap() }));
+      await click(button("中止合并…", q(".merge-banner")!));
+      await click(button("中止合并", q('[role="alertdialog"]')!));
+      expect(q(".merge-banner")).toBeNull();
+    } else {
+      await click(q(".project-tab:nth-child(2) .project-switch"));
+      expect(q(".project-tab.active")?.getAttribute("title")).toBe("C:/b");
+    }
+    expect(dialog()).toBeNull();
+    await act(async () => resolveRead());
+    await flush();
+    expect(dialog()).toBeNull();
+  });
   it("merges a branch from the branch popover and a commit from the log with the displayed OID", async () => {
     await mount();
     await click(q(".branch-button"));
