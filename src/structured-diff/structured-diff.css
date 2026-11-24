@@ -1,0 +1,9 @@
+.structured-container { display:flex; flex-direction:column; min-height:0; }
+.structured-diff { padding:12px; overflow:auto; min-height:0; }
+.structured-diff p { margin:0 0 10px; }
+.structured-diff details { margin-bottom:10px; }
+.structured-diff table { width:100%; border-collapse:collapse; table-layout:fixed; }
+.structured-diff th, .structured-diff td { padding:6px; border-bottom:1px solid var(--border); text-align:left; vertical-align:top; overflow-wrap:anywhere; }
+.structured-diff code { display:block; white-space:pre-wrap; }
+.structured-diff small { color:var(--dim); }
+.structured-diff td button { margin-top:4px; }

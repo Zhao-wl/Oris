@@ -1,0 +1,1 @@
+export const STRUCTURED_MAX_BYTES = 512 * 1024;
