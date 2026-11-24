@@ -1130,7 +1130,12 @@ export default function App() {
     // 状态栏的“撤销丢弃”只针对本次丢弃返回的备份，不依赖异步刷新的备份列表。
     const succeeded = outcome.status === "succeeded";
     const backupPatch = (outcome.kind === "discard" || outcome.kind === "hunkDiscard") && succeeded && outcome.backup ? { lastBackup: outcome.backup } : request.kind === "undoDiscard" && succeeded && opStore.get()[repoId]?.lastBackup?.id === request.backupId ? { lastBackup: null } : {};
-    updateOps(repoId, { running: null, reconciling: outcome.snapshotDeferred ? opId : null, last: record(outcome), ...backupPatch, ...(commitKind ? { lastCommit: record(outcome) } : {}) });
+    const stagingScope = request.kind === "unstage" ? "staged" : "unstaged";
+    const summaryPath = succeeded && (request.kind === "stage" || request.kind === "stageSelected" || request.kind === "unstage")
+      ? (prior?.scopes?.[stagingScope] ?? prior?.files)?.find(file => file.pathId === request.pathIds[0])?.displayPath
+      : undefined;
+    const last = { ...record(outcome), summaryPath };
+    updateOps(repoId, { running: null, reconciling: outcome.snapshotDeferred ? opId : null, last, ...backupPatch, ...(commitKind ? { lastCommit: last } : {}) });
     if (outcome.kind === "discard" || outcome.kind === "hunkDiscard" || outcome.kind === "undoDiscard") void discardBackups(repoId).then((backups) => updateOps(repoId, { backups }), () => {});
     const applyOperationSnapshot = async (result: RepositorySnapshot) => {
       // Git 已确认，统计仍在后台补齐；只在文件列表暂时沿用未操作行的显示信息。
@@ -1200,7 +1205,8 @@ export default function App() {
             snapshot: optimistic && current.snapshot?.revision === optimistic.revision ? prior : current.snapshot,
             stagingOutOfDate: true, dirty: true
           }));
-          updateOps(repoId, { last: { ...record(outcome), message: `${outcome.message}，文件列表刷新失败${queued ? "，已取消排队操作" : ""}。请刷新后继续操作：${errorText(error)}` } });
+          const shortMessage = `${outcome.message}，文件列表刷新失败`;
+          updateOps(repoId, { last: { ...last, shortMessage: summaryPath ? shortMessage : undefined, message: `${shortMessage}${queued ? "，已取消排队操作" : ""}。请刷新后继续操作：${errorText(error)}` } });
         }
         if (repositoryGate.current.accepts(requestId)) repositoryGate.current.finish(requestId);
       });
@@ -2131,6 +2137,7 @@ export default function App() {
       </section>;
     })}</>} filesTools={<>{nestedRepos.length > 0 && <details className="nested-repos"><summary title="嵌套仓库">◫ {nestedRepos.length}</summary><div className="nested-popover">{nestedRepos.map(relative => { const member = nestedMember(relative); return <div className="nested-repo" key={relative}><span>{relative}{!member && <small>独立仓库，未加入工作区</small>}</span>{member?.repoId ? <button onClick={() => { const project = workspaceState.projects.find(p => p.repo.repoId === member.repoId); if (project) void switchProject(project); }}>切换</button> : <button onClick={() => void changeManual(joinPath(snapshot!.repo.worktreePath, relative), true)}>加入工作区</button>}</div>; })}</div></details>}<input className="compact-filter" aria-label="按完整相对路径筛选" placeholder="筛选文件路径" value={filter} onChange={event => { setFilter(event.target.value); updateAnchor({ filter: event.target.value }); }}/><select aria-label="文件显示方式" value={fileView} onChange={event => { const value = event.target.value as "flat" | "tree"; setFileView(value); updateAnchor({ fileView: value }); }}><option value="flat">☷</option><option value="tree">⑂</option></select>{snapshot?.hasSubmodules && <button role="switch" aria-checked={!!activeProject?.showSubmodulePointers} title="显示子模块指针变化" onClick={() => void toggleSubmodulePointers()}>子模块指针</button>}</>} ignoredStagedPaths={ignoredStagedPaths} repoId={backendRepoId} tab={gitTab} onTab={setGitTab} stagedCount={stagedCount} headOid={runtime?.snapshot?.branchInfo?.oid ?? null} headKey={`${snapshot?.branchInfo?.oid ?? ""}:${snapshot?.branchInfo?.upstream ?? ""}:${snapshot?.branchInfo?.ahead ?? ""}:${snapshot?.branchInfo?.behind ?? ""}`}
       blockedReason={writeBlocked && !repoOps?.running ? writeBlocked : null} running={repoOps?.running ?? null} lines={repoOps?.lines ?? []} last={repoOps?.last ?? null} lastCommit={repoOps?.lastCommit ?? null} backups={repoOps?.backups ?? []}
+      contentCacheStats={gitTab === "output" ? cache.current.stats() : undefined}
       onCommit={commit} onGenerateMessage={aiMessage} onUndoDiscard={(id) => void undoDiscard(id)} onCancel={() => { if (activeRepoId) void cancelOperation(activeRepoId); }}
       stashCount={stashes.entries?.length} stashContent={backendRepoId && (gitTab === "stash" || stashMounted === backendRepoId) ? <StashPanel key={backendRepoId}
         repoId={backendRepoId} list={stashes} hidden={gitTab !== "stash"} blocked={writeBlocked} activeKey={historyReading?.key ?? null} reveal={stashReveal?.repoId === backendRepoId ? stashReveal : null}
@@ -2164,6 +2171,21 @@ export default function App() {
       if (action.kind === "fileIgnore") return `忽略规则已保存 · ${ignoreDetail}`;
       return action.kind === "git" ? opStore.get()[turn.repoId ?? ""]?.last?.message || "Git 操作已完成" : "应用操作已完成";
     }} onCancelGeneration={cancelAiGeneration} onCommit={aiCommit}/>}
-    <footer className="statusbar">{snapshot ? <span className="status-location"><PathText path={snapshot.repo.worktreePath}/><span className="status-suffix">{` · ${snapshot.repo.branch} · ${scopeLabels[scope].short}`}</span></span> : <span>多项目 → 本地差异浏览</span>}<span className="spacer"/>{repoOps?.queuedStage && <span className="op-status running" role="status">{operationLabels[repoOps.queuedStage.kind]}已排队</span>}{repoOps?.running ? <><span className="op-status running" role="status">⟳ 正在{operationLabels[repoOps.running.kind]}…{fetchProgress ? ` ${fetchProgress.text}` : ""}</span>{networkRunning && <button type="button" className="op-undo" onClick={() => { if (activeRepoId) void cancelOperation(activeRepoId); }}>取消</button>}</> : repoOps?.last && <button type="button" className={`op-status ${repoOps.last.status}`} title="查看最近一次操作的 Git 输出" onClick={() => setGitTab("output")}>{repoOps.last.status === "succeeded" ? "✓" : repoOps.last.status === "cancelled" ? "■" : repoOps.last.status === "needsConfirmation" ? "?" : "✗"} {repoOps.last.message}</button>}{!repoOps?.running && repoOps?.last?.stashOid && backendRepoId && <button type="button" className="op-undo" onClick={() => { setStashReveal({ repoId: backendRepoId, oid: repoOps.last!.stashOid! }); setGitTab("stash"); }}>查看 Stash</button>}{!repoOps?.running && repoOps?.lastBackup && <button type="button" className="op-undo" disabled={!!writeBlocked} title={`撤销刚才丢弃的 ${repoOps.lastBackup.files} 个文件`} onClick={() => void undoDiscard(repoOps.lastBackup!.id)}>撤销丢弃</button>}{!repoOps?.running && repoOps?.last?.kind === "push" && repoOps.last.status === "failed" && repoOps.last.message.includes("被拒绝") && <button type="button" className="op-undo push-rejected-pull" disabled={!!writeBlocked} title={writeBlocked ?? `按默认方式（${pullMode === "ffOnly" ? "仅快进" : "合并远端改动"}）拉取；不会自动再推送`} onClick={() => void runPull()}>拉取</button>}<span>本机 Git · 缓存 {cache.current.stats().entries}/{cache.current.stats().budget / 1024 / 1024} MiB</span></footer>
+    <footer className="statusbar">
+      {snapshot ? <span className="status-location"><PathText path={snapshot.repo.worktreePath}/><span className="status-suffix">{` · ${snapshot.repo.branch} · ${scopeLabels[scope].short}`}</span></span> : <span>多项目 → 本地差异浏览</span>}
+      <span className="spacer"/>
+      {repoOps?.queuedStage && <span className="op-status running" role="status">{operationLabels[repoOps.queuedStage.kind]}已排队</span>}
+      {repoOps?.running ? <>
+        <span className="op-status running" role="status">⟳ 正在{operationLabels[repoOps.running.kind]}…{fetchProgress ? ` ${fetchProgress.text}` : ""}</span>
+        {networkRunning && <button type="button" className="op-undo" onClick={() => { if (activeRepoId) void cancelOperation(activeRepoId); }}>取消</button>}
+      </> : repoOps?.last && <button type="button" className={`op-status ${repoOps.last.status}${repoOps.last.summaryPath ? " with-path" : ""}`} title="查看最近一次操作的 Git 输出" onClick={() => setGitTab("output")}>
+        <span>{repoOps.last.status === "succeeded" ? "✓" : repoOps.last.status === "cancelled" ? "■" : repoOps.last.status === "needsConfirmation" ? "?" : "✗"} {repoOps.last.shortMessage ?? repoOps.last.message}{repoOps.last.summaryPath && " ·"}</span>
+        {repoOps.last.summaryPath && <PathText path={repoOps.last.summaryPath}/>}
+      </button>}
+      {!repoOps?.running && repoOps?.last?.stashOid && backendRepoId && <button type="button" className="op-undo" onClick={() => { setStashReveal({ repoId: backendRepoId, oid: repoOps.last!.stashOid! }); setGitTab("stash"); }}>查看 Stash</button>}
+      {!repoOps?.running && repoOps?.lastBackup && <button type="button" className="op-undo" disabled={!!writeBlocked} title={`撤销刚才丢弃的 ${repoOps.lastBackup.files} 个文件`} onClick={() => void undoDiscard(repoOps.lastBackup!.id)}>撤销丢弃</button>}
+      {!repoOps?.running && repoOps?.last?.kind === "push" && repoOps.last.status === "failed" && repoOps.last.message.includes("被拒绝") && <button type="button" className="op-undo push-rejected-pull" disabled={!!writeBlocked} title={writeBlocked ?? `按默认方式（${pullMode === "ffOnly" ? "仅快进" : "合并远端改动"}）拉取；不会自动再推送`} onClick={() => void runPull()}>拉取</button>}
+      <button type="button" className="op-undo" disabled={!!repoOps?.running} onClick={() => setGitTab("output")}>诊断</button>
+    </footer>
   </main>;
 }

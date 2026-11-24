@@ -285,6 +285,7 @@ describe("stage / unstage (B05, B16)", () => {
     expect(rowButton("b.txt", "暂存").disabled).toBe(true);
     expect(rowButton("b.txt", "暂存").title).toContain("正在执行");
     expect(host.querySelector(".op-status.running")?.textContent).toContain("正在暂存");
+    expect(button("诊断").disabled).toBe(true);
     expect(host.querySelector("[data-testid=readable]")).toBe(editor);
     expect(editor?.textContent).toBe("a:unstaged:id-a.txt");
     pending.resolve(outcome("stage", snap([change("b.txt")], [change("a.txt")], "r2"), { message: "已暂存 1 个文件" }));
@@ -308,6 +309,26 @@ describe("stage / unstage (B05, B16)", () => {
     await click(rowButton("a.txt", "暂存"));
     expect(rows()).toEqual(["a.txt", "b.txt"]);
     expect(host.querySelector(".op-status.failed")?.textContent).toContain("index.lock");
+  });
+
+  it("shows the staged path in the result and keeps Git output and cache units in details", async () => {
+    const path = `${"a-long-directory/".repeat(12)}report.txt`;
+    bridge.open.mockResolvedValue(snap([change(path), change("b.txt")], []));
+    bridge.operation.mockResolvedValue(outcome("stage", snap([change("b.txt")], [change(path)], "r2"), {
+      message: "已暂存 1 个文件", output: `git add\n${path}`,
+    }));
+    await mount();
+    await click(rowButton(path, "暂存"));
+    const status = host.querySelector<HTMLButtonElement>(".op-status.succeeded")!;
+    expect(status.textContent).toContain("已暂存 1 个文件");
+    expect(status.querySelector('.path-text[dir="rtl"] > bdi')?.textContent).toBe(path);
+    expect(host.querySelector(".statusbar")?.textContent).not.toContain("MiB");
+    await click(status);
+    const details = host.querySelector('[aria-label="操作详情"]');
+    expect(details?.querySelector('[aria-label="操作输出"]')?.textContent).toBe(`git add\n${path}`);
+    const cache = details?.querySelector('[aria-label="缓存诊断"]')?.textContent;
+    expect(cache).toMatch(/内容缓存条目 · \d+ 项/);
+    expect(cache).toMatch(/容量预算 · \d+\.\d+ MiB/);
   });
 
   it("disables write entries while a restored snapshot is still verifying (V2-D08)", async () => {
@@ -778,6 +799,7 @@ it("requires a fresh snapshot after the background staging refresh fails", async
   expect(bridge.operation).toHaveBeenCalledTimes(1);
   expect(host.querySelector(".pending-mark")).toBeNull();
   expect(host.querySelector(".op-status.succeeded")?.textContent).toContain("文件列表刷新失败");
+  expect(host.querySelector(".op-status.succeeded .path-text")?.textContent).toBe("a.txt");
   expect(button("全部加入暂存").disabled).toBe(true);
   await click(button("已暂存"));
   expect(button("全部加入暂存").disabled).toBe(true);

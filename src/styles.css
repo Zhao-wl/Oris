@@ -455,20 +455,23 @@ button.danger:not(:disabled):hover { color:var(--error, #ff7b72); border-color:v
 .output-head span { color:var(--dim); font-size:11px; }
 .output-status.succeeded { color:var(--status-added, #4f9f64); }
 .output-status.failed, .output-status.cancelled { color:var(--error, #ff7b72); }
-.output-message { margin:0; }
+.output-message { margin:0; overflow-wrap:anywhere; }
 .output-empty { margin:0; color:var(--dim); }
 .output-backups { display:flex; flex-direction:column; gap:6px; min-width:0; padding-left:12px; border-left:1px solid var(--border); overflow:auto; }
+.cache-diagnostics { padding-bottom:8px; border-bottom:1px solid var(--border); }
 .backup-row { display:flex; align-items:center; gap:8px; font-size:12px; }
 .backup-row>span { flex:1; min-width:0; }
 .backup-row small { display:block; overflow:hidden; color:var(--dim); text-overflow:ellipsis; white-space:nowrap; }
 .backup-row button { flex:none; padding:2px 7px; font-size:11px; }
-.op-status { max-width:55%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.op-status { min-width:0; max-width:55%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 button.op-status { padding:0 6px; border:0; background:transparent; font-size:11px; }
+.op-status.with-path { display:inline-flex; align-items:baseline; gap:4px; }
+.op-status.with-path > span:first-child { flex:none; }
 .op-status.running { color:var(--blue); }
 .op-status.succeeded { color:var(--status-added, #4f9f64); }
 .op-status.failed, .op-status.cancelled { color:var(--error, #ff7b72); }
 .op-status.needsConfirmation { color:var(--warning, #d9a24f); }
-.op-undo { padding:0 6px; font-size:11px; }
+.op-undo { flex:none; padding:0 6px; font-size:11px; white-space:nowrap; }
 .dialog-overlay { position:fixed; inset:0; z-index:110; display:grid; place-items:center; background:color-mix(in srgb, var(--bg) 40%, #0009); }
 .confirm-dialog { width:min(520px, calc(100vw - 48px)); max-height:calc(100vh - 80px); display:flex; flex-direction:column; padding:16px; color:var(--text); background:var(--panel); border:1px solid var(--border); border-radius:7px; box-shadow:0 15px 40px var(--widget-shadow, #000a); }
 .confirm-dialog h3 { margin:0 0 10px; font-size:15px; }
