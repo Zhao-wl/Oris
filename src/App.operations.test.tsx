@@ -68,8 +68,8 @@ const type = async (element: HTMLTextAreaElement | HTMLInputElement, value: stri
   await act(async () => { Object.getOwnPropertyDescriptor(prototype, "value")!.set!.call(element, value); element.dispatchEvent(new Event("input", { bubbles: true })); });
   await flush();
 };
-const mount = async () => {
-  localStorage.setItem(WORKSPACE_KEY, JSON.stringify({ version: 2, activeRepoId: "a", projects: [{ repo, gitExecutable: "", pinned: false, lastOpenedAt: 0, anchor: defaultAnchor() }] }));
+const mount = async (repos = [repo]) => {
+  localStorage.setItem(WORKSPACE_KEY, JSON.stringify({ version: 2, activeRepoId: "a", projects: repos.map(repo => ({ repo, gitExecutable: "", pinned: false, lastOpenedAt: 0, anchor: defaultAnchor() })) }));
   await act(async () => { root.render(<App />); }); await flush();
 };
 
@@ -296,10 +296,12 @@ describe("stage / unstage (B05, B16)", () => {
     expect(host.querySelector(".op-status")?.textContent).toContain("已暂存 1 个文件");
     expect(host.querySelector("[data-testid=readable]")).toBe(editor);
     expect(editor?.textContent).toBe("a:unstaged:id-a.txt");
+    expect(host.querySelector(".tab-path")?.textContent).toBe("a.txt");
     nextDiff.resolve(pair("id-b.txt", "r2"));
     await flush();
     expect(host.querySelector("[data-testid=readable]")).toBe(editor);
     expect(editor?.textContent).toBe("a:unstaged:id-b.txt");
+    expect(host.querySelector(".tab-path")?.textContent).toBe("b.txt");
     expect(host.querySelector(".selection-notice")).toBeNull();
   });
 
@@ -785,6 +787,33 @@ it("cancels a queued unstage when Git reports a rename partner outside the selec
   expect(bridge.operation).toHaveBeenCalledTimes(1);
   expect(host.querySelector(".op-status.cancelled")?.textContent).toContain("文件状态已变化");
   expect(button("全部取消暂存").disabled).toBe(false);
+});
+
+it("keeps the new project's reading position when the previous staging refresh finishes", async () => {
+  const repoB = { ...repo, repoId: "b", displayName: "b", worktreePath: "C:/b", gitDir: "C:/b/.git", commonDir: "C:/b/.git" };
+  const scanA = deferred<RepositorySnapshot>();
+  const beforeA = snap([change("a.txt"), change("b.txt")], []);
+  const snapshotB = { ...snap([change("other.txt")], []), repo: repoB };
+  bridge.open.mockImplementation(async (path: string) => path === repoB.worktreePath ? snapshotB : beforeA);
+  bridge.operation.mockResolvedValue(outcome("stage", null, { snapshotDeferred: true }));
+  bridge.refresh.mockImplementation(async (repoId: string) => repoId === repoB.repoId ? snapshotB : scanA.promise);
+  bridge.read.mockImplementation(async (repoId: string, _scope: string, revision: string, pathId: string) => ({ ...pair(pathId, revision), repoId }));
+  await mount([repo, repoB]);
+
+  await click(rowButton("a.txt", "暂存"));
+  await click(button("全部取消暂存"));
+  expect(host.textContent).toContain("取消暂存已排队");
+  await click(host.querySelector<HTMLElement>('.project-tab[data-repo-id="b"] .project-switch')!);
+  expect(rows()).toEqual(["other.txt"]);
+  expect(host.querySelector(".tab-path")?.textContent).toBe("other.txt");
+  expect(host.querySelector("[data-testid=readable]")?.textContent).toBe("b:unstaged:id-other.txt");
+
+  scanA.resolve(snap([change("b.txt")], [change("a.txt")], "r2"));
+  await flush();
+  expect(bridge.operation).toHaveBeenCalledTimes(1);
+  expect(rows()).toEqual(["other.txt"]);
+  expect(host.querySelector(".tab-path")?.textContent).toBe("other.txt");
+  expect(host.querySelector("[data-testid=readable]")?.textContent).toBe("b:unstaged:id-other.txt");
 });
 
 it("requires a fresh snapshot after the background staging refresh fails", async () => {
