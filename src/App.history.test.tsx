@@ -106,7 +106,62 @@ afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi
 
 const mount = async () => { await act(async () => { root.render(<App />); }); await flush(); };
 
+function addSecondRepository() {
+  const otherRepo = { ...repo, repoId: "b", displayName: "b", worktreePath: "C:/b", gitDir: "C:/b/.git", commonDir: "C:/b/.git" };
+  const file = change("b.txt");
+  const otherSnapshot = { ...snap(), repo: otherRepo, files: [file], scopes: { all: [file], unstaged: [file], staged: [] } };
+  const workspace = JSON.parse(localStorage.getItem(WORKSPACE_KEY)!);
+  workspace.projects.push({ ...workspace.projects[0], repo: otherRepo });
+  localStorage.setItem(WORKSPACE_KEY, JSON.stringify(workspace));
+  bridge.open.mockImplementation(async (path: string) => path === otherRepo.worktreePath ? otherSnapshot : snap());
+}
+
 describe("Git log tab (A07 / A08)", () => {
+  it("hides inactive panes without losing the history selection, and removes previous repository history on switch", async () => {
+    addSecondRepository();
+    await mount();
+    await openLog();
+    const historyPane = q(".log-layout")!;
+    await click(q(`.log-row[data-oid="${O("2")}"]`));
+    expect(q(".log-row.selected")?.getAttribute("data-oid")).toBe(O("2"));
+    await click(button("文件"));
+    expect(historyPane.hidden).toBe(true);
+    expect(q(".files-layout")).toBeTruthy();
+
+    await click(q('.git-tabs [aria-label="Stash"]'));
+    const stashPane = q(".stash-layout")!;
+    expect(stashPane.hidden).toBe(false);
+    expect(q(".files-layout")).toBeNull();
+    await openLog();
+    expect(stashPane.hidden).toBe(true);
+    expect(q(".log-layout")).toBe(historyPane);
+    expect(historyPane.hidden).toBe(false);
+    expect(q(".log-row.selected")?.getAttribute("data-oid")).toBe(O("2"));
+
+    await click(button("文件"));
+    await click(q('.project-tab[data-repo-id="b"]'));
+    expect(q(".log-layout")).toBeNull();
+    expect(q(".stash-layout")).toBeNull();
+    expect(q(".files-layout")?.textContent).toContain("b.txt");
+    expect(q(".files-layout")?.textContent).not.toContain("a.txt");
+  });
+
+  it("ignores history refs that finish after switching repositories", async () => {
+    addSecondRepository();
+    let finishRefs!: (view: RefsView) => void;
+    await mount();
+    bridge.refs.mockImplementationOnce(() => new Promise<RefsView>((resolve) => { finishRefs = resolve; }));
+    await openLog();
+    expect(bridge.refs).toHaveBeenLastCalledWith("a");
+
+    await click(button("文件"));
+    await click(q('.project-tab[data-repo-id="b"]'));
+    const fetchButton = q(".sync-fetch .sync-main")!;
+    const fetchTitle = fetchButton.getAttribute("title");
+    await act(async () => finishRefs({ ...refsView(), remotes: [] }));
+    expect(q(".sync-fetch .sync-main")?.getAttribute("title")).toBe(fetchTitle);
+  });
+
   it("shows the working branch separately from the browsed branch; filtering never runs a write operation", async () => {
     await mount();
     expect(bridge.log).not.toHaveBeenCalled();

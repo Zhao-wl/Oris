@@ -135,9 +135,23 @@ export default function HistoryPanel(props: Props) {
   /** 已按哪个 refs 版本读完分支列表 / 日志第一页（用于判断切回后的重读是否完成）。 */
   const [loadedRefs, setLoadedRefs] = useState(-1);
   const [loadedLog, setLoadedLog] = useState(-1);
-  const loadRefs = useCallback((version: number) => {
-    void readRefs(repoId).then((view) => { setRefs(view); setFilter((current) => current === undefined ? view.local.find((branch) => branch.current)?.fullName ?? null : current); setRefsError(null); setLoadedRefs(version); onRefsRef.current?.(view); }, (error) => { if (!isStale(error)) { setRefsError(errorText(error)); setFilter((current) => current === undefined ? null : current); setLoadedRefs(version); } });
-  }, [repoId]);
+  useEffect(() => {
+    let live = true;
+    void readRefs(repoId).then((view) => {
+      if (!live) return;
+      setRefs(view);
+      setFilter((current) => current === undefined ? view.local.find((branch) => branch.current)?.fullName ?? null : current);
+      setRefsError(null);
+      setLoadedRefs(shownRefs);
+      onRefsRef.current?.(view);
+    }, (error) => {
+      if (!live || isStale(error)) return;
+      setRefsError(errorText(error));
+      setFilter((current) => current === undefined ? null : current);
+      setLoadedRefs(shownRefs);
+    });
+    return () => { live = false; };
+  }, [repoId, shownRefs]);
 
   /** 读取第一页（重置已加载的结果）；已选中的提交仍在结果中时保持选择。 */
   const loadFirst = useCallback((version: number) => {
@@ -175,7 +189,6 @@ export default function HistoryPanel(props: Props) {
     }, (error) => { if (inflight.current === key) inflight.current = null; if (request === logRequest.current && !isStale(error)) { setLogLoading(false); setLogError(errorText(error)); } });
   }, [repoId, cursor, logLoading, search]);
 
-  useEffect(() => { loadRefs(shownRefs); }, [loadRefs, shownRefs]);
   useEffect(() => { if (filter !== undefined) loadFirst(shownRefs); }, [loadFirst, shownRefs, filter]);
   // 不可见期间失效的内容在切回后的重读完成前不显示（旧的分支、HEAD、引用标记与 stash 列表），提交列表保留以维持滚动位置。
   const refsStale = deferred.refsUntil !== null && (loadedRefs < deferred.refsUntil || loadedLog < deferred.refsUntil);
