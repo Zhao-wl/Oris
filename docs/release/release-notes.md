@@ -1,8 +1,12 @@
-# Oris 发行说明（v1.0.0）
+# Oris 发行说明
 
-最新发布：**[v1.0.0（Windows x64 / macOS Apple Silicon）](https://github.com/Zhao-wl/Oris/releases/tag/v1.0.0)**，于 2026-11-09 正式公开并设为 latest。文件审核布局改版与暂存闪烁修复见 [1.0.0 更新日志](v1.0.0.md)；双平台构建、七项附件哈希与更新签名核验已通过，详情见 [发布收尾记录](../validation/v1.0.0-release-closeout.md)。下方保留旧版发布记录与历史验证边界。
+[查看最新正式版本](https://github.com/Zhao-wl/Oris/releases/latest) · [1.1.0 更新日志](v1.1.0.md)
 
-本次发布：**[v0.9.2（Windows x64 / macOS Apple Silicon）已公开发布](https://github.com/Zhao-wl/Oris/releases/tag/v0.9.2)**，于 2026-10-27 14:49:23（北京时间）通过 [Desktop release 工作流](https://github.com/Zhao-wl/Oris/actions/runs/40462080636) 发布，标签指向 `3cb3302`。七项公开附件哈希、双平台更新签名及 latest 自动更新入口已核验。更新内容见 [0.9.2 更新日志](v0.9.2.md)，证据与边界见 [发布收尾记录](../validation/v0.9.2-release-closeout.md)。
+以下各条记录采用对应发布时的版本及验收状态。
+
+历史发布：**[v1.0.0（Windows x64 / macOS Apple Silicon）](https://github.com/Zhao-wl/Oris/releases/tag/v1.0.0)**，于 2026-11-09 正式公开并设为 latest。文件审核布局改版与暂存闪烁修复见 [1.0.0 更新日志](v1.0.0.md)；双平台构建、七项附件哈希与更新签名核验已通过，详情见 [发布收尾记录](../validation/v1.0.0-release-closeout.md)。下方保留旧版发布记录与历史验证边界。
+
+历史发布：**[v0.9.2（Windows x64 / macOS Apple Silicon）已公开发布](https://github.com/Zhao-wl/Oris/releases/tag/v0.9.2)**，于 2026-10-27 14:49:23（北京时间）通过 [Desktop release 工作流](https://github.com/Zhao-wl/Oris/actions/runs/40462080636) 发布，标签指向 `3cb3302`。七项公开附件哈希、双平台更新签名及 latest 自动更新入口已核验。更新内容见 [0.9.2 更新日志](v0.9.2.md)，证据与边界见 [发布收尾记录](../validation/v0.9.2-release-closeout.md)。
 
 历史发布：**[v0.9.1（Windows x64 / macOS Apple Silicon）已公开发布](https://github.com/Zhao-wl/Oris/releases/tag/v0.9.1)**，于 2026-10-19 16:18:08（北京时间）通过 [Desktop release 工作流](https://github.com/Zhao-wl/Oris/actions/runs/39220209530) 发布，标签指向 `0aadf3e`。Windows 安装包、Mac DMG、双平台自动更新包及签名、`latest.json` 和校验和已齐备，并设为 latest。全部七项公开附件的哈希、双平台更新签名及自动更新入口已核验。更新内容见 [0.9.1 更新日志](v0.9.1.md)，证据与边界见 [发布收尾记录](../validation/v0.9.1-release-closeout.md)。
 
@@ -18,7 +22,7 @@ macOS 0.8.4 修复点击“检查更新”时的平台缺失错误，包含 0.8.
 
 历史发布：v0.8.1 于 2026-10-08 15:50（北京时间）公开，tag 指向 `48a1712`，更新与核验见 [0.8.1 更新日志](v0.8.1.md) 和 [收尾记录](../validation/v0.8.1-release-closeout.md)。v0.8.0 于 2026-10-08 14:49（北京时间）公开，tag 指向 `e4e41f8`，更新与产物核验见 [0.8.0 更新日志](v0.8.0.md) 和 [发布收尾记录](../validation/v0.8.0-release-closeout.md)。v0.7.0 于 2026-10-08 10:29（北京时间）重新公开，tag 指向 `5280875`，更新与产物核验见 [0.7.0 更新日志](v0.7.0.md) 和 [发布收尾记录](../validation/v0.7.0-release-closeout.md)。v0.6.0 于 2026-09-30 03:42 UTC 发布（tag `9f2bba7`），v0.5.0 于同日 01:19 UTC 发布（tag `8dc620b`），均附 NSIS 安装包与更新签名。
 
-版本：当前五个版本文件中的根包均为 0.9.2，由工作流统一准备并提交。此前长链 lc5 / lc4 中显示为 0.6.0、0.5.0、0.4.1 的测试构建并非对应的已发布构建，其 SHA-256 与来源见 [RC 验收结果](../validation/v1-06-rc-results.md)。
+v0.9.2 发布时，五个版本文件中的根包均由工作流统一更新至 0.9.2。此前长链 lc5 / lc4 中显示为 0.6.0、0.5.0、0.4.1 的测试构建并非对应的已发布构建，其 SHA-256 与来源见 [RC 验收结果](../validation/v1-06-rc-results.md)。
 
 ## v0.9.2：文件多选与暂存操作改进
 
