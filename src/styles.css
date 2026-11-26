@@ -826,6 +826,22 @@ button.op-status { padding:0 6px; border:0; background:transparent; font-size:11
 .git-tabs { height:32px; flex-shrink:0; gap:4px; }
 .git-tabs button[role="tab"] { height:31px; min-width:64px; border-radius:0; }
 .git-tabs .compact-filter { width:210px; height:24px; padding:2px 7px; }
+.git-tabs .repository-search-trigger { flex:none; height:25px; padding:2px 8px; border-color:var(--border); border-radius:4px; background:var(--toggle-off); white-space:nowrap; }
+.git-tabs .repository-search-trigger:hover { background:var(--hover); }
+.repository-file-search { box-sizing:border-box; width:min(620px,calc(100vw - 24px)); max-height:calc(100vh - 40px); padding:0; border:1px solid var(--border); border-radius:7px; background:var(--panel); color:var(--text); }
+.repository-search-body { padding:10px; }
+.repository-search-body .clearable-input { width:100%; }
+.repository-search-body input { width:100%; }
+.repository-search-scope { padding:7px 0; }
+.repository-search-results { max-height:min(50vh,440px); overflow:auto; margin:0; padding:0; list-style:none; }
+.repository-search-result { display:flex; align-items:center; width:100%; gap:10px; padding:6px 8px; border:0; background:transparent; text-align:left; }
+.repository-search-result .path-text { flex:1; }
+.repository-search-result .dim { flex:none; font-size:11px; }
+.file-history-path { cursor:context-menu; }
+.oris-attribution-gutter { width:122px; max-width:24vw; border-right:1px solid var(--border); color:var(--dim); }
+.oris-attribution-gutter .cm-gutterElement { padding:0 5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }
+.oris-attribution-gutter .cm-gutterElement:hover { background:var(--hover); color:var(--text); }
+.diff-host [data-attribution]::before { content:attr(data-attribution); display:inline-block; box-sizing:border-box; width:122px; max-width:24vw; padding:0 5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:bottom; color:var(--dim); border-right:1px solid var(--border); }
 .git-tabs select { height:25px; padding:0 5px; }
 .files-layout { flex:1; min-height:0; display:grid; grid-template-columns:minmax(0,42fr) minmax(0,42fr) minmax(210px,16fr); overflow:hidden; }
 .change-column { display:flex; flex-direction:column; min-width:0; min-height:0; border-right:1px solid var(--border); }

@@ -3,6 +3,7 @@ import { statusLetter, type ChangedFile } from "./history-api";
 import PathText from "./PathText";
 import VirtualRows, { VIRTUAL_THRESHOLD } from "./VirtualRows";
 import ClearableInput from "./ClearableInput";
+import { useFileHistoryMenu } from "./file-history-menu";
 
 export function filterChangedFiles(files: ChangedFile[], query: string) {
   const text = query.trim().toLocaleLowerCase();
@@ -16,9 +17,13 @@ export function ChangedFileSearch({ value, onChange }: { value: string; onChange
 }
 
 /** 提交 / 比较 / stash 的变化文件列表；文件很多时改用虚拟列表，滚动容器为外层 `.log-detail`。 */
-export default function FileList({ files: allFiles, filter, label, context, emptyMessage = "没有文件变化", activeKey, keyFor, onOpen, onHistory, onSubmodule }: { files: ChangedFile[]; filter: string; label: string; context?: string; emptyMessage?: string; activeKey: string | null; keyFor(file: ChangedFile): string; onOpen(file: ChangedFile): void; onHistory?(file: ChangedFile): void; /** 工作区（V2-D85）：在子仓库中比较子模块指针的前后两个提交。 */ onSubmodule?(file: ChangedFile): void }) {
+export default function FileList({ files: allFiles, filter, label, context, emptyMessage = "没有文件变化", activeKey, keyFor, onOpen, onHistory, onHistoryPath, onSubmodule }: { files: ChangedFile[]; filter: string; label: string; context?: string; emptyMessage?: string; activeKey: string | null; keyFor(file: ChangedFile): string; onOpen(file: ChangedFile): void; onHistory?(file: ChangedFile): void; onHistoryPath?(file: ChangedFile, old: boolean): void; /** 工作区（V2-D85）：在子仓库中比较子模块指针的前后两个提交。 */ onSubmodule?(file: ChangedFile): void }) {
   const files = useMemo(() => filterChangedFiles(allFiles, filter), [allFiles, filter]);
   const host = useRef<HTMLElement | null>(null);
+  const historyMenu = useFileHistoryMenu<{ file: ChangedFile; old: boolean }>(onHistoryPath || onHistory ? ({ file, old }) => {
+    if (onHistoryPath) onHistoryPath(file, old);
+    else onHistory?.(file);
+  } : undefined);
   const move = (event: ReactKeyboardEvent<HTMLElement>, index: number) => {
     const delta = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
     if (!delta) return;
@@ -36,7 +41,11 @@ export default function FileList({ files: allFiles, filter, label, context, empt
     if (!focus()) requestAnimationFrame(focus);
   };
   const content = (file: ChangedFile, index: number) => <>
-    <button type="button" className="log-file" title={file.oldPath ? `${file.oldPath} → ${file.path}` : file.path} onClick={() => onOpen(file)} onKeyDown={(event) => move(event, index)}><span className={`status-letter ${file.status}`}>{statusLetter[file.status]}</span><PathText path={file.path} className="log-file-path" title={file.path}/>{file.oldPath && <PathText path={file.oldPath} prefix="← " className="log-file-old"/>}{file.submodule && <span className="log-submodule" title="子模块提交指针">◫ {file.submodule.old?.slice(0, 7) ?? "（新增）"} → {file.submodule.new?.slice(0, 7) ?? "（删除）"}</span>}</button>
+    <button type="button" className="log-file" title={file.oldPath ? `${file.oldPath} → ${file.path}` : file.path} onClick={() => onOpen(file)} {...historyMenu.bindings(file.submodule ? null : { file, old: false })} onKeyDown={(event) => {
+      historyMenu.bindings(file.submodule ? null : { file, old: false }).onKeyDown?.(event);
+      if (!event.defaultPrevented) move(event, index);
+    }}><span className={`status-letter ${file.status}`}>{statusLetter[file.status]}</span><PathText path={file.path} className="log-file-path" title={file.path}/>{file.oldPath && <PathText path={file.oldPath} prefix="← " className="log-file-old" onContextMenu={historyMenu.bindings(file.submodule ? null : { file, old: true }).onContextMenu}/>}
+    {file.submodule && <span className="log-submodule" title="子模块提交指针">◫ {file.submodule.old?.slice(0, 7) ?? "（新增）"} → {file.submodule.new?.slice(0, 7) ?? "（删除）"}</span>}</button>
     {onSubmodule && file.submodule?.old && file.submodule.new && <button type="button" className="quiet log-submodule-compare" title={`切换到子仓库 ${file.path}，比较这两个提交`} onClick={() => onSubmodule(file)}>在 {file.path.split("/").pop()} 中比较</button>}
     {onHistory && !file.submodule && <button type="button" className="quiet log-file-history" title={`查看 ${file.path} 的文件历史`} onClick={() => onHistory(file)}>历史</button>}
   </>;
@@ -51,5 +60,6 @@ export default function FileList({ files: allFiles, filter, label, context, empt
   return <>
     <div className="log-group">{label} · {filter.trim() ? `${files.length} / ` : ""}{allFiles.length}{context}</div>
     {files.length ? rows : <div className="log-empty">{allFiles.length ? "没有匹配的变化文件" : emptyMessage}</div>}
+    {historyMenu.popup}
   </>;
 }

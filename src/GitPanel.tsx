@@ -36,6 +36,7 @@ interface Props {
   stashCount?: number;
   filesContent?: ReactNode;
   filesTools?: ReactNode;
+  onSearchRepository?(): void;
   contentCacheStats?: { entries: number; bytes: number; budget: number };
 }
 
@@ -60,6 +61,7 @@ export default function GitPanel(props: Props) {
       <button type="button" role="tab" aria-selected={tab === "commit" || tab === "output"} className={tab === "commit" || tab === "output" ? "active" : ""} onClick={() => onTab("commit")}>文件</button>
       <button type="button" role="tab" aria-selected={tab === "log"} className={tab === "log" ? "active" : ""} onClick={() => onTab("log")}>历史</button>
       <button type="button" role="tab" aria-label="Stash" aria-selected={tab === "stash"} className={tab === "stash" ? "active" : ""} onClick={() => onTab("stash")}>Stash{props.stashCount ? <small className="stash-count"> {props.stashCount}</small> : null}</button>
+      {props.onSearchRepository && <button type="button" className="repository-search-trigger" title="按文件名或路径搜索仓库文件" aria-keyshortcuts="Ctrl+P Meta+P" onClick={props.onSearchRepository}>⌕ 搜索整个仓库</button>}
       <span className="spacer"/>{tab === "commit" && props.filesTools}
       <button type="button" className="git-fold" title={tab ? "收起下方区域" : "展开下方区域"} onClick={() => onTab(tab ? null : "commit")} aria-label={tab ? "收起 Git 区" : "展开 Git 区"}>{tab ? "⌄" : "⌃"}</button>
     </div>

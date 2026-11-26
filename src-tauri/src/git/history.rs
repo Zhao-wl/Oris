@@ -10,6 +10,22 @@ use super::*;
 
 /// 按分支筛选时最多同时指定的引用数。
 const MAX_FILTER_REFS: usize = 64;
+const FILE_SEARCH_LIMIT: usize = 200;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryFile {
+    pub path: String,
+    pub path_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryFileSearch {
+    pub start: Option<String>,
+    pub files: Vec<RepositoryFile>,
+    pub total: usize,
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -53,6 +69,39 @@ pub fn validate_reference(reference: &str) -> Result<(), GitError> {
 }
 
 impl GitAdapter {
+    pub fn search_repository_files(&self, query: &str, stale: &dyn Fn() -> bool) -> Result<RepositoryFileSearch, GitError> {
+        let head = refs::read_head(&self.git, &self.worktree);
+        let Some(start) = head.oid else {
+            return if head.unborn {
+                Ok(RepositoryFileSearch { start: None, files: Vec::new(), total: 0 })
+            } else {
+                Err(GitError::CommandFailed("无法读取当前 HEAD".into()))
+            };
+        };
+        let output = run_required(&self.git, &self.worktree, &["ls-tree", "-r", "-z", "--full-tree", &start])?;
+        let query = query.trim().replace('\\', "/").to_lowercase();
+        let mut matches: [Vec<RepositoryFile>; 3] = Default::default();
+        let mut total = 0;
+        for record in output.stdout.split(|byte| *byte == 0) {
+            if stale() { return Err(GitError::StaleRequest); }
+            let Some(tab) = record.iter().position(|byte| *byte == b'\t') else { continue };
+            if record.starts_with(b"160000 ") { continue; }
+            let Ok(path) = std::str::from_utf8(&record[tab + 1..]) else { continue };
+            if validate_relative(path).is_err() { continue; }
+            let lower = path.to_lowercase();
+            let name = lower.rsplit('/').next().unwrap_or(&lower);
+            let rank = if lower == query || name == query { 0 }
+                else if !query.is_empty() && name.contains(&query) { 1 }
+                else if lower.contains(&query) { 2 }
+                else { continue };
+            total += 1;
+            if matches[rank].len() < FILE_SEARCH_LIMIT {
+                matches[rank].push(RepositoryFile { path: path.to_owned(), path_id: URL_SAFE_NO_PAD.encode(path) });
+            }
+        }
+        Ok(RepositoryFileSearch { start: Some(start), files: matches.into_iter().flatten().take(FILE_SEARCH_LIMIT).collect(), total })
+    }
+
     pub fn history_locate(&self, query: &LogQuery, commit: &str, stale: &dyn Fn() -> bool) -> Result<LogPage, GitError> {
         validate_reference(commit)?;
         if query.refs.len() > MAX_FILTER_REFS { return Err(GitError::CommandFailed("筛选引用过多".into())); }

@@ -33,6 +33,11 @@ export interface Comparison { leftRef: string; rightRef: string; left: string; r
 
 export interface FileHistoryEntry { commit: CommitInfo; path: string; pathId: string; status: ChangeStatus; renamedFrom: string | null; renamedFromId: string | null }
 export interface FileHistory { entries: FileHistoryEntry[]; next: LogCursor | null; reachedOrigin: boolean }
+export interface RepositoryFile { path: string; pathId: string }
+export interface FileHistoryTarget extends RepositoryFile { start: string }
+export interface RepositoryFileSearch { start: string | null; files: RepositoryFile[]; total: number }
+export interface AttributionRange { firstLine: number; lineCount: number; oid: string | null; author: string | null }
+export type DiffAttributions = [AttributionRange[] | null, AttributionRange[] | null];
 
 export type Tracking =
   | { state: "noUpstream" }
@@ -63,12 +68,21 @@ export interface RefsView {
 export const readLog = (repoId: string, query: LogQuery, cursor: LogCursor | null) => invoke<LogPage>("read_log", { repoId, query, cursor });
 export const locateLog = (repoId: string, query: LogQuery, commit: string) => invoke<LogPage>("locate_log", { repoId, query, commit });
 export interface LineQuery { pathId: string; revision: string | null; contents: string | null; line: number }
+export type FileAttributionQuery = Omit<LineQuery, "line">;
 export interface LineAttribution { commit: CommitInfo | null; originalLine: number; path: string; pathId: string; shallow: boolean }
 export const readLineAttribution = (repoId: string, query: LineQuery) => invoke<LineAttribution>("read_line_attribution", { repoId, query });
+export const readFileAttribution = (repoId: string, left: FileAttributionQuery | null, right: FileAttributionQuery | null) => invoke<DiffAttributions>("read_file_attribution", { repoId, left, right });
+export const readPreviousAttribution = (repoId: string, commit: string, pathId: string, line: number) => invoke<LineAttribution | null>("read_previous_attribution", { repoId, commit, pathId, line });
+export const searchRepositoryFiles = (repoId: string, query: string) => invoke<RepositoryFileSearch>("search_repository_files", { repoId, query });
 export const readLineChange = (repoId: string, commit: string, pathId: string, line: number) => invoke<string[]>("read_line_change", { repoId, commit, pathId, line });
 export const commitChanges = (repoId: string, commit: string, parent: string | null) => invoke<CommitChanges>("commit_changes", { repoId, commit, parent });
 export const compareRevisions = (repoId: string, left: string, right: string) => invoke<Comparison>("compare_revisions", { repoId, left, right });
 export const fileHistory = (repoId: string, start: string, pathId: string, pageSize: number, cursor: LogCursor | null) => invoke<FileHistory>("file_history", { repoId, start, pathId, pageSize, cursor });
+export function fileHistoryTarget(file: ChangedFile, right: string, left: string | null, old = false): FileHistoryTarget {
+  return old && left
+    ? { path: file.oldPath ?? file.path, pathId: file.oldPathId ?? file.pathId, start: left }
+    : { path: file.path, pathId: file.pathId, start: right };
+}
 export const readRefs = (repoId: string) => invoke<RefsView>("read_refs", { repoId });
 /** 标题栏“获取 ▾”：只读 remote 列表与默认目标，不读分支（比 readRefs 轻）。 */
 export interface RemotesView { remotes: string[]; defaultRemote: string | null; fetchHeadAt: number | null }

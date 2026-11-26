@@ -1,5 +1,5 @@
 import { useEffect, useImperativeHandle, useLayoutEffect, useRef, forwardRef, type CSSProperties } from "react";
-import { EditorState, StateEffect, StateField, Text, type Extension, type Range } from "@codemirror/state";
+import { Compartment, EditorState, StateEffect, StateField, Text, type Extension, type Range } from "@codemirror/state";
 import {
   Decoration,
   type DecorationSet,
@@ -28,6 +28,11 @@ import type { DiffDocument } from "./types";
 import type { HunkItem } from "./hunk-model";
 import { highlightLineSelection, installLineSelection, lineSelectionMarker, type DiffLineSelection } from "./diff-line-selection";
 import { installGoToLine } from "./go-to-line";
+import { attributionGutter, labelUnifiedDeletions } from "./diff-attribution-gutter";
+import type { DiffAttributions } from "./history-api";
+
+const attributionCompartment = new Compartment();
+const emptyAttribution: Extension = [];
 
 const DIFF_SEPARATOR_WIDTH = 56;
 const DIFF_RAIL_WIDTH = 24;
@@ -2050,10 +2055,11 @@ interface Props {
   hunkHeaders?: HunkHeaders | null;
   onLineSelect?(selection: DiffLineSelection): void;
   selectedLine?: DiffLineSelection | null;
+  attributions?: DiffAttributions;
 }
 
 const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
-  { readingKey, presentation, left, right, document, mode, highlight, collapsed, wrap, alignChanges, onPositionChange, hunkHeaders = null, onLineSelect, selectedLine = null },
+  { readingKey, presentation, left, right, document, mode, highlight, collapsed, wrap, alignChanges, onPositionChange, hunkHeaders = null, onLineSelect, selectedLine = null, attributions },
   ref
 ) {
   const host = useRef<HTMLDivElement>(null);
@@ -2172,6 +2178,7 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
       searchHighlights,
       selectionHighlights,
       lineSelectionMarker,
+      attributionCompartment.of(emptyAttribution),
       EditorView.editable.of(false),
       EditorView.contentAttributes.of({ tabindex: "0" }),
       EditorView.domEventHandlers({
@@ -2304,6 +2311,23 @@ const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
   }, [layoutKey, left, right, document, mode, highlight, collapsed, wrap, alignChanges, onPositionChange, presentation]);
 
   useEffect(() => { applyHunkHeaders.current(); }, [hunkHeaders]);
+  useEffect(() => {
+    const current = runtime.current;
+    const entries = current.split ? [{ view: current.split.view.a, side: "left" as const }, { view: current.split.view.b, side: "right" as const }]
+      : current.single ? [{ view: current.single.view, side: presentation.kind === "single" && presentation.side === "a" ? "left" as const : "right" as const }]
+      : current.unified ? [{ view: current.unified, side: "unified" as const }] : [];
+    for (const entry of entries) {
+      const side = entry.side === "left" ? "a" : "b";
+      const ranges = attributions?.[side === "a" ? 0 : 1];
+      if (ranges || attributionCompartment.get(entry.view.state) !== emptyAttribution) {
+        entry.view.dispatch({ effects: attributionCompartment.reconfigure(ranges?.length ? attributionGutter(ranges, side, selection => {
+          highlightLineSelection(entries, selection);
+          lineSelect.current?.(selection);
+        }) : emptyAttribution) });
+      }
+    }
+    if (current.unified && attributions?.[0]?.length) return labelUnifiedDeletions(current.unified, attributions[0]);
+  }, [attributions, layoutKey, left, right, document, mode, highlight, collapsed, wrap, alignChanges, onPositionChange, presentation]);
   useEffect(() => {
     const current = runtime.current;
     const entries = current.split ? [{ view: current.split.view.a, side: "left" as const }, { view: current.split.view.b, side: "right" as const }]

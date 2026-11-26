@@ -96,6 +96,62 @@ fn linear_history_pages_keep_identity_when_refs_move() {
 }
 
 #[test]
+fn repository_file_search_reads_the_head_tree_and_preserves_history_path_ids() {
+    let dir = init();
+    let p = dir.path();
+    let adapter = GitAdapter::open(p.to_string_lossy().into_owned(), None).unwrap();
+    let empty = adapter.search_repository_files("", &|| false).unwrap();
+    assert!(empty.start.is_none() && empty.files.is_empty());
+    let first = commit(p, "src/共享.txt", "keep\n", "add source", 1);
+    let head = commit(p, "tests/共享.txt", "fixture\n", "add tests", 2);
+    fs::write(p.join("scratch.txt"), "untracked\n").unwrap();
+    fs::write(p.join("tests/共享.txt"), "modified\n").unwrap();
+    let before = state(p);
+    let matches = adapter.search_repository_files("共享.TXT", &|| false).unwrap();
+    assert_eq!(matches.start.as_deref(), Some(head.as_str()));
+    assert_eq!(matches.total, 2);
+    let source = matches.files.iter().find(|file| file.path == "src/共享.txt").unwrap();
+    let history = adapter.history_file(&head, &source.path_id, 100, None).unwrap();
+    assert_eq!(history.entries[0].commit.oid, first);
+    assert_eq!(adapter.search_repository_files("src\\共享.txt", &|| false).unwrap().total, 1);
+    assert_eq!(adapter.search_repository_files("scratch", &|| false).unwrap().total, 0);
+    assert!(matches!(adapter.search_repository_files("", &|| true), Err(GitError::StaleRequest)));
+    assert_eq!(state(p), before);
+}
+
+#[test]
+fn file_attribution_batches_ranges_and_traces_the_previous_version() {
+    use super::blame::FileAttributionQuery;
+    let dir = init();
+    let p = dir.path();
+    let first = commit(p, "old.txt", "first\nold\nthree\nfour\nfive\nlast\n", "original", 1);
+    git(p, &["mv", "old.txt", "renamed.txt"]);
+    let second = commit(p, "renamed.txt", "first\nnew\nthree\nfour\nfive\nlast\n", "rename and edit", 2);
+    let third = commit(p, "renamed.txt", "added\nfirst\nnew\nthree\nfour\nfive\nlast\n", "insert line", 3);
+    let adapter = GitAdapter::open(p.to_string_lossy().into_owned(), None).unwrap();
+    let path_id = URL_SAFE_NO_PAD.encode("renamed.txt");
+    let before = state(p);
+    let read = |contents: Option<&str>| adapter.file_attribution(&FileAttributionQuery {
+        path_id: path_id.clone(), revision: Some(third.clone()), contents: contents.map(str::to_owned)
+    }, &|| false).unwrap();
+    let ranges = read(None);
+    let range_at = |line| ranges.iter().find(|r| line >= r.first_line && line < r.first_line + r.line_count).unwrap();
+    assert_eq!(range_at(1).oid.as_deref(), Some(third.as_str()));
+    assert_eq!(range_at(2).oid.as_deref(), Some(first.as_str()));
+    assert_eq!(range_at(3).oid.as_deref(), Some(second.as_str()));
+    assert_eq!(range_at(4).author.as_deref(), Some("Alice"));
+    assert_eq!(ranges.iter().map(|range| range.line_count).sum::<usize>(), 7);
+    let snapshot = read(Some("added\nuncommitted\nnew\nthree\nfour\nfive\nlast\n"));
+    assert!(snapshot.iter().any(|r| r.first_line == 2 && r.oid.is_none()));
+    let previous = adapter.previous_line_attribution(&second, &path_id, 2, &|| false).unwrap().unwrap();
+    assert_eq!(previous.original_line, 2);
+    assert_eq!(previous.path, "old.txt");
+    assert_eq!(previous.commit.unwrap().oid, first);
+    assert!(adapter.previous_line_attribution(&third, &path_id, 1, &|| false).unwrap().is_none());
+    assert_eq!(state(p), before);
+}
+
+#[test]
 fn line_attribution_uses_each_revision_and_snapshot_without_writes() {
     use super::blame::LineQuery;
     let dir = init();

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { shortOid, stashChanges, stashList, type ChangedFile, type StashChanges, type StashEntry } from "./history-api";
+import { fileHistoryTarget, shortOid, stashChanges, stashList, type ChangedFile, type FileHistoryTarget, type StashChanges, type StashEntry } from "./history-api";
 import type { HistoryFileOpen } from "./HistoryPanel";
 import { isStale } from "./history-model";
 import { errorText } from "./error-message";
@@ -102,9 +102,10 @@ export function StashForm({ selectedFiles, blocked, onPush, onClose, onGenerate 
 type StashList = ReturnType<typeof useStashList>;
 interface StashMenuTarget { entry: StashEntry; row: HTMLButtonElement; x: number; y: number }
 
-export default function StashPanel({ repoId, list, hidden, blocked, activeKey, reveal, onApply, onDrop, onOpenFile }: {
+export default function StashPanel({ repoId, list, hidden, blocked, activeKey, reveal, onApply, onDrop, onOpenFile, onHistoryPath }: {
   repoId: string; list: StashList; hidden: boolean; blocked: string | null; activeKey: string | null;
   reveal: { oid: string } | null; onApply(entry: StashEntry, pop: boolean): void; onDrop(entry: StashEntry): void; onOpenFile(open: HistoryFileOpen): void;
+  onHistoryPath?(target: FileHistoryTarget): void;
 }) {
   const [picked, setPicked] = useState<{ entry: StashEntry; reveal: typeof reveal } | null>(null);
   const [menu, setMenu] = useState<StashMenuTarget | null>(null);
@@ -148,7 +149,7 @@ export default function StashPanel({ repoId, list, hidden, blocked, activeKey, r
       </div>
     </section>
     <section className="log-detail" aria-label="储藏详情">
-      {!hidden && selected && <StashDetail key={selected.oid} repoId={repoId} entry={selected} activeKey={activeKey} onOpenFile={onOpenFile}/>}
+      {!hidden && selected && <StashDetail key={selected.oid} repoId={repoId} entry={selected} activeKey={activeKey} onOpenFile={onOpenFile} onHistoryPath={onHistoryPath}/>}
     </section>
     {!hidden && menu && list.ready && entries.includes(menu.entry) && <MenuShell x={menu.x} y={menu.y} label="储藏操作" onClose={closeMenu}>
       <button type="button" role="menuitem" disabled={!!blocked} title={blocked ?? undefined} onClick={() => run((entry) => onApply(entry, false))}>应用并保留</button>
@@ -159,7 +160,7 @@ export default function StashPanel({ repoId, list, hidden, blocked, activeKey, r
 }
 
 /** 所选 stash 的内容在主 diff 阅读器中查看。 */
-function StashDetail({ repoId, entry, activeKey, onOpenFile }: { repoId: string; entry: StashEntry; activeKey: string | null; onOpenFile(open: HistoryFileOpen): void }) {
+function StashDetail({ repoId, entry, activeKey, onOpenFile, onHistoryPath }: { repoId: string; entry: StashEntry; activeKey: string | null; onOpenFile(open: HistoryFileOpen): void; onHistoryPath?(target: FileHistoryTarget): void }) {
   const [changes, setChanges] = useState<StashChanges | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [fileFilter, setFileFilter] = useState("");
@@ -190,9 +191,11 @@ function StashDetail({ repoId, entry, activeKey, onOpenFile }: { repoId: string;
     {error && <div className="log-error">{error}</div>}
     {!changes || changes.oid !== entry.oid ? !error && <div className="log-empty">正在读取…</div> : <>
       <FileList files={changes.tracked} filter={fileFilter} label="已跟踪文件" context={`（相对储藏时的 HEAD ${shortOid(changes.base)}）`} emptyMessage="没有已跟踪文件的改动"
-        activeKey={activeKey} keyFor={(file) => `stash:${entry.oid}:tracked:${file.pathId}`} onOpen={(file) => open(file, "tracked")}/>
+        activeKey={activeKey} keyFor={(file) => `stash:${entry.oid}:tracked:${file.pathId}`} onOpen={(file) => open(file, "tracked")}
+        onHistoryPath={onHistoryPath && ((file, old) => onHistoryPath(fileHistoryTarget(file, entry.oid, changes.base, old)))}/>
       {changes.untrackedCommit && <FileList files={changes.untracked} filter={fileFilter} label="未跟踪文件"
-        activeKey={activeKey} keyFor={(file) => `stash:${entry.oid}:untracked:${file.pathId}`} onOpen={(file) => open(file, "untracked")}/>}
+        activeKey={activeKey} keyFor={(file) => `stash:${entry.oid}:untracked:${file.pathId}`} onOpen={(file) => open(file, "untracked")}
+        onHistoryPath={onHistoryPath && ((file) => onHistoryPath(fileHistoryTarget(file, changes.untrackedCommit!, null)))}/>}
     </>}
   </div>;
 }

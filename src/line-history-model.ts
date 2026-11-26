@@ -1,7 +1,7 @@
 import type { ContentPair, FileChange } from "./types";
 import type { HistoryFileOpen } from "./HistoryPanel";
 import type { DiffLineSelection } from "./diff-line-selection";
-import type { LineQuery } from "./history-api";
+import type { FileAttributionQuery, LineQuery } from "./history-api";
 
 export interface LineHistoryContext { pair: ContentPair; file: FileChange; history: HistoryFileOpen | null; head: string | null }
 export function lineHistoryKey(context: LineHistoryContext) {
@@ -9,20 +9,28 @@ export function lineHistoryKey(context: LineHistoryContext) {
   return JSON.stringify([pair.repoId, pair.pathId, pair.left.contentId, pair.right.contentId, history?.left.oid, history?.right.oid, head]);
 }
 
-export function lineQuery(context: LineHistoryContext, selection: DiffLineSelection): LineQuery | string {
+export function fileAttributionQuery(context: LineHistoryContext, sideKey: DiffLineSelection["side"]): FileAttributionQuery | string {
   const { pair, file, history, head } = context;
-  const side = selection.side === "a" ? pair.left : pair.right;
+  const side = sideKey === "a" ? pair.left : pair.right;
   if (side.text === null || side.encoding === "missing" || side.endpoint === "emptyTree") return "此版本没有可追溯的文本行";
   if (side.encoding !== "utf-8") return "此编码暂不支持行提交信息";
   if (side.kind && side.kind !== "text") return "此文件类型不支持行提交信息";
+  if (!side.text) return "文件末尾占位行没有提交记录";
   if (/\r(?!\n)/.test(side.text)) return "此文件的换行格式暂不支持行提交信息";
-  const lines = side.text.split(/\r?\n/);
-  if (selection.line < 1 || selection.line > lines.length || (selection.line === lines.length && lines.at(-1) === "")) return "文件末尾占位行没有提交记录";
-  const pathId = selection.side === "a" ? file.oldPathId ?? file.pathId : file.pathId;
-  if (history && side.endpoint === "commit") return { pathId, revision: selection.side === "a" ? history.left.oid : history.right.oid, contents: null, line: selection.line };
-  if (side.endpoint === "head") return { pathId: file.oldPathId ?? pathId, revision: head, contents: null, line: selection.line };
-  if (side.endpoint === "index" || side.endpoint === "workingTree") return { pathId: file.oldPathId ?? file.pathId, revision: head, contents: `${side.bom ? "\uFEFF" : ""}${side.text}`, line: selection.line };
+  const pathId = sideKey === "a" ? file.oldPathId ?? file.pathId : file.pathId;
+  if (history && side.endpoint === "commit") return { pathId, revision: sideKey === "a" ? history.left.oid : history.right.oid, contents: null };
+  if (side.endpoint === "head") return { pathId: file.oldPathId ?? pathId, revision: head, contents: null };
+  if (side.endpoint === "index" || side.endpoint === "workingTree") return { pathId: file.oldPathId ?? file.pathId, revision: head, contents: `${side.bom ? "\uFEFF" : ""}${side.text}` };
   return "冲突阶段版本暂不支持行提交信息";
+}
+
+export function lineQuery(context: LineHistoryContext, selection: DiffLineSelection): LineQuery | string {
+  const query = fileAttributionQuery(context, selection.side);
+  if (typeof query === "string") return query;
+  const side = selection.side === "a" ? context.pair.left : context.pair.right;
+  const lines = side.text!.split(/\r?\n/);
+  if (selection.line < 1 || selection.line > lines.length || (selection.line === lines.length && lines.at(-1) === "")) return "文件末尾占位行没有提交记录";
+  return { ...query, line: selection.line };
 }
 
 export function relativeCommitTime(seconds: number, now = Date.now()) {

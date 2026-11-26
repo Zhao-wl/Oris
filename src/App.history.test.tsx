@@ -10,7 +10,7 @@ import { FETCH_LOG_KEY } from "./history-model";
 
 const bridge = vi.hoisted(() => ({
   open: vi.fn(), refresh: vi.fn(), read: vi.fn(), diff: vi.fn(), operation: vi.fn(),
-  line: vi.fn(), lineChange: vi.fn(), locate: vi.fn(), log: vi.fn(), changes: vi.fn(), compare: vi.fn(), fileHistory: vi.fn(), refs: vi.fn(), revision: vi.fn()
+  line: vi.fn(), lineChange: vi.fn(), attribution: vi.fn(), searchFiles: vi.fn(), locate: vi.fn(), log: vi.fn(), changes: vi.fn(), compare: vi.fn(), fileHistory: vi.fn(), refs: vi.fn(), revision: vi.fn()
 }));
 vi.mock("./api", () => ({ discoverGroup: vi.fn(async () => ({ isGroup: false, members: [], selectedRepoId: null, ignored: [] })), memberChangeCount: vi.fn(async () => 0), watchGroup: vi.fn(async () => {}), setSubmodulePointers: vi.fn(async () => {}), openRepository: bridge.open, refreshRepository: bridge.refresh, readContentPair: bridge.read, closeRepository: vi.fn(async () => {}), cancelContentRead: vi.fn(async () => {}),
   repositoryDetails: vi.fn(async () => null), activateRepository: vi.fn(async () => true), loadSnapshot: vi.fn(async () => null), saveSnapshot: vi.fn(async () => true), removeSnapshot: vi.fn(async () => {}), decodeContentFrame: (x: unknown) => x }));
@@ -18,6 +18,7 @@ vi.mock("./operations-api", () => ({ runOperation: bridge.operation, cancelOpera
   prepareDiscard: vi.fn(), discardBackups: vi.fn(async () => []), headCommitInfo: vi.fn(async () => null) }));
 vi.mock("./history-api", async (importOriginal) => ({ ...(await importOriginal<typeof import("./history-api")>()),
   readLineAttribution: bridge.line, readLineChange: bridge.lineChange, locateLog: bridge.locate, readLog: bridge.log, commitChanges: bridge.changes, compareRevisions: bridge.compare, fileHistory: bridge.fileHistory, readRefs: bridge.refs, readRevisionPair: bridge.revision,
+  readFileAttribution: bridge.attribution, searchRepositoryFiles: bridge.searchFiles,
   // 获取 ▾ 的轻量读取：取自同一份 refs 夹具。
   readRemotes: async (repoId: string) => { const view = await bridge.refs(repoId); return { remotes: view.remotes, defaultRemote: view.defaultRemote, fetchHeadAt: view.fetchHeadAt }; } }));
 vi.mock("./diff", () => ({ calculateDiff: bridge.diff }));
@@ -325,6 +326,44 @@ describe("compare and file history (A09)", () => {
     expect(q(".history-badge")?.textContent).toContain("文件历史");
     await click(button("← 返回提交历史"));
     expect(all(".log-row").length).toBe(4);
+  });
+
+  it("opens an unchanged repository search result in the existing historical diff from click and context menu", async () => {
+    const target = { path: "clean/Server.xml", pathId: "id-clean" };
+    bridge.searchFiles.mockResolvedValue({ start: O("3"), files: [target], total: 1 });
+    bridge.fileHistory.mockResolvedValue({ entries: [{ commit: history[1], ...target, status: "modified", renamedFrom: null, renamedFromId: null }], next: null, reachedOrigin: true });
+    await mount();
+    expect(q(".files-layout")?.textContent).not.toContain(target.path);
+    const openSearch = async () => {
+      await click(q(".repository-search-trigger"));
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 5)); });
+      expect(bridge.searchFiles).toHaveBeenLastCalledWith("a", "");
+      return q(".repository-search-result");
+    };
+    await click(await openSearch());
+    expect(bridge.fileHistory).toHaveBeenLastCalledWith("a", O("3"), target.pathId, 100, null);
+    expect(bridge.revision).toHaveBeenLastCalledWith("a", O("0"), O("1"), target.pathId, null, expect.any(String));
+    expect(reading()).toContain("history:file:");
+    await click(button("← 返回本地变化"));
+    await contextMenu(await openSearch());
+    await click(button("历史记录", q(".repository-file-search")!));
+    expect(bridge.fileHistory).toHaveBeenCalledTimes(2);
+    await contextMenu(q(".tab-path"));
+    await click(button("历史记录"));
+    expect(bridge.fileHistory).toHaveBeenLastCalledWith("a", O("1"), target.pathId, 100, null);
+  });
+
+  it("fetches both sides' attribution only when the diff toolbar toggle is enabled", async () => {
+    bridge.attribution.mockResolvedValue([[{ firstLine: 1, lineCount: 1, oid: O("0"), author: "Alice" }], []]);
+    await mount();
+    const toggle = button("逐行归属");
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    expect(bridge.attribution).not.toHaveBeenCalled();
+    await click(toggle);
+    expect(bridge.attribution).toHaveBeenCalledWith("a", { pathId: "id-a.txt", revision: O("1"), contents: "l" }, { pathId: "id-a.txt", revision: O("1"), contents: "r" });
+    expect(button("逐行归属").getAttribute("aria-pressed")).toBe("true");
+    await click(button("逐行归属"));
+    expect(bridge.attribution).toHaveBeenCalledTimes(1);
   });
 });
 

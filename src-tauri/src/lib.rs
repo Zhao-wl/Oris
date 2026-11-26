@@ -74,7 +74,7 @@ struct OpenRepository {
 }
 
 #[cfg(feature = "desktop")]
-const HISTORY_KINDS: usize = 10;
+const HISTORY_KINDS: usize = 13;
 
 /// 历史类只读请求的种类（各自独立的代次）。
 #[cfg(feature = "desktop")]
@@ -90,6 +90,9 @@ enum HistoryKind {
     StashChanges = 7,
     LineAttribution = 8,
     LineChange = 9,
+    RepositoryFiles = 10,
+    FileAttribution = 11,
+    PreviousAttribution = 12,
 }
 
 /// 在后台线程执行一个历史类读取；`fresh` 为 true 时使同种类的旧请求过期（分页续读传 false，沿用当前代次）。
@@ -815,6 +818,41 @@ async fn read_line_change(repo_id: String, commit: String, path_id: String, line
     history_call(opened, HistoryKind::LineChange, true, move |adapter, _| adapter.line_change(&commit, &path_id, line)).await
 }
 
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn search_repository_files(repo_id: String, query: String, registry: State<'_, RepositoryRegistry>) -> Result<git::history::RepositoryFileSearch, GitError> {
+    let opened = opened(&registry, &repo_id)?;
+    let slots = opened.slots.clone();
+    history_call(opened, HistoryKind::RepositoryFiles, true, move |adapter, stale| {
+        let _slot = slots.acquire();
+        adapter.search_repository_files(&query, stale)
+    }).await
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn read_file_attribution(repo_id: String, left: Option<git::blame::FileAttributionQuery>, right: Option<git::blame::FileAttributionQuery>, registry: State<'_, RepositoryRegistry>) -> Result<[Option<Vec<git::blame::AttributionRange>>; 2], GitError> {
+    let opened = opened(&registry, &repo_id)?;
+    let slots = opened.slots.clone();
+    history_call(opened, HistoryKind::FileAttribution, true, move |adapter, stale| {
+        let _slot = slots.acquire();
+        let left = left.as_ref().map(|query| adapter.file_attribution(query, stale)).transpose()?;
+        let right = right.as_ref().map(|query| adapter.file_attribution(query, stale)).transpose()?;
+        Ok([left, right])
+    }).await
+}
+
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn read_previous_attribution(repo_id: String, commit: String, path_id: String, line: usize, registry: State<'_, RepositoryRegistry>) -> Result<Option<git::blame::LineAttribution>, GitError> {
+    let opened = opened(&registry, &repo_id)?;
+    let slots = opened.slots.clone();
+    history_call(opened, HistoryKind::PreviousAttribution, true, move |adapter, stale| {
+        let _slot = slots.acquire();
+        adapter.previous_line_attribution(&commit, &path_id, line, stale)
+    }).await
+}
+
 /// 某个提交相对所选父节点（默认第一个；根提交相对空树）的变化文件。
 #[cfg(feature = "desktop")]
 #[tauri::command]
@@ -1080,6 +1118,9 @@ pub fn run() {
             locate_log,
             read_line_attribution,
             read_line_change,
+            search_repository_files,
+            read_file_attribution,
+            read_previous_attribution,
             commit_changes,
             compare_revisions,
             file_history,

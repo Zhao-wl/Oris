@@ -1,6 +1,6 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type HTMLAttributes, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { flatLayout, layoutGraph, type GraphLayout, type GraphRow } from "./history-graph";
-import { commitChanges, compareRevisions, fileHistory, readLog, locateLog, readRefs, shortOid, shortRef, statusLetter, type Branch, type ChangedFile, type CommitChanges, type CommitInfo, type Comparison, type FileHistory, type LogCursor, type RefsView, type SearchKind } from "./history-api";
+import { commitChanges, compareRevisions, fileHistory, fileHistoryTarget, readLog, locateLog, readRefs, shortOid, shortRef, statusLetter, type Branch, type ChangedFile, type CommitChanges, type CommitInfo, type Comparison, type FileHistory, type FileHistoryEntry, type FileHistoryTarget, type LogCursor, type RefsView, type SearchKind } from "./history-api";
 import { ROW_HEIGHT, deferVersions, initialDeferred, isStale, movedEndpoint, nodeX, rowSegments, LANE_WIDTH, refOid, type DeferredVersions, type PinnedEndpoint } from "./history-model";
 import { errorText } from "./error-message";
 import HistorySidebar from "./HistorySidebar";
@@ -8,9 +8,11 @@ import PathText from "./PathText";
 import { useMenuPosition } from "./menu-position";
 import FileList, { ChangedFileSearch, filterChangedFiles } from "./ChangedFileList";
 import ClearableInput from "./ClearableInput";
+import { useFileHistoryMenu } from "./file-history-menu";
 
 /** 在主 diff 阅读器中打开的历史文件（两端都是固定的提交 OID；left 为 null 表示空树）。 */
 export interface HistoryFileOpen {
+  focusLine?: number;
   key: string;
   /** 来源说明，例如“提交 abcd1234”“比较 A → B”“文件历史”。 */
   source: string;
@@ -19,7 +21,7 @@ export interface HistoryFileOpen {
   right: { oid: string; label: string };
 }
 
-export interface FileHistoryRequest { pathId: string; path: string; start: string; nonce: number }
+export interface FileHistoryRequest extends FileHistoryTarget { openLatest?: boolean; focusLine?: number }
 
 export interface LineHistoryJump { repoId: string; nonce: number; oid: string; author: string | null; path: string }
 
@@ -225,15 +227,36 @@ export default function HistoryPanel(props: Props) {
 
   // ---------- 文件历史 ----------
   const loadFileHistory = useCallback((request: FileHistoryRequest, next: LogCursor | null, previous: FileHistory | null) => {
-    setMode((current) => current.kind === "file" && current.request.nonce === request.nonce ? { ...current, loading: true } : { kind: "file", request, history: null, loading: true, error: null, selected: null });
+    setMode((current) => current.kind === "file" && current.request === request ? { ...current, loading: true } : { kind: "file", request, history: null, loading: true, error: null, selected: null });
     void fileHistory(repoId, request.start, request.pathId, 100, next).then((result) => {
-      setMode((current) => current.kind !== "file" || current.request.nonce !== request.nonce ? current : { ...current, loading: false, error: null, history: previous ? { entries: [...previous.entries, ...result.entries], next: result.next, reachedOrigin: result.reachedOrigin } : result });
+      setMode((current) => current.kind !== "file" || current.request !== request ? current : { ...current, loading: false, error: null, history: previous ? { entries: [...previous.entries, ...result.entries], next: result.next, reachedOrigin: result.reachedOrigin } : result });
     }, (error) => {
       if (isStale(error)) return;
-      setMode((current) => current.kind !== "file" || current.request.nonce !== request.nonce ? current : { ...current, loading: false, error: errorText(error) });
+      setMode((current) => current.kind !== "file" || current.request !== request ? current : { ...current, loading: false, error: errorText(error) });
     });
   }, [repoId]);
   useEffect(() => { if (fileHistoryRequest) loadFileHistory(fileHistoryRequest, null, null); }, [fileHistoryRequest, loadFileHistory]);
+  const openFileHistoryEntry = (request: FileHistoryRequest, entry: FileHistoryEntry) => {
+    setMode(current => current.kind === "file" && current.request === request ? { ...current, selected: entry.commit.oid } : current);
+    const parentOid = entry.commit.parents[0] ?? null;
+    onOpenFile({
+      key: `file:${entry.commit.oid}:${entry.pathId}`, source: `文件历史 · ${request.path}`,
+      focusLine: request.start === entry.commit.oid ? request.focusLine : undefined,
+      file: { path: entry.path, oldPath: entry.renamedFrom, pathId: entry.pathId, oldPathId: entry.renamedFromId, status: entry.status },
+      left: { oid: parentOid, label: parentOid ? `父提交 ${shortOid(parentOid)}${entry.commit.parents.length > 1 ? "（第 1 个父节点）" : ""}` : "空树（根提交）" },
+      right: { oid: entry.commit.oid, label: `提交 ${shortOid(entry.commit.oid)}` }
+    });
+  };
+  const autoOpened = useRef<FileHistoryRequest | null>(null);
+  useEffect(() => {
+    if (hidden || mode.kind !== "file" || !mode.request.openLatest || mode.selected || autoOpened.current === mode.request) return;
+    const entry = mode.history?.entries[0];
+    if (!entry) return;
+    autoOpened.current = mode.request;
+    openFileHistoryEntry(mode.request, entry);
+  });
+  const startHistoryAt = (target: FileHistoryTarget) => loadFileHistory({ ...target, openLatest: true }, null, null);
+  const historyPathMenu = useFileHistoryMenu(startHistoryAt);
 
   // ---------- 比较（直接比较两个端点，非共同基线） ----------
   const runCompare = useCallback((a: PinnedEndpoint, b: PinnedEndpoint, hint?: string) => {
@@ -428,11 +451,7 @@ export default function HistoryPanel(props: Props) {
       blocked={writeBlocked ?? null} onSwitch={onSwitch} onTrack={onTrack} onPruneGone={onPruneGone} onMenu={(x, y, endpoint) => setMenu({ x, y, endpoint })}/>
     {splitter("left")}
     <section className="log-commits-pane" aria-label={mode.kind === "file" ? "文件历史" : "提交历史"}>
-      {mode.kind === "file" ? <FileHistoryList mode={mode} activeKey={activeKey} onBack={() => setMode({ kind: "commit" })} onMore={() => mode.history?.next && loadFileHistory(mode.request, mode.history.next, mode.history)} onOpen={(entry) => {
-        setMode({ ...mode, selected: entry.commit.oid });
-        const parentOid = entry.commit.parents[0] ?? null;
-        onOpenFile({ key: `file:${entry.commit.oid}:${entry.pathId}`, source: `文件历史 · ${mode.request.path}`, file: { path: entry.path, oldPath: entry.renamedFrom, pathId: entry.pathId, oldPathId: entry.renamedFromId, status: entry.status }, left: { oid: parentOid, label: parentOid ? `父提交 ${shortOid(parentOid)}${entry.commit.parents.length > 1 ? "（第 1 个父节点）" : ""}` : "空树（根提交）" }, right: { oid: entry.commit.oid, label: `提交 ${shortOid(entry.commit.oid)}` } });
-      }}/> : <>
+      {mode.kind === "file" ? <FileHistoryList mode={mode} activeKey={activeKey} onBack={() => setMode({ kind: "commit" })} onMore={() => mode.history?.next && loadFileHistory(mode.request, mode.history.next, mode.history)} onOpen={entry => openFileHistoryEntry(mode.request, entry)} historyPath={historyPathMenu.bindings}/> : <>
         <div className="log-toolbar">
           <select aria-label="搜索类型" value={searchKind} onChange={(event) => setSearchKind(event.target.value as SearchKind)}>{(Object.keys(searchLabels) as SearchKind[]).map((kind) => <option key={kind} value={kind}>{searchLabels[kind]}</option>)}</select>
           <ClearableInput aria-label="搜索提交" placeholder={searchKind === "sha" ? "SHA 前缀（至少 4 位）" : `按${searchLabels[searchKind]}搜索（字面量）`} value={searchText} onValueChange={setSearchText} canClear={!!search} onClear={clearSearch} clearLabel="清除提交搜索" onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); applySearch(); } }}/>
@@ -463,11 +482,12 @@ export default function HistoryPanel(props: Props) {
       {mode.kind === "compare" ? <CompareDetail key={mode.result ? `${mode.result.left}:${mode.result.right}` : "pending"} mode={mode} moved={moved} activeKey={activeKey} onSwap={() => runCompare(mode.b, mode.a)} onRefresh={() => {
         const renew = (endpoint: PinnedEndpoint) => { const oid = refOid(endpoint.ref, viewRefs); return oid ? { ...endpoint, oid } : endpoint; };
         runCompare(renew(mode.a), renew(mode.b));
-      }} onClose={() => { setMode({ kind: "commit" }); setCompareStart(null); }} onOpen={(file) => mode.result && openCompareFile(mode.result, mode.a, mode.b, file)}/>
-        : mode.kind === "file" ? <FileHistoryDetail mode={mode}/>
-        : selected ? <CommitDetail commit={selected} changes={changes} error={changesError} fileFilter={selectedFileFilter} onFileFilter={text => setFileFilter({ oid: selectedOid, text })} activeKey={activeKey} onParent={setParent} onOpen={(file) => changes && openCommitFile(selected, changes, file)} onHistory={(file) => loadFileHistory({ pathId: file.pathId, path: file.path, start: selected.oid, nonce: Date.now() }, null, null)} onSubmodule={onSubmoduleCompare}/>
+      }} onClose={() => { setMode({ kind: "commit" }); setCompareStart(null); }} onOpen={(file) => mode.result && openCompareFile(mode.result, mode.a, mode.b, file)} onHistoryPath={(file, old) => mode.result && startHistoryAt(fileHistoryTarget(file, mode.result.right, mode.result.left, old))}/>
+        : mode.kind === "file" ? <FileHistoryDetail mode={mode} historyPath={historyPathMenu.bindings}/>
+        : selected ? <CommitDetail commit={selected} changes={changes} error={changesError} fileFilter={selectedFileFilter} onFileFilter={text => setFileFilter({ oid: selectedOid, text })} activeKey={activeKey} onParent={setParent} onOpen={(file) => changes && openCommitFile(selected, changes, file)} onHistory={(file) => loadFileHistory(fileHistoryTarget(file, selected.oid, null), null, null)} onHistoryPath={(file, old) => startHistoryAt(fileHistoryTarget(file, selected.oid, changes?.parent ?? null, old))} onSubmodule={onSubmoduleCompare}/>
         : <div className="log-empty">选择一个提交查看元信息与变化文件</div>}
     </aside>
+    {historyPathMenu.popup}
     {menu && <EndpointMenu menu={menu} hasStart={!!compareStart} blocked={writeBlocked ?? null} onClose={() => setMenu(null)} onStart={() => { setCompareStart(menu.endpoint); setMenu(null); }} onCompare={() => compareWith(menu.endpoint)}
       switchTo={menuSwitch}
       onCheckout={onCheckout && menu.endpoint.ref === menu.endpoint.oid ? () => { setMenu(null); onCheckout(menu.endpoint.oid); } : undefined}
@@ -504,7 +524,7 @@ const CommitRow = memo(function CommitRow({ row, commit, top, graphWidth, loaded
   </div>;
 });
 
-function CommitDetail({ commit, changes, error, fileFilter, onFileFilter, activeKey, onParent, onOpen, onHistory, onSubmodule }: { commit: CommitInfo; changes: CommitChanges | null; error: string | null; fileFilter: string; onFileFilter(text: string): void; activeKey: string | null; onParent(parent: string): void; onOpen(file: ChangedFile): void; onHistory(file: ChangedFile): void; onSubmodule?(file: ChangedFile): void }) {
+function CommitDetail({ commit, changes, error, fileFilter, onFileFilter, activeKey, onParent, onOpen, onHistory, onHistoryPath, onSubmodule }: { commit: CommitInfo; changes: CommitChanges | null; error: string | null; fileFilter: string; onFileFilter(text: string): void; activeKey: string | null; onParent(parent: string): void; onOpen(file: ChangedFile): void; onHistory(file: ChangedFile): void; onHistoryPath(file: ChangedFile, old: boolean): void; onSubmodule?(file: ChangedFile): void }) {
   const current = changes?.oid === commit.oid ? changes : null;
   return <div className="log-detail-body">
     <div className="log-detail-header">
@@ -518,11 +538,11 @@ function CommitDetail({ commit, changes, error, fileFilter, onFileFilter, active
     {commit.body && <pre className="log-body">{commit.body}</pre>}
     {error && <div className="log-error">{error}</div>}
     {current ? <FileList files={current.files} filter={fileFilter} label="变化文件" context={current.parent ? ` · 相对 ${shortOid(current.parent)}` : " · 相对空树"}
-      activeKey={activeKey} keyFor={(file) => `commit:${commit.oid}:${current.parent ?? "root"}:${file.pathId}`} onOpen={onOpen} onHistory={onHistory} onSubmodule={onSubmodule}/> : !error && <div className="log-empty">正在读取变化文件…</div>}
+      activeKey={activeKey} keyFor={(file) => `commit:${commit.oid}:${current.parent ?? "root"}:${file.pathId}`} onOpen={onOpen} onHistory={onHistory} onHistoryPath={onHistoryPath} onSubmodule={onSubmodule}/> : !error && <div className="log-empty">正在读取变化文件…</div>}
   </div>;
 }
 
-function CompareDetail({ mode, moved, activeKey, onSwap, onRefresh, onClose, onOpen }: { mode: Extract<Mode, { kind: "compare" }>; moved: string[]; activeKey: string | null; onSwap(): void; onRefresh(): void; onClose(): void; onOpen(file: ChangedFile): void }) {
+function CompareDetail({ mode, moved, activeKey, onSwap, onRefresh, onClose, onOpen, onHistoryPath }: { mode: Extract<Mode, { kind: "compare" }>; moved: string[]; activeKey: string | null; onSwap(): void; onRefresh(): void; onClose(): void; onOpen(file: ChangedFile): void; onHistoryPath(file: ChangedFile, old: boolean): void }) {
   const [fileFilter, setFileFilter] = useState("");
   return <div className="log-detail-body">
     <div className="log-detail-header">
@@ -533,19 +553,21 @@ function CompareDetail({ mode, moved, activeKey, onSwap, onRefresh, onClose, onO
     <div className="log-meta">B：{shortRef(mode.b.label)} · <span className="log-sha-full">{mode.b.oid}</span></div>
     {moved.length > 0 && <div className="log-moved" role="status">{moved.join("；")}。当前比较仍使用上面固定的 OID。<button type="button" onClick={onRefresh}>按新位置重新比较</button></div>}
     {mode.error && <div className="log-error">{mode.error}</div>}
-    {mode.result ? <FileList files={mode.result.files} filter={fileFilter} label="A → B 的变化文件" activeKey={activeKey} keyFor={(file) => `compare:${mode.result!.left}:${mode.result!.right}:${file.pathId}`} onOpen={onOpen}/> : !mode.error && <div className="log-empty">正在比较…</div>}
+    {mode.result ? <FileList files={mode.result.files} filter={fileFilter} label="A → B 的变化文件" activeKey={activeKey} keyFor={(file) => `compare:${mode.result!.left}:${mode.result!.right}:${file.pathId}`} onOpen={onOpen} onHistoryPath={onHistoryPath}/> : !mode.error && <div className="log-empty">正在比较…</div>}
   </div>;
 }
 
-function FileHistoryList({ mode, activeKey, onBack, onMore, onOpen }: { mode: Extract<Mode, { kind: "file" }>; activeKey: string | null; onBack(): void; onMore(): void; onOpen(entry: FileHistory["entries"][number]): void }) {
+type HistoryPathBindings = (target: FileHistoryTarget | null) => Pick<HTMLAttributes<HTMLElement>, "onContextMenu" | "onKeyDown">;
+
+function FileHistoryList({ mode, activeKey, onBack, onMore, onOpen, historyPath }: { mode: Extract<Mode, { kind: "file" }>; activeKey: string | null; onBack(): void; onMore(): void; onOpen(entry: FileHistoryEntry): void; historyPath: HistoryPathBindings }) {
   const entries = mode.history?.entries ?? [];
   return <>
-    <div className="log-toolbar"><button type="button" onClick={onBack}>← 返回提交历史</button><strong className="log-file-title" title={mode.request.path}><PathText path={mode.request.path} prefix="文件历史："/></strong><span className="spacer"/><span className="log-count">自 {mode.request.start === "HEAD" ? "HEAD" : shortOid(mode.request.start)} · {entries.length} 条{mode.loading ? " · 读取中…" : ""}</span></div>
+    <div className="log-toolbar"><button type="button" onClick={onBack}>← 返回提交历史</button><strong className="log-file-title" title={mode.request.path}><PathText path={mode.request.path} prefix="文件历史：" className="file-history-path" tabIndex={0} {...historyPath(mode.request)}/></strong><span className="spacer"/><span className="log-count">自 {mode.request.start === "HEAD" ? "HEAD" : shortOid(mode.request.start)} · {entries.length} 条{mode.loading ? " · 读取中…" : ""}</span></div>
     {mode.error && <div className="log-error">{mode.error}</div>}
     <ul className="log-history" aria-label="文件历史记录">
       {entries.map((entry) => <li key={entry.commit.oid + entry.pathId} className={`${mode.selected === entry.commit.oid ? "selected" : ""}${activeKey === `file:${entry.commit.oid}:${entry.pathId}` ? " active" : ""}`}>
         <button type="button" className="log-history-row" onClick={() => onOpen(entry)}><span className={`status-letter ${entry.status}`}>{statusLetter[entry.status]}</span><span className="log-sha">{shortOid(entry.commit.oid)}</span><span className="log-subject">{entry.commit.subject}</span><span className="log-date">{time(entry.commit.authorTime)}</span><span className="log-committer" title={`提交者：${entry.commit.committerName} <${entry.commit.committerEmail}>`}>{entry.commit.committerName}</span></button>
-        {entry.renamedFrom && <div className="log-rename-boundary" role="note">↳ rename 跟随边界：此提交由 {entry.renamedFrom} 改名而来，更早的记录使用原路径（由 Git 的 rename 检测判断）</div>}
+        {entry.renamedFrom && <div className="log-rename-boundary" role="note">↳ rename 跟随边界：此提交由 <span className="file-history-path" tabIndex={entry.renamedFromId && entry.commit.parents[0] ? 0 : undefined} {...historyPath(entry.renamedFromId && entry.commit.parents[0] ? { path: entry.renamedFrom, pathId: entry.renamedFromId, start: entry.commit.parents[0] } : null)}>{entry.renamedFrom}</span> 改名而来，更早的记录使用原路径（由 Git 的 rename 检测判断）</div>}
       </li>)}
     </ul>
     {!mode.loading && mode.history && (mode.history.next ? <button type="button" className="log-more" onClick={onMore}>加载更多</button>
@@ -555,7 +577,7 @@ function FileHistoryList({ mode, activeKey, onBack, onMore, onOpen }: { mode: Ex
   </>;
 }
 
-function FileHistoryDetail({ mode }: { mode: Extract<Mode, { kind: "file" }> }) {
+function FileHistoryDetail({ mode, historyPath }: { mode: Extract<Mode, { kind: "file" }>; historyPath: HistoryPathBindings }) {
   const entry = mode.history?.entries.find((e) => e.commit.oid === mode.selected);
   if (!entry) return <div className="log-empty">选择一条记录，在主阅读器中查看该提交对此文件的改动（相对第一个父节点）</div>;
   const { commit } = entry;
@@ -563,7 +585,9 @@ function FileHistoryDetail({ mode }: { mode: Extract<Mode, { kind: "file" }> }) 
     <strong className="log-detail-subject">{commit.subject}</strong>
     <div className="log-meta"><span className="log-sha-full">{commit.oid}</span></div>
     <div className="log-meta">作者 {commit.authorName} · {time(commit.authorTime)}</div>
-    <div className="log-meta">该提交中的路径：{entry.path}{entry.renamedFrom ? `（由 ${entry.renamedFrom} 改名）` : ""}</div>
+    <div className="log-meta">该提交中的路径：<span className="file-history-path" tabIndex={0} {...historyPath({ path: entry.path, pathId: entry.pathId, start: commit.oid })}>{entry.path}</span>
+      {entry.renamedFrom && <>（由 <span className="file-history-path" tabIndex={entry.renamedFromId && commit.parents[0] ? 0 : undefined} {...historyPath(entry.renamedFromId && commit.parents[0] ? { path: entry.renamedFrom, pathId: entry.renamedFromId, start: commit.parents[0] } : null)}>{entry.renamedFrom}</span> 改名）</>}
+    </div>
     {commit.parents.length > 1 && <div className="log-note">合并提交：与第一个父节点比较</div>}
     {commit.body && <pre className="log-body">{commit.body}</pre>}
   </div>;

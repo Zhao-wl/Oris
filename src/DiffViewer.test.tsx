@@ -11,6 +11,7 @@ import DiffViewer, { buildSideDecorations, type DiffViewerHandle, type HunkHeade
 import { computeDiff } from "./diff-core";
 import { installLineSelection, lineAtNode } from "./diff-line-selection";
 import type { DiffDocument } from "./types";
+import type { DiffAttributions } from "./history-api";
 
 const lines = (count: number, edit: (index: number, line: string) => string = (_, line) => line) =>
   Array.from({ length: count }, (_, i) => edit(i, `const item${i} = load(${i});`)).join("\n") + "\n";
@@ -53,12 +54,12 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function render(file: { left: string; right: string }, document: DiffDocument, readingKey: string, hunkHeaders: HunkHeaders | null, mode: "split" | "unified" = "split", collapsed = false, aligned = false) {
+function render(file: { left: string; right: string }, document: DiffDocument, readingKey: string, hunkHeaders: HunkHeaders | null, mode: "split" | "unified" = "split", collapsed = false, aligned = false, attributions?: DiffAttributions) {
   const ref = createRef<DiffViewerHandle>();
   act(() => root.render(
     <DiffViewer ref={ref} readingKey={readingKey} presentation={{ kind: "compare" }} left={file.left} right={file.right} document={document}
       mode={mode} highlight="words" collapsed={collapsed} wrap={false} alignChanges={aligned} hunkHeaders={hunkHeaders}
-      onPositionChange={onPositionChange} />
+      onPositionChange={onPositionChange} attributions={attributions} />
   ));
   return ref;
 }
@@ -352,6 +353,28 @@ describe("buildSideDecorations", () => {
 
 
 describe("行提交信息的实际阅读器行映射", () => {
+  it("逐行归属可配置在左右编辑器中，并覆盖统一视图的旧行部件", () => {
+    const file = { left: "same\nold one\nold two\nlast\n", right: "same\nnew\nlast\n" };
+    const doc = documentFor(file.left, file.right, "attribution");
+    const ranges: DiffAttributions = [
+      [{ firstLine: 1, lineCount: 4, oid: "1".repeat(40), author: "Alice" }],
+      [{ firstLine: 1, lineCount: 3, oid: "2".repeat(40), author: "Bob" }]
+    ];
+    render(file, doc, "attribution", null);
+    const original = editors();
+    expect(host.querySelectorAll(".oris-attribution-gutter")).toHaveLength(0);
+    render(file, doc, "attribution", null, "split", false, false, ranges);
+    expect(editors()).toEqual(original);
+    expect(original[0].dom.querySelector(".oris-attribution-gutter")?.textContent).toContain("Alice");
+    expect(original[1].dom.querySelector(".oris-attribution-gutter")?.textContent).toContain("Bob");
+    render(file, doc, "attribution", null, "unified", false, false, ranges);
+    expect(host.querySelector(".oris-attribution-gutter")?.textContent).toContain("Bob");
+    expect(host.querySelector(".cm-deletedLine[data-attribution]")?.getAttribute("data-attribution")).toContain("Alice");
+    render(file, doc, "attribution", null, "unified");
+    expect(host.querySelector(".oris-attribution-gutter")).toBeNull();
+    expect(host.querySelector("[data-attribution]")).toBeNull();
+  });
+
   it("并排视图的选中行保留左右侧身份，只派发一次行标记更新", () => {
     const file = { left: "one\nold\nlast\n", right: "one\nnew\nlast\n" };
     render(file, documentFor(file.left, file.right, "line"), "line", null);

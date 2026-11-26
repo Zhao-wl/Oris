@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type FocusEvent } from "react";
 import { createPortal } from "react-dom";
-import { readLineAttribution, readLineChange, shortOid, type LineAttribution } from "./history-api";
+import { readLineAttribution, readLineChange, readPreviousAttribution, shortOid, type LineAttribution } from "./history-api";
 import type { DiffLineSelection } from "./diff-line-selection";
 import { lineHistoryKey, lineQuery, relativeCommitTime, type LineHistoryContext } from "./line-history-model";
 import { fitInViewport } from "./menu-position";
@@ -10,12 +10,13 @@ interface Props {
   context: LineHistoryContext;
   selection: { key: string; value: DiffLineSelection } | null;
   onJump(attribution: LineAttribution, author: boolean): void;
+  onOpenAttribution?(attribution: LineAttribution): void;
 }
 
 type Result = { key: string; data?: LineAttribution; error?: string };
 const fullTime = (time: number) => new Date(time * 1000).toLocaleString(undefined, { timeZoneName: "short" });
 
-export default function LineHistoryBar({ context, selection, onJump }: Props) {
+export default function LineHistoryBar({ context, selection, onJump, onOpenAttribution }: Props) {
   const contextKey = lineHistoryKey(context);
   const selected = selection?.key === contextKey ? selection.value : null;
   const query = useMemo(() => selected ? lineQuery(context, selected) : null, [context, selected]);
@@ -24,6 +25,8 @@ export default function LineHistoryBar({ context, selection, onJump }: Props) {
   const [open, setOpen] = useState(false);
   const [preview, setPreview] = useState<{ key: string; lines?: string[]; error?: string } | null>(null);
   const [copyNote, setCopyNote] = useState("");
+  const [previous, setPrevious] = useState<{ key: string; loading: boolean; note?: string } | null>(null);
+  const previousRequest = useRef<object | null>(null);
   const cache = useRef(new Map<string, LineAttribution>());
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const bar = useRef<HTMLDivElement>(null);
@@ -50,6 +53,7 @@ export default function LineHistoryBar({ context, selection, onJump }: Props) {
     }, 160);
     return () => { alive = false; clearTimeout(timer); };
   }, [query, requestKey, context.pair.repoId]);
+  useEffect(() => () => { previousRequest.current = null; }, [requestKey, onOpenAttribution != null]);
 
   const previewKey = commit ? `${context.pair.repoId}:${commit.oid}:${data.pathId}:${data.originalLine}` : "";
   useEffect(() => {
@@ -93,6 +97,21 @@ export default function LineHistoryBar({ context, selection, onJump }: Props) {
   };
   const leave = () => { keepOpen(); closeTimer.current = setTimeout(() => setOpen(false), 400); };
   const jump = (author: boolean) => { if (data?.commit) { setOpen(false); onJump(data, author); } };
+  const openPrevious = async () => {
+    if (!commit || !data || !onOpenAttribution) return;
+    const request = {};
+    previousRequest.current = request;
+    setPrevious({ key: requestKey, loading: true });
+    setOpen(false);
+    try {
+      const result = await readPreviousAttribution(context.pair.repoId, commit.oid, data.pathId, data.originalLine);
+      if (previousRequest.current !== request) return;
+      if (result?.commit) { setPrevious(null); onOpenAttribution(result); }
+      else setPrevious({ key: requestKey, loading: false, note: "父版本中没有可对应的行" });
+    } catch (reason) {
+      if (previousRequest.current === request) setPrevious({ key: requestKey, loading: false, note: `无法读取上一次归属：${errorText(reason)}` });
+    }
+  };
   const copy = async () => {
     if (!commit) return;
     try { await navigator.clipboard.writeText(commit.oid); setCopyNote("已复制 SHA"); }
@@ -111,7 +130,11 @@ export default function LineHistoryBar({ context, selection, onJump }: Props) {
       : <><button type="button" className="line-history-link" onClick={() => jump(true)} title="在历史中按作者搜索并定位该提交">{commit.authorName}</button>
         <span className="line-history-muted">· {relativeCommitTime(commit.authorTime)} ·</span>
         <button type="button" className="line-history-summary" onClick={show} aria-expanded={open}>{commit.subject || "（无提交信息）"}</button>
-        <span className="spacer"/><button type="button" className="line-history-link line-history-sha" onClick={() => jump(false)} title="在历史中定位该提交">{shortOid(commit.oid)}</button></>}
+        <span className="spacer"/>
+        {onOpenAttribution && <><button type="button" className="line-history-link" onClick={() => { setOpen(false); onOpenAttribution(data); }}>看本行改动</button>
+          <button type="button" className="line-history-link" onClick={() => void openPrevious()} disabled={!commit.parents.length || (previous?.key === requestKey && previous.loading)}>{previous?.key === requestKey && previous.loading ? "正在追溯…" : "查看上一次归属"}</button>
+          {previous?.key === requestKey && previous.note && <span className="line-history-muted" role="status">{previous.note}</span>}</>}
+        <button type="button" className="line-history-link line-history-sha" onClick={() => jump(false)} title="在历史中定位该提交">{shortOid(commit.oid)}</button></>}
     {open && commit && data && createPortal(<div className="line-history-popover" ref={popup} style={position} role="dialog" aria-label="行提交详情" onMouseEnter={keepOpen} onMouseLeave={leave} onFocus={keepOpen}
       onBlur={event => { if (!(event.relatedTarget instanceof Node) || (!popup.current?.contains(event.relatedTarget) && !bar.current?.contains(event.relatedTarget))) leave(); }}>
       <button type="button" className="line-history-close" onClick={() => setOpen(false)} aria-label="关闭提交详情">×</button>

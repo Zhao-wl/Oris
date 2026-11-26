@@ -23,6 +23,7 @@ export interface FileActions {
   onSelection(pathIds: string[], focus: FileChange | null): void;
   onAction(action: FileAction, files: FileChange[]): void;
   onStash?(files: FileChange[]): void;
+  onHistory?(file: FileChange): void;
   /** 在资源管理器中打开（`/` 分隔的仓库相对路径）；不提供时菜单不显示该项。只读，不受写入口状态限制。 */
   onReveal?(relative: string): void;
 }
@@ -205,6 +206,7 @@ function FileMenu({ menu, files, onClose }: { menu: { file: FileChange; x: numbe
   const stagingLabel = actions.scope === "staged" ? "取消暂存" : "暂存";
   const stagingReason = actions.scope === "all" ? "“全部”范围不区分暂存区，请在“未暂存”范围暂存" : !regular.length ? "所选都是冲突文件，请使用“标记已解决”" : null;
   return <MenuShell x={menu.x} y={menu.y} label="文件操作" onClose={onClose}>
+    {actions.onHistory && !menu.file.gitlink && <button type="button" role="menuitem" onClick={() => { onClose(); actions.onHistory?.(menu.file); }}>历史记录</button>}
     {actions.onStash && <button type="button" role="menuitem" disabled={!!disabled || !!conflicts.length}
       title={disabled ?? (conflicts.length ? "选中项包含冲突文件" : undefined)} onClick={() => { onClose(); actions.onStash?.(targets); }}>储藏所选文件…</button>}
     {targets.length > 1 && <span className="file-menu-note">已选中 {targets.length} 个文件</span>}
