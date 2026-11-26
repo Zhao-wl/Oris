@@ -7,6 +7,7 @@ import type { OperationOutcome } from "./operations-api";
 import type { CommitInfo, RefsView } from "./history-api";
 import { defaultAnchor, WORKSPACE_KEY } from "./workspace-model";
 import { FETCH_LOG_KEY } from "./history-model";
+import { isMacPlatform } from "./ai-shortcut";
 
 const bridge = vi.hoisted(() => ({
   open: vi.fn(), refresh: vi.fn(), read: vi.fn(), diff: vi.fn(), operation: vi.fn(),
@@ -345,7 +346,9 @@ describe("compare and file history (A09)", () => {
     expect(bridge.revision).toHaveBeenLastCalledWith("a", O("0"), O("1"), target.pathId, null, expect.any(String));
     expect(reading()).toContain("history:file:");
     await click(button("← 返回本地变化"));
-    await contextMenu(await openSearch());
+    await act(async () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "P", ctrlKey: !isMacPlatform(), metaKey: isMacPlatform(), shiftKey: true, cancelable: true })));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 5)); });
+    await contextMenu(q(".repository-search-result"));
     await click(button("历史记录", q(".repository-file-search")!));
     expect(bridge.fileHistory).toHaveBeenCalledTimes(2);
     await contextMenu(q(".tab-path"));

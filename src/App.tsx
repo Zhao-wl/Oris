@@ -2119,9 +2119,6 @@ export default function App() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (conflictEditor) return;
-      if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "p" && backendRepoId && !document.querySelector(".dialog-overlay, dialog[open]")) {
-        event.preventDefault(); setFileSearchRepo(backendRepoId); return;
-      }
       if (fileSearchRepo && fileSearchRepo === backendRepoId) return;
       // 设置与字号快捷键不与文字输入冲突，焦点在输入框（如 diff 搜索框）时也生效（V2-D25）。
       if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key === ",") { event.preventDefault(); setSettingsOpen(true); return; }
@@ -2138,6 +2135,9 @@ export default function App() {
       if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "e" && activeRoot && !document.querySelector(".dialog-overlay")) { event.preventDefault(); setPickerOpen((value) => !value); return; }
       if (!settingsOpen && !aiOpen && matchesAiShortcut(event, aiShortcut)) {
         event.preventDefault(); setAiOpen(true); return;
+      }
+      if (backendRepoId && !aiOpen && !settingsOpen && !document.querySelector(".dialog-overlay, dialog[open]") && matchesAiShortcut(event, "CtrlOrMeta+Shift+P")) {
+        event.preventDefault(); setFileSearchRepo(backendRepoId); return;
       }
       const target = event.target;
       if (target instanceof Element && target.matches("input, textarea, select, [contenteditable=true]")) return;
